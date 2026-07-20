@@ -1,0 +1,25 @@
+# Python (pyUVM / cocotb port)
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# FuseSoC / simulation build outputs
+build/
+sim_build*/
+rundir/
+results.xml
+
+# VCS artifacts
+csrc/
+*.daidir/
+simv
+simv.*
+ucli.key
+vc_hdrs.h
+.vcs*
+AN.DB/
+DVEfiles/
+*.vpd
+*.fsdb
+novas.*
+verdiLog/

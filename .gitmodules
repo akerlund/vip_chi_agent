@@ -1,0 +1,6 @@
+[submodule "submodules/vip_memory"]
+	path = submodules/vip_memory
+	url = git@github.com:akerlund/vip_memory.git
+[submodule "submodules/vip_report_server"]
+	path = submodules/vip_report_server
+	url = git@github.com:akerlund/vip_report_server.git
