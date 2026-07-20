@@ -1,0 +1,788 @@
+`ifndef VIP_CHI_BASE_SEQ
+`define VIP_CHI_BASE_SEQ
+
+import uvm_pkg::*;
+`include "uvm_macros.svh"
+import vip_chi_types_pkg::*;
+
+class vip_chi_base_seq #(
+  vip_chi_cfg_t CFG_P = VIP_CHI_DEFAULT_CFG_C
+  ) extends uvm_sequence #(vip_chi_item #(CFG_P));
+
+  `uvm_object_param_utils(vip_chi_base_seq #(CFG_P))
+
+  typedef vip_chi_item  #(CFG_P) item_t;
+  typedef item_t                 responses_t [$];
+  typedef vip_chi_types #(CFG_P)::addr_t       addr_t;
+  typedef vip_chi_types #(CFG_P)::data_t       data_t;
+  typedef vip_chi_types #(CFG_P)::be_t         be_t;
+  typedef vip_chi_types #(CFG_P)::node_id_t    node_id_t;
+  typedef vip_chi_types #(CFG_P)::txn_id_t     txn_id_t;
+  typedef vip_chi_types #(CFG_P)::lpid_t       lpid_t;
+  typedef vip_chi_types #(CFG_P)::tagop_t      tagop_t;
+  typedef vip_chi_types #(CFG_P)::groupidext_t groupidext_t;
+  typedef vip_chi_types #(CFG_P)::tag_t        tag_t;
+  typedef vip_chi_types #(CFG_P)::tu_t         tu_t;
+  typedef vip_chi_types #(CFG_P)::req_opcode_t req_opcode_t;
+
+  protected vip_chi_seq_config                   cfg;
+  protected vip_chi_cfg_item                     item_cfg;
+  protected vip_chi_addr_iterator      #(CFG_P) addr_iter;
+  protected vip_chi_seq_payload_buffer #(CFG_P) payload_buf;
+  protected vip_chi_seq_counter_iter   #(CFG_P) counter_iter;
+
+  protected logic       ns_val           = 1'b1;
+  protected logic [1:0] order_val        = VIP_CHI_ORDER_NONE_E;
+  protected logic [3:0] mem_attr_val     = 4'b0;
+  protected logic       allow_retry_val  = 1'b1;
+  protected logic       exp_comp_ack_val = 1'b0;
+  protected logic       excl_val         = 1'b0;
+  protected logic [3:0] pcrd_type_val    = 4'b0;
+  protected node_id_t   src_id_val       = '0;
+  protected node_id_t   tgt_id_val       = '0;
+  protected lpid_t      lp_id_val        = '0;
+  protected node_id_t   return_nid_val   = '0;
+  protected txn_id_t    return_txn_id_val = '0;
+  protected logic [VIP_CHI_QOS_WIDTH_C - 1:0] qos_val = '0;
+  protected logic       tracetag_val     = 1'b0;
+  protected logic       dodwt_val        = 1'b0;
+  protected logic       likelyshared_val = 1'b0;
+  protected logic       endian_val       = 1'b0;
+  protected groupidext_t group_id_ext_val = '0;
+  protected tagop_t     tagop_val        = '0;
+  protected tagop_t     dat_tagop_val    = '0;
+  protected tag_t       tag_val          [];
+  protected tu_t        tu_val           [];
+  protected bit         sep_read_enabled = 1'b0;
+  // When set, body() launches every request before collecting any response, so
+  // a multi-outstanding driver (cfg.multi_outstanding) can overlap them. Default
+  // 0 keeps the strict one-request-at-a-time send/collect loop.
+  bit                   pipelined_send   = 1'b0;
+
+  protected responses_t responses;
+
+  // ---------------------------------------------------------------------------
+  // Constructor.
+  // ---------------------------------------------------------------------------
+  function new(input string name = "vip_chi_base_seq");
+
+    super.new(name);
+    this.cfg          = vip_chi_seq_config                  ::type_id::create("cfg");
+    this.item_cfg     = vip_chi_cfg_item                    ::type_id::create("item_cfg");
+    this.addr_iter    = vip_chi_addr_iterator      #(CFG_P)::type_id::create("addr_iter");
+    this.payload_buf  = vip_chi_seq_payload_buffer #(CFG_P)::type_id::create("payload_buf");
+    this.counter_iter = vip_chi_seq_counter_iter   #(CFG_P)::type_id::create("counter_iter");
+    this.reset();
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Restore sequence state while preserving the direction pinned by a concrete
+  // read/write subclass.
+  // ---------------------------------------------------------------------------
+  function void reset();
+
+    vip_chi_dir_t saved_direction;
+
+    saved_direction = this.item_cfg.direction;
+    this.cfg.reset();
+    this.item_cfg.reset();
+    this.addr_iter.reset();
+    this.payload_buf.reset();
+    this.counter_iter.reset();
+
+    this.item_cfg.direction = saved_direction;
+    this.ns_val             = 1'b1;
+    this.order_val          = VIP_CHI_ORDER_NONE_E;
+    this.mem_attr_val       = 4'b0;
+    this.allow_retry_val    = 1'b1;
+    this.exp_comp_ack_val   = 1'b0;
+    this.excl_val           = 1'b0;
+    this.pcrd_type_val      = 4'b0;
+    this.src_id_val         = '0;
+    this.tgt_id_val         = '0;
+    this.lp_id_val          = '0;
+    this.return_nid_val     = '0;
+    this.return_txn_id_val  = '0;
+    this.qos_val            = '0;
+    this.tracetag_val       = 1'b0;
+    this.dodwt_val          = 1'b0;
+    this.likelyshared_val   = 1'b0;
+    this.endian_val         = 1'b0;
+    this.group_id_ext_val   = '0;
+    this.tagop_val          = '0;
+    this.dat_tagop_val      = '0;
+    this.tag_val.delete();
+    this.tu_val.delete();
+    this.sep_read_enabled   = 1'b0;
+    this.pipelined_send     = 1'b0;
+    this.responses.delete();
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Enable/disable pipelined send: launch all requests, then collect responses.
+  // ---------------------------------------------------------------------------
+  function void set_pipelined_send(input bit enabled);
+    this.pipelined_send = enabled;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Protected direction pin used by concrete read/write subclasses.
+  // ---------------------------------------------------------------------------
+  protected function void set_direction(input vip_chi_dir_t direction);
+    this.item_cfg.direction = direction;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Expose the currently pinned request direction for smoke checks.
+  // ---------------------------------------------------------------------------
+  function vip_chi_dir_t get_direction();
+    return this.item_cfg.direction;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set how many requests the sequence should generate.
+  // ---------------------------------------------------------------------------
+  function void set_requests(input int requests);
+
+    if (this.addr_iter.list_size() > 0) begin
+      `uvm_warning(get_name(), $sformatf(
+        "WARNING [%s] set_requests(%0d) called while addr_iter holds %0d list entries",
+        get_name(), requests, this.addr_iter.list_size()))
+    end
+
+    if (requests < 0) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] set_requests(%0d) is negative",
+        get_name(), requests))
+    end
+
+    if (this.item_cfg.data_type == VIP_CHI_DATA_CUSTOM_E) begin
+      this.cfg.requests = VIP_CHI_UNLIMITED_REQUESTS_C;
+    end
+    else begin
+      this.cfg.requests = requests;
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the first request address.
+  // ---------------------------------------------------------------------------
+  function void set_initial_addr(input addr_t addr);
+    this.addr_iter.set_initial_addr(addr);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Load an explicit per-request address list.
+  // ---------------------------------------------------------------------------
+  function void set_addr_list(input addr_t list []);
+
+    this.addr_iter.load_list(list);
+    this.cfg.requests = this.addr_iter.list_size();
+    if (this.addr_iter.list_size() != 0) begin
+      this.addr_iter.set_initial_addr(this.addr_iter.pop_list_front());
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set a fixed address stride between requests. Zero restores auto-stride.
+  // ---------------------------------------------------------------------------
+  function void set_addr_stride(input longint stride);
+    this.addr_iter.set_increment(stride);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Enable or disable address advancement between requests.
+  // ---------------------------------------------------------------------------
+  function void set_addr_enabled(input bit enabled);
+    this.addr_iter.set_enabled(enabled);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Pin the CHI Size field to one exact value.
+  // ---------------------------------------------------------------------------
+  function void set_size(input logic [2:0] size);
+    this.item_cfg.min_size = int'(size);
+    this.item_cfg.max_size = int'(size);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Constrain the CHI Size randomization range.
+  // ---------------------------------------------------------------------------
+  function void set_size_range(input int min_size, input int max_size);
+
+    if ((min_size < 0) || (max_size > 6) || (min_size > max_size)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] Illegal size range [%0d:%0d]",
+        get_name(), min_size, max_size))
+    end
+
+    this.item_cfg.min_size = min_size;
+    this.item_cfg.max_size = max_size;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Enable or disable the default size-alignment rule on generated requests.
+  // ---------------------------------------------------------------------------
+  function void set_enforce_addr_alignment(input bit value);
+    this.item_cfg.enforce_addr_alignment = value;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Enable CHI-size-legal atomic operands (ordinary atomics <=8B; AtomicCompare
+  // <=16B combined). Default off preserves the existing full-beat stress tests.
+  // ---------------------------------------------------------------------------
+  function void set_atomic_strict_size(input bit enabled);
+    this.item_cfg.atomic_strict_size = enabled;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Select the write payload generation mode.
+  // ---------------------------------------------------------------------------
+  function void set_data_type(input vip_chi_data_type_t data_type);
+    this.item_cfg.data_type = data_type;
+    if (data_type == VIP_CHI_DATA_CUSTOM_E) begin
+      this.cfg.requests = VIP_CHI_UNLIMITED_REQUESTS_C;
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Load custom write payload beats and switch into CUSTOM mode.
+  // ---------------------------------------------------------------------------
+  function void set_data(input data_t data [$]);
+    this.payload_buf.set_data(data);
+    this.item_cfg.data_type = VIP_CHI_DATA_CUSTOM_E;
+    this.cfg.requests = VIP_CHI_UNLIMITED_REQUESTS_C;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Load custom byte enables for CUSTOM write payload mode.
+  // ---------------------------------------------------------------------------
+  function void set_be(input be_t be [$]);
+    this.payload_buf.set_be(be);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the first COUNTER-mode payload value.
+  // ---------------------------------------------------------------------------
+  function void set_counter_value(input data_t start);
+    this.counter_iter.set_counter(start);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the COUNTER-mode per-beat increment.
+  // ---------------------------------------------------------------------------
+  function void set_counter_increment(input data_t increment);
+    this.counter_iter.set_increment(increment);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Return the current COUNTER-mode value.
+  // ---------------------------------------------------------------------------
+  function data_t get_counter();
+    return this.counter_iter.get_counter();
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the SrcID stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_src_id(input node_id_t src_id);
+    this.src_id_val = src_id;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the TgtID stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_tgt_id(input node_id_t tgt_id);
+    this.tgt_id_val = tgt_id;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the LPID stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_lp_id(input lpid_t lp_id);
+    this.lp_id_val = lp_id;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the ReturnNID stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_return_nid(input node_id_t return_nid);
+    this.return_nid_val = return_nid;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the ReturnTxnID stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_return_txn_id(input txn_id_t return_txn_id);
+    this.return_txn_id_val = return_txn_id;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the QoS field stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_qos(input logic [VIP_CHI_QOS_WIDTH_C - 1:0] qos);
+    this.qos_val = qos;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the CHI-E TraceTag field stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_tracetag(input logic tracetag);
+    this.tracetag_val = tracetag;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the CHI-E DoDWT field stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_dodwt(input logic dodwt);
+    this.dodwt_val = dodwt;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the CHI-E LikelyShared field stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_likelyshared(input logic likelyshared);
+    this.likelyshared_val = likelyshared;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the CHI-E Endian field stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_endian(input logic endian);
+    this.endian_val = endian;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the CHI-E GroupIDExt field stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_group_id_ext(input groupidext_t group_id_ext);
+    this.group_id_ext_val = group_id_ext;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the CHI-E TagOp field stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_tagop(input tagop_t tagop);
+    this.tagop_val = tagop;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the CHI-E DAT TagOp field stamped onto every generated write.
+  // ---------------------------------------------------------------------------
+  function void set_dat_tagop(input tagop_t dat_tagop);
+    this.dat_tagop_val = dat_tagop;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the per-beat CHI-E DAT Tag values stamped onto every generated write.
+  // ---------------------------------------------------------------------------
+  function void set_tag(input tag_t tag[]);
+    this.tag_val = new[tag.size()];
+    foreach (tag[i]) begin
+      this.tag_val[i] = tag[i];
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the per-beat CHI-E DAT TU values stamped onto every generated write.
+  // ---------------------------------------------------------------------------
+  function void set_tu(input tu_t tu[]);
+    this.tu_val = new[tu.size()];
+    foreach (tu[i]) begin
+      this.tu_val[i] = tu[i];
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the NS attribute stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_ns(input logic ns);
+    this.ns_val = ns;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the Order field stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_order(input logic [1:0] order);
+    this.order_val = order;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the MemAttr field stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_mem_attr(input logic [3:0] mem_attr);
+    this.mem_attr_val = mem_attr;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Control whether generated requests allow RetryAck responses.
+  // ---------------------------------------------------------------------------
+  function void set_allow_retry(input logic allow_retry);
+    this.allow_retry_val = allow_retry;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Control whether generated writes expect a later CompAck.
+  // ---------------------------------------------------------------------------
+  function void set_exp_comp_ack(input logic exp_comp_ack);
+    this.exp_comp_ack_val = exp_comp_ack;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Control the Excl field stamped onto every generated request.
+  // ---------------------------------------------------------------------------
+  function void set_excl(input logic excl);
+    this.excl_val = excl;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the PCrdType stamped onto generated requests.
+  // ---------------------------------------------------------------------------
+  function void set_pcrd_type(input logic [3:0] pcrd_type);
+    this.pcrd_type_val = pcrd_type;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Switch read traffic between ReadNoSnp and ReadNoSnpSep.
+  // ---------------------------------------------------------------------------
+  function void set_sep_read(input bit enabled);
+    this.sep_read_enabled = enabled;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Enable or disable synchronous response collection.
+  // ---------------------------------------------------------------------------
+  function void set_get_response(input bit enabled);
+    this.item_cfg.get_response = enabled;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Drain and return the collected response queue.
+  // ---------------------------------------------------------------------------
+  function responses_t get_responses();
+    get_responses = this.responses;
+    this.responses.delete();
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Configure an inter-request delay in units of one caller-supplied period.
+  // ---------------------------------------------------------------------------
+  function void set_request_delay(
+    input bit      enabled,
+    input int      min_delay,
+    input int      max_delay,
+    input realtime period
+  );
+
+    if ((min_delay < 0) || (max_delay < min_delay)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] Illegal request delay range [%0d:%0d]",
+        get_name(), min_delay, max_delay))
+    end
+
+    if (enabled && (period <= 0.0)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] request-delay period must be > 0 when enabled",
+        get_name()))
+    end
+
+    this.cfg.request_delay_enabled = enabled;
+    this.cfg.request_delay_min     = min_delay;
+    this.cfg.request_delay_max     = max_delay;
+    this.cfg.clock_period          = period;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Enable or disable sequence progress logging.
+  // ---------------------------------------------------------------------------
+  function void set_verbose(input bit verbose);
+    this.cfg.verbose = verbose;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Control how often progress messages are printed.
+  // ---------------------------------------------------------------------------
+  function void set_log_denominator(input int log_denominator);
+
+    if (log_denominator <= 0) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] log_denominator must be > 0",
+        get_name()))
+    end
+
+    this.cfg.log_denominator = log_denominator;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Generate items according to the configured iterator, payload, and stamp
+  // state, then send them through the sequencer.
+  // ---------------------------------------------------------------------------
+  protected function item_t build_request_item(input int unsigned request_idx);
+    item_t         req;
+    vip_chi_dir_t  direction_val;
+    req_opcode_t   opcode_val;
+    vip_chi_role_t role_val_v;
+
+    req = new($sformatf("req_%0d", request_idx));
+    req.set_config(CFG_P);
+
+    if (this.item_cfg.data_type == VIP_CHI_DATA_CUSTOM_E) begin
+      if (this.payload_buf.exhausted()) begin
+        `uvm_fatal(get_name(), $sformatf(
+          "FATAL [%s] CUSTOM data mode requires queued payload data",
+          get_name()))
+      end
+      this.payload_buf.clamp_size(this.item_cfg);
+      req.set_deferred_custom_payload(1'b1);
+    end
+
+    req.set_size_range(this.item_cfg.min_size, this.item_cfg.max_size);
+    req.set_data_type(this.item_cfg.data_type);
+    req.set_enforce_addr_alignment(this.item_cfg.enforce_addr_alignment);
+    req.set_atomic_strict_size(this.item_cfg.atomic_strict_size);
+    req.min_addr = this.addr_iter.current();
+    req.max_addr = this.addr_iter.current();
+    req.set_ns(this.ns_val);
+    req.set_order(this.order_val);
+    req.set_mem_attr(this.mem_attr_val);
+    req.set_allow_retry(this.allow_retry_val);
+    req.set_exp_comp_ack(this.exp_comp_ack_val);
+    req.set_excl(this.excl_val);
+    req.set_pcrd_type(this.pcrd_type_val);
+    this.counter_iter.configure_item(req);
+
+    direction_val = this.item_cfg.direction;
+    opcode_val    = this.choose_opcode();
+    role_val_v    = this.role_val();
+    if (!req.randomize() with {
+      direction     == direction_val;
+      role          == local::role_val_v;
+      opcode        == opcode_val;
+      src_id        == local::this.src_id_val;
+      tgt_id        == local::this.tgt_id_val;
+      lp_id         == local::this.lp_id_val;
+      return_nid    == local::this.return_nid_val;
+      return_txn_id == local::this.return_txn_id_val;
+      qos           == local::this.qos_val;
+      tracetag      == local::this.tracetag_val;
+      dodwt         == local::this.dodwt_val;
+      likelyshared  == local::this.likelyshared_val;
+      endian        == local::this.endian_val;
+      group_id_ext  == local::this.group_id_ext_val;
+      tagop         == local::this.tagop_val;
+      ns            == local::this.ns_val;
+      order         == local::this.order_val;
+      mem_attr      == local::this.mem_attr_val;
+      allow_retry   == local::this.allow_retry_val;
+      exp_comp_ack  == local::this.exp_comp_ack_val;
+      excl          == local::this.excl_val;
+      pcrd_type     == local::this.pcrd_type_val;
+    }) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] Failed to randomize request %0d",
+        get_name(), request_idx))
+    end
+
+    if (this.item_cfg.data_type == VIP_CHI_DATA_CUSTOM_E) begin
+      this.payload_buf.apply(req, this.item_cfg);
+    end
+
+    req.set_dat_tagop(this.dat_tagop_val);
+    if (this.tag_val.size() != 0) begin
+      req.set_tag(this.tag_val);
+    end
+    if (this.tu_val.size() != 0) begin
+      req.set_tu(this.tu_val);
+    end
+
+    return req;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Preview the next generated item without starting it on a sequencer.
+  // ---------------------------------------------------------------------------
+  virtual function item_t preview_next_request();
+    return this.build_request_item(0);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Generate items according to the configured iterator, payload, and stamp
+  // state, then send them through the sequencer.
+  // ---------------------------------------------------------------------------
+  task body();
+    item_t          req;
+    item_t          rsp;
+    int unsigned    request_idx;
+
+    if ((this.cfg.requests == VIP_CHI_UNLIMITED_REQUESTS_C) &&
+        (this.item_cfg.data_type != VIP_CHI_DATA_CUSTOM_E)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] unlimited requests are only supported in CUSTOM data mode",
+        get_name()))
+    end
+
+    if ((this.item_cfg.data_type == VIP_CHI_DATA_CUSTOM_E) && this.payload_buf.exhausted()) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] CUSTOM data mode requires queued payload data",
+        get_name()))
+    end
+
+    if (this.pipelined_send) begin
+      this.pipelined_body();
+      return;
+    end
+
+    request_idx = 0;
+    forever begin
+      if ((this.cfg.requests != VIP_CHI_UNLIMITED_REQUESTS_C) &&
+          (request_idx >= this.cfg.requests)) begin
+        break;
+      end
+
+      if ((this.item_cfg.data_type == VIP_CHI_DATA_CUSTOM_E) && this.payload_buf.exhausted()) begin
+        break;
+      end
+
+      this.apply_request_delay(request_idx);
+      this.cfg.log_status(int'(request_idx), this.access_name(), get_name());
+
+      req = this.build_request_item(request_idx);
+
+      start_item(req);
+      finish_item(req);
+
+      if (this.item_cfg.get_response) begin
+        get_response(rsp);
+        this.responses.push_back(rsp);
+      end
+
+      this.counter_iter.advance(req, this.item_cfg);
+      void'(this.addr_iter.advance(req.size));
+      request_idx++;
+    end
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Pipelined send: generate and launch every request first (finish_item
+  // returns as soon as the driver has issued the request, not when it
+  // completes), then drain the responses. Overlap only materializes when the
+  // driver runs cfg.multi_outstanding; against a serial driver this collects
+  // the same responses one-by-one and simply reorders the loop.
+  // ---------------------------------------------------------------------------
+  protected task pipelined_body();
+    item_t       req;
+    item_t       rsp;
+    int unsigned n;
+
+    if (this.item_cfg.data_type == VIP_CHI_DATA_CUSTOM_E) begin
+      // CUSTOM mode is bounded by the queued payload, not cfg.requests
+      // (set_requests pins cfg.requests to UNLIMITED in custom mode). Launch a
+      // request per queued payload until the buffer drains; n is the count sent.
+      n = 0;
+      while (!this.payload_buf.exhausted()) begin
+        this.cfg.log_status(int'(n), this.access_name(), get_name());
+        req = this.build_request_item(n);
+
+        start_item(req);
+        finish_item(req);
+
+        this.counter_iter.advance(req, this.item_cfg);
+        void'(this.addr_iter.advance(req.size));
+        n++;
+      end
+    end
+    else begin
+      if (this.cfg.requests == VIP_CHI_UNLIMITED_REQUESTS_C) begin
+        `uvm_fatal(get_name(), $sformatf(
+          "FATAL [%s] pipelined_send requires a bounded request count",
+          get_name()))
+      end
+
+      n = this.cfg.requests;
+
+      for (int unsigned i = 0; i < n; i++) begin
+        this.cfg.log_status(int'(i), this.access_name(), get_name());
+        req = this.build_request_item(i);
+
+        start_item(req);
+        finish_item(req);
+
+        this.counter_iter.advance(req, this.item_cfg);
+        void'(this.addr_iter.advance(req.size));
+      end
+    end
+
+    if (this.item_cfg.get_response) begin
+      for (int unsigned i = 0; i < n; i++) begin
+        get_response(rsp);
+        this.responses.push_back(rsp);
+      end
+    end
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Apply the configured inter-request delay before request N>0.
+  // ---------------------------------------------------------------------------
+  protected task apply_request_delay(input int unsigned request_idx);
+    int delay_cycles;
+
+    if (!this.cfg.request_delay_enabled || (request_idx == 0)) begin
+      return;
+    end
+
+    delay_cycles = $urandom_range(this.cfg.request_delay_max, this.cfg.request_delay_min);
+    #(delay_cycles * this.cfg.clock_period);
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Return the requester role stamped onto every generated request. Base is
+  // RN-I; the coherent sequence overrides this to RN-F.
+  // ---------------------------------------------------------------------------
+  virtual protected function vip_chi_role_t role_val();
+    return VIP_CHI_ROLE_RNI_E;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Return the opcode stamped onto the next generated request.
+  // ---------------------------------------------------------------------------
+  virtual protected function req_opcode_t choose_opcode();
+
+    if (this.item_cfg.direction == VIP_CHI_DIR_READ_E) begin
+      if (this.sep_read_enabled) begin
+        if (CFG_P.ISSUE_P != VIP_CHI_ISSUE_E_E) begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] ReadNoSnpSep is only legal under CHI-E",
+            get_name()))
+        end
+        return req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C);
+      end
+      return req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_C);
+    end
+
+    if (this.payload_buf.has_custom_be()) begin
+      return req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C);
+    end
+    return req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Return a short access label for progress logging.
+  // ---------------------------------------------------------------------------
+  virtual protected function string access_name();
+
+    if (this.item_cfg.direction == VIP_CHI_DIR_READ_E) begin
+      if (this.sep_read_enabled) begin
+        return "ReadNoSnpSep";
+      end
+      return "ReadNoSnp";
+    end
+
+    if (this.payload_buf.has_custom_be()) begin
+      return "WriteNoSnpPtl";
+    end
+    return "WriteNoSnpFull";
+  endfunction
+
+endclass
+
+`endif

@@ -1,0 +1,1083 @@
+`ifndef VIP_CHI_SCOREBOARD
+`define VIP_CHI_SCOREBOARD
+
+import uvm_pkg::*;
+`include "uvm_macros.svh"
+import vip_chi_types_pkg::*;
+
+// -----------------------------------------------------------------------------
+// Standalone, always-on protocol scoreboard for the vip_chi example.
+//
+// The example is a DUT-less VIP-on-VIP setup (RN-I <-> SN-F, plus an HN-I proxy
+// fan-in/xbar), so this scoreboard checks transaction/protocol consistency
+// between the two agents rather than DUT-vs-reference. Three checkers share one
+// transaction table keyed in the requester frame:
+//
+//   A - lifecycle / completion contract (per requester transaction)
+//   B - cross-agent request fidelity (REQ observed at requester == at completer)
+//   C - independent, predictable-only data integrity (write->read)
+//
+// It connects in parallel to the same monitor analysis ports the observation
+// FIFOs and coverage already use, so the per-test FIFO draining is untouched.
+// See vip_chi/docs/SCOREBOARD_PLAN.md for the full rationale.
+// -----------------------------------------------------------------------------
+
+// Which requester stream an observation arrived on (TxnID alone is not unique
+// across the integrated pair and the two proxy RNs).
+typedef enum int {
+  VIP_CHI_SB_STREAM_RNI,
+  VIP_CHI_SB_STREAM_HRNI0,
+  VIP_CHI_SB_STREAM_HRNI1
+} vip_chi_sb_stream_e;
+
+// Coarse transaction class used to pick the completion contract.
+typedef enum int {
+  VIP_CHI_SB_READ,
+  VIP_CHI_SB_WRITE,
+  VIP_CHI_SB_WRITE_NODATA,
+  VIP_CHI_SB_ATOMIC,
+  VIP_CHI_SB_PERSIST,
+  VIP_CHI_SB_PERSIST_SEP,
+  VIP_CHI_SB_PREFETCH,
+  VIP_CHI_SB_OTHER
+} vip_chi_sb_kind_e;
+
+// -----------------------------------------------------------------------------
+// Per-transaction context. A class (not a struct) so the primary table and the
+// DBID side-index can hold handles to the same object.
+// -----------------------------------------------------------------------------
+class vip_chi_sb_ctx #(
+  vip_chi_cfg_t CFG_P = VIP_CHI_DEFAULT_CFG_C
+  );
+
+  typedef vip_chi_item #(CFG_P)  item_t;
+  typedef item_t::node_id_t      node_id_t;
+  typedef item_t::addr_t         addr_t;
+  typedef item_t::txn_id_t       txn_id_t;
+  typedef item_t::size_t         size_t;
+  typedef item_t::req_opcode_t   req_opcode_t;
+  typedef item_t::data_t         data_t;
+
+  // Identity (the normalized key).
+  vip_chi_sb_stream_e stream;
+  node_id_t           requester_node;   // src_id of the REQ == tgt_id of completions
+  txn_id_t            txn_id;
+
+  // Request attributes captured once at REQ.
+  addr_t              addr;
+  size_t              size;
+  req_opcode_t        opcode;
+  vip_chi_sb_kind_e   kind;
+  bit                 ordered;
+  bit                 exp_comp_ack;
+  bit                 allow_retry;
+
+  // Separated read (ReadNoSnpSep): the DataSepResp data leg returns on
+  // ReturnNID/ReturnTxnID rather than the original requester TxnID, so the ctx
+  // is also indexed by (stream, return_nid, return_txn_id) to match that leg.
+  bit                 sep_read;
+  node_id_t           return_nid;
+  txn_id_t            return_txn_id;
+
+  // Completion contract: which milestones are REQUIRED to retire.
+  bit  need_grant, need_write_data, need_read_data, need_comp;
+  bit  need_receipt, need_persist, need_compack;
+
+  // Milestones OBSERVED.
+  bit  grant_seen, write_data_sent, read_data_seen, comp_seen;
+  bit  receipt_seen, persist_seen, compack_seen;
+  bit  retry_seen, pcrd_seen;
+
+  txn_id_t            dbid;
+  bit                 retired;
+
+  // Checker C: hold the observed write-DAT until the completion resolves so the
+  // predicted image only commits data that actually landed (OKAY completion).
+  item_t              wr_dat_item;
+  bit                 wr_committed;
+  vip_chi_resp_err_t  comp_err;
+
+  // Checker C atomic RMW prediction: the target's pre-op value is captured off
+  // pred_mem when the operand DAT is observed (before the target is invalidated
+  // for the RMW window). At completion the new value is recomputed and committed
+  // and, for returning atomics, the CompData is compared against this pre-op
+  // value. atomic_old_valid is 0 when any target byte was unknown (unpredictable).
+  data_t              atomic_old [];
+  bit                 atomic_old_valid;
+  bit                 atomic_resolved;
+
+  function new();
+    this.comp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
+  endfunction
+
+  // All required milestones observed?
+  function bit contract_met();
+    return (!need_grant      || grant_seen)
+        && (!need_write_data || write_data_sent)
+        && (!need_read_data  || read_data_seen)
+        && (!need_comp       || comp_seen)
+        && (!need_receipt    || receipt_seen)
+        && (!need_persist    || persist_seen)
+        && (!need_compack    || compack_seen);
+  endfunction
+
+  // Reset completion state for a legitimate retry re-issue (keep identity).
+  function void reset_milestones();
+    this.grant_seen      = 1'b0;
+    this.write_data_sent = 1'b0;
+    this.read_data_seen  = 1'b0;
+    this.comp_seen       = 1'b0;
+    this.receipt_seen    = 1'b0;
+    this.persist_seen    = 1'b0;
+    this.compack_seen    = 1'b0;
+    this.retry_seen      = 1'b0;
+    this.pcrd_seen       = 1'b0;
+    this.retired         = 1'b0;
+    this.wr_dat_item     = null;
+    this.wr_committed    = 1'b0;
+    this.comp_err        = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
+    this.atomic_old      = {};
+    this.atomic_old_valid = 1'b0;
+    this.atomic_resolved = 1'b0;
+  endfunction
+
+endclass
+
+// -----------------------------------------------------------------------------
+// Analysis imps: requester streams feed Checkers A & C, completer req streams
+// feed Checker B fidelity only. Suffixes are globally unique (_sb).
+// -----------------------------------------------------------------------------
+`uvm_analysis_imp_decl(_rni_req_sb)
+`uvm_analysis_imp_decl(_rni_rsp_sb)
+`uvm_analysis_imp_decl(_rni_dat_sb)
+`uvm_analysis_imp_decl(_hrni0_req_sb)
+`uvm_analysis_imp_decl(_hrni0_rsp_sb)
+`uvm_analysis_imp_decl(_hrni0_dat_sb)
+`uvm_analysis_imp_decl(_hrni1_req_sb)
+`uvm_analysis_imp_decl(_hrni1_rsp_sb)
+`uvm_analysis_imp_decl(_hrni1_dat_sb)
+`uvm_analysis_imp_decl(_snf_req_sb)
+`uvm_analysis_imp_decl(_hsnf0_req_sb)
+`uvm_analysis_imp_decl(_hsnf1_req_sb)
+
+class vip_chi_scoreboard #(
+  vip_chi_cfg_t CFG_P = VIP_CHI_DEFAULT_CFG_C
+  ) extends uvm_component;
+
+  `uvm_component_param_utils(vip_chi_scoreboard #(CFG_P))
+
+  typedef vip_chi_item #(CFG_P)  item_t;
+  typedef item_t::node_id_t      node_id_t;
+  typedef item_t::addr_t         addr_t;
+  typedef item_t::txn_id_t       txn_id_t;
+  typedef item_t::size_t         size_t;
+  typedef item_t::req_opcode_t   req_opcode_t;
+  typedef item_t::rsp_opcode_t   rsp_opcode_t;
+  typedef item_t::dat_opcode_t   dat_opcode_t;
+  typedef item_t::data_t         data_t;
+  typedef vip_chi_sb_ctx #(CFG_P) ctx_t;
+
+  localparam int DATA_BYTES_C = CFG_P.DATA_BYTES_P;
+
+  // Gating knobs, set by the env from tb_cfg in connect_phase.
+  bit enable     = 1'b1;   // master on/off (A + B + C)
+  bit check_data = 1'b1;   // Checker C on/off (A + B still run)
+
+  // Checker B HN-I routing prediction: the env hands over the exact routing
+  // policy the HN-I driver uses (port count, stride LSB, optional SAM) so the
+  // scoreboard can independently re-derive each request's SN target from its
+  // address and confirm it landed on that port. route_check stays off (nothing
+  // to prove) when there is a single SN target. See set_route_policy().
+  bit             route_check = 1'b0;
+  int             n_sn_ports  = 1;
+  int unsigned    sn_addr_lsb = 12;
+  vip_chi_hni_sam hni_sam;     // null => stride decode (mirrors the driver)
+
+  // Requester views (integrated + both proxy RNs).
+  uvm_analysis_imp_rni_req_sb   #(item_t, vip_chi_scoreboard #(CFG_P)) rni_req_sb;
+  uvm_analysis_imp_rni_rsp_sb   #(item_t, vip_chi_scoreboard #(CFG_P)) rni_rsp_sb;
+  uvm_analysis_imp_rni_dat_sb   #(item_t, vip_chi_scoreboard #(CFG_P)) rni_dat_sb;
+  uvm_analysis_imp_hrni0_req_sb #(item_t, vip_chi_scoreboard #(CFG_P)) hrni0_req_sb;
+  uvm_analysis_imp_hrni0_rsp_sb #(item_t, vip_chi_scoreboard #(CFG_P)) hrni0_rsp_sb;
+  uvm_analysis_imp_hrni0_dat_sb #(item_t, vip_chi_scoreboard #(CFG_P)) hrni0_dat_sb;
+  uvm_analysis_imp_hrni1_req_sb #(item_t, vip_chi_scoreboard #(CFG_P)) hrni1_req_sb;
+  uvm_analysis_imp_hrni1_rsp_sb #(item_t, vip_chi_scoreboard #(CFG_P)) hrni1_rsp_sb;
+  uvm_analysis_imp_hrni1_dat_sb #(item_t, vip_chi_scoreboard #(CFG_P)) hrni1_dat_sb;
+  // Completer-side req (Checker B fidelity is REQ<->REQ).
+  uvm_analysis_imp_snf_req_sb   #(item_t, vip_chi_scoreboard #(CFG_P)) snf_req_sb;
+  uvm_analysis_imp_hsnf0_req_sb #(item_t, vip_chi_scoreboard #(CFG_P)) hsnf0_req_sb;
+  uvm_analysis_imp_hsnf1_req_sb #(item_t, vip_chi_scoreboard #(CFG_P)) hsnf1_req_sb;
+
+  // Shared transaction table + DBID side-index (both hold the same handle).
+  protected ctx_t open_ctx    [string];   // key: stream_reqnode_txn
+  protected ctx_t ctx_by_dbid [string];   // key: stream_dbid  (binds write-DAT)
+  protected ctx_t sep_ret_ctx [string];   // key: stream_returnnid_returntxn
+                                           // (binds a ReadNoSnpSep DataSepResp)
+
+  // Checker C: independent, byte-granular predicted image (observed writes only).
+  protected byte  pred_mem [addr_t];
+  protected bit   written  [addr_t];
+
+  // Checker B: canonical-key request multisets, matched at check_phase.
+  protected int   int_req_cnt [string];   // integrated requester (rni)
+  protected int   int_cmp_cnt [string];   // integrated completer (snf)
+  protected int   hni_req_cnt [string];   // proxy requester (hrni*)
+  protected int   hni_cmp_cnt [string];   // proxy completer (hsnf*)
+
+  // Checker B routing: per-request multisets tagged with the SN port. The key
+  // is "p<port>|<canon_key>", so a mis-route surfaces as a shortfall at the
+  // predicted port AND a phantom at the observed port under the same compare.
+  protected int   hni_route_pred [string]; // predicted target port per hrni REQ
+  protected int   hni_route_obs  [string]; // observed arrival port per hsnf REQ
+
+  // Reporting counters.
+  protected int n_incomplete, n_orphan, n_wrong_opcode, n_reuse;
+  protected int n_data_mismatch, n_reads_skipped, n_relay_mismatch, n_route_mismatch;
+
+  // ---------------------------------------------------------------------------
+  // Constructor.
+  // ---------------------------------------------------------------------------
+  function new(input string name, input uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Allocate the analysis imps.
+  // ---------------------------------------------------------------------------
+  function void build_phase(input uvm_phase phase);
+    super.build_phase(phase);
+
+    this.rni_req_sb   = new("rni_req_sb", this);
+    this.rni_rsp_sb   = new("rni_rsp_sb", this);
+    this.rni_dat_sb   = new("rni_dat_sb", this);
+    this.hrni0_req_sb = new("hrni0_req_sb", this);
+    this.hrni0_rsp_sb = new("hrni0_rsp_sb", this);
+    this.hrni0_dat_sb = new("hrni0_dat_sb", this);
+    this.hrni1_req_sb = new("hrni1_req_sb", this);
+    this.hrni1_rsp_sb = new("hrni1_rsp_sb", this);
+    this.hrni1_dat_sb = new("hrni1_dat_sb", this);
+    this.snf_req_sb   = new("snf_req_sb", this);
+    this.hsnf0_req_sb = new("hsnf0_req_sb", this);
+    this.hsnf1_req_sb = new("hsnf1_req_sb", this);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Keys.
+  // ---------------------------------------------------------------------------
+  protected function string ctx_key(
+    input vip_chi_sb_stream_e stream,
+    input node_id_t           requester_node,
+    input txn_id_t            txn_id
+  );
+    return $sformatf("%0d_%0h_%0h", stream, requester_node, txn_id);
+  endfunction
+
+  protected function string dbid_key(
+    input vip_chi_sb_stream_e stream,
+    input txn_id_t            dbid
+  );
+    return $sformatf("%0d_%0h", stream, dbid);
+  endfunction
+
+  // Full canonical REQ identity - never addr/opcode alone (tests deliberately
+  // vary src/tgt, e.g. tc_chi_e_req_smoke sets src=0x15,tgt=0x2a).
+  protected function string canon_key(input item_t item);
+    return $sformatf("%0h_%0h_%0h_%0h_%0h_%0d",
+      item.src_id, item.tgt_id, item.txn_id, item.addr, item.opcode, item.size);
+  endfunction
+
+  // At a requester agent, TX flits carry ROLE_P (RN-I), RX flits peer_role
+  // (SN-F). Direction, not opcode, distinguishes requester-sourced flits.
+  protected function bit is_outbound(input item_t item);
+    return (item.role == VIP_CHI_ROLE_RNI_E);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker B - HN-I routing prediction helpers.
+  // ---------------------------------------------------------------------------
+  // Install the HN-I routing policy (env, connect_phase). The per-port routing
+  // check only runs when there is more than one SN target to disambiguate.
+  function void set_route_policy(input int            sn_ports,
+                                 input int unsigned    addr_lsb,
+                                 input vip_chi_hni_sam sam);
+    this.n_sn_ports  = sn_ports;
+    this.sn_addr_lsb = addr_lsb;
+    this.hni_sam     = sam;
+    this.route_check = (sn_ports > 1);
+  endfunction
+
+  // Re-derive an address's SN target port, mirroring the HN-I driver's
+  // sn_port_of_addr() exactly (SAM ranges first, else the address stride).
+  protected function int sn_port_of_addr(input addr_t addr);
+    int s;
+    if (this.n_sn_ports <= 1) begin
+      return 0;
+    end
+    if (this.hni_sam != null) begin
+      s = this.hni_sam.lookup(longint'(addr));
+      // Out-of-range SAM target: the driver would fatal; flag it as a route error.
+      if ((s < 0) || (s >= this.n_sn_ports)) begin
+        return -1;
+      end
+      return s;
+    end
+    return int'((longint'(addr) >> this.sn_addr_lsb) % this.n_sn_ports);
+  endfunction
+
+  // Port-tagged canonical key: same request on the wrong port => two mismatches.
+  protected function string route_key(input int port, input item_t item);
+    return $sformatf("p%0d|%s", port, this.canon_key(item));
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Derive the completion contract from a requester REQ.
+  // ---------------------------------------------------------------------------
+  protected function void set_contract(input ctx_t ctx, input item_t item);
+    req_opcode_t opc = item.opcode;
+
+    ctx.ordered      = (item.order != VIP_CHI_ORDER_NONE_E);
+    ctx.exp_comp_ack = item.exp_comp_ack;
+    ctx.allow_retry  = item.allow_retry;
+
+    ctx.need_grant = 1'b0; ctx.need_write_data = 1'b0; ctx.need_read_data = 1'b0;
+    ctx.need_comp  = 1'b0; ctx.need_receipt = 1'b0; ctx.need_persist = 1'b0;
+    ctx.need_compack = 1'b0;
+
+    if (vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(vip_chi_req_opcode_t'(opc))) begin
+      ctx.kind            = VIP_CHI_SB_ATOMIC;
+      ctx.need_grant      = 1'b1;
+      ctx.need_write_data = 1'b1;
+      if (vip_chi_types_pkg::vip_chi_req_opcode_is_atomic_returning_data(
+            vip_chi_req_opcode_t'(opc))) begin
+        ctx.need_read_data = 1'b1;
+      end
+      else begin
+        ctx.need_comp = 1'b1;
+      end
+      return;
+    end
+
+    case (opc)
+      req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_C),
+      req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C): begin
+        ctx.kind           = VIP_CHI_SB_READ;
+        ctx.need_read_data = 1'b1;
+        if (ctx.ordered) begin
+          ctx.need_receipt = 1'b1;
+        end
+      end
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C): begin
+        ctx.kind            = VIP_CHI_SB_WRITE;
+        ctx.need_grant      = 1'b1;
+        ctx.need_write_data = 1'b1;
+        ctx.need_comp       = 1'b1;
+        ctx.need_compack    = ctx.exp_comp_ack;
+      end
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C): begin
+        ctx.kind      = VIP_CHI_SB_WRITE_NODATA;
+        ctx.need_comp = 1'b1;
+      end
+      req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C): begin
+        ctx.kind      = VIP_CHI_SB_PERSIST;
+        ctx.need_comp = 1'b1;
+      end
+      req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C): begin
+        ctx.kind         = VIP_CHI_SB_PERSIST_SEP;
+        ctx.need_persist = 1'b1;
+        ctx.need_comp    = 1'b1;
+      end
+      req_opcode_t'(VIP_CHI_REQ_PREFETCH_TGT_C): begin
+        ctx.kind = VIP_CHI_SB_PREFETCH;   // no completion
+      end
+      default: begin
+        ctx.kind = VIP_CHI_SB_OTHER;      // e.g. PcrdReturn - no completion tracked
+      end
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker A/C - requester REQ.
+  // ---------------------------------------------------------------------------
+  protected function void handle_req(input vip_chi_sb_stream_e stream, input item_t item);
+    string key;
+    ctx_t  ctx;
+
+    if (!this.enable || !this.is_outbound(item)) begin
+      return;
+    end
+
+    // Checker B: record the requester-issued REQ.
+    if (stream == VIP_CHI_SB_STREAM_RNI) begin
+      this.int_req_cnt[this.canon_key(item)]++;
+    end
+    else begin
+      this.hni_req_cnt[this.canon_key(item)]++;
+      // Predict which SN target this REQ must be relayed to.
+      if (this.route_check) begin
+        this.hni_route_pred[this.route_key(this.sn_port_of_addr(item.addr), item)]++;
+      end
+    end
+
+    key = this.ctx_key(stream, item.src_id, item.txn_id);
+
+    if (this.open_ctx.exists(key)) begin
+      ctx = this.open_ctx[key];
+      if (!ctx.retired) begin
+        if (ctx.retry_seen) begin
+          // Legitimate retry re-issue (same TxnID) - reset and keep tracking.
+          ctx.reset_milestones();
+          this.set_contract(ctx, item);
+          ctx.addr = item.addr;
+          ctx.size = item.size;
+          return;
+        end
+        this.n_reuse++;
+        `uvm_error(get_name(), $sformatf(
+          "TxnID reuse while in flight: stream=%0d src=0x%0h txn=0x%0h opcode=0x%0h",
+          stream, item.src_id, item.txn_id, item.opcode))
+        // fall through and overwrite with a fresh ctx
+      end
+    end
+
+    ctx                = new();
+    ctx.stream         = stream;
+    ctx.requester_node = item.src_id;
+    ctx.txn_id         = item.txn_id;
+    ctx.addr           = item.addr;
+    ctx.size           = item.size;
+    ctx.opcode         = item.opcode;
+    this.set_contract(ctx, item);
+    this.open_ctx[key] = ctx;
+
+    // Separated read: the DataSepResp leg returns on ReturnNID/ReturnTxnID, not
+    // the original TxnID, so index the ctx by the completion key that data leg
+    // will actually carry. Without this the DataSepResp is a false orphan and
+    // the read a false incomplete.
+    if (item.opcode == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C)) begin
+      ctx.sep_read      = 1'b1;
+      ctx.return_nid    = item.return_nid;
+      ctx.return_txn_id = item.return_txn_id;
+      this.sep_ret_ctx[this.ctx_key(stream, item.return_nid, item.return_txn_id)] = ctx;
+    end
+
+    // No-completion requests (prefetch / pcrd-return) retire on issue but stay
+    // in the table so a later reuse of the TxnID is still caught.
+    this.check_and_retire(ctx);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker A - requester RSP.
+  // ---------------------------------------------------------------------------
+  protected function void handle_rsp(input vip_chi_sb_stream_e stream, input item_t item);
+    string       key;
+    ctx_t        ctx;
+    rsp_opcode_t opc;
+
+    if (!this.enable) begin
+      return;
+    end
+
+    opc = item.rsp_opcode;
+
+    // Outbound RSP from the requester == CompAck (keyed by src_id).
+    if (this.is_outbound(item)) begin
+      if (opc == rsp_opcode_t'(VIP_CHI_RSP_COMP_ACK_C)) begin
+        key = this.ctx_key(stream, item.src_id, item.txn_id);
+        if (this.open_ctx.exists(key)) begin
+          ctx = this.open_ctx[key];
+          ctx.compack_seen = 1'b1;
+          this.check_and_retire(ctx);
+        end
+      end
+      return;
+    end
+
+    // PCrdGrant is credit-typed, not TxnID-correlated: attach it to any open
+    // retried ctx on this stream rather than risk a false orphan.
+    if (opc == rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C)) begin
+      foreach (this.open_ctx[k]) begin
+        if ((this.open_ctx[k].stream == stream) &&
+            this.open_ctx[k].retry_seen && !this.open_ctx[k].retired) begin
+          this.open_ctx[k].pcrd_seen = 1'b1;
+        end
+      end
+      return;
+    end
+
+    // Inbound completion (keyed by tgt_id == requester node).
+    key = this.ctx_key(stream, item.tgt_id, item.txn_id);
+    if (!this.open_ctx.exists(key)) begin
+      this.n_orphan++;
+      `uvm_error(get_name(), $sformatf(
+        "Orphan RSP (no open ctx): stream=%0d tgt=0x%0h txn=0x%0h rsp_opcode=0x%0h",
+        stream, item.tgt_id, item.txn_id, opc))
+      return;
+    end
+    ctx = this.open_ctx[key];
+
+    case (opc)
+      rsp_opcode_t'(VIP_CHI_RSP_COMP_C): begin
+        ctx.comp_seen = 1'b1;
+        ctx.comp_err  = item.rsp_resp_err;
+      end
+      rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C): begin
+        ctx.grant_seen = 1'b1;
+        ctx.comp_seen  = 1'b1;
+        ctx.comp_err   = item.rsp_resp_err;
+        this.record_grant(ctx, item);
+      end
+      rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_C),
+      rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_ORD_C): begin
+        ctx.grant_seen = 1'b1;
+        this.record_grant(ctx, item);
+      end
+      rsp_opcode_t'(VIP_CHI_RSP_READ_RECEIPT_C): begin
+        ctx.receipt_seen = 1'b1;
+      end
+      rsp_opcode_t'(VIP_CHI_RSP_RESP_SEP_DATA_C): begin
+        // Separated read's response leg. The read still retires on its
+        // DataSepResp (read_data_seen); recording the response error here keeps
+        // this legal opcode from being flagged as unmodeled.
+        ctx.comp_err = item.rsp_resp_err;
+      end
+      rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C): begin
+        ctx.persist_seen = 1'b1;
+      end
+      rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C): begin
+        ctx.comp_seen = 1'b1;
+        ctx.comp_err  = item.rsp_resp_err;
+      end
+      rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C): begin
+        ctx.retry_seen = 1'b1;
+      end
+      default: begin
+        // Unmodeled completion opcode: warn rather than fail. A genuinely wrong
+        // completion still surfaces as an "incomplete" at check_phase (the
+        // required milestone never ticks), so this cannot mask a real bug while
+        // it does avoid false-failing on a legal opcode this contract omits.
+        this.n_wrong_opcode++;
+        `uvm_warning(get_name(), $sformatf(
+          "Unmodeled completion RSP opcode 0x%0h for kind=%0d stream=%0d txn=0x%0h",
+          opc, ctx.kind, stream, item.txn_id));
+      end
+    endcase
+
+    this.maybe_commit_write(ctx);
+    this.resolve_atomic(ctx, null);  // store atomic completes on its Comp RSP
+    this.check_and_retire(ctx);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker A/C - requester DAT.
+  // ---------------------------------------------------------------------------
+  protected function void handle_dat(input vip_chi_sb_stream_e stream, input item_t item);
+    string key;
+    ctx_t  ctx;
+
+    if (!this.enable) begin
+      return;
+    end
+
+    if (this.is_outbound(item)) begin
+      // Write / atomic-operand data: both the DBID and TxnID fields carry the
+      // granted DBID (vip_chi_driver_rni.sv:777,781), so bind through the DBID
+      // side-index - try dbid then txnid to stay robust across data paths.
+      key = this.dbid_key(stream, item.dbid);
+      if (!this.ctx_by_dbid.exists(key)) begin
+        key = this.dbid_key(stream, item.txn_id);
+      end
+      if (this.ctx_by_dbid.exists(key)) begin
+        ctx = this.ctx_by_dbid[key];
+        ctx.write_data_sent = 1'b1;
+        ctx.wr_dat_item     = item;
+        this.maybe_commit_write(ctx);
+        this.capture_atomic_old(ctx);
+        // Cover the combined-grant store atomic, whose CompDBIDResp already set
+        // comp_seen before this operand arrived; a returning atomic still waits
+        // for its CompData (resolve_atomic no-ops until then).
+        this.resolve_atomic(ctx, null);
+        this.check_and_retire(ctx);
+      end
+      return;
+    end
+
+    // Inbound read-completion data (CompData / DataSepResp), keyed by tgt_id.
+    key = this.ctx_key(stream, item.tgt_id, item.txn_id);
+    if (this.open_ctx.exists(key)) begin
+      ctx = this.open_ctx[key];
+    end
+    else if (this.sep_ret_ctx.exists(key)) begin
+      // A ReadNoSnpSep's DataSepResp returns on ReturnNID/ReturnTxnID, so it
+      // matches the sep-read return index rather than the primary open_ctx key.
+      ctx = this.sep_ret_ctx[key];
+    end
+    else begin
+      this.n_orphan++;
+      `uvm_error(get_name(), $sformatf(
+        "Orphan DAT (no open ctx): stream=%0d tgt=0x%0h txn=0x%0h dat_opcode=0x%0h",
+        stream, item.tgt_id, item.txn_id, item.dat_opcode));
+      return;
+    end
+    ctx.read_data_seen = 1'b1;
+
+    // Checker C: plain reads compare against wire-observed writes; a returning
+    // atomic's CompData is its completion, so resolve the RMW here (compare the
+    // pre-op return value and commit the post-op image). Error data is
+    // don't-care in both paths.
+    if (this.check_data && (ctx.kind == VIP_CHI_SB_READ)) begin
+      this.compare_read(ctx, item);
+    end
+    else if (this.check_data && (ctx.kind == VIP_CHI_SB_ATOMIC)) begin
+      this.resolve_atomic(ctx, item);
+    end
+
+    this.check_and_retire(ctx);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Record a granted DBID and seed the side-index for the coming write-DAT.
+  // ---------------------------------------------------------------------------
+  protected function void record_grant(input ctx_t ctx, input item_t item);
+    ctx.dbid = item.dbid;
+    this.ctx_by_dbid[this.dbid_key(ctx.stream, item.dbid)] = ctx;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker C - commit an observed write to the predicted image, but only once
+  // the completion has resolved OKAY (an NDERR-rejected write never landed).
+  // ---------------------------------------------------------------------------
+  protected function void maybe_commit_write(input ctx_t ctx);
+    addr_t       a;
+    int unsigned transfer_bytes;
+
+    if (!this.check_data || ctx.wr_committed) begin
+      return;
+    end
+
+    // WriteNoSnpZero carries no DAT phase; an OKAY completion zeroes exactly the
+    // Size-selected byte range in backing memory (mirrors the SN-F auto-responder
+    // vip_chi_driver_snf::drive_auto_write_zero_comp). Predict that here so a later
+    // readback of the zeroed range is byte-checked rather than left predicting the
+    // stale pre-zero image.
+    if (ctx.kind == VIP_CHI_SB_WRITE_NODATA) begin
+      if (!ctx.comp_seen) begin
+        return;
+      end
+      if (ctx.comp_err != VIP_CHI_RESP_ERR_NORMAL_OKAY_E) begin
+        ctx.wr_committed = 1'b1;   // rejected zero-write never landed
+        return;
+      end
+      transfer_bytes = 1 << int'(ctx.size);
+      for (int unsigned k = 0; k < transfer_bytes; k++) begin
+        a = ctx.addr + addr_t'(k);
+        this.pred_mem[a] = 8'h00;
+        this.written[a]  = 1'b1;
+      end
+      ctx.wr_committed = 1'b1;
+      return;
+    end
+
+    if (ctx.kind != VIP_CHI_SB_WRITE) begin
+      return;
+    end
+    if (!ctx.write_data_sent || !ctx.comp_seen || (ctx.wr_dat_item == null)) begin
+      return;
+    end
+    if (ctx.comp_err != VIP_CHI_RESP_ERR_NORMAL_OKAY_E) begin
+      ctx.wr_committed = 1'b1;   // resolved (rejected) - nothing to commit
+      return;
+    end
+
+    foreach (ctx.wr_dat_item.data[i]) begin
+      for (int j = 0; j < DATA_BYTES_C; j++) begin
+        if ((i < ctx.wr_dat_item.be.size()) && ctx.wr_dat_item.be[i][j]) begin
+          a = ctx.addr + addr_t'((i * DATA_BYTES_C) + j);
+          this.pred_mem[a] = byte'(ctx.wr_dat_item.data[i][(8 * j) +: 8]);
+          this.written[a]  = 1'b1;
+        end
+      end
+    end
+    ctx.wr_committed = 1'b1;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker C - number of memory beats an atomic targets. AtomicCompare ships
+  // twice the operand beats (compare values then swap values) but mutates only
+  // the first half of memory; every other atomic targets its full operand span.
+  // ---------------------------------------------------------------------------
+  protected function int atomic_target_beats(input ctx_t ctx);
+    int operand_beats;
+    operand_beats = ctx.wr_dat_item.data.size();
+    if (vip_chi_types_pkg::vip_chi_req_opcode_is_atomic_compare(
+          vip_chi_req_opcode_t'(ctx.opcode))) begin
+      return operand_beats / 2;
+    end
+    return operand_beats;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker C - the CHI AtomicStore/Load[0:7] arithmetic variant, applied over
+  // the full beat width. Mirrors the SN-F reference exactly
+  // (vip_chi_driver_snf.sv apply_atomic_variant) so the predicted post-op image
+  // matches the completer's byte-for-byte.
+  // ---------------------------------------------------------------------------
+  protected function data_t apply_atomic_variant_sb(
+    input int    variant,
+    input data_t current_value,
+    input data_t operand_value
+  );
+    case (variant)
+      0:       return data_t'(current_value + operand_value);
+      1:       return data_t'(current_value & ~operand_value);
+      2:       return data_t'(current_value ^ operand_value);
+      3:       return data_t'(current_value | operand_value);
+      4:       return ($signed(current_value) > $signed(operand_value)) ? current_value : operand_value;
+      5:       return ($signed(current_value) < $signed(operand_value)) ? current_value : operand_value;
+      6:       return (current_value > operand_value) ? current_value : operand_value;
+      7:       return (current_value < operand_value) ? current_value : operand_value;
+      default: return current_value;
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker C - on the operand-DAT, snapshot the target's pre-op value off the
+  // predicted image, then drop the target from the observed-write set for the
+  // RMW window (so a concurrent read skips it rather than sees the stale pre-op
+  // bytes). atomic_old_valid is cleared if any target byte was never observed
+  // written, i.e. its pre-op value is unpredictable and no RMW can be modelled.
+  // The post-op value is recomputed and committed later, in resolve_atomic().
+  // ---------------------------------------------------------------------------
+  protected function void capture_atomic_old(input ctx_t ctx);
+    int    beat_count;
+    addr_t a;
+
+    if (!this.check_data || (ctx.kind != VIP_CHI_SB_ATOMIC) ||
+        (ctx.wr_dat_item == null)) begin
+      return;
+    end
+
+    beat_count = this.atomic_target_beats(ctx);
+    ctx.atomic_old = new[beat_count];
+    ctx.atomic_old_valid = 1'b1;
+
+    for (int i = 0; i < beat_count; i++) begin
+      data_t beat;
+      beat = '0;
+      for (int j = 0; j < DATA_BYTES_C; j++) begin
+        a = ctx.addr + addr_t'((i * DATA_BYTES_C) + j);
+        if (this.written.exists(a)) begin
+          beat[(8 * j) +: 8] = this.pred_mem[a];
+        end
+        else begin
+          ctx.atomic_old_valid = 1'b0;
+        end
+      end
+      ctx.atomic_old[i] = beat;
+    end
+
+    // Invalidate the target range for the RMW window.
+    for (int i = 0; i < beat_count; i++) begin
+      for (int j = 0; j < DATA_BYTES_C; j++) begin
+        a = ctx.addr + addr_t'((i * DATA_BYTES_C) + j);
+        if (this.written.exists(a))  this.written.delete(a);
+        if (this.pred_mem.exists(a)) this.pred_mem.delete(a);
+      end
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker C - at the atomic completion (CompData for a returning atomic, the
+  // Comp RSP for a store atomic), recompute the post-op image from the captured
+  // pre-op value and the observed operand using the same decode the SN-F uses,
+  // compare a returning atomic's CompData against the pre-op value, and commit
+  // the post-op value so a later read-back is predictable. On an errored or
+  // unpredictable atomic the target simply stays invalidated (nothing asserted).
+  // ---------------------------------------------------------------------------
+  protected function void resolve_atomic(input ctx_t ctx, input item_t ret_item);
+    int                beat_count;
+    bit                returns_data;
+    bit                is_compare;
+    bit                is_swap;
+    bit                compare_match;
+    int                variant;
+    vip_chi_resp_err_t err;
+    data_t             new_beat;
+    addr_t             a;
+
+    if (!this.check_data || (ctx.kind != VIP_CHI_SB_ATOMIC) ||
+        (ctx.wr_dat_item == null) || ctx.atomic_resolved) begin
+      return;
+    end
+    if (!ctx.write_data_sent) begin
+      return;  // operand not observed yet
+    end
+
+    returns_data = vip_chi_types_pkg::vip_chi_req_opcode_is_atomic_returning_data(
+                     vip_chi_req_opcode_t'(ctx.opcode));
+
+    // Fire only at the true completion.
+    if (returns_data) begin
+      if (ret_item == null) begin
+        return;  // CompData not arrived
+      end
+    end
+    else begin
+      if (!ctx.comp_seen) begin
+        return;  // Comp not arrived
+      end
+    end
+    ctx.atomic_resolved = 1'b1;
+
+    err = returns_data ?
+            (((ret_item != null) && (ret_item.dat_resp_err.size() > 0)) ?
+               ret_item.dat_resp_err[0] : VIP_CHI_RESP_ERR_NORMAL_OKAY_E) :
+            ctx.comp_err;
+
+    // Errored or unpredictable: leave the target invalidated (dropped at operand
+    // time); do not compare the return nor commit a post-op value.
+    if ((err != VIP_CHI_RESP_ERR_NORMAL_OKAY_E) || !ctx.atomic_old_valid) begin
+      return;
+    end
+
+    beat_count = this.atomic_target_beats(ctx);
+    is_compare = vip_chi_types_pkg::vip_chi_req_opcode_is_atomic_compare(
+                   vip_chi_req_opcode_t'(ctx.opcode));
+    is_swap    = (ctx.opcode == req_opcode_t'(VIP_CHI_REQ_ATOMIC_SWAP_C));
+    variant    = vip_chi_types_pkg::vip_chi_req_opcode_atomic_variant(
+                   vip_chi_req_opcode_t'(ctx.opcode));
+
+    // A returning atomic returns the pre-op value on CompData: compare it against
+    // the captured pre-op image, byte-granular.
+    if (returns_data && (ret_item != null)) begin
+      for (int i = 0; (i < beat_count) && (i < ret_item.data.size()); i++) begin
+        for (int j = 0; j < DATA_BYTES_C; j++) begin
+          logic [7:0] exp_b, got_b;
+          exp_b = ctx.atomic_old[i][(8 * j) +: 8];
+          got_b = ret_item.data[i][(8 * j) +: 8];
+          if (byte'(got_b) != byte'(exp_b)) begin
+            this.n_data_mismatch++;
+            `uvm_error(get_name(), $sformatf(
+              "Atomic return mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
+              ctx.stream, ctx.txn_id,
+              ctx.addr + addr_t'((i * DATA_BYTES_C) + j), exp_b, got_b));
+          end
+        end
+      end
+    end
+
+    // AtomicCompare stores the swap half only on a full-target match.
+    compare_match = 1'b1;
+    if (is_compare) begin
+      for (int k = 0; k < beat_count; k++) begin
+        if (ctx.atomic_old[k] != ctx.wr_dat_item.data[k]) begin
+          compare_match = 1'b0;
+        end
+      end
+    end
+
+    // Recompute and commit the post-op value so a later read-back is predictable.
+    for (int i = 0; i < beat_count; i++) begin
+      if (is_compare) begin
+        new_beat = compare_match ? ctx.wr_dat_item.data[i + beat_count]
+                                 : ctx.atomic_old[i];
+      end
+      else if (is_swap) begin
+        new_beat = ctx.wr_dat_item.data[i];
+      end
+      else begin
+        new_beat = this.apply_atomic_variant_sb(
+                     variant, ctx.atomic_old[i], ctx.wr_dat_item.data[i]);
+      end
+
+      for (int j = 0; j < DATA_BYTES_C; j++) begin
+        a = ctx.addr + addr_t'((i * DATA_BYTES_C) + j);
+        this.pred_mem[a] = byte'(new_beat[(8 * j) +: 8]);
+        this.written[a]  = 1'b1;
+      end
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker C - predictable-only read compare (skip bytes never observed
+  // written; the SN-F synthesizes a deterministic pattern the scoreboard did
+  // not originate and must not predict).
+  // ---------------------------------------------------------------------------
+  protected function void compare_read(input ctx_t ctx, input item_t item);
+    addr_t     a;
+    logic [7:0] got;
+
+    // Error read data is don't-care.
+    if ((item.dat_resp_err.size() > 0) &&
+        (item.dat_resp_err[0] != VIP_CHI_RESP_ERR_NORMAL_OKAY_E)) begin
+      return;
+    end
+
+    foreach (item.data[i]) begin
+      for (int j = 0; j < DATA_BYTES_C; j++) begin
+        a = ctx.addr + addr_t'((i * DATA_BYTES_C) + j);
+        if (!this.written.exists(a)) begin
+          this.n_reads_skipped++;
+          continue;
+        end
+        got = item.data[i][(8 * j) +: 8];
+        if (byte'(got) != this.pred_mem[a]) begin
+          this.n_data_mismatch++;
+          `uvm_error(get_name(), $sformatf(
+            "Data mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
+            ctx.stream, ctx.txn_id, a, this.pred_mem[a], got));
+        end
+      end
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Retire when the contract is met; drop the DBID index entry (the DBID may be
+  // reused by a later write).
+  // ---------------------------------------------------------------------------
+  protected function void check_and_retire(input ctx_t ctx);
+    string dkey;
+    string skey;
+
+    if (ctx.retired || !ctx.contract_met()) begin
+      return;
+    end
+    ctx.retired = 1'b1;
+    dkey = this.dbid_key(ctx.stream, ctx.dbid);
+    if (this.ctx_by_dbid.exists(dkey) && (this.ctx_by_dbid[dkey] == ctx)) begin
+      this.ctx_by_dbid.delete(dkey);
+    end
+    if (ctx.sep_read) begin
+      skey = this.ctx_key(ctx.stream, ctx.return_nid, ctx.return_txn_id);
+      if (this.sep_ret_ctx.exists(skey) && (this.sep_ret_ctx[skey] == ctx)) begin
+        this.sep_ret_ctx.delete(skey);
+      end
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker B - completer-side REQ recording.
+  // ---------------------------------------------------------------------------
+  protected function void handle_cmp_req(input bit hni, input int port, input item_t item);
+    if (!this.enable) begin
+      return;
+    end
+    if (hni) begin
+      this.hni_cmp_cnt[this.canon_key(item)]++;
+      // Record the SN port this REQ actually arrived on (checked vs prediction).
+      if (this.route_check) begin
+        this.hni_route_obs[this.route_key(port, item)]++;
+      end
+    end
+    else begin
+      this.int_cmp_cnt[this.canon_key(item)]++;
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Analysis imp write callbacks.
+  // ---------------------------------------------------------------------------
+  function void write_rni_req_sb   (input item_t item); this.handle_req(VIP_CHI_SB_STREAM_RNI,   item); endfunction
+  function void write_rni_rsp_sb   (input item_t item); this.handle_rsp(VIP_CHI_SB_STREAM_RNI,   item); endfunction
+  function void write_rni_dat_sb   (input item_t item); this.handle_dat(VIP_CHI_SB_STREAM_RNI,   item); endfunction
+  function void write_hrni0_req_sb (input item_t item); this.handle_req(VIP_CHI_SB_STREAM_HRNI0, item); endfunction
+  function void write_hrni0_rsp_sb (input item_t item); this.handle_rsp(VIP_CHI_SB_STREAM_HRNI0, item); endfunction
+  function void write_hrni0_dat_sb (input item_t item); this.handle_dat(VIP_CHI_SB_STREAM_HRNI0, item); endfunction
+  function void write_hrni1_req_sb (input item_t item); this.handle_req(VIP_CHI_SB_STREAM_HRNI1, item); endfunction
+  function void write_hrni1_rsp_sb (input item_t item); this.handle_rsp(VIP_CHI_SB_STREAM_HRNI1, item); endfunction
+  function void write_hrni1_dat_sb (input item_t item); this.handle_dat(VIP_CHI_SB_STREAM_HRNI1, item); endfunction
+  function void write_snf_req_sb   (input item_t item); this.handle_cmp_req(1'b0, 0, item); endfunction
+  function void write_hsnf0_req_sb (input item_t item); this.handle_cmp_req(1'b1, 0, item); endfunction
+  function void write_hsnf1_req_sb (input item_t item); this.handle_cmp_req(1'b1, 1, item); endfunction
+
+  // ---------------------------------------------------------------------------
+  // Flush all in-flight state on reset (abandoned txns must not report as
+  // incomplete; the SN-F wipes its backing store on reset too).
+  // ---------------------------------------------------------------------------
+  function void handle_reset();
+    this.open_ctx.delete();
+    this.ctx_by_dbid.delete();
+    this.sep_ret_ctx.delete();
+    this.pred_mem.delete();
+    this.written.delete();
+    this.int_req_cnt.delete();
+    this.int_cmp_cnt.delete();
+    this.hni_req_cnt.delete();
+    this.hni_cmp_cnt.delete();
+    this.hni_route_pred.delete();
+    this.hni_route_obs.delete();
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker B multiset compare between requester and completer views.
+  // ---------------------------------------------------------------------------
+  protected function void check_relay(
+    input string   label,
+    ref   int      req_cnt [string],
+    ref   int      cmp_cnt [string],
+    ref   int      mismatch_cnt
+  );
+    foreach (req_cnt[k]) begin
+      int seen = cmp_cnt.exists(k) ? cmp_cnt[k] : 0;
+      if (seen < req_cnt[k]) begin
+        mismatch_cnt++;
+        `uvm_error(get_name(), $sformatf(
+          "%s: request key=%s issued %0d time(s) but observed at completer %0d time(s)",
+          label, k, req_cnt[k], seen));
+      end
+    end
+    foreach (cmp_cnt[k]) begin
+      int issued = req_cnt.exists(k) ? req_cnt[k] : 0;
+      if (cmp_cnt[k] > issued) begin
+        mismatch_cnt++;
+        `uvm_error(get_name(), $sformatf(
+          "%s: phantom request key=%s at completer %0d time(s) but issued %0d time(s)",
+          label, k, cmp_cnt[k], issued));
+      end
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Final checks: incomplete transactions + request fidelity.
+  // ---------------------------------------------------------------------------
+  function void check_phase(input uvm_phase phase);
+    super.check_phase(phase);
+
+    if (!this.enable) begin
+      return;
+    end
+
+    foreach (this.open_ctx[k]) begin
+      ctx_t ctx = this.open_ctx[k];
+      if (!ctx.retired) begin
+        this.n_incomplete++;
+        `uvm_error(get_name(), $sformatf(
+          "Incomplete transaction stream=%0d node=0x%0h txn=0x%0h opcode=0x%0h kind=%0d (grant=%0b wdat=%0b rdat=%0b comp=%0b rcpt=%0b prst=%0b cack=%0b)",
+          ctx.stream, ctx.requester_node, ctx.txn_id, ctx.opcode, ctx.kind,
+          ctx.grant_seen, ctx.write_data_sent, ctx.read_data_seen, ctx.comp_seen,
+          ctx.receipt_seen, ctx.persist_seen, ctx.compack_seen));
+      end
+    end
+
+    this.check_relay("Checker-B integrated", this.int_req_cnt, this.int_cmp_cnt,
+                     this.n_relay_mismatch);
+    this.check_relay("Checker-B HN-I proxy", this.hni_req_cnt, this.hni_cmp_cnt,
+                     this.n_relay_mismatch);
+
+    // Per-port routing fidelity: each proxied REQ must land on the SN target its
+    // address decodes to. Mis-route => shortfall at predicted + phantom at actual.
+    if (this.route_check) begin
+      this.check_relay("Checker-B HN-I routing", this.hni_route_pred,
+                       this.hni_route_obs, this.n_route_mismatch);
+    end
+
+    `uvm_info(get_name(), $sformatf(
+      "scoreboard summary: incomplete=%0d orphan=%0d wrong_opcode=%0d reuse=%0d data_mismatch=%0d relay_mismatch=%0d route_mismatch=%0d (reads_skipped_unpredictable=%0d)",
+      this.n_incomplete, this.n_orphan, this.n_wrong_opcode, this.n_reuse,
+      this.n_data_mismatch, this.n_relay_mismatch, this.n_route_mismatch,
+      this.n_reads_skipped), UVM_LOW);
+  endfunction
+
+endclass
+
+`endif

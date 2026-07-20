@@ -1,0 +1,41 @@
+`ifndef VIP_CHI_WRITE_SEQ
+`define VIP_CHI_WRITE_SEQ
+
+import uvm_pkg::*;
+`include "uvm_macros.svh"
+import vip_chi_types_pkg::*;
+
+class vip_chi_write_seq #(
+  vip_chi_cfg_t CFG_P = VIP_CHI_DEFAULT_CFG_C
+  ) extends vip_chi_base_seq #(CFG_P);
+
+  `uvm_object_param_utils(vip_chi_write_seq #(CFG_P))
+
+  typedef vip_chi_item #(CFG_P) item_t;
+
+  // ---------------------------------------------------------------------------
+  // Constructor.
+  // ---------------------------------------------------------------------------
+  function new(input string name = "vip_chi_write_seq");
+    super.new(name);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Preview one generated write request without starting the sequence.
+  // ---------------------------------------------------------------------------
+  function item_t preview_next_request();
+    super.set_direction(VIP_CHI_DIR_WRITE_E);
+    return super.preview_next_request();
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Pin the request direction before the inherited generation loop runs.
+  // ---------------------------------------------------------------------------
+  task body();
+    super.set_direction(VIP_CHI_DIR_WRITE_E);
+    super.body();
+  endtask
+
+endclass
+
+`endif

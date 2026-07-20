@@ -1,0 +1,6 @@
+`include "uvm_macros.svh"
+`include "uvm_pkg.sv"
+`include "vip_chi_tb_pkg.sv"
+`include "vip_chi_tc_pkg.sv"
+`include "vip_chi_link_adapter.sv"
+`include "vip_chi_tb_top.sv"

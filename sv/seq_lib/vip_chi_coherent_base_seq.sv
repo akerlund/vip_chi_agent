@@ -1,0 +1,55 @@
+`ifndef VIP_CHI_COHERENT_BASE_SEQ
+`define VIP_CHI_COHERENT_BASE_SEQ
+
+import uvm_pkg::*;
+`include "uvm_macros.svh"
+import vip_chi_types_pkg::*;
+
+// -----------------------------------------------------------------------------
+// Base sequence for coherent (RN-F) traffic. It reuses the whole
+// vip_chi_base_seq generation loop (iterators, payload, stamping, delays) and
+// only redirects two decisions:
+//   * role_val()     -> VIP_CHI_ROLE_RNF_E, so items stamp the coherent role.
+//   * choose_opcode() -> the configured coherent opcode, instead of the
+//                        base's ReadNoSnp / WriteNoSnp defaults.
+// Thin per-opcode wrappers pin the direction + opcode and defer to super.body().
+// -----------------------------------------------------------------------------
+class vip_chi_coherent_base_seq #(
+  vip_chi_cfg_t CFG_P = VIP_CHI_DEFAULT_CFG_C
+  ) extends vip_chi_base_seq #(CFG_P);
+
+  // Coherent opcode stamped on every generated request (set by the wrappers or a
+  // test). Defaults to ReadShared so a bare coherent sequence still does
+  // something sensible.
+  protected req_opcode_t coh_opcode = req_opcode_t'(VIP_CHI_REQ_READ_SHARED_C);
+
+  `uvm_object_param_utils(vip_chi_coherent_base_seq #(CFG_P))
+
+  // ---------------------------------------------------------------------------
+  // Constructor.
+  // ---------------------------------------------------------------------------
+  function new(input string name = "vip_chi_coherent_base_seq");
+    super.new(name);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Select the coherent opcode used for subsequent generation.
+  // ---------------------------------------------------------------------------
+  function void set_coherent_opcode(input req_opcode_t op);
+    this.coh_opcode = op;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Coherent role + opcode overrides consumed by the inherited generation loop.
+  // ---------------------------------------------------------------------------
+  protected function vip_chi_role_t role_val();
+    return VIP_CHI_ROLE_RNF_E;
+  endfunction
+
+  protected function req_opcode_t choose_opcode();
+    return this.coh_opcode;
+  endfunction
+
+endclass
+
+`endif
