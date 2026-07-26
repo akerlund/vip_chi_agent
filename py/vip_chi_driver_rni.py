@@ -1,0 +1,1057 @@
+################################################################################
+#
+# Copyright (C) 2026 Fredrik Akerlund
+# https://github.com/akerlund/vip_chi_agent
+#
+# See the SystemVerilog originals for the full MIT notice.
+#
+################################################################################
+#
+# pyUVM port of vip_chi_driver_rni.sv (serial request path).
+#
+# RN-I initiator. driver_start() forks the credit loop, activates the link, and
+# runs seq_loop(): pull a request item off the sequencer, drive the REQ flit,
+# and run the direction-specific completion collection (write: DBID grant ->
+# DAT burst -> Comp; read: CompData burst). Link-credit is counted per channel
+# by VipChiLcrdMgr; the credit loop advertises RN-I receive credits (RSP/DAT)
+# and returns send credits on inbound LCRDV pulses.
+#
+# Timing discipline (the ChiBus contract): every SV `@(rni_cb)` becomes
+# `await bus.rising()`, every sampled `rni_cb.rx*` becomes `bus.get(...)` read
+# in the post-edge region (returns the value the peer drove last cycle, because
+# cocotb defers `.value=` writes to the ReadWrite region -- the clocking-block
+# output-skew / NBA feel), and every driven `rni_cb.tx* <= v` becomes
+# `bus.drive(...)` / `bus.drive_flit(...)`.
+#
+# Scope: this is the Tier-A serial cut. The multi-outstanding / mixed pipeline
+# (cfg.multi_outstanding) and the coherent RN-F extension hooks are Tier B/C;
+# cfg.multi_outstanding defaults False so seq_loop() is the only path here.
+#
+# Port deviation (PORTING_PLAN §11.3): SV exposes exact-CHI-E behavior through a
+# vip_chi_driver_rni_e subclass wired by an agent factory hook
+# (vip_chi_agent_e.sv:59). The port folds the E-only field handling into this
+# generic driver via runtime `cfg.is_e` branches instead of a subclass.
+#
+################################################################################
+
+from __future__ import annotations
+
+import cocotb
+
+from pyuvm import uvm_driver, ConfigDB
+
+from vip_chi_types_pkg import (
+  Role, Dir, ReqOpcode, RspOpcode, RawChannel,
+  req_opcode_is_atomic,
+)
+from vip_chi_if import ChiBus
+from vip_chi_lcrd_mgr import VipChiLcrdMgr
+from vip_chi_cfg_agent import VipChiCfgAgent
+
+# Writes whose REQ is followed by a DAT burst (after the DBID grant).
+_WRITE_DATA_OPCODES = {
+  int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
+  int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL),
+  int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL),
+}
+
+# Atomics that return data (AtomicLoad/Swap/Compare); AtomicStore does not.
+_ATOMIC_RETURN_DATA = (
+  set(range(int(ReqOpcode.ATOMIC_LOAD_0), int(ReqOpcode.ATOMIC_LOAD_7) + 1))
+  | {int(ReqOpcode.ATOMIC_SWAP), int(ReqOpcode.ATOMIC_COMPARE)}
+)
+
+_I = int
+
+# Mixed-pipeline transaction kinds. A READ and a non-store ATOMIC complete on
+# inbound DAT (CompData); a WRITE, a store ATOMIC and a PERSIST complete on
+# inbound RSP -- so the two completion monitors never contend.
+_KIND_READ = "READ"
+_KIND_WRITE = "WRITE"
+_KIND_ATOMIC = "ATOMIC"
+_KIND_PERSIST = "PERSIST"
+
+
+class _MxCtx:
+  """One in-flight transaction in the multi-outstanding pipeline."""
+
+  __slots__ = (
+    "kind", "item", "dbid", "grant_seen", "comp_seen", "data_sent",
+    "read_done", "receipt_seen", "compack_sent", "retry_pending", "retried",
+    "pcrd_type", "req_src_id", "req_tgt_id",
+  )
+
+  def __init__(self, kind, item):
+    self.kind = kind
+    self.item = item
+    self.dbid = 0
+    self.grant_seen = False
+    self.comp_seen = False
+    self.data_sent = False
+    self.read_done = False
+    self.receipt_seen = False
+    self.compack_sent = False
+    self.retry_pending = False
+    self.retried = False
+    self.pcrd_type = 0
+    self.req_src_id = _I(item.src_id)
+    self.req_tgt_id = _I(item.tgt_id)
+
+
+class vip_chi_driver_rni(uvm_driver):
+
+  def __init__(self, name, parent):
+    super().__init__(name, parent)
+    self.bus = None
+    self.cfg = None
+    self.role = Role.RNI
+
+    self.next_txn_id = 0
+    self.outstanding_ids = []
+
+    # Multi-outstanding (opt-in via cfg.multi_outstanding) pipeline state.
+    self.mx_ctx = []          # in-flight _MxCtx entries
+    self._accepted = []       # items accepted off the sequencer, awaiting issue
+    self.pcrd_pool = {}       # PCrdType -> banked PCrdGrant credit count
+
+    self.req_lcrd = VipChiLcrdMgr("req_lcrd_mgr")
+    self.rsp_lcrd = VipChiLcrdMgr("rsp_lcrd_mgr")
+    self.dat_lcrd = VipChiLcrdMgr("dat_lcrd_mgr")
+    self.rsp_lcrdv_pending = 0
+    self.dat_lcrdv_pending = 0
+    self.seen_rx_dat_flit = False
+
+    # Forked-coroutine registry so handle_reset() can tear down the credit loop
+    # (cocotb does not cascade-kill start_soon children when the agent kills the
+    # top-level driver_start()).
+    self._driver_tasks = []
+    self.agent_owned = False
+
+    # TX flit-driving mutex (SV tx_flit_arb). Serializes concurrent flit drivers
+    # -- the coherent RN-F snoop responder vs the request thread -- on the shared
+    # txsactive / tx*flit signals. Uncontended in the RN-I cut (one TX thread), so
+    # acquire returns without advancing time -> byte-identical RN-I timing.
+    self._tx_flit_locked = False
+
+  # ==========================================================================
+  def build_phase(self):
+    self.bus = ConfigDB().get(self, "", "vif")
+    try:
+      self.cfg = ConfigDB().get(self, "", "cfg")
+    except Exception:
+      self.cfg = VipChiCfgAgent("default_cfg")
+      self.cfg.role = Role.RNI
+    try:
+      self.role = Role(ConfigDB().get(self, "", "role"))
+    except Exception:
+      self.role = Role.RNI
+    self.reset_credit_state()
+
+  # -- fork registry ---------------------------------------------------------
+  def _spawn(self, coro):
+    self._driver_tasks = [t for t in self._driver_tasks if not t.done()]
+    t = cocotb.start_soon(coro)
+    self._driver_tasks.append(t)
+    return t
+
+  def _kill_driver_tasks(self):
+    for t in self._driver_tasks:
+      try:
+        if not t.done():
+          t.kill()
+      except Exception:
+        pass
+    self._driver_tasks = []
+
+  # ==========================================================================
+  # Credit bookkeeping.
+  # ==========================================================================
+  def reset_credit_state(self):
+    self.req_lcrd.reset(self.cfg.req_send_credit_cap, 0)
+    self.rsp_lcrd.reset(self.cfg.rsp_send_credit_cap, 0)
+    self.dat_lcrd.reset(self.cfg.dat_send_credit_cap, 0)
+    self.rsp_lcrdv_pending = 0
+    self.dat_lcrdv_pending = 0
+    self.seen_rx_dat_flit = False
+
+  def schedule_initial_credit_grants(self):
+    # RN-I consumes inbound RSP/DAT, so it advertises those receive credits.
+    self.rsp_lcrdv_pending += self.cfg.initial_rsp_credits
+    self.dat_lcrdv_pending += self.cfg.initial_dat_credits
+
+  def schedule_rsp_credit_return(self):
+    self.rsp_lcrdv_pending += 1
+
+  def schedule_dat_credit_return(self):
+    self.dat_lcrdv_pending += 1
+
+  # ==========================================================================
+  # Interface reset.
+  # ==========================================================================
+  def reset_outputs(self):
+    bus = self.bus
+    bus.drive(txlinkactivereq=0, txlinkactiveack=0, txsactive=0)
+    bus.drive(txreqflitpend=0, txreqflitv=0)
+    bus.drive_flit("req", {})
+    bus.drive(txrspflitpend=0, txrspflitv=0, txrsplcrdv=0)
+    bus.drive_flit("rsp", {})
+    bus.drive(txdatflitpend=0, txdatflitv=0, txdatlcrdv=0)
+    bus.drive_flit("dat", {})
+
+  def reset_vif(self):
+    self.reset_outputs()
+
+  def handle_reset(self):
+    self._kill_driver_tasks()
+    self.next_txn_id = 0
+    self.outstanding_ids = []
+    self.mx_ctx = []
+    self._accepted = []
+    self.pcrd_pool = {}
+    self._tx_flit_locked = False
+    self.reset_credit_state()
+    self.reset_outputs()
+
+  def drive_idle_sideband(self):
+    self.bus.drive(txlinkactiveack=self.bus.get("rxlinkactivereq"))
+
+  # ==========================================================================
+  # TX flit-driving mutex + coherent-role extension hooks (empty in RN-I).
+  #
+  # A coroutine that drives txsactive / a tx*flit group brackets its beat section
+  # with acquire/release so concurrent drivers (the RN-F snoop responder vs the
+  # request thread) never write the shared TX signals in the same timestep. When
+  # free, acquire returns immediately (no edge) -- so the single-threaded RN-I
+  # path is timing-unchanged.
+  # ==========================================================================
+  async def acquire_tx_flit(self):
+    while self._tx_flit_locked:
+      await self.bus.rising()
+      self.drive_idle_sideband()
+    self._tx_flit_locked = True
+
+  def release_tx_flit(self):
+    self._tx_flit_locked = False
+
+  # Forked alongside credit_loop; RN-F starts its SNP receive-credit loop +
+  # snoop responder here. No-op in RN-I.
+  def extra_rx_channels(self):
+    pass
+
+  # Runs once after activate_link; RN-F advertises its initial SNP receive
+  # credits. No-op in RN-I.
+  def post_activate_hook(self):
+    pass
+
+  # Runs as each request retires in seq_loop; RN-F records the granted coherent
+  # state into its cache model. No-op in RN-I.
+  def on_transaction_complete(self, req):
+    pass
+
+  # ==========================================================================
+  # Outstanding-TxnID pool (bounded by cfg.max_outstanding_*, not the ID space).
+  # ==========================================================================
+  def _txn_in_flight(self, tid):
+    return tid in self.outstanding_ids
+
+  def alloc_txn_id(self):
+    width = self.cfg_txn_mask()
+    while True:
+      cand = self.next_txn_id & width
+      self.next_txn_id = (self.next_txn_id + 1) & width
+      if not self._txn_in_flight(cand):
+        self.outstanding_ids.append(cand)
+        if len(self.outstanding_ids) > self.cfg.observed_peak_outstanding:
+          self.cfg.observed_peak_outstanding = len(self.outstanding_ids)
+        return cand
+
+  def cfg_txn_mask(self):
+    return (1 << self.bus.cfg.txn_id_width) - 1
+
+  def free_txn_id(self, tid):
+    if tid in self.outstanding_ids:
+      self.outstanding_ids.remove(tid)
+
+  # Signal a pipelined sequence that this item's transaction has fully retired.
+  # Harmless (no-op) for the serial, non-pipelined path where no event was set.
+  def _signal_mo_done(self, item):
+    evt = getattr(item, "_mo_evt", None)
+    if evt is not None:
+      evt.set()
+
+  def _complete_item(self, req):
+    self._signal_mo_done(req)
+    self.seq_item_port.item_done()
+
+  # ==========================================================================
+  # run_phase: standalone drivers self-drive; agent-owned ones stand down (the
+  # agent forks driver_start() and owns the reset watcher).
+  # ==========================================================================
+  async def run_phase(self):
+    if self.agent_owned:
+      return
+    self.reset_vif()
+    while self.bus.in_reset():
+      await self.bus.rising()
+    await self.driver_start()
+
+  # ==========================================================================
+  async def driver_start(self):
+    self._spawn(self.credit_loop())
+    # Coherent-role extension point: RN-F forks its SNP receive-credit loop and
+    # snoop responder here. No-op in RN-I.
+    self.extra_rx_channels()
+    await self.activate_link()
+    # Coherent-role extension point: RN-F advertises its initial SNP receive
+    # credits now the link is up. No-op in RN-I.
+    self.post_activate_hook()
+    if self.cfg.multi_outstanding:
+      await self.seq_loop_mixed_pipelined()
+    else:
+      await self.seq_loop()
+
+  # --------------------------------------------------------------------------
+  async def credit_loop(self):
+    bus = self.bus
+    while True:
+      await bus.rising()
+      self.drive_idle_sideband()
+
+      if bus.get("rxdatflitv"):
+        self.seen_rx_dat_flit = True
+
+      dat_hold = self.cfg.hold_dat_credit and self.seen_rx_dat_flit
+
+      bus.drive(txrsplcrdv=1 if self.rsp_lcrdv_pending else 0)
+      bus.drive(txdatlcrdv=1 if (self.dat_lcrdv_pending and not dat_hold) else 0)
+
+      if self.rsp_lcrdv_pending:
+        self.rsp_lcrdv_pending -= 1
+      if self.dat_lcrdv_pending and not dat_hold:
+        self.dat_lcrdv_pending -= 1
+
+      if bus.get("rxreqlcrdv"):
+        self.req_lcrd.return_credit()
+      if bus.get("rxrsplcrdv"):
+        self.rsp_lcrd.return_credit()
+      if bus.get("rxdatlcrdv"):
+        self.dat_lcrd.return_credit()
+
+  # --------------------------------------------------------------------------
+  async def wait_for_credit(self, lcrd):
+    bus = self.bus
+    while True:
+      if lcrd.try_acquire_credit():
+        return
+      await bus.rising()
+      self.drive_idle_sideband()
+
+  # --------------------------------------------------------------------------
+  async def activate_link(self):
+    bus = self.bus
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(txlinkactivereq=1)
+    while True:
+      await bus.rising()
+      self.drive_idle_sideband()
+      if bus.in_reset() or bus.get("rxlinkactiveack"):
+        break
+    self.schedule_initial_credit_grants()
+
+  # ==========================================================================
+  # Request/completion helpers.
+  # ==========================================================================
+  def req_expects_write_data(self, req):
+    op = _I(req.opcode)
+    if op in _WRITE_DATA_OPCODES:
+      return True
+    return req_opcode_is_atomic(op)
+
+  def req_expects_atomic_data_completion(self, req):
+    return _I(req.opcode) in _ATOMIC_RETURN_DATA
+
+  def req_expects_persist_sep_completion(self, req):
+    return _I(req.opcode) == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP)
+
+  def req_expects_read_completion(self, req):
+    return _I(req.opcode) != int(ReqOpcode.PREFETCH_TGT)
+
+  def req_expects_read_receipt(self, req):
+    return self.req_expects_read_completion(req) and _I(req.order) != 0
+
+  def expected_read_completion_txn_id(self, req):
+    if _I(req.opcode) == int(ReqOpcode.READ_NO_SNP_SEP):
+      return _I(req.return_txn_id)
+    return _I(req.txn_id)
+
+  # ==========================================================================
+  # Main serial request loop.
+  # ==========================================================================
+  async def seq_loop(self):
+    bus = self.bus
+    while True:
+      req = await self.seq_item_port.get_next_item()
+
+      if req.raw_override:
+        await self.drive_raw_item(req)
+        self._complete_item(req)
+        continue
+
+      await self.drive_req(req)
+
+      if _I(req.direction) == int(Dir.WRITE):
+        await self.handle_retry(req)
+        req_src_id = _I(req.src_id)
+        req_tgt_id = _I(req.tgt_id)
+        send_write_data = self.req_expects_write_data(req)
+
+        if send_write_data:
+          wait_deferred, grant = await self.collect_write_dbid_grant(req)
+          await self.drive_dat(req)
+          if self.req_expects_atomic_data_completion(req):
+            # Returning-data atomics must be granted with a deferred DBIDResp/
+            # DBIDRespOrd (never a combined CompDBIDResp) before their CompData.
+            if not wait_deferred:
+              raise AssertionError(
+                f"[{self.get_name()}] Non-store atomic grant opcode "
+                f"0x{grant['opcode']:x} was not DBIDResp/DBIDRespOrd")
+            await self.collect_read_completion(req)
+          elif wait_deferred:
+            await self.collect_write_completion(req)
+          else:
+            self.stamp_rsp_flit_on_req(req, grant)
+        else:
+          if self.req_expects_persist_sep_completion(req):
+            await self.collect_persist_sep_completion(req)
+          else:
+            await self.collect_write_completion(req)
+
+        if _I(req.exp_comp_ack):
+          await self.drive_comp_ack(_I(req.txn_id), req_src_id, req_tgt_id)
+
+        await bus.rising()
+        self.drive_idle_sideband()
+        bus.drive(txsactive=0)
+        self.free_txn_id(_I(req.txn_id))
+        self.on_transaction_complete(req)
+        self._complete_item(req)
+      else:
+        if self.req_expects_read_completion(req):
+          await self.handle_retry(req)
+          if self.req_expects_read_receipt(req):
+            await self.collect_read_receipt(req)
+          if _I(req.opcode) == int(ReqOpcode.READ_NO_SNP_SEP):
+            await self.collect_resp_sep_data(req)
+          await self.collect_read_completion(req)
+        else:
+          await bus.rising()
+          self.drive_idle_sideband()
+          bus.drive(txsactive=0)
+
+        self.free_txn_id(_I(req.txn_id))
+        self.on_transaction_complete(req)
+        self._complete_item(req)
+
+  # ==========================================================================
+  # Flit drivers.
+  # ==========================================================================
+  def _req_fields(self, req):
+    f = {
+      "mpam": _I(req.mpam), "tracetag": _I(req.tracetag),
+      "expcompack": _I(req.exp_comp_ack), "excl": _I(req.excl),
+      "dodwt": _I(req.dodwt), "memattr": _I(req.mem_attr),
+      "pcrdtype": _I(req.pcrd_type), "order": _I(req.order),
+      "allowretry": _I(req.allow_retry), "likelyshared": _I(req.likelyshared),
+      "ns": _I(req.ns), "addr": _I(req.addr), "size": _I(req.size),
+      "opcode": _I(req.opcode), "returntxnid": _I(req.return_txn_id),
+      "endian": _I(req.endian), "returnnid": _I(req.return_nid),
+      "lpid": _I(req.lp_id), "txnid": _I(req.txn_id),
+      "srcid": _I(req.src_id), "tgtid": _I(req.tgt_id), "qos": _I(req.qos),
+    }
+    if self.bus.cfg.is_e:
+      f["tagop"] = _I(req.tagop)
+      f["groupidext"] = _I(req.group_id_ext)
+    return f
+
+  async def drive_req(self, req, alloc_id=True):
+    bus = self.bus
+    if alloc_id:
+      req.txn_id = self.alloc_txn_id()
+    fields = self._req_fields(req)
+
+    await self.wait_for_credit(self.req_lcrd)
+
+    await self.acquire_tx_flit()
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(txsactive=1, txreqflitpend=0, txreqflitv=1)
+    bus.drive_flit("req", fields)
+
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(txreqflitv=0)
+    bus.drive_flit("req", {})
+    self.release_tx_flit()
+
+  async def drive_dat(self, req):
+    bus = self.bus
+    cfg = self.bus.cfg
+    if _I(req.opcode) == int(ReqOpcode.WRITE_NO_SNP_ZERO):
+      return
+
+    # Hold the TX flit mutex for the whole burst so a concurrent flit driver (an
+    # RN-F snoop responder's SnpRespData) cannot interleave another packet's beats
+    # into this one. Safe: each beat's DAT send credit is returned by the receiver
+    # independently, so the burst always drains and releases the key.
+    await self.acquire_tx_flit()
+    n = len(req.data)
+    for i in range(n):
+      fields = {
+        "data": _I(req.data[i]), "be": _I(req.be[i]),
+        "poison": _I(req.poison) if cfg.poison_en else 0,
+        "datacheck": _I(req.datacheck) if cfg.datacheck_en else 0,
+        "dataid": i, "ccid": 0, "dbid": _I(req.dbid),
+        "resp": _I(req.dat_resp[i]) if i < len(req.dat_resp) else 0,
+        "resperr": _I(req.dat_resp_err[i]) if i < len(req.dat_resp_err) else 0,
+        "opcode": _I(req.dat_opcode), "txnid": _I(req.dbid),
+        "srcid": _I(req.src_id), "tgtid": _I(req.tgt_id), "qos": _I(req.qos),
+      }
+      if cfg.is_e:
+        fields["tagop"] = _I(req.dat_tagop)
+        fields["tag"] = _I(req.tag[i]) if i < len(req.tag) else 0
+        fields["tu"] = _I(req.tu[i]) if i < len(req.tu) else 0
+      await self.wait_for_credit(self.dat_lcrd)
+
+      await bus.rising()
+      self.drive_idle_sideband()
+      bus.drive(txdatflitpend=1 if i != (n - 1) else 0, txdatflitv=1)
+      bus.drive_flit("dat", fields)
+
+      await bus.rising()
+      self.drive_idle_sideband()
+      bus.drive(txdatflitpend=0, txdatflitv=0)
+      bus.drive_flit("dat", {})
+    self.release_tx_flit()
+
+  async def drive_comp_ack(self, txn_id, src_id, tgt_id):
+    bus = self.bus
+    fields = {"opcode": int(RspOpcode.COMP_ACK), "txnid": txn_id,
+              "srcid": src_id, "tgtid": tgt_id}
+    await self.wait_for_credit(self.rsp_lcrd)
+
+    await self.acquire_tx_flit()
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(txsactive=1, txrspflitpend=0, txrspflitv=1)
+    bus.drive_flit("rsp", fields)
+
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(txrspflitv=0)
+    bus.drive_flit("rsp", {})
+    self.release_tx_flit()
+
+  # ==========================================================================
+  # Completion collectors.
+  # ==========================================================================
+  def stamp_rsp_flit_on_req(self, req, flit):
+    req.role = int(Role.SNF)
+    req.src_id = flit["srcid"]
+    req.tgt_id = flit["tgtid"]
+    req.qos = flit["qos"]
+    req.rsp_opcode = flit["opcode"]
+    req.rsp_resp = flit["resp"]
+    req.rsp_resp_err = flit["resperr"]
+    req.dbid = flit["dbid"]
+
+  async def wait_for_matching_rsp(self, req_txn_id):
+    bus = self.bus
+    while not bus.get("rxrspflitv"):
+      await bus.rising()
+      self.drive_idle_sideband()
+    flit = bus.sample_flit("rsp", "rx")
+    if flit["txnid"] != req_txn_id:
+      raise AssertionError(
+        f"[{self.get_name()}] RSP completion txnid 0x{flit['txnid']:x} "
+        f"!= request txnid 0x{req_txn_id:x}")
+    self.schedule_rsp_credit_return()
+    return flit
+
+  async def collect_write_dbid_grant(self, req):
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    req.dbid = flit["dbid"]
+    op = flit["opcode"]
+    if op == int(RspOpcode.COMP_DBID_RESP):
+      return False, flit
+    if op in (int(RspOpcode.DBID_RESP), int(RspOpcode.DBID_RESP_ORD)):
+      return True, flit
+    raise AssertionError(
+      f"[{self.get_name()}] Write grant opcode 0x{op:x} was not "
+      f"CompDBIDResp/DBIDResp/DBIDRespOrd")
+
+  async def collect_write_completion(self, req):
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    self.stamp_rsp_flit_on_req(req, flit)
+    if flit["opcode"] != int(RspOpcode.COMP):
+      raise AssertionError(
+        f"[{self.get_name()}] Deferred write completion opcode "
+        f"0x{flit['opcode']:x} was not Comp")
+
+  async def collect_read_receipt(self, req):
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    if flit["opcode"] != int(RspOpcode.READ_RECEIPT):
+      raise AssertionError(
+        f"[{self.get_name()}] Read receipt opcode 0x{flit['opcode']:x} "
+        f"was not ReadReceipt")
+    await self.bus.rising()
+    self.drive_idle_sideband()
+
+  async def collect_resp_sep_data(self, req):
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    self.stamp_rsp_flit_on_req(req, flit)
+    if flit["opcode"] != int(RspOpcode.RESP_SEP_DATA):
+      raise AssertionError(
+        f"[{self.get_name()}] Separated read response opcode "
+        f"0x{flit['opcode']:x} was not RespSepData")
+    await self.bus.rising()
+    self.drive_idle_sideband()
+
+  async def collect_persist_sep_completion(self, req):
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    if flit["opcode"] != int(RspOpcode.PERSIST):
+      raise AssertionError(
+        f"[{self.get_name()}] PersistSep first completion opcode "
+        f"0x{flit['opcode']:x} was not Persist")
+    await self.bus.rising()
+    self.drive_idle_sideband()
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    self.stamp_rsp_flit_on_req(req, flit)
+    if flit["opcode"] != int(RspOpcode.COMP_PERSIST):
+      raise AssertionError(
+        f"[{self.get_name()}] PersistSep final completion opcode "
+        f"0x{flit['opcode']:x} was not CompPersist")
+
+  async def collect_read_completion(self, req, clear_activity=True):
+    bus = self.bus
+    expected = self.expected_read_completion_txn_id(req)
+    data_q, be_q, id_q, cc_q, resp_q, err_q = [], [], [], [], [], []
+
+    while True:
+      while not bus.get("rxdatflitv"):
+        await bus.rising()
+        self.drive_idle_sideband()
+
+      flit = bus.sample_flit("dat", "rx")
+      if flit["txnid"] != expected:
+        raise AssertionError(
+          f"[{self.get_name()}] Read completion txnid 0x{flit['txnid']:x} "
+          f"!= expected 0x{expected:x}")
+      self.schedule_dat_credit_return()
+
+      data_q.append(flit["data"])
+      be_q.append(flit["be"])
+      id_q.append(flit["dataid"])
+      cc_q.append(flit["ccid"])
+      resp_q.append(flit["resp"])
+      err_q.append(flit["resperr"])
+
+      req.role = int(Role.SNF)
+      req.src_id = flit["srcid"]
+      req.tgt_id = flit["tgtid"]
+      req.qos = flit["qos"]
+      req.dat_opcode = flit["opcode"]
+      req.dbid = flit["dbid"]
+      req.rsp_resp = flit["resp"]
+      req.rsp_resp_err = flit["resperr"]
+
+      if not bus.get("rxdatflitpend"):
+        break
+      await bus.rising()
+      self.drive_idle_sideband()
+
+    req.data = data_q
+    req.be = be_q
+    req.data_id = id_q
+    req.cc_id = cc_q
+    req.dat_resp = resp_q
+    req.dat_resp_err = err_q
+
+    await bus.rising()
+    self.drive_idle_sideband()
+    if clear_activity:
+      bus.drive(txsactive=0)
+
+  # ==========================================================================
+  # Protocol-credit retry (no-op unless the request allowed retry and the SN-F
+  # bounced it with a RetryAck).
+  # ==========================================================================
+  async def collect_pcrd_grant(self, pcrd_type):
+    bus = self.bus
+    while True:
+      while not bus.get("rxrspflitv"):
+        await bus.rising()
+        self.drive_idle_sideband()
+      flit = bus.sample_flit("rsp", "rx")
+      if flit["opcode"] != int(RspOpcode.PCRD_GRANT):
+        raise AssertionError(
+          f"[{self.get_name()}] Expected PCrdGrant, got RSP opcode "
+          f"0x{flit['opcode']:x}")
+      if flit["pcrdtype"] != pcrd_type:
+        raise AssertionError(
+          f"[{self.get_name()}] PCrdGrant PCrdType 0x{flit['pcrdtype']:x} "
+          f"!= owed 0x{pcrd_type:x}")
+      self.schedule_rsp_credit_return()
+      await bus.rising()
+      self.drive_idle_sideband()
+      return
+
+  async def handle_retry(self, req):
+    bus = self.bus
+    if not _I(req.allow_retry):
+      return
+    while True:
+      while not bus.get("rxrspflitv") and not bus.get("rxdatflitv"):
+        await bus.rising()
+        self.drive_idle_sideband()
+      if not bus.get("rxrspflitv"):
+        return  # DAT beat -> read completion, no retry
+      flit = bus.sample_flit("rsp", "rx")
+      if flit["opcode"] != int(RspOpcode.RETRY_ACK):
+        return  # a normal completion; leave it for the collector
+      if flit["txnid"] != _I(req.txn_id):
+        raise AssertionError(
+          f"[{self.get_name()}] RetryAck txnid 0x{flit['txnid']:x} "
+          f"!= request txnid 0x{_I(req.txn_id):x}")
+      pcrd = flit["pcrdtype"]
+      self.schedule_rsp_credit_return()
+      await bus.rising()
+      self.drive_idle_sideband()
+      await self.collect_pcrd_grant(pcrd)
+      req.allow_retry = 0
+      req.pcrd_type = pcrd
+      await self.drive_req(req, alloc_id=False)
+
+  # ==========================================================================
+  # Raw-flit injection (verbatim item on the raw_channel).
+  # ==========================================================================
+  async def drive_raw_item(self, item):
+    if not self.cfg.allow_raw_override:
+      raise AssertionError(f"[{self.get_name()}] raw_override is disabled in cfg")
+    ch = _I(item.raw_channel)
+    if ch == int(RawChannel.REQ):
+      await self._drive_raw(item, "req", item.raw_req)
+    elif ch == int(RawChannel.RSP):
+      await self._drive_raw(item, "rsp", item.raw_rsp)
+    elif ch == int(RawChannel.DAT):
+      await self._drive_raw(item, "dat", item.raw_dat)
+    else:
+      raise AssertionError(f"[{self.get_name()}] raw item has no raw channel")
+
+  async def _drive_raw(self, item, channel, raw_value):
+    bus = self.bus
+    lcrd = {"req": self.req_lcrd, "rsp": self.rsp_lcrd, "dat": self.dat_lcrd}[channel]
+    flitpend = 1 if getattr(item, "raw_flitpend", False) else 0
+    await self.wait_for_credit(lcrd)
+
+    await self.acquire_tx_flit()
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(txsactive=1)
+    bus.drive(**{f"tx{channel}flitpend": flitpend, f"tx{channel}flitv": 1})
+    bus.sig[f"tx{channel}flit"].value = int(raw_value)
+
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(**{f"tx{channel}flitpend": 0, f"tx{channel}flitv": 0})
+    bus.drive_flit(channel, {})
+    bus.drive(txsactive=0)
+    self.release_tx_flit()
+
+  # ==========================================================================
+  # Multi-outstanding mixed pipeline (opt-in via cfg.multi_outstanding).
+  #
+  # One unified pipeline overlaps plain ReadNoSnp, WriteNoSnp Full/Ptl, atomics
+  # and persist CMOs: reads / non-store atomics complete on inbound DAT, writes /
+  # store atomics / persists on inbound RSP. Structure:
+  #   * mixed_acceptor  -- the ONLY get_next_item() caller. pyUVM get_next_item is
+  #                        blocking and there is no try_next_item, so a dedicated
+  #                        coroutine pulls each request, item_done()s it AT
+  #                        ACCEPTANCE (freeing the sequence to pipeline the next),
+  #                        and stages it in self._accepted for the TX thread. The
+  #                        completed item is handed back later via its _mo_evt.
+  #   * mixed_tx_proc   -- sole TX + issue owner: issue-first up to depth, then
+  #                        drive pending WriteData/operand, then CompAck, then
+  #                        retire finished entries.
+  #   * mixed_rsp_proc  -- write/atomic/persist completion + retry/PCrd monitor.
+  #   * mixed_dat_proc  -- read / returning-atomic CompData monitor.
+  # ==========================================================================
+  def is_plain_read(self, req):
+    return (_I(req.opcode) == int(ReqOpcode.READ_NO_SNP)) and not req.raw_override
+
+  def is_plain_write(self, req):
+    return (_I(req.opcode) in (int(ReqOpcode.WRITE_NO_SNP_FULL),
+                               int(ReqOpcode.WRITE_NO_SNP_PTL))) and not req.raw_override
+
+  def is_pipelined_atomic(self, req):
+    return req_opcode_is_atomic(_I(req.opcode)) and not req.raw_override
+
+  def is_pipelined_persist(self, req):
+    return (_I(req.opcode) in (int(ReqOpcode.CLEAN_SHARED_PERSIST),
+                               int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP))) and not req.raw_override
+
+  async def seq_loop_mixed_pipelined(self):
+    self._spawn(self.mixed_acceptor())
+    self._spawn(self.mixed_rsp_proc())
+    self._spawn(self.mixed_dat_proc())
+    await self.mixed_tx_proc()
+
+  async def mixed_acceptor(self):
+    while True:
+      req = await self.seq_item_port.get_next_item()
+      # Ack at acceptance so finish_item() returns and the sequence pipelines the
+      # next request; the retired item is returned later via _signal_mo_done().
+      self.seq_item_port.item_done()
+      self._accepted.append(req)
+
+  def find_mixed_ctx_by_txn(self, txn):
+    for i, c in enumerate(self.mx_ctx):
+      if _I(c.item.txn_id) == txn:
+        return i
+    return -1
+
+  def find_mixed_read_by_completion(self, txn):
+    for i, c in enumerate(self.mx_ctx):
+      if ((c.kind == _KIND_READ) or
+          (c.kind == _KIND_ATOMIC and self.req_expects_atomic_data_completion(c.item))):
+        if self.expected_read_completion_txn_id(c.item) == txn:
+          return i
+    return -1
+
+  def sample_mixed_overlap(self):
+    n_rd = n_wr = 0
+    for c in self.mx_ctx:
+      if c.kind == _KIND_READ:
+        n_rd += 1
+      elif c.kind == _KIND_ATOMIC:
+        pass  # bidirectional -- excluded from the read-vs-write concurrency metric
+      else:
+        n_wr += 1
+    if n_rd > 0 and n_wr > 0 and len(self.mx_ctx) > self.cfg.observed_peak_mixed_inflight:
+      self.cfg.observed_peak_mixed_inflight = len(self.mx_ctx)
+
+  def retire_mixed(self):
+    retired = False
+    i = 0
+    while i < len(self.mx_ctx):
+      c = self.mx_ctx[i]
+      if c.kind == _KIND_READ:
+        done = c.read_done and (_I(c.item.order) == 0 or c.receipt_seen)
+      elif c.kind == _KIND_ATOMIC:
+        if self.req_expects_atomic_data_completion(c.item):
+          done = c.data_sent and c.read_done
+        else:
+          done = c.data_sent and c.comp_seen
+        done = done and (not _I(c.item.exp_comp_ack) or c.compack_sent)
+      elif c.kind == _KIND_PERSIST:
+        done = c.comp_seen
+      else:  # WRITE
+        done = (c.data_sent and c.comp_seen and
+                (not _I(c.item.exp_comp_ack) or c.compack_sent))
+
+      if done:
+        self._signal_mo_done(c.item)
+        self.free_txn_id(_I(c.item.txn_id))
+        del self.mx_ctx[i]
+        retired = True
+      else:
+        i += 1
+    return retired
+
+  async def mixed_tx_proc(self):
+    bus = self.bus
+    while True:
+      self.sample_mixed_overlap()
+
+      max_rd = self.cfg.max_outstanding_read if self.cfg.max_outstanding_read > 0 else 1
+      max_wr = self.cfg.max_outstanding_write if self.cfg.max_outstanding_write > 0 else 1
+      max_out = max(max_rd, max_wr)
+
+      # 0) Re-issue a bounced entry whose PCrdType credit is now in hand.
+      idx = -1
+      for i, c in enumerate(self.mx_ctx):
+        if (c.retry_pending and not c.retried and
+            self.pcrd_pool.get(c.pcrd_type, 0) > 0):
+          idx = i
+          break
+      if idx >= 0:
+        c = self.mx_ctx[idx]
+        self.pcrd_pool[c.pcrd_type] -= 1
+        c.item.allow_retry = 0
+        c.item.pcrd_type = c.pcrd_type
+        c.retry_pending = False
+        c.retried = True
+        await self.drive_req(c.item, alloc_id=False)
+        continue
+
+      # 1) Issue-first: launch the next request if depth AND a REQ credit allow.
+      if (len(self.mx_ctx) < max_out and self.req_lcrd.has_credit() and self._accepted):
+        req = self._accepted.pop(0)
+        if self.is_plain_read(req):
+          await self.drive_req(req)
+          self.mx_ctx.append(_MxCtx(_KIND_READ, req))
+          continue
+        elif self.is_plain_write(req):
+          await self.drive_req(req)
+          self.mx_ctx.append(_MxCtx(_KIND_WRITE, req))
+          continue
+        elif self.is_pipelined_atomic(req):
+          await self.drive_req(req)
+          self.mx_ctx.append(_MxCtx(_KIND_ATOMIC, req))
+          continue
+        elif self.is_pipelined_persist(req):
+          await self.drive_req(req)
+          self.mx_ctx.append(_MxCtx(_KIND_PERSIST, req))
+          continue
+        else:
+          raise AssertionError(
+            f"[{self.get_name()}] mixed pipeline supports ReadNoSnp / WriteNoSnp / "
+            f"atomics / persist only (opcode 0x{_I(req.opcode):x})")
+
+      # 2) Drive WriteData/operand for the first granted write/atomic.
+      idx = -1
+      for i, c in enumerate(self.mx_ctx):
+        if c.kind in (_KIND_WRITE, _KIND_ATOMIC) and c.grant_seen and not c.data_sent:
+          idx = i
+          break
+      if idx >= 0:
+        await self.drive_dat(self.mx_ctx[idx].item)
+        self.mx_ctx[idx].data_sent = True
+        continue
+
+      # 2b) Drive CompAck for the first completed exp_comp_ack write/atomic.
+      idx = -1
+      for i, c in enumerate(self.mx_ctx):
+        if (c.kind in (_KIND_WRITE, _KIND_ATOMIC) and _I(c.item.exp_comp_ack) and
+            c.data_sent and (c.comp_seen or c.read_done) and not c.compack_sent):
+          idx = i
+          break
+      if idx >= 0:
+        c = self.mx_ctx[idx]
+        await self.drive_comp_ack(_I(c.item.txn_id), c.req_src_id, c.req_tgt_id)
+        c.compack_sent = True
+        continue
+
+      # 3) Retire every finished transaction.
+      if self.retire_mixed():
+        continue
+
+      # 4) Nothing to do this cycle.
+      await bus.rising()
+      self.drive_idle_sideband()
+
+  async def mixed_rsp_proc(self):
+    bus = self.bus
+    while True:
+      while not bus.get("rxrspflitv"):
+        await bus.rising()
+        self.drive_idle_sideband()
+
+      flit = bus.sample_flit("rsp", "rx")
+      txn = flit["txnid"]
+      op = flit["opcode"]
+      self.schedule_rsp_credit_return()
+
+      # PCrdGrant is credit-typed, not TxnID-tied: bank one credit and step off.
+      if op == int(RspOpcode.PCRD_GRANT):
+        self.pcrd_pool[flit["pcrdtype"]] = self.pcrd_pool.get(flit["pcrdtype"], 0) + 1
+        await bus.rising()
+        self.drive_idle_sideband()
+        continue
+
+      idx = self.find_mixed_ctx_by_txn(txn)
+      if idx < 0:
+        raise AssertionError(
+          f"[{self.get_name()}] RSP txn_id 0x{txn:x} matches no outstanding transaction")
+      c = self.mx_ctx[idx]
+
+      if op == int(RspOpcode.RETRY_ACK):
+        if c.retried:
+          raise AssertionError(
+            f"[{self.get_name()}] second RetryAck for txn_id 0x{txn:x} "
+            f"(re-issue must not be retryable)")
+        c.retry_pending = True
+        c.pcrd_type = flit["pcrdtype"]
+        await bus.rising()
+        self.drive_idle_sideband()
+        continue
+
+      if c.kind == _KIND_READ:
+        if op != int(RspOpcode.READ_RECEIPT):
+          raise AssertionError(
+            f"[{self.get_name()}] read RSP txn_id 0x{txn:x} expected ReadReceipt, "
+            f"got opcode 0x{op:x}")
+        c.receipt_seen = True
+        await bus.rising()
+        self.drive_idle_sideband()
+        continue
+
+      if c.kind == _KIND_PERSIST:
+        self.stamp_rsp_flit_on_req(c.item, flit)
+        if op == int(RspOpcode.PERSIST):
+          pass  # separated-persist intermediate ack; CompPersist still owed
+        elif op in (int(RspOpcode.COMP_PERSIST), int(RspOpcode.COMP)):
+          c.comp_seen = True
+        else:
+          raise AssertionError(
+            f"[{self.get_name()}] pipeline persist expects Persist/CompPersist/Comp, "
+            f"got opcode 0x{op:x}")
+        await bus.rising()
+        self.drive_idle_sideband()
+        continue
+
+      # Writes and atomics: DBID grant on RSP and (split/store) a later Comp.
+      self.stamp_rsp_flit_on_req(c.item, flit)
+      if op == int(RspOpcode.COMP_DBID_RESP):
+        c.dbid = flit["dbid"]
+        c.grant_seen = True
+        c.comp_seen = True
+      elif op in (int(RspOpcode.DBID_RESP), int(RspOpcode.DBID_RESP_ORD)):
+        c.dbid = flit["dbid"]
+        c.grant_seen = True
+      elif op == int(RspOpcode.COMP):
+        c.comp_seen = True
+      else:
+        raise AssertionError(
+          f"[{self.get_name()}] pipeline write/atomic expects CompDBIDResp or "
+          f"DBIDResp+Comp, got opcode 0x{op:x}")
+
+      await bus.rising()
+      self.drive_idle_sideband()
+
+  async def mixed_dat_proc(self):
+    bus = self.bus
+    while True:
+      while not bus.get("rxdatflitv"):
+        await bus.rising()
+        self.drive_idle_sideband()
+
+      beat_txn = bus.sample_flit("dat", "rx")["txnid"]
+      idx = self.find_mixed_read_by_completion(beat_txn)
+      if idx < 0:
+        raise AssertionError(
+          f"[{self.get_name()}] Mixed CompData TxnID 0x{beat_txn:x} "
+          f"matches no outstanding read")
+
+      r = self.mx_ctx[idx].item
+      await self.collect_read_completion(r, clear_activity=False)
+
+      # Re-find by request TxnID: the queue may have shifted while
+      # collect_read_completion() yielded (only the TX thread deletes, and it
+      # will not retire this read until read_done is set just below).
+      idx = self.find_mixed_ctx_by_txn(_I(r.txn_id))
+      if idx < 0:
+        raise AssertionError(
+          f"[{self.get_name()}] Mixed read TxnID 0x{_I(r.txn_id):x} "
+          f"vanished before completion")
+      self.mx_ctx[idx].read_done = True

@@ -1,0 +1,286 @@
+################################################################################
+#
+# Copyright (C) 2026 Fredrik Akerlund
+# https://github.com/akerlund/vip_chi_agent
+#
+# See the SystemVerilog originals for the full MIT notice.
+#
+################################################################################
+#
+# pyUVM port of vip_chi_monitor.sv.
+#
+# Passive 4-channel monitor. Each observed edge it samples every asserted tx/rx
+# {req,rsp,dat,snp} flitv, unpacks the flit through the vip_chi_types_pkg codec,
+# and publishes a vip_chi_item on the matching analysis port. A tx-side flit is
+# attributed to THIS endpoint's role; an rx-side flit to the peer role.
+#
+# REQ/RSP/SNP publish one item per flit; DAT is reassembled into ONE item per
+# transfer. The beat count is correlated from the REQ (plain reads key by the
+# echoed TxnID; writes/atomic operands stage by TxnID and promote to the granted
+# DBID on the DBID-carrying RSP), falling back to the advisory FLITPEND deassert
+# when the count is unknown -- mirroring the SV monitor exactly.
+#
+# The single-flit field mapping stays factored into module-level builders so it
+# is unit-testable without a simulation; the class owns the stateful DAT
+# reassembly + REQ/DAT correlation and the live ChiBus collect loop.
+#
+################################################################################
+
+from __future__ import annotations
+
+from pyuvm import uvm_monitor, uvm_analysis_port
+
+from vip_chi_types_pkg import (
+  ChiCfg, Role, Dir, ReqOpcode, RspOpcode, DatOpcode, unpack,
+  req_opcode_is_atomic, chi_xfer_dat_beats,
+)
+from vip_chi_if import ChiBus, CHANNELS
+from vip_chi_item import vip_chi_item
+
+# Opcodes whose REQ ships data upstream (direction_from_opcode WRITE set).
+_WRITE_DIR_OPCODES = {
+  int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL),
+  int(ReqOpcode.WRITE_NO_SNP_ZERO), int(ReqOpcode.WRITE_BACK_FULL),
+  int(ReqOpcode.WRITE_CLEAN_FULL), int(ReqOpcode.WRITE_UNIQUE_FULL),
+  int(ReqOpcode.WRITE_UNIQUE_PTL),
+}
+
+# DAT opcodes carrying requester-sourced write / atomic-operand data (keyed by
+# the granted DBID) rather than data returned to the requester.
+_WRITE_DAT_OPCODES = {
+  int(DatOpcode.NON_COPY_BACK_WR_DATA), int(DatOpcode.NCB_WR_DATA_COMP_ACK),
+  int(DatOpcode.COPY_BACK_WR_DATA),
+}
+
+_PLAIN_READ_OPCODES = {int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP)}
+
+_DBID_GRANT_OPCODES = {
+  int(RspOpcode.COMP_DBID_RESP), int(RspOpcode.DBID_RESP),
+  int(RspOpcode.DBID_RESP_ORD),
+}
+
+_PEER = {
+  Role.RNI: Role.SNF, Role.SNF: Role.RNI,
+  Role.RNF: Role.HNF, Role.HNF: Role.RNF,
+}
+
+
+def peer_role(role: Role) -> Role:
+  return _PEER.get(Role(role), Role.MONITOR)
+
+
+def direction_from_opcode(opcode: int) -> Dir:
+  op = int(opcode)
+  if req_opcode_is_atomic(op) or op in _WRITE_DIR_OPCODES:
+    return Dir.WRITE
+  return Dir.READ
+
+
+# ---------------------------------------------------------------------------
+# flit -> item builders (pure; unit-testable without a simulator).
+# ---------------------------------------------------------------------------
+
+
+def req_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_item:
+  f = unpack(cfg, "req", flit)
+  it = vip_chi_item("monitor_req_item", cfg)
+  it.raw_override = True                     # observed, not solver-produced
+  it.role = int(observed_role)
+  it.direction = int(direction_from_opcode(f["opcode"]))
+  it.src_id, it.tgt_id, it.txn_id = f["srcid"], f["tgtid"], f["txnid"]
+  it.lp_id, it.return_nid, it.return_txn_id = f["lpid"], f["returnnid"], f["returntxnid"]
+  it.qos, it.opcode, it.addr, it.size = f["qos"], f["opcode"], f["addr"], f["size"]
+  it.ns, it.order, it.mem_attr, it.pcrd_type = f["ns"], f["order"], f["memattr"], f["pcrdtype"]
+  it.allow_retry, it.excl, it.exp_comp_ack = f["allowretry"], f["excl"], f["expcompack"]
+  it.tracetag, it.dodwt = f["tracetag"], f["dodwt"]
+  it.likelyshared, it.endian, it.mpam = f["likelyshared"], f["endian"], f["mpam"]
+  if cfg.is_e:
+    it.tagop, it.group_id_ext = f.get("tagop", 0), f.get("groupidext", 0)
+  return it
+
+
+def rsp_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_item:
+  f = unpack(cfg, "rsp", flit)
+  it = vip_chi_item("monitor_rsp_item", cfg)
+  it.raw_override = True
+  it.role = int(observed_role)
+  it.src_id, it.tgt_id, it.txn_id = f["srcid"], f["tgtid"], f["txnid"]
+  it.qos, it.rsp_opcode, it.dbid = f["qos"], f["opcode"], f["dbid"]
+  it.rsp_resp, it.rsp_resp_err = f["resp"], f["resperr"]
+  it.pcrd_type, it.fwd_state, it.tracetag = f["pcrdtype"], f["fwdstate"], f["tracetag"]
+  # A DBID-carrying grant is labelled WRITE; every other RSP defaults READ.
+  it.direction = int(Dir.WRITE) if f["opcode"] in _DBID_GRANT_OPCODES else int(Dir.READ)
+  return it
+
+
+def dat_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_item:
+  """Single-beat view of one DAT flit (the live monitor reassembles bursts)."""
+  f = unpack(cfg, "dat", flit)
+  it = vip_chi_item("monitor_dat_item", cfg)
+  it.raw_override = True
+  it.role = int(observed_role)
+  it.src_id, it.tgt_id, it.txn_id = f["srcid"], f["tgtid"], f["txnid"]
+  it.qos, it.dat_opcode, it.dbid = f["qos"], f["opcode"], f["dbid"]
+  it.rsp_resp, it.rsp_resp_err = f["resp"], f["resperr"]
+  it.data = [f["data"]]
+  it.be = [f["be"]]
+  it.data_id = [f["dataid"]]
+  it.cc_id = [f["ccid"]]
+  return it
+
+
+def snp_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_item:
+  f = unpack(cfg, "snp", flit)
+  it = vip_chi_item("monitor_snp_item", cfg)
+  it.raw_override = True
+  it.role = int(observed_role)
+  it.is_snoop = True
+  it.src_id, it.txn_id = f["srcid"], f["txnid"]
+  it.qos, it.snp_opcode, it.snp_addr = f["qos"], f["opcode"], f["addr"]
+  it.fwd_nid, it.fwd_txn_id = f["fwdnid"], f["fwdtxnid"]
+  it.ns = f["ns"]
+  it.ret_to_src, it.do_not_data_pull = bool(f["rettosrc"]), bool(f["donotdatapull"])
+  return it
+
+
+class vip_chi_monitor(uvm_monitor):
+
+  def __init__(self, name, parent):
+    super().__init__(name, parent)
+    self.cfg = None
+    self.role = Role.MONITOR
+    self.bus = None
+    self.req_port = uvm_analysis_port("req_port", self)
+    self.rsp_port = uvm_analysis_port("rsp_port", self)
+    self.dat_port = uvm_analysis_port("dat_port", self)
+    self.snp_port = uvm_analysis_port("snp_port", self)
+    self._reset_state()
+
+  def _reset_state(self):
+    # DAT reassembly state, keyed by (role, src, tgt, txnid).
+    self.dat_item_by_key = {}
+    self.dat_beats_by_key = {}
+    # REQ->DAT beat-count correlation.
+    self.rd_beats_by_txnid = {}
+    self.wr_beats_by_txnid = {}
+    self.wr_beats_by_dbid = {}
+
+  def set_bus(self, bus: ChiBus, cfg: ChiCfg, role: Role) -> None:
+    self.bus = bus
+    self.cfg = cfg
+    self.role = role
+
+  def handle_reset(self):
+    self._reset_state()
+
+  # ==========================================================================
+  # Publish helpers (stateful correlation lives here, not in the builders).
+  # ==========================================================================
+  def _publish_req(self, flit_int, observed_role):
+    it = req_item_from_flit(self.cfg, flit_int, observed_role)
+    op = int(it.opcode)
+    if op in _PLAIN_READ_OPCODES:
+      beats = chi_xfer_dat_beats(int(it.size), self.cfg.data_bytes)
+      if beats > 0:
+        self.rd_beats_by_txnid[int(it.txn_id)] = beats
+    else:
+      beats = it.get_payload_beat_count()
+      if beats > 0:
+        self.wr_beats_by_txnid[int(it.txn_id)] = beats
+    self.req_port.write(it)
+
+  def _publish_rsp(self, flit_int, observed_role):
+    it = rsp_item_from_flit(self.cfg, flit_int, observed_role)
+    if int(it.rsp_opcode) in _DBID_GRANT_OPCODES:
+      txn = int(it.txn_id)
+      if txn in self.wr_beats_by_txnid:
+        self.wr_beats_by_dbid[int(it.dbid)] = self.wr_beats_by_txnid.pop(txn)
+    self.rsp_port.write(it)
+
+  def _publish_snp(self, flit_int, observed_role):
+    self.snp_port.write(snp_item_from_flit(self.cfg, flit_int, observed_role))
+
+  def _publish_dat(self, flit_int, flit_pending, observed_role):
+    f = unpack(self.cfg, "dat", flit_int)
+    dat_txn = f["txnid"]
+    is_write_data = f["opcode"] in _WRITE_DAT_OPCODES
+
+    if is_write_data:
+      expected = self.wr_beats_by_dbid.get(dat_txn, 0)
+    else:
+      expected = self.rd_beats_by_txnid.get(dat_txn, 0)
+
+    key = (int(observed_role), f["srcid"], f["tgtid"], dat_txn)
+
+    it = self.dat_item_by_key.get(key)
+    if it is None:
+      it = vip_chi_item("monitor_dat_item", self.cfg)
+      it.raw_override = True
+      it.role = int(observed_role)
+      it.direction = int(Dir.WRITE) if is_write_data else int(Dir.READ)
+      it.src_id, it.tgt_id, it.txn_id = f["srcid"], f["tgtid"], dat_txn
+      it.dbid, it.qos = f["dbid"], f["qos"]
+      it.poison, it.datacheck = f["poison"], f["datacheck"]
+      it.dat_opcode = f["opcode"]
+      if self.cfg.is_e:
+        it.dat_tagop = f.get("tagop", 0)
+      it.data, it.be = [], []
+      it.data_id, it.cc_id = [], []
+      it.dat_resp, it.dat_resp_err = [], []
+      it.tag, it.tu = [], []
+      self.dat_item_by_key[key] = it
+      self.dat_beats_by_key[key] = 0
+
+    it.data.append(f["data"])
+    it.be.append(f["be"])
+    it.data_id.append(f["dataid"])
+    it.cc_id.append(f["ccid"])
+    it.dat_resp.append(f["resp"])
+    it.dat_resp_err.append(f["resperr"])
+    it.tag.append(f.get("tag", 0))
+    it.tu.append(f.get("tu", 0))
+    self.dat_beats_by_key[key] += 1
+
+    if expected > 0:
+      done = self.dat_beats_by_key[key] >= expected
+    else:
+      done = not flit_pending
+
+    if done:
+      self.dat_port.write(it)
+      del self.dat_item_by_key[key]
+      del self.dat_beats_by_key[key]
+      if is_write_data:
+        self.wr_beats_by_dbid.pop(dat_txn, None)
+      else:
+        self.rd_beats_by_txnid.pop(dat_txn, None)
+
+  # ==========================================================================
+  async def monitor_start(self):
+    """Sample the bus each edge; publish every asserted tx/rx flit."""
+    bus, me, peer = self.bus, self.role, peer_role(self.role)
+    while True:
+      await bus.rising()
+      await bus.read_only()
+      if bus.in_reset():
+        continue
+
+      if bus.get_or("txreqflitv"):
+        self._publish_req(bus.get("txreqflit"), me)
+      if bus.get_or("rxreqflitv"):
+        self._publish_req(bus.get("rxreqflit"), peer)
+
+      if bus.get_or("txrspflitv"):
+        self._publish_rsp(bus.get("txrspflit"), me)
+      if bus.get_or("rxrspflitv"):
+        self._publish_rsp(bus.get("rxrspflit"), peer)
+
+      if bus.get_or("txdatflitv"):
+        self._publish_dat(bus.get("txdatflit"), bus.get_or("txdatflitpend"), me)
+      if bus.get_or("rxdatflitv"):
+        self._publish_dat(bus.get("rxdatflit"), bus.get_or("rxdatflitpend"), peer)
+
+      if bus.get_or("txsnpflitv"):
+        self._publish_snp(bus.get("txsnpflit"), me)
+      if bus.get_or("rxsnpflitv"):
+        self._publish_snp(bus.get("rxsnpflit"), peer)
