@@ -194,9 +194,10 @@ class vip_chi_coherency_checker #(
 
     // The binned (state-changing) snoops resolve a held line to exactly SC
     // (downgrade) or I (invalidate) -- snoop_result() never yields a Unique/Dirty
-    // to-state. (A snapshot SnpOnce leaves the holder unchanged, but it is unbinned
-    // in cp_snp and this HN-F only issues SnpOnce to a dirty holder, so no clean
-    // Unique to-state is ever produced.) So the reachable to-states are {SC, I}.
+    // to-state. Snapshot snoops such as SnpOnce leave the holder unchanged; obs_snp
+    // updates the shadow state for them, but does not sample this transition
+    // covergroup because they are not state transitions. So the reachable to-states
+    // for sampled transitions are {SC, I}.
     cp_to: coverpoint this.ct_to_sample {
       bins inv = {VIP_CHI_RESP_STATE_I_E};
       bins sc  = {VIP_CHI_RESP_STATE_SC_E};
@@ -462,6 +463,21 @@ class vip_chi_coherency_checker #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // TRUE for the snoops binned by cg_cache_transition. Snapshot/data-forwarding
+  // snoops are still applied to the shadow state, but are intentionally not
+  // sampled as state transitions.
+  // ---------------------------------------------------------------------------
+  protected function bit snoop_samples_cache_transition(input item_t::snp_opcode_t snp_opcode);
+    case (snp_opcode)
+      VIP_CHI_SNP_SHARED_C,
+      VIP_CHI_SNP_UNIQUE_C,
+      VIP_CHI_SNP_CLEAN_INVALID_C,
+      VIP_CHI_SNP_MAKE_INVALID_C: return 1'b1;
+      default: return 1'b0;
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Record the authoritative beats for a line (from an observed write to home).
   // ---------------------------------------------------------------------------
   protected function void record_line_data(input longint line, input item_t item);
@@ -661,12 +677,15 @@ class vip_chi_coherency_checker #(
     line = this.line_of(longint'(item.snp_addr));
     cur  = this.line_state.exists(line) ? vip_chi_resp_t'(this.line_state[line][node])
                                         : VIP_CHI_RESP_STATE_I_E;
-    // Coverage: sample the snoop-induced transition (from-state x snoop x to)
-    // before applying it, then the resulting sharer occupancy.
+    // Coverage: sample only the binned state-changing snoops (from-state x snoop x
+    // to) before applying them. Snapshot snoops (SnpOnce) preserve Unique/Dirty
+    // state and are not part of cg_cache_transition.
     this.ct_from_sample       = cur;
     this.ct_snp_opcode_sample = item.snp_opcode;
     this.ct_to_sample         = this.snoop_result(item.snp_opcode, cur);
-    this.cg_cache_transition.sample();
+    if (this.snoop_samples_cache_transition(item.snp_opcode)) begin
+      this.cg_cache_transition.sample();
+    end
     this.set_node_state(line, node, this.ct_to_sample);
     this.sample_occupancy(line);
     // An invalidating snoop (result Invalid) to this node breaks its exclusive
