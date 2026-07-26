@@ -8,7 +8,7 @@ shared across roles and across the CHI-D and CHI-E issues.
 - **RN-I** — non-coherent requester (reads, writes, atomics, persist CMOs,
   ordered traffic, the retry handshake).
 - **SN-F** — memory-target completer backed by an internal
-  [vip_mem](../vip_memory) store, with DECERR/DERR injection and configurable
+  [vip_mem](submodules/vip_memory) store, with DECERR/DERR injection and configurable
   split-write / ordered-DBID behaviour.
 - **HN-I** — an `N_RN x N_SN` pass-through ordering proxy (QoS fan-in, SAM /
   stride address fan-out, node-id completion routing).
@@ -72,7 +72,7 @@ typedef vip_chi_types_d #(MY_CHI_CFG_C) my_chi_types_t;   // vip_chi_types_e for
 ```
 
 Use the same `(CFG, FLIT_TYPES_T)` pair for the interface, agent, monitor, and
-items so the typedefs in [vip_chi_types_pkg.sv](vip_chi_types_pkg.sv)
+items so the typedefs in [vip_chi_types_pkg.sv](sv/vip_chi_types_pkg.sv)
 (`addr_t`, `data_t`, `txn_id_t`, the flit structs) resolve consistently.
 
 ### 3. Instantiate the interface
@@ -159,12 +159,12 @@ The agent picks the driver subclass in `build_phase` from the `ROLE_P`
 parameter — `VIP_CHI_ROLE_RNI_E` → `vip_chi_driver_rni`, `SNF_E` →
 `vip_chi_driver_snf`, `RNF_E` → `vip_chi_driver_rnf`, `HNF_E` →
 `vip_chi_driver_hnf`, `MONITOR_E` → no driver (passive). For CHI-E, instantiate
-[vip_chi_agent_e](vip_chi_agent_e.sv), which factory-overrides the driver and
+[vip_chi_agent_e](sv/vip_chi_agent_e.sv), which factory-overrides the driver and
 monitor to the exact-CHI-E `*_e` variants; no other factory overrides are
 required. The HN-I proxy is hosted by its own
-[vip_chi_hni_agent](vip_chi_hni_agent.sv) (it needs both an RN-facing and an
+[vip_chi_hni_agent](sv/vip_chi_hni_agent.sv) (it needs both an RN-facing and an
 SN-facing interface), and the coherent home node by
-[vip_chi_hnf_agent](vip_chi_hnf_agent.sv).
+[vip_chi_hnf_agent](sv/vip_chi_hnf_agent.sv).
 
 ### Files
 
@@ -172,40 +172,40 @@ SN-facing interface), and the coherent home node by
 
 | File | Description |
 |------|-------------|
-| [vip_chi.svh](vip_chi.svh) | Single include entry point (packages + umbrella agent package) |
-| [vip_chi_agent_pkg.sv](vip_chi_agent_pkg.sv) | Umbrella UVM package; includes the classes in compile order |
-| [vip_chi_types_pkg.sv](vip_chi_types_pkg.sv) | Owned CHI types: flit structs, opcode/response enums, `vip_chi_cfg_t`, helpers (CHI-D + CHI-E) |
-| [vip_chi_if.sv](vip_chi_if.sv) | Role-gated interface; `monitor_cb` always, `g_drv.<role>_cb` selected by `ROLE_P` |
-| [vip_chi_item.sv](vip_chi_item.sv) | Transaction item; shared request/response object + raw-override flit views |
-| [vip_chi_cfg_agent.sv](vip_chi_cfg_agent.sv) | Agent runtime cfg: role, active/passive, credits, split-write/ordered-DBID, DECERR/DERR, `mem_cfg`, coverage, timeouts, delays |
-| [vip_chi_cfg_item.sv](vip_chi_cfg_item.sv) | Per-item randomization-knob config |
-| [vip_chi_agent.sv](vip_chi_agent.sv) | Role-parameterized agent; monitor + `ROLE_P`-matched driver + sequencer; owns the `rst_n` watcher |
-| [vip_chi_agent_e.sv](vip_chi_agent_e.sv) | CHI-E agent subclass (factory-overrides to the `*_e` driver/monitor) |
-| [vip_chi_hni_agent.sv](vip_chi_hni_agent.sv) | Multi-port HN-I proxy agent (`N_RN_PORTS x N_SN_PORTS`) |
-| [vip_chi_hnf_agent.sv](vip_chi_hnf_agent.sv) | Coherent home-node agent hosting the HN-F driver + directory |
-| [vip_chi_hni_sam.sv](vip_chi_hni_sam.sv) | HN-I System Address Map: `[base:limit] -> SN-port` range table |
-| [vip_chi_sequencer.sv](vip_chi_sequencer.sv) | `uvm_sequencer #(vip_chi_item)` with reset handling |
-| [seq_lib/](seq_lib/) | Sequence library — base seq setter API + read/write/atomic/persist/pipelined/coherent/raw sequences |
-| [vip_chi_sva.sv](vip_chi_sva.sv) | Bindable link/protocol assertions (link-before-traffic, credit rules, DBID-before-DAT, beat counts, TxnID uniqueness, timeouts) |
-| [vip_chi_snp_sva.sv](vip_chi_snp_sva.sv) | Bindable SNP-channel assertions for the coherent path |
-| [vip_chi_coverage.sv](vip_chi_coverage.sv) | Functional coverage over REQ/RSP/DAT opcode classes, sizes, errors, and coherent groups |
-| [vip_chi_perf_counters.sv](vip_chi_perf_counters.sv) | Latency / throughput / retry / back-pressure counters |
-| `yml/compile.yml` | Build manifest |
+| [vip_chi.svh](sv/vip_chi.svh) | Single include entry point (packages + umbrella agent package) |
+| [vip_chi_agent_pkg.sv](sv/vip_chi_agent_pkg.sv) | Umbrella UVM package; includes the classes in compile order |
+| [vip_chi_types_pkg.sv](sv/vip_chi_types_pkg.sv) | Owned CHI types: flit structs, opcode/response enums, `vip_chi_cfg_t`, helpers (CHI-D + CHI-E) |
+| [vip_chi_if.sv](sv/vip_chi_if.sv) | Role-gated interface; `monitor_cb` always, `g_drv.<role>_cb` selected by `ROLE_P` |
+| [vip_chi_item.sv](sv/vip_chi_item.sv) | Transaction item; shared request/response object + raw-override flit views |
+| [vip_chi_cfg_agent.sv](sv/vip_chi_cfg_agent.sv) | Agent runtime cfg: role, active/passive, credits, split-write/ordered-DBID, DECERR/DERR, `mem_cfg`, coverage, timeouts, delays |
+| [vip_chi_cfg_item.sv](sv/vip_chi_cfg_item.sv) | Per-item randomization-knob config |
+| [vip_chi_agent.sv](sv/vip_chi_agent.sv) | Role-parameterized agent; monitor + `ROLE_P`-matched driver + sequencer; owns the `rst_n` watcher |
+| [vip_chi_agent_e.sv](sv/vip_chi_agent_e.sv) | CHI-E agent subclass (factory-overrides to the `*_e` driver/monitor) |
+| [vip_chi_hni_agent.sv](sv/vip_chi_hni_agent.sv) | Multi-port HN-I proxy agent (`N_RN_PORTS x N_SN_PORTS`) |
+| [vip_chi_hnf_agent.sv](sv/vip_chi_hnf_agent.sv) | Coherent home-node agent hosting the HN-F driver + directory |
+| [vip_chi_hni_sam.sv](sv/vip_chi_hni_sam.sv) | HN-I System Address Map: `[base:limit] -> SN-port` range table |
+| [vip_chi_sequencer.sv](sv/vip_chi_sequencer.sv) | `uvm_sequencer #(vip_chi_item)` with reset handling |
+| [seq_lib/](sv/seq_lib/) | Sequence library — base seq setter API + read/write/atomic/persist/pipelined/coherent/raw sequences |
+| [vip_chi_sva.sv](sv/vip_chi_sva.sv) | Bindable link/protocol assertions (link-before-traffic, credit rules, DBID-before-DAT, beat counts, TxnID uniqueness, timeouts) |
+| [vip_chi_snp_sva.sv](sv/vip_chi_snp_sva.sv) | Bindable SNP-channel assertions for the coherent path |
+| [vip_chi_coverage.sv](sv/vip_chi_coverage.sv) | Functional coverage over REQ/RSP/DAT opcode classes, sizes, errors, and coherent groups |
+| [vip_chi_perf_counters.sv](sv/vip_chi_perf_counters.sv) | Latency / throughput / retry / back-pressure counters |
+| [vip_chi_agent.core](vip_chi_agent.core) | FuseSoC core — build manifest (deps + filesets) |
 
 #### Internal implementation
 
 | File | Description |
 |------|-------------|
-| [vip_chi_lcrd_mgr.sv](vip_chi_lcrd_mgr.sv) | Per-channel L-credit manager (`try_acquire_credit` / `return_credit`; starts at 0, learns from LCRDV pulses) |
-| [vip_chi_driver_rni.sv](vip_chi_driver_rni.sv) | RN-I requester driver + the opt-in multi-outstanding pipeline |
-| [vip_chi_driver_snf.sv](vip_chi_driver_snf.sv) | SN-F auto-responder over an internal `vip_mem` |
-| [vip_chi_driver_hni.sv](vip_chi_driver_hni.sv) | HN-I multi-port pass-through proxy driver |
-| [vip_chi_driver_rnf.sv](vip_chi_driver_rnf.sv) | RN-F coherent requester (extends RN-I; adds cache-state model + snoop responder) |
-| [vip_chi_driver_hnf.sv](vip_chi_driver_hnf.sv) | HN-F home-node driver (directory, snoop origination, terminates to its own `vip_mem`) |
-| [vip_chi_driver_rni_e.sv](vip_chi_driver_rni_e.sv) / [vip_chi_driver_snf_e.sv](vip_chi_driver_snf_e.sv) | Exact-CHI-E drivers (memory tagging, E-shaped REQ/DAT) |
-| [vip_chi_monitor.sv](vip_chi_monitor.sv) / [vip_chi_monitor_e.sv](vip_chi_monitor_e.sv) | Passive monitors; publish REQ/RSP/DAT/SNP items (the `_e` variant adds CHI-E fields) |
-| [vip_chi_scoreboard.sv](vip_chi_scoreboard.sv) | Checker-C predictable write→read + atomic-RMW predictor |
-| [vip_chi_coherency_checker.sv](vip_chi_coherency_checker.sv) | Checker-D self-derived per-line ownership shadow |
+| [vip_chi_lcrd_mgr.sv](sv/vip_chi_lcrd_mgr.sv) | Per-channel L-credit manager (`try_acquire_credit` / `return_credit`; starts at 0, learns from LCRDV pulses) |
+| [vip_chi_driver_rni.sv](sv/vip_chi_driver_rni.sv) | RN-I requester driver + the opt-in multi-outstanding pipeline |
+| [vip_chi_driver_snf.sv](sv/vip_chi_driver_snf.sv) | SN-F auto-responder over an internal `vip_mem` |
+| [vip_chi_driver_hni.sv](sv/vip_chi_driver_hni.sv) | HN-I multi-port pass-through proxy driver |
+| [vip_chi_driver_rnf.sv](sv/vip_chi_driver_rnf.sv) | RN-F coherent requester (extends RN-I; adds cache-state model + snoop responder) |
+| [vip_chi_driver_hnf.sv](sv/vip_chi_driver_hnf.sv) | HN-F home-node driver (directory, snoop origination, terminates to its own `vip_mem`) |
+| [vip_chi_driver_rni_e.sv](sv/vip_chi_driver_rni_e.sv) / [vip_chi_driver_snf_e.sv](sv/vip_chi_driver_snf_e.sv) | Exact-CHI-E drivers (memory tagging, E-shaped REQ/DAT) |
+| [vip_chi_monitor.sv](sv/vip_chi_monitor.sv) / [vip_chi_monitor_e.sv](sv/vip_chi_monitor_e.sv) | Passive monitors; publish REQ/RSP/DAT/SNP items (the `_e` variant adds CHI-E fields) |
+| [vip_chi_scoreboard.sv](sv/vip_chi_scoreboard.sv) | Checker-C predictable write→read + atomic-RMW predictor |
+| [vip_chi_coherency_checker.sv](sv/vip_chi_coherency_checker.sv) | Checker-D self-derived per-line ownership shadow |
 
 ---
 
@@ -239,7 +239,7 @@ retry handshake runs on the serial path only.
 
 ### SN-F Completer (Memory Responder)
 
-Autonomous auto-responder backed by an internal [vip_mem](../vip_memory) store:
+Autonomous auto-responder backed by an internal [vip_mem](submodules/vip_memory) store:
 receives REQ, grants credits, performs reads / writes / atomic RMW / persist,
 injects DECERR/DERR by address range, and drives `CompData`/RSP with
 configurable split-write and ordered-DBID behaviour. Instantiated with
@@ -253,24 +253,24 @@ driver. Verify committed data with a read-back sequence and/or the scoreboard
 
 An `N_RN_PORTS x N_SN_PORTS` home node that relays flits between RN-facing and
 SN-facing links: QoS-weighted fan-in arbitration, address fan-out (a
-configurable [vip_chi_hni_sam](vip_chi_hni_sam.sv) range table or an address
+configurable [vip_chi_hni_sam](sv/vip_chi_hni_sam.sv) range table or an address
 stride), and node-id completion routing. Pure flit relay — transaction- and
 issue-agnostic, no TxnID remap, serial (one transaction at a time) by design.
-Hosted by [vip_chi_hni_agent](vip_chi_hni_agent.sv), which fetches the RN- and
+Hosted by [vip_chi_hni_agent](sv/vip_chi_hni_agent.sv), which fetches the RN- and
 SN-facing vifs (plus an optional SAM and QoS `arb_window`) via `uvm_config_db`.
 
 ### Coherent RN-F / HN-F
 
 The coherent slice models cache coherence over the SNP channel:
 
-- **RN-F** ([vip_chi_driver_rnf.sv](vip_chi_driver_rnf.sv)) extends the RN-I
+- **RN-F** ([vip_chi_driver_rnf.sv](sv/vip_chi_driver_rnf.sv)) extends the RN-I
   driver, reusing its request/credit/link/retry machinery, and adds a per-line
   cache-state model and an autonomous snoop responder. Issues the coherent-REQ
   family (`ReadShared`/`ReadClean`/`ReadUnique`/`MakeReadUnique`/`ReadOnce`,
   `CleanUnique`, `WriteBack`/`Evict`, `CleanInvalid`/`MakeInvalid`,
   `WriteUnique`) and exclusives (LL/SC).
-- **HN-F** ([vip_chi_driver_hnf.sv](vip_chi_driver_hnf.sv), hosted by
-  [vip_chi_hnf_agent](vip_chi_hnf_agent.sv)) is a stateful home node with a
+- **HN-F** ([vip_chi_driver_hnf.sv](sv/vip_chi_driver_hnf.sv), hosted by
+  [vip_chi_hnf_agent](sv/vip_chi_hnf_agent.sv)) is a stateful home node with a
   directory: it terminates requests against its own `vip_mem`, originates snoops
   to sharers/owners, collects `SnpResp`(`Data`), merges dirty forwards, and
   completes with the granted state. DCT forwarding snoops and an optional
@@ -290,7 +290,7 @@ ports remain available.
 ## Configuration
 
 Per-agent runtime policy lives on
-[vip_chi_cfg_agent](vip_chi_cfg_agent.sv):
+[vip_chi_cfg_agent](sv/vip_chi_cfg_agent.sv):
 
 | Group | Fields |
 |-------|--------|
@@ -312,13 +312,13 @@ additionally accepts an optional `vip_chi_hni_sam` and a QoS `arb_window` via
 
 ## Transaction Item
 
-[vip_chi_item](vip_chi_item.sv) is the shared object carried on the sequencer
+[vip_chi_item](sv/vip_chi_item.sv) is the shared object carried on the sequencer
 and republished by the monitor, parameterized by `vip_chi_cfg_t`. It carries the
 REQ / RSP / DAT / SNP flit fields (opcode, address, size, IDs, QoS, order,
 exclusive, `ExpCompAck`, the data/BE payload arrays, and the CHI-E MTE
 `Tag`/`TU` fields) plus a raw-override view for negative testing.
 
-Randomization is shaped by [vip_chi_cfg_item](vip_chi_cfg_item.sv) and by the
+Randomization is shaped by [vip_chi_cfg_item](sv/vip_chi_cfg_item.sv) and by the
 sequence setters. Key legality constraints baked into the item include
 size-aligned addressing, per-role/per-direction opcode pools, and the
 combined-Size rule for `AtomicCompare` (Size denotes the combined compare+swap
@@ -353,7 +353,7 @@ Helpers: vip_chi_seq_config, vip_chi_addr_iterator,
          vip_chi_seq_counter_iter, vip_chi_seq_payload_buffer
 ```
 
-The [vip_chi_base_seq](seq_lib/vip_chi_base_seq.sv) setter API covers request
+The [vip_chi_base_seq](sv/seq_lib/vip_chi_base_seq.sv) setter API covers request
 count and addressing (`set_requests`, `set_initial_addr`, `set_addr_list`,
 `set_addr_stride`, `set_enforce_addr_alignment`), transfer shape (`set_size`,
 `set_size_range`), payload (`set_data_type`, `set_data`, `set_be`,
@@ -369,12 +369,12 @@ count and addressing (`set_requests`, `set_initial_addr`, `set_addr_list`,
 ## Common Recipes
 
 Canonical patterns, each lifted from an example test in
-[../examples/vip_chi_agent/tc](../examples/vip_chi_agent/tc).
+[testbench/sv/tc](testbench/sv/tc).
 
 ### Write a counter pattern and read it back
 
 The foundational integration check
-([tc_chi_d_write_read_smoke](../examples/vip_chi_agent/sv/tc/tc_chi_d_write_read_smoke.sv)):
+([tc_chi_d_write_read_smoke](testbench/sv/tc/tc_chi_d_write_read_smoke.sv)):
 
 ```systemverilog
 wr_seq.set_requests(N);
@@ -396,48 +396,48 @@ rd_seq.start(v_sqr.rni_sequencer);
 
 Set `cfg.multi_outstanding` on **both** the RN-I and SN-F cfgs, then confirm the
 overlap actually happened via `observed_peak_mixed_inflight`. See
-[tc_chi_d_multi_outstanding_concurrent](../examples/vip_chi_agent/sv/tc/tc_chi_d_multi_outstanding_concurrent.sv).
+[tc_chi_d_multi_outstanding_concurrent](testbench/sv/tc/tc_chi_d_multi_outstanding_concurrent.sv).
 
 ### Exercise the retry handshake
 
 Set `cfg.force_retry_count` on the completer; the RN-I holds, consumes the
 `PCrdGrant`, and re-issues. See
-[tc_chi_d_retry](../examples/vip_chi_agent/sv/tc/tc_chi_d_retry.sv).
+[tc_chi_d_retry](testbench/sv/tc/tc_chi_d_retry.sv).
 
 ### Route through the HN-I proxy
 
 Two RNs fan into two SNs by address. Hand the proxy a
-[vip_chi_hni_sam](vip_chi_hni_sam.sv) for explicit `[base:limit] -> SN` ranges,
+[vip_chi_hni_sam](sv/vip_chi_hni_sam.sv) for explicit `[base:limit] -> SN` ranges,
 or rely on the address stride. See
-[tc_chi_d_hni_xbar](../examples/vip_chi_agent/sv/tc/tc_chi_d_hni_xbar.sv),
-[tc_chi_d_hni_fanin](../examples/vip_chi_agent/sv/tc/tc_chi_d_hni_fanin.sv), and
-[tc_chi_d_hni_sam](../examples/vip_chi_agent/sv/tc/tc_chi_d_hni_sam.sv).
+[tc_chi_d_hni_xbar](testbench/sv/tc/tc_chi_d_hni_xbar.sv),
+[tc_chi_d_hni_fanin](testbench/sv/tc/tc_chi_d_hni_fanin.sv), and
+[tc_chi_d_hni_sam](testbench/sv/tc/tc_chi_d_hni_sam.sv).
 
 ### Drive coherent traffic and observe snoops
 
 An RN-F read that hits another RN-F's line originates a snoop from the HN-F. See
-[tc_chi_coh_d_shared_read](../examples/vip_chi_agent/sv/tc/tc_chi_coh_d_shared_read.sv),
-[tc_chi_coh_d_dirty_forward](../examples/vip_chi_agent/sv/tc/tc_chi_coh_d_dirty_forward.sv),
-and [tc_chi_coh_d_writeback_evict](../examples/vip_chi_agent/sv/tc/tc_chi_coh_d_writeback_evict.sv).
+[tc_chi_coh_d_shared_read](testbench/sv/tc/tc_chi_coh_d_shared_read.sv),
+[tc_chi_coh_d_dirty_forward](testbench/sv/tc/tc_chi_coh_d_dirty_forward.sv),
+and [tc_chi_coh_d_writeback_evict](testbench/sv/tc/tc_chi_coh_d_writeback_evict.sv).
 
 ### Inject error responses
 
 Add address ranges to `cfg.decerr_ranges` / `cfg.derr_ranges` on the SN-F. See
-[tc_chi_d_decerr_smoke](../examples/vip_chi_agent/sv/tc/tc_chi_d_decerr_smoke.sv) and
-[tc_chi_d_derr_smoke](../examples/vip_chi_agent/sv/tc/tc_chi_d_derr_smoke.sv).
+[tc_chi_d_decerr_smoke](testbench/sv/tc/tc_chi_d_decerr_smoke.sv) and
+[tc_chi_d_derr_smoke](testbench/sv/tc/tc_chi_d_derr_smoke.sv).
 
 ### Reset mid-traffic
 
 Pulse `rst_n` while a storm runs; the agent watcher flushes queues, drops
 objections, and resumes on release. See
-[tc_chi_d_reset](../examples/vip_chi_agent/sv/tc/tc_chi_d_reset.sv) and
-[tc_chi_coh_d_reset_mid_snoop](../examples/vip_chi_agent/sv/tc/tc_chi_coh_d_reset_mid_snoop.sv).
+[tc_chi_d_reset](testbench/sv/tc/tc_chi_d_reset.sv) and
+[tc_chi_coh_d_reset_mid_snoop](testbench/sv/tc/tc_chi_coh_d_reset_mid_snoop.sv).
 
 ---
 
 ## Monitor Analysis Ports
 
-[vip_chi_monitor](vip_chi_monitor.sv) publishes four
+[vip_chi_monitor](sv/vip_chi_monitor.sv) publishes four
 `uvm_analysis_port #(vip_chi_item)` streams for scoreboarding, coherency
 checking, and coverage:
 
@@ -461,30 +461,30 @@ The `_e` monitor republishes the CHI-E-only fields on the same ports.
 
 ## Checkers & Coverage
 
-- **Scoreboard** ([vip_chi_scoreboard.sv](vip_chi_scoreboard.sv)) — Checker-C:
+- **Scoreboard** ([vip_chi_scoreboard.sv](sv/vip_chi_scoreboard.sv)) — Checker-C:
   predicts read data from wire-observed writes (predictable-only) and resolves
   atomic RMW results, flagging opcode/data/route mismatches and orphans.
-- **Coherency checker** ([vip_chi_coherency_checker.sv](vip_chi_coherency_checker.sv))
+- **Coherency checker** ([vip_chi_coherency_checker.sv](sv/vip_chi_coherency_checker.sv))
   — Checker-D: a self-derived per-line ownership shadow (never the HN-F
   directory) whose core invariant is *never two Unique owners of one line*.
-- **SVA** ([vip_chi_sva.sv](vip_chi_sva.sv),
-  [vip_chi_snp_sva.sv](vip_chi_snp_sva.sv)) — bindable link/protocol and
+- **SVA** ([vip_chi_sva.sv](sv/vip_chi_sva.sv),
+  [vip_chi_snp_sva.sv](sv/vip_chi_snp_sva.sv)) — bindable link/protocol and
   SNP-channel assertions: link-before-traffic, L-credit accounting,
   DBID-before-DAT, `Comp`-before-`CompAck`, beat counts, in-flight TxnID
   uniqueness, and completion timeouts.
-- **Perf counters** ([vip_chi_perf_counters.sv](vip_chi_perf_counters.sv)) —
+- **Perf counters** ([vip_chi_perf_counters.sv](sv/vip_chi_perf_counters.sv)) —
   per-requester latency (min/avg/max, read/write), throughput, retry count, and
   per-channel back-pressure cycles, off a reset-gated cycle counter.
 
 Every always-on checker ships with a negative-control test that fails if the
 check is vacuous (e.g.
-[tc_chi_d_scoreboard_negctl](../examples/vip_chi_agent/sv/tc/tc_chi_d_scoreboard_negctl.sv)).
+[tc_chi_d_scoreboard_negctl](testbench/sv/tc/tc_chi_d_scoreboard_negctl.sv)).
 
 ---
 
 ## Interface
 
-[vip_chi_if](vip_chi_if.sv) carries the REQ/RSP/DAT/SNP flit, link-activation,
+[vip_chi_if](sv/vip_chi_if.sv) carries the REQ/RSP/DAT/SNP flit, link-activation,
 and L-credit signals plus role-gated clocking blocks:
 
 | Block / Modport | Elaborated when | Used by |
@@ -497,8 +497,8 @@ and L-credit signals plus role-gated clocking blocks:
 
 Only the active role's driving clocking block is elaborated (inside a
 `generate`), so a role reads a signal it does not drive without a VCS
-multiple-driver error — mirroring the [vip_axi4_if](../vip_axi4_agent/vip_axi4_if.sv)
-pattern. The SNP-channel signals are tied idle except on the HN-F (tx) and RN-F
+multiple-driver error — mirroring the vip_axi4 interface pattern. The SNP-channel
+signals are tied idle except on the HN-F (tx) and RN-F
 (rx) sides. Drivers reach their clocking block via hierarchical reference
 (`vif.g_drv.<role>_cb`) because VCS does not support modports inside generate
 blocks.
@@ -524,13 +524,13 @@ spans two links, so the home node tears both down together).
 
 ## Example Testbench
 
-[../examples/vip_chi](../examples/vip_chi) is a DUT-less structural top that
+[testbench/sv](testbench/sv) is a DUT-less structural top that
 cross-wires the agents in several modes — integrated RN-I↔SN-F, RN-I loopback,
 SN-F manual/auto, HN-I passthrough/fan-in/crossbar, a CHI-E sidecar, and the
 coherent RN-F/HN-F topology — driven by 100+ testcases.
 
 ```text
-examples/vip_chi_agent/
+testbench/sv/
 ├── tb/
 │   ├── vip_chi_tb_top.sv          — top: interface instances + per-mode cross-wiring
 │   ├── vip_chi_tb_pkg.sv          — CHI_D / CHI_D_WIDE / CHI_E_WIDE cfg + type typedefs
@@ -541,7 +541,7 @@ examples/vip_chi_agent/
 │   ├── vip_chi_link_adapter.sv    — cross-wires two role interfaces into one CHI link
 │   └── vip_chi_virtual_sequencer.sv — rni / snf / hrni0 / hrni1 sequencer handles
 ├── tc/                            — vip_chi_base_test + tc_chi_* / tc_chi_coh_* testcases
-└── yml/                           — build configuration
+└── vip_chi_agent_example.core     — FuseSoC core (build manifest)
 ```
 
 ### Building and running

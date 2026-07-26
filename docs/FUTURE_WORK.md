@@ -92,6 +92,3 @@ Extends the RN-F / HN-F subsystem with more of the CHI coherency surface.
 
 - **`M6 cg_outstanding` coverage** — a separate workstream; do not touch from
   vip_chi.
-- **fusesoc migration** — done: the build is FuseSoC-driven (`vip_chi_agent.core`
-  + `testbench/sv/vip_chi_agent_example.core`, target `default`, tool `vcs`; see
-  the repo README). The previous shell-function build wrapper and `yml/` are gone.
