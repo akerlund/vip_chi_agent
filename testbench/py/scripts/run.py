@@ -28,9 +28,8 @@ SUMMARY_RE_C = re.compile(r"TESTS=(?P<tests>\d+).*FAIL=(?P<fail>\d+)")
 
 @dataclass(frozen=True)
 class TestCase:
-  """Map one public testcase name to one cocotb wrapper."""
-  public_name: str
-  wrapper_name: str
+  """Hold one public cocotb testcase entry."""
+  name: str
 
 
 @dataclass(frozen=True)
@@ -60,7 +59,7 @@ def main() -> int:
 
   if args.list:
     for case in cases:
-      print(case.public_name)
+      print(case.name)
     return 0
 
   selected = select_tests(args, cases)
@@ -79,7 +78,7 @@ def main() -> int:
   reports = []
   print_header()
   for case in selected:
-    print_running(case.public_name)
+    print_running(case.name)
     report = run_one(root, case, stream=False)
     reports.append(report)
     print("\r" + report.line)
@@ -97,7 +96,7 @@ def main() -> int:
 
 
 def parse_args() -> argparse.Namespace:
-  """Create the CLI used by the Python regression wrapper."""
+  """Create the CLI used by the Python regression runner."""
   parser = argparse.ArgumentParser(description="Run CHI pyUVM/cocotb tests")
   parser.add_argument("-t", "--tc", default="", help="public tc_* testcase")
   parser.add_argument("-a", "--all", action="store_true", help="run all tests")
@@ -119,7 +118,7 @@ def repo_root() -> Path:
 
 
 def discover_tests(root: Path) -> list[TestCase]:
-  """Discover public tests from static cocotb wrappers."""
+  """Discover public cocotb tests from the Python top."""
   top = root / "testbench" / "py" / "tb" / f"{TOP_MODULE_C}.py"
   tree = ast.parse(top.read_text(encoding="utf-8"))
   tests: dict[str, TestCase] = {}
@@ -127,19 +126,21 @@ def discover_tests(root: Path) -> list[TestCase]:
   for node in tree.body:
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
       continue
-    wrapper = cocotb_test_name(node)
-    if not wrapper:
+    name = cocotb_test_name(node)
+    if not name or not name.startswith("tc_"):
       continue
-    public = public_test_name(node)
-    if not public:
-      continue
-    tests[public] = TestCase(public, wrapper)
+    body_name = body_test_name(node)
+    if body_name and body_name != name:
+      raise RuntimeError(
+        f"{TOP_MODULE_C}.{node.name} runs {body_name}, but is named {name}"
+      )
+    tests[name] = TestCase(name)
 
   return [tests[name] for name in sorted(tests)]
 
 
 def cocotb_test_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
-  """Return the cocotb wrapper name for a decorated function."""
+  """Return the configured cocotb test name for a function."""
   for decorator in node.decorator_list:
     target = decorator.func if isinstance(decorator, ast.Call) else decorator
     if not isinstance(target, ast.Attribute) or target.attr != "test":
@@ -153,24 +154,32 @@ def cocotb_test_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
   return None
 
 
-def public_test_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+def body_test_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
   """Return the tc_* name passed to the pyUVM testcase runner."""
   for child in ast.walk(node):
-    if isinstance(child, ast.Constant) and isinstance(child.value, str):
-      if child.value.startswith("tc_"):
-        return child.value
+    if not isinstance(child, ast.Assign):
+      continue
+    if not isinstance(child.value, ast.Constant):
+      continue
+    if not isinstance(child.value.value, str):
+      continue
+    if not child.value.value.startswith("tc_"):
+      continue
+    for target in child.targets:
+      if isinstance(target, ast.Name) and target.id == "test_name":
+        return child.value.value
   return None
 
 
 def select_tests(args: argparse.Namespace, cases: list[TestCase]) -> list[TestCase]:
   """Resolve the requested public testcase selection."""
-  if args.list or args.build and not args.tc and not args.all:
+  if args.list or (args.build and not args.tc and not args.all):
     return []
   if args.all:
     return cases
-  by_name = {case.public_name: case for case in cases}
+  by_name = {case.name: case for case in cases}
   if args.tc not in by_name:
-    known = ", ".join(case.public_name for case in cases[:5])
+    known = ", ".join(case.name for case in cases[:5])
     raise SystemExit(f"unknown testcase '{args.tc}' (examples: {known})")
   return [by_name[args.tc]]
 
@@ -190,7 +199,7 @@ def env(root: Path, case: TestCase | None = None) -> dict[str, str]:
     [str(path) for path in paths] + [values.get("PYTHONPATH", "")]
   )
   if case:
-    values["COCOTB_TEST_FILTER"] = f"{case.wrapper_name}$"
+    values["COCOTB_TEST_FILTER"] = f"{case.name}$"
   return values
 
 
@@ -217,7 +226,7 @@ def run_one(root: Path, case: TestCase, stream: bool) -> TestReport:
   """Run one public testcase in its own simulator process."""
   log_dir = root / "testbench" / "py" / "rundir" / "verilator"
   log_dir.mkdir(parents=True, exist_ok=True)
-  log_path = log_dir / f"{case.public_name}.log"
+  log_path = log_dir / f"{case.name}.log"
   command = [
     "fusesoc",
     "--cores-root",
@@ -241,7 +250,7 @@ def run_one(root: Path, case: TestCase, stream: bool) -> TestReport:
   if failures == 0 and "TESTS=1 PASS=1 FAIL=0" not in output:
     failures = 1
   status = "Passed" if failures == 0 else "Failed"
-  return TestReport(case.public_name, status, warnings, errors, failures, elapsed)
+  return TestReport(case.name, status, warnings, errors, failures, elapsed)
 
 
 def run_logged(

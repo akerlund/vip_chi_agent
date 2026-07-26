@@ -18,7 +18,7 @@ vip_chi_agent_example_py.core
 
 `vip_chi_hdl_top.sv` exposes the Verilator-visible flat nets. `vip_chi_tb_top.py`
 creates the `ChiBus` objects, publishes them through pyUVM `ConfigDB`, and
-contains one static cocotb wrapper per public `tc_*` testcase.
+contains one static cocotb test entry per public `tc_*` testcase.
 
 ## Build And Run
 

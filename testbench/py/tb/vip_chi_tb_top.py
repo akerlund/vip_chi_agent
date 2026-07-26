@@ -161,8 +161,8 @@ async def _sample_edge(bus: ChiBus) -> None:
   await bus.read_only()
 
 
-@cocotb.test(name="tb_a0_smoke")
-async def tb_a0_smoke(dut) -> None:
+@cocotb.test(name="tc_chi_a0_smoke")
+async def tc_chi_a0_smoke(dut) -> None:
   """Run the direct A0 smoke on the combined HDL top."""
   test_name = "tc_chi_a0_smoke"
   rni = ChiBus(dut, A0_CFG, Role.RNI, prefix="a0_rni_")
@@ -230,844 +230,844 @@ async def tb_a0_smoke(dut) -> None:
   cocotb.log.info(f"Test ({test_name}) PASS")
 
 
-# Static cocotb wrappers let scripts discover public tests from the core flow.
+# Static cocotb tests let scripts discover public names from the core flow.
 
 
-@cocotb.test(name="tb_coh_d_cache_evict", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_cache_evict(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_cache_evict", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_cache_evict(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_cache_evict"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_cmo_invalidate", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_cmo_invalidate(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_cmo_invalidate", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_cmo_invalidate(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_cmo_invalidate"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_data_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_data_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_data_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_data_negctl(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_data_negctl"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_dirty_forward", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_dirty_forward(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_dirty_forward", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_dirty_forward(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_dirty_forward"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_excl_fail_snoop", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_excl_fail_snoop(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_excl_fail_snoop", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_excl_fail_snoop(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_excl_fail_snoop"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_excl_fail_store", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_excl_fail_store(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_excl_fail_store", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_excl_fail_store(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_excl_fail_store"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_excl_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_excl_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_excl_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_excl_negctl(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_excl_negctl"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_excl_success", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_excl_success(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_excl_success", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_excl_success(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_excl_success"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_fwd_data_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_fwd_data_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_fwd_data_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_fwd_data_negctl(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_fwd_data_negctl"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_fwd_dirty", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_fwd_dirty(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_fwd_dirty", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_fwd_dirty(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_fwd_dirty"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_fwd_shared", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_fwd_shared(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_fwd_shared", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_fwd_shared(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_fwd_shared"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_fwd_unique", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_fwd_unique(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_fwd_unique", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_fwd_unique(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_fwd_unique"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_line_granularity", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_line_granularity(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_line_granularity", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_line_granularity(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_line_granularity"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_make_unique", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_make_unique(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_make_unique", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_make_unique(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_make_unique"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_make_unique_dct", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_make_unique_dct(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_make_unique_dct", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_make_unique_dct(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_make_unique_dct"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_make_unique_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_make_unique_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_make_unique_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_make_unique_negctl(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_make_unique_negctl"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_negctl(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_negctl"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_read_after_writeback", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_read_after_writeback(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_read_after_writeback", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_read_after_writeback(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_read_after_writeback"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_read_no_snoop", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_read_no_snoop(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_read_no_snoop", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_read_no_snoop(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_read_no_snoop"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_read_once", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_read_once(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_read_once", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_read_once(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_read_once"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_read_then_unique", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_read_then_unique(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_read_then_unique", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_read_then_unique(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_read_then_unique"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_reset_mid_snoop", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_reset_mid_snoop(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_reset_mid_snoop", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_reset_mid_snoop(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_reset_mid_snoop"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_shared_read", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_shared_read(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_shared_read", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_shared_read(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_shared_read"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_snf_data_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_snf_data_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_snf_data_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_snf_data_negctl(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_snf_data_negctl"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_snf_read_miss", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_snf_read_miss(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_snf_read_miss", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_snf_read_miss(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_snf_read_miss"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_snf_writeback_readback", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_snf_writeback_readback(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_snf_writeback_readback", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_snf_writeback_readback(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_snf_writeback_readback"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_snp_backpressure", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_snp_backpressure(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_snp_backpressure", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_snp_backpressure(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_snp_backpressure"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_stress", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_stress(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_stress", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_stress(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_stress"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_transition_sweep", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_transition_sweep(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_transition_sweep", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_transition_sweep(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_transition_sweep"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_wr_direction", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_wr_direction(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_wr_direction", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_wr_direction(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_wr_direction"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_write_unique", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_write_unique(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_write_unique", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_write_unique(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_write_unique"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_write_unique_ptl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_write_unique_ptl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_write_unique_ptl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_write_unique_ptl(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_write_unique_ptl"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_d_writeback_evict", timeout_time=20, timeout_unit="ms")
-async def tb_coh_d_writeback_evict(dut) -> None:
+@cocotb.test(name="tc_chi_coh_d_writeback_evict", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_writeback_evict(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
   test_name = "tc_chi_coh_d_writeback_evict"
   await _run_d_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_cache_evict", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_cache_evict(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_cache_evict", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_cache_evict(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_cache_evict"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_cmo_invalidate", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_cmo_invalidate(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_cmo_invalidate", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_cmo_invalidate(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_cmo_invalidate"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_cmo_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_cmo_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_cmo_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_cmo_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_cmo_negctl"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_data_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_data_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_data_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_data_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_data_negctl"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_dirty_forward", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_dirty_forward(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_dirty_forward", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_dirty_forward(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_dirty_forward"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_excl_fail_snoop", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_excl_fail_snoop(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_excl_fail_snoop", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_excl_fail_snoop(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_excl_fail_snoop"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_excl_fail_store", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_excl_fail_store(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_excl_fail_store", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_excl_fail_store(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_excl_fail_store"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_excl_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_excl_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_excl_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_excl_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_excl_negctl"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_excl_success", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_excl_success(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_excl_success", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_excl_success(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_excl_success"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_fwd_data_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_fwd_data_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_fwd_data_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_fwd_data_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_fwd_data_negctl"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_fwd_dirty", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_fwd_dirty(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_fwd_dirty", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_fwd_dirty(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_fwd_dirty"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_fwd_shared", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_fwd_shared(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_fwd_shared", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_fwd_shared(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_fwd_shared"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_fwd_unique", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_fwd_unique(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_fwd_unique", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_fwd_unique(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_fwd_unique"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_make_read_unique", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_make_read_unique(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_make_read_unique", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_make_read_unique(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_make_read_unique"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_make_unique", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_make_unique(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_make_unique", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_make_unique(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_make_unique"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_make_unique_dct", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_make_unique_dct(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_make_unique_dct", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_make_unique_dct(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_make_unique_dct"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_make_unique_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_make_unique_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_make_unique_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_make_unique_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_make_unique_negctl"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_negctl"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_read_after_writeback", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_read_after_writeback(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_read_after_writeback", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_read_after_writeback(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_read_after_writeback"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_read_no_snoop", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_read_no_snoop(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_read_no_snoop", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_read_no_snoop(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_read_no_snoop"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_read_once", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_read_once(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_read_once", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_read_once(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_read_once"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_read_then_unique", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_read_then_unique(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_read_then_unique", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_read_then_unique(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_read_then_unique"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_reset_mid_snoop", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_reset_mid_snoop(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_reset_mid_snoop", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_reset_mid_snoop(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_reset_mid_snoop"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_shared_read", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_shared_read(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_shared_read", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_shared_read(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_shared_read"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_snf_data_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_snf_data_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_snf_data_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_snf_data_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_snf_data_negctl"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_snf_read_miss", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_snf_read_miss(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_snf_read_miss", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_snf_read_miss(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_snf_read_miss"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_snf_writeback_readback", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_snf_writeback_readback(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_snf_writeback_readback", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_snf_writeback_readback(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_snf_writeback_readback"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_snp_backpressure", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_snp_backpressure(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_snp_backpressure", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_snp_backpressure(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_snp_backpressure"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_stress", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_stress(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_stress", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_stress(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_stress"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_transition_sweep", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_transition_sweep(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_transition_sweep", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_transition_sweep(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_transition_sweep"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_write_unique", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_write_unique(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_write_unique", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_write_unique(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_write_unique"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_write_unique_ptl", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_write_unique_ptl(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_write_unique_ptl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_write_unique_ptl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_write_unique_ptl"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_coh_e_writeback_evict", timeout_time=20, timeout_unit="ms")
-async def tb_coh_e_writeback_evict(dut) -> None:
+@cocotb.test(name="tc_chi_coh_e_writeback_evict", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_writeback_evict(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_writeback_evict"
   await _run_e_coherent(dut, test_name)
 
 
-@cocotb.test(name="tb_atomic", timeout_time=20, timeout_unit="ms")
-async def tb_atomic(dut) -> None:
+@cocotb.test(name="tc_chi_d_atomic", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_atomic(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_atomic"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_atomic_predict", timeout_time=20, timeout_unit="ms")
-async def tb_atomic_predict(dut) -> None:
+@cocotb.test(name="tc_chi_d_atomic_predict", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_atomic_predict(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_atomic_predict"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_atomic_variants", timeout_time=20, timeout_unit="ms")
-async def tb_atomic_variants(dut) -> None:
+@cocotb.test(name="tc_chi_d_atomic_variants", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_atomic_variants(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_atomic_variants"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_credit_starvation", timeout_time=20, timeout_unit="ms")
-async def tb_credit_starvation(dut) -> None:
+@cocotb.test(name="tc_chi_d_credit_starvation", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_credit_starvation(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_credit_starvation"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_decerr_smoke", timeout_time=20, timeout_unit="ms")
-async def tb_decerr_smoke(dut) -> None:
+@cocotb.test(name="tc_chi_d_decerr_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_decerr_smoke(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_decerr_smoke"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_derr_smoke", timeout_time=20, timeout_unit="ms")
-async def tb_derr_smoke(dut) -> None:
+@cocotb.test(name="tc_chi_d_derr_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_derr_smoke(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_derr_smoke"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_atomic", timeout_time=20, timeout_unit="ms")
-async def tb_hni_atomic(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_atomic", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_atomic(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_atomic"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_backpressure", timeout_time=20, timeout_unit="ms")
-async def tb_hni_backpressure(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_backpressure", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_backpressure(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_backpressure"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_decerr", timeout_time=20, timeout_unit="ms")
-async def tb_hni_decerr(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_decerr", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_decerr(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_decerr"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_fanin", timeout_time=20, timeout_unit="ms")
-async def tb_hni_fanin(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_fanin", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_fanin(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_fanin"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_passthrough", timeout_time=20, timeout_unit="ms")
-async def tb_hni_passthrough(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_passthrough", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_passthrough(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_passthrough"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_persist", timeout_time=20, timeout_unit="ms")
-async def tb_hni_persist(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_persist", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_persist(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_persist"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_qos", timeout_time=20, timeout_unit="ms")
-async def tb_hni_qos(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_qos", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_qos(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_qos"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_reset", timeout_time=20, timeout_unit="ms")
-async def tb_hni_reset(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_reset", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_reset(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_reset"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_sam", timeout_time=20, timeout_unit="ms")
-async def tb_hni_sam(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_sam", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_sam(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_sam"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_split_write_rsp", timeout_time=20, timeout_unit="ms")
-async def tb_hni_split_write_rsp(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_split_write_rsp", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_split_write_rsp(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_split_write_rsp"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_hni_xbar", timeout_time=20, timeout_unit="ms")
-async def tb_hni_xbar(dut) -> None:
+@cocotb.test(name="tc_chi_d_hni_xbar", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_hni_xbar(dut) -> None:
   """Run this public testcase through the CHI-D HN-I topology."""
   test_name = "tc_chi_d_hni_xbar"
   await _run_d_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_link_reactivation", timeout_time=20, timeout_unit="ms")
-async def tb_link_reactivation(dut) -> None:
+@cocotb.test(name="tc_chi_d_link_reactivation", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_link_reactivation(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_link_reactivation"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_atomic", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_atomic(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_atomic", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_atomic(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_atomic"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_compack", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_compack(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_compack", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_compack(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_compack"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_concurrent", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_concurrent(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_concurrent", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_concurrent(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_concurrent"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_mixed", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_mixed(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_mixed", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_mixed(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_mixed"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_ordered", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_ordered(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_ordered", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_ordered(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_ordered"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_ordered_read", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_ordered_read(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_ordered_read", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_ordered_read(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_ordered_read"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_partial", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_partial(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_partial", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_partial(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_partial"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_persist", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_persist(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_persist", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_persist(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_persist"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_retry", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_retry(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_retry", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_retry(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_retry"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_split", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_split(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_split", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_split(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_split"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_multi_outstanding_write", timeout_time=20, timeout_unit="ms")
-async def tb_multi_outstanding_write(dut) -> None:
+@cocotb.test(name="tc_chi_d_multi_outstanding_write", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_multi_outstanding_write(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_multi_outstanding_write"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_ordered_read", timeout_time=20, timeout_unit="ms")
-async def tb_ordered_read(dut) -> None:
+@cocotb.test(name="tc_chi_d_ordered_read", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_ordered_read(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_ordered_read"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_ordered_write", timeout_time=20, timeout_unit="ms")
-async def tb_ordered_write(dut) -> None:
+@cocotb.test(name="tc_chi_d_ordered_write", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_ordered_write(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_ordered_write"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_perf_smoke", timeout_time=20, timeout_unit="ms")
-async def tb_perf_smoke(dut) -> None:
+@cocotb.test(name="tc_chi_d_perf_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_perf_smoke(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_perf_smoke"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_prefetch_tgt", timeout_time=20, timeout_unit="ms")
-async def tb_prefetch_tgt(dut) -> None:
+@cocotb.test(name="tc_chi_d_prefetch_tgt", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_prefetch_tgt(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_prefetch_tgt"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_qos_echo", timeout_time=20, timeout_unit="ms")
-async def tb_qos_echo(dut) -> None:
+@cocotb.test(name="tc_chi_d_qos_echo", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_qos_echo(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_qos_echo"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_raw_inject", timeout_time=20, timeout_unit="ms")
-async def tb_raw_inject(dut) -> None:
+@cocotb.test(name="tc_chi_d_raw_inject", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_raw_inject(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_raw_inject"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_read_smoke", timeout_time=20, timeout_unit="ms")
-async def tb_read_smoke(dut) -> None:
+@cocotb.test(name="tc_chi_d_read_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_read_smoke(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_read_smoke"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_reset", timeout_time=20, timeout_unit="ms")
-async def tb_reset(dut) -> None:
+@cocotb.test(name="tc_chi_d_reset", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_reset(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_reset"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_retry", timeout_time=20, timeout_unit="ms")
-async def tb_retry(dut) -> None:
+@cocotb.test(name="tc_chi_d_retry", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_retry(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_retry"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_scoreboard_negctl", timeout_time=20, timeout_unit="ms")
-async def tb_scoreboard_negctl(dut) -> None:
+@cocotb.test(name="tc_chi_d_scoreboard_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_scoreboard_negctl(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_scoreboard_negctl"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_split_write_rsp", timeout_time=20, timeout_unit="ms")
-async def tb_split_write_rsp(dut) -> None:
+@cocotb.test(name="tc_chi_d_split_write_rsp", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_split_write_rsp(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_split_write_rsp"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_write_partial_smoke", timeout_time=20, timeout_unit="ms")
-async def tb_write_partial_smoke(dut) -> None:
+@cocotb.test(name="tc_chi_d_write_partial_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_write_partial_smoke(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_write_partial_smoke"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_write_read_smoke", timeout_time=20, timeout_unit="ms")
-async def tb_write_read_smoke(dut) -> None:
+@cocotb.test(name="tc_chi_d_write_read_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_write_read_smoke(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_write_read_smoke"
   await _run_d_link(dut, test_name)
 
 
-@cocotb.test(name="tb_e_dat_smoke", timeout_time=20, timeout_unit="ms")
-async def tb_e_dat_smoke(dut) -> None:
+@cocotb.test(name="tc_chi_e_dat_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_dat_smoke(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_dat_smoke"
   await _run_e_link(dut, test_name)
 
 
-@cocotb.test(name="tb_e_dbid_resp_ord", timeout_time=20, timeout_unit="ms")
-async def tb_e_dbid_resp_ord(dut) -> None:
+@cocotb.test(name="tc_chi_e_dbid_resp_ord", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_dbid_resp_ord(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_dbid_resp_ord"
   await _run_e_link(dut, test_name)
 
 
-@cocotb.test(name="tb_e_hni_passthrough", timeout_time=20, timeout_unit="ms")
-async def tb_e_hni_passthrough(dut) -> None:
+@cocotb.test(name="tc_chi_e_hni_passthrough", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_hni_passthrough(dut) -> None:
   """Run this public testcase through the CHI-E HN-I topology."""
   test_name = "tc_chi_e_hni_passthrough"
   await _run_e_hni(dut, test_name)
 
 
-@cocotb.test(name="tb_e_mte", timeout_time=20, timeout_unit="ms")
-async def tb_e_mte(dut) -> None:
+@cocotb.test(name="tc_chi_e_mte", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_mte(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_mte"
   await _run_e_link(dut, test_name)
 
 
-@cocotb.test(name="tb_e_multi_outstanding_persist_sep", timeout_time=20, timeout_unit="ms")
-async def tb_e_multi_outstanding_persist_sep(dut) -> None:
+@cocotb.test(name="tc_chi_e_multi_outstanding_persist_sep", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_multi_outstanding_persist_sep(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_multi_outstanding_persist_sep"
   await _run_e_link(dut, test_name)
 
 
-@cocotb.test(name="tb_e_persist", timeout_time=20, timeout_unit="ms")
-async def tb_e_persist(dut) -> None:
+@cocotb.test(name="tc_chi_e_persist", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_persist(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_persist"
   await _run_e_link(dut, test_name)
 
 
-@cocotb.test(name="tb_e_req_smoke", timeout_time=20, timeout_unit="ms")
-async def tb_e_req_smoke(dut) -> None:
+@cocotb.test(name="tc_chi_e_req_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_req_smoke(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_req_smoke"
   await _run_e_link(dut, test_name)
 
 
-@cocotb.test(name="tb_e_sep_read", timeout_time=20, timeout_unit="ms")
-async def tb_e_sep_read(dut) -> None:
+@cocotb.test(name="tc_chi_e_sep_read", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_sep_read(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_sep_read"
   await _run_e_link(dut, test_name)
 
 
-@cocotb.test(name="tb_e_signal_drivability", timeout_time=20, timeout_unit="ms")
-async def tb_e_signal_drivability(dut) -> None:
+@cocotb.test(name="tc_chi_e_signal_drivability", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_signal_drivability(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_signal_drivability"
   await _run_e_link(dut, test_name)
 
 
-@cocotb.test(name="tb_e_snf_dat_smoke", timeout_time=20, timeout_unit="ms")
-async def tb_e_snf_dat_smoke(dut) -> None:
+@cocotb.test(name="tc_chi_e_snf_dat_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_snf_dat_smoke(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_snf_dat_smoke"
   await _run_e_link(dut, test_name)
 
 
-@cocotb.test(name="tb_e_write_zero_readback", timeout_time=20, timeout_unit="ms")
-async def tb_e_write_zero_readback(dut) -> None:
+@cocotb.test(name="tc_chi_e_write_zero_readback", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_write_zero_readback(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_write_zero_readback"
   await _run_e_link(dut, test_name)

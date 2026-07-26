@@ -43,9 +43,9 @@ py/vip_chi_agent_example_py.core
 
 `vip_chi_hdl_top.sv` exposes all flat-net endpoint groups with unique prefixes.
 `vip_chi_tb_top.py` creates the matching `ChiBus` objects, publishes them
-through pyUVM `ConfigDB`, and contains one static cocotb wrapper per public
-`tc_*.py` testcase. The public command-line name is always the `tc_*` name;
-internal cocotb wrapper names such as `tb_read_smoke` are not user-facing.
+through pyUVM `ConfigDB`, and contains one static cocotb test entry per public
+`tc_*.py` testcase. The cocotb test name, command-line name, testcase file, and
+pyUVM test class all use the same public `tc_*` name.
 
 Run it from `testbench/py`:
 
@@ -57,8 +57,8 @@ Run it from `testbench/py`:
 
 The script uses FuseSoC for the Verilator build/run commands. FuseSoC does not
 provide a project-aware `--all` switch, so the script discovers the static
-cocotb wrappers in `vip_chi_tb_top.py`, maps them back to public `tc_*` names,
-and runs one simulator process per testcase.
+cocotb tests in `vip_chi_tb_top.py` by their public `tc_*` names and runs one
+simulator process per testcase.
 
 The three building-block smokes below (`tc_chi_cfg_item_smoke`,
 `tc_chi_item_smoke`, `tc_chi_base_seq_smoke`) are SV-only with no Python port.
