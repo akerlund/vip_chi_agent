@@ -1,0 +1,45 @@
+CAPI=2:
+name: "akerlund::vip_chi_agent_example_py:0"
+description: "CHI agent example - pyUVM/cocotb flow (Verilator)"
+
+filesets:
+  tb:
+    files:
+      - ../../sv/vip_chi_types_pkg.sv
+      - tb/vip_chi_hdl_top.sv
+    file_type: systemVerilogSource
+
+targets:
+  default: &default
+    flow: sim
+    flow_options:
+      tool: verilator
+    filesets:
+      - tb
+    toplevel: vip_chi_hdl_top
+
+  lint:
+    <<: *default
+    flow: lint
+    flow_options:
+      tool: verilator
+      verilator_options:
+        - -Wno-fatal
+        - -Wno-WIDTH
+        - -Wno-UNOPTFLAT
+        - -Wno-UNDRIVEN
+        - -Wno-UNUSEDSIGNAL
+
+  sim:
+    <<: *default
+    flow_options:
+      tool: verilator
+      cocotb_module: vip_chi_tb_top
+      mode: cc
+      verilator_options:
+        - --public-flat-rw
+        - -Wno-fatal
+        - -Wno-WIDTH
+        - -Wno-UNOPTFLAT
+        - -Wno-UNDRIVEN
+        - -Wno-UNUSEDSIGNAL
