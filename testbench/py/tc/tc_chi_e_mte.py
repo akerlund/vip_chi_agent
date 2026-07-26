@@ -5,20 +5,20 @@
 # RN-I/SN-F path, then read it back and verify the SN-F auto-read CompData replays
 # the same DAT tag metadata and data -- i.e. the SN-F stores and returns the MTE
 # tags alongside the data.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import Role, DatOpcode, RspOpcode
-from vip_chi_e_base_test import vip_chi_e_base_test
-from vip_chi_tb_pkg import (
+from chi_e_base_test import chi_e_base_test
+from chi_tb_pkg import (
   E_MTE_ADDR_C, E_MTE_RNI_NODE_ID_C, E_MTE_SNF_NODE_ID_C,
   E_MTE_WRITE_DATA_C, E_MTE_WRITE_TAGOP_C, E_MTE_WRITE_TAG_C, E_MTE_WRITE_TU_C,
 )
 
 
-class tc_chi_e_mte(vip_chi_e_base_test):
+class tc_chi_e_mte(chi_e_base_test):
 
   async def _get_snf_compdata(self):
     # Ignore write-side DAT observations; return the SN-F read CompData item.

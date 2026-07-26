@@ -9,19 +9,19 @@
 # several write-then-read pairs through the proxy while the SN-facing links are
 # credit-starved: the proxy must serialize its forwarding against the trickle of
 # SN credits yet still relay every transaction end-to-end with its payload intact.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import RspOpcode, DataType
-from vip_chi_hni_base_test import vip_chi_hni_base_test
-from vip_chi_tb_pkg import WRITE_READ_ADDR_C
+from chi_hni_base_test import chi_hni_base_test
+from chi_tb_pkg import WRITE_READ_ADDR_C
 
 N_TXNS_C = 3
 
 
-class tc_chi_d_hni_backpressure(vip_chi_hni_base_test):
+class tc_chi_d_hni_backpressure(chi_hni_base_test):
 
   def configure(self):
     # Runtime credit-hold is RN-I only; the SN-F driver seeds its advertised

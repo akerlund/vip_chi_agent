@@ -5,17 +5,17 @@
 # likelyshared, endian, group_id_ext, tagop, plus the common src/tgt/lpid/qos);
 # the monitor must observe every one of them on the REQ, and the SN-F completes
 # with Comp.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import ReqOpcode, RspOpcode
-from vip_chi_e_base_test import vip_chi_e_base_test
+from chi_e_base_test import chi_e_base_test
 from vip_chi_write_zero_seq import vip_chi_write_zero_seq
 
 
-class tc_chi_e_req_smoke(vip_chi_e_base_test):
+class tc_chi_e_req_smoke(chi_e_base_test):
 
   async def run_phase(self):
     self.raise_objection()

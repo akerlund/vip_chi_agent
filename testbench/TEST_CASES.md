@@ -8,7 +8,7 @@ payloads. This catalog is the authoritative list.
 
 Most coherent scenarios run at both CHI-D and wide CHI-E from a single
 parameterized body: `vip_chi_<scenario>_base_test #(CFG_P, TYPES_T)` extends the
-parameterized `vip_chi_coherent_base_test`, and each runnable name lives in its
+parameterized `chi_coherent_base_test`, and each runnable name lives in its
 own file (one class per file): `tc_chi_coh_d_<x>.sv` fixes CHI_D_CFG_C /
 chi_d_types_t and `tc_chi_coh_e_<x>.sv` fixes CHI_E_WIDE_CFG_C /
 chi_e_wide_types_t. Both names run independently; there is no separate
@@ -36,13 +36,13 @@ The Python port (`py/`) uses one Verilator HDL shell and one Python
 testbench top:
 
 ```text
-py/tb/vip_chi_hdl_top.sv
-py/tb/vip_chi_tb_top.py
+py/tb/chi_hdl_top.sv
+py/tb/chi_tb_top.py
 py/vip_chi_agent_example_py.core
 ```
 
-`vip_chi_hdl_top.sv` exposes all flat-net endpoint groups with unique prefixes.
-`vip_chi_tb_top.py` creates the matching `ChiBus` objects, publishes them
+`chi_hdl_top.sv` exposes all flat-net endpoint groups with unique prefixes.
+`chi_tb_top.py` creates the matching `ChiBus` objects, publishes them
 through pyUVM `ConfigDB`, and contains one static cocotb test entry per public
 `tc_*.py` testcase. The cocotb test name, command-line name, testcase file, and
 pyUVM test class all use the same public `tc_*` name.
@@ -57,7 +57,7 @@ Run it from `testbench/py`:
 
 The script uses FuseSoC for the Verilator build/run commands. FuseSoC does not
 provide a project-aware `--all` switch, so the script discovers the static
-cocotb tests in `vip_chi_tb_top.py` by their public `tc_*` names and runs one
+cocotb tests in `chi_tb_top.py` by their public `tc_*` names and runs one
 simulator process per testcase.
 
 The three building-block smokes below (`tc_chi_cfg_item_smoke`,
@@ -159,7 +159,7 @@ request — i.e. the proxy relayed rather than short-circuited.
 
 ## Coherent subsystem (RN-F / HN-F / SNP)
 
-The coherent env (`vip_chi_coherent_tb_env`) drives two RN-F requesters against a
+The coherent env (`chi_coherent_tb_env`) drives two RN-F requesters against a
 single multi-port HN-F home node, which terminates to its own `vip_mem` and owns a
 per-line directory. Coherent reads (`ReadShared`/`ReadClean`/`ReadUnique`) that hit
 another holder make the HN-F originate snoops on the SNP channel; each RN-F answers

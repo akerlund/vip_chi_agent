@@ -5,7 +5,7 @@
 # disjoint region) CONCURRENTLY on the same sequencer. Proves the mixed loop
 # keeps a read and a write in flight at the same instant
 # (observed_peak_mixed_inflight > 1) while returning the seeded read data intact.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 import cocotb
 
 from vip_chi_types_pkg import RspOpcode, DatOpcode
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 
 N_C = 6
 READ_ADDR_C = 0x2800_0000
@@ -22,7 +22,7 @@ SIZE_C = 6
 SETTLE_C = 20
 
 
-class tc_chi_d_multi_outstanding_concurrent(vip_chi_base_test):
+class tc_chi_d_multi_outstanding_concurrent(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     rni_cfg.multi_outstanding = True

@@ -4,19 +4,19 @@
 # CHI-E ordered WriteNoSnpFull with ExpCompAck against a split-write SN-F that
 # has ordered_dbid_resp enabled: the grant is DBIDRespOrd, followed by the
 # deferred Comp and the RN-I CompAck. Write data is NCBWrDataCompAck.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import Role, DataType, ReqOrder, RspOpcode, DatOpcode
-from vip_chi_e_base_test import vip_chi_e_base_test
-from vip_chi_tb_pkg import (
+from chi_e_base_test import chi_e_base_test
+from chi_tb_pkg import (
   E_DBID_RESP_ORD_ADDR_C, E_DBID_RESP_ORD_RNI_NODE_ID_C, E_DBID_RESP_ORD_SNF_NODE_ID_C,
 )
 
 
-class tc_chi_e_dbid_resp_ord(vip_chi_e_base_test):
+class tc_chi_e_dbid_resp_ord(chi_e_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     snf_cfg.split_write_rsp = True

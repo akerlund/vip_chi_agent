@@ -5,17 +5,17 @@
 # transactions end-to-end (RN-I -> HN-I -> SN-F): the RN-I sees correct
 # completions, the SN-F (on the far side of the proxy) actually observed the
 # forwarded requests, and the readback payload beat count matches.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import ReqOpcode, RspOpcode, DatOpcode, DataType
-from vip_chi_hni_base_test import vip_chi_hni_base_test
-from vip_chi_tb_pkg import WRITE_READ_ADDR_C
+from chi_hni_base_test import chi_hni_base_test
+from chi_tb_pkg import WRITE_READ_ADDR_C
 
 
-class tc_chi_d_hni_passthrough(vip_chi_hni_base_test):
+class tc_chi_d_hni_passthrough(chi_hni_base_test):
 
   async def run_phase(self):
     self.raise_objection()

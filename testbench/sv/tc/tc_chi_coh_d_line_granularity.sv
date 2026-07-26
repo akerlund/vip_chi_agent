@@ -19,7 +19,7 @@
 // probe would be vacuous. No CHI-E variant exists, so this stays one concrete
 // test class (no shared base).
 // ===========================================================================
-class tc_chi_coh_d_line_granularity extends vip_chi_coherent_base_test #(CHI_D_CFG_C, chi_d_types_t);
+class tc_chi_coh_d_line_granularity extends chi_coherent_base_test #(CHI_D_CFG_C, chi_d_types_t);
 
   typedef vip_chi_item #(CHI_D_CFG_C) item_t;
 

@@ -1,4 +1,4 @@
-class tc_chi_e_mte extends vip_chi_e_base_test;
+class tc_chi_e_mte extends chi_e_base_test;
 
   typedef vip_chi_item #(CHI_E_WIDE_CFG_C) item_t;
 

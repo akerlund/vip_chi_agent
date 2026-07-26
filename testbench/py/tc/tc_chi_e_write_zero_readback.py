@@ -3,20 +3,20 @@
 #
 # Seed a non-zero line (ONES), confirm the readback is non-zero, then a
 # WriteNoSnpZero over the same range and confirm the readback is all zeros.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import DataType, RspOpcode, chi_xfer_dat_beats
-from vip_chi_e_base_test import vip_chi_e_base_test
+from chi_e_base_test import chi_e_base_test
 from vip_chi_write_zero_seq import vip_chi_write_zero_seq
-from vip_chi_tb_pkg import E_WRITE_ZERO_ADDR_C
+from chi_tb_pkg import E_WRITE_ZERO_ADDR_C
 
 SIZE_C = 6
 
 
-class tc_chi_e_write_zero_readback(vip_chi_e_base_test):
+class tc_chi_e_write_zero_readback(chi_e_base_test):
 
   async def run_phase(self):
     self.raise_objection()

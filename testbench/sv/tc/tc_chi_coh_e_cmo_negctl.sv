@@ -13,13 +13,13 @@
 // error is caught + demoted. Proves MakeReadUnique is tracked by the same
 // single-writer check as ReadUnique, at CHI-E flit width.
 // ===========================================================================
-class tc_chi_coh_e_cmo_negctl extends vip_chi_coherent_e_base_test;
+class tc_chi_coh_e_cmo_negctl extends chi_coherent_e_base_test;
 
   typedef vip_chi_item #(CHI_E_WIDE_CFG_C) item_t;
 
   `uvm_component_utils(tc_chi_coh_e_cmo_negctl)
 
-  vip_chi_coherency_negctl_catcher        coh_catcher;
+  chi_coherency_negctl_catcher        coh_catcher;
   vip_chi_makereadunique_seq #(CHI_E_WIDE_CFG_C) hrnf1_mru_seq;
 
   function new(input string name, input uvm_component parent = null);

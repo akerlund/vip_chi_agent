@@ -12,7 +12,7 @@
 //   * every write -- including the re-issued one -- commits (read-back matches).
 // The read-back compares against the captured write payloads, so it holds for any
 // data and any completion ordering.
-class tc_chi_d_multi_outstanding_retry extends vip_chi_base_test;
+class tc_chi_d_multi_outstanding_retry extends chi_base_test;
 
   `uvm_component_utils(tc_chi_d_multi_outstanding_retry)
 

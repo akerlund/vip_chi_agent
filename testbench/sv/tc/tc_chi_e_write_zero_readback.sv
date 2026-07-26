@@ -1,10 +1,10 @@
-class tc_chi_e_write_zero_readback extends vip_chi_e_base_test;
+class tc_chi_e_write_zero_readback extends chi_e_base_test;
 
   typedef vip_chi_item #(CHI_E_WIDE_CFG_C) item_t;
 
   `uvm_component_utils(tc_chi_e_write_zero_readback)
 
-  // Address lives at package scope (vip_chi_tb_pkg::E_WRITE_ZERO_ADDR_C): a
+  // Address lives at package scope (chi_tb_pkg::E_WRITE_ZERO_ADDR_C): a
   // class-scoped `localparam item_t::addr_t` at CHI-E width hangs vcs1fe codegen.
   localparam bit [2:0] SIZE_C = 3'd6;
 

@@ -6,7 +6,7 @@ filesets:
   tb:
     files:
       - ../../sv/vip_chi_types_pkg.sv
-      - tb/vip_chi_hdl_top.sv
+      - tb/chi_hdl_top.sv
     file_type: systemVerilogSource
 
 targets:
@@ -16,7 +16,7 @@ targets:
       tool: verilator
     filesets:
       - tb
-    toplevel: vip_chi_hdl_top
+    toplevel: chi_hdl_top
 
   lint:
     <<: *default
@@ -34,7 +34,7 @@ targets:
     <<: *default
     flow_options:
       tool: verilator
-      cocotb_module: vip_chi_tb_top
+      cocotb_module: chi_tb_top
       mode: cc
       verilator_options:
         - --public-flat-rw

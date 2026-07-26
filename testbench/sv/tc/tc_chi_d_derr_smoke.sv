@@ -1,4 +1,4 @@
-class tc_chi_d_derr_smoke extends vip_chi_base_test;
+class tc_chi_d_derr_smoke extends chi_base_test;
 
   `uvm_component_utils(tc_chi_d_derr_smoke)
 

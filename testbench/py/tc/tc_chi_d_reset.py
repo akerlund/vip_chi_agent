@@ -6,7 +6,7 @@
 # down cleanly (the stalled sequence unwinds) and restarts -- a fresh read relays
 # end-to-end afterwards. rni/snf DAT credit pools are held at one apiece so the
 # stalled read parks deterministically.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
@@ -14,12 +14,12 @@ from __future__ import annotations
 import cocotb
 
 from vip_chi_types_pkg import Role, clog2
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 from vip_chi_read_seq import vip_chi_read_seq
-from vip_chi_tb_pkg import READ_ADDR_C
+from chi_tb_pkg import READ_ADDR_C
 
 
-class tc_chi_d_reset(vip_chi_base_test):
+class tc_chi_d_reset(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     # SN-F DAT send progress is limited by RN-I's advertised DAT credits, so keep

@@ -67,8 +67,8 @@ Implemented and passing (baseline, still current):
   link activation instead of pre-seeding local availability.
 - First-cut `vip_chi_coverage` and `vip_chi_sva`; item `do_copy`/`do_compare`/
   `convert2string`; base-seq attribute stamping pinned through `randomize()`.
-- Explicit harness-mode selection via `vip_chi_tb_config.tb_mode`, owned by
-  `vip_chi_base_test` and consumed by `vip_chi_tb_top` (RN-I loopback /
+- Explicit harness-mode selection via `chi_tb_config.tb_mode`, owned by
+  `chi_base_test` and consumed by `chi_tb_top` (RN-I loopback /
   manual SN-F / autonomous SN-F), so the top stays structural and does not
   parse `+UVM_TESTNAME`.
 
@@ -1086,7 +1086,7 @@ allocator.
                                       monitor, coverage, driver_rni/snf[/hni], agent,
                                       seq_lib/*)
 5. vip_chi_sva                       (after vip_chi_if)
-6. testbench/sv/tb/tb.svh        (tb pkg + tc pkg + vip_chi_tb_top)
+6. testbench/sv/tb/tb.svh        (tb pkg + tc pkg + chi_tb_top)
 ```
 
 ---
@@ -1134,15 +1134,15 @@ scoreboard observes nothing.
 
 **Landed (2026-07-14):** the *runtime* CHI-E HN-I routed test now exists —
 `tc_chi_e_hni_passthrough` on a full 2×2 CHI-E proxy topology
-(`vip_chi_e_proxy_tb_env`, new `e_hni_*` interfaces + adapters in
-`vip_chi_tb_top`). The HN-I proxy driver is a pure per-flit relay, so it carries
+(`chi_e_proxy_tb_env`, new `e_hni_*` interfaces + adapters in
+`chi_tb_top`). The HN-I proxy driver is a pure per-flit relay, so it carries
 CHI-E flits with no `_e` subclass; the scoreboard predicts CHI-E routing + data.
 Reset-recovery (`tc_chi_hni_reset`) and SN-side backpressure
 (`tc_chi_hni_backpressure`) through the proxy also landed. *Build note:* a
 class-scoped `localparam` typed as a parameterized-class-nested type
 (`vip_chi_item #(CHI_E_WIDE_CFG_C)::addr_t`) hangs VCS `vcs1fe` codegen
 indefinitely at CHI-E width — keep such constants at package scope
-(`vip_chi_tb_pkg`), which is why every address constant lives there.
+(`chi_tb_pkg`), which is why every address constant lives there.
 
 ---
 
@@ -1220,7 +1220,7 @@ first is now prototyped:
 6. **Issue D/E:** the relay copies whole flit structs, so `vip_chi_hni_agent
    #(CHI_E_WIDE_CFG_C, …)` reuses the base `vip_chi_driver_hni` (no `_e` proxy
    variant). **Landed (2026-07-14):** a *runtime* CHI-E HN-I datapath now exists
-   — `tc_chi_e_hni_passthrough` on the 2×2 `vip_chi_e_proxy_tb_env`, relaying a
+   — `tc_chi_e_hni_passthrough` on the 2×2 `chi_e_proxy_tb_env`, relaying a
    wide-E write+read end-to-end with the scoreboard predicting CHI-E routing +
    data. E is now proven by routed simulation, not just construction. (The
    pre-existing `chi_e_wide_hni_if` elaboration anchor is retained for parity;
@@ -1416,7 +1416,7 @@ unaffected).
   grant/consume signals were **mispaired**: each counter fed itself the LCRDV the
   local node *emits* (`tx<chan>lcrdv`) alongside the flit the local node *sends*
   (`tx<chan>flitv`) — but on a CHI channel the flit and its credit travel in
-  opposite directions (see `vip_chi_link_adapter`: `rn.rxreqlcrdv = sn.txreqlcrdv`
+  opposite directions (see `chi_link_adapter`: `rn.rxreqlcrdv = sn.txreqlcrdv`
   while `sn.rxreqflitv = rn.txreqflitv`). A `tx<chan>flitv` send is authorized by
   the inbound `rx<chan>lcrdv`; `tx<chan>lcrdv` authorizes the peer's
   `rx<chan>flitv`. Re-pairing all six counters (`grant = rx<chan>lcrdv` for tx

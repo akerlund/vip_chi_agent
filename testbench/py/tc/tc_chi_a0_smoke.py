@@ -19,7 +19,7 @@
 #      drives it, and the SN-F samples + unpacks it on its rx and gets exactly
 #      the same fields back. Proves codec + ChiBus + link wiring together.
 #
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 import cocotb
@@ -28,7 +28,7 @@ from cocotb.clock import Clock
 from vip_chi_types_pkg import ChiCfg, Issue, Role, ReqOpcode, pack, unpack
 from vip_chi_if import ChiBus, CHANNELS
 
-# Must match the A0_CFG geometry in tb/vip_chi_hdl_top.sv.
+# Must match the A0_CFG geometry in tb/chi_hdl_top.sv.
 A0_CFG = ChiCfg(issue=Issue.D, node_id_width=7, addr_width=44, data_bytes=32)
 
 

@@ -7,16 +7,16 @@
 # time source ticked: read/write completion counts, per-class latency sums, and
 # the cycle counter must all be non-zero. This proves the perf component is wired
 # to the monitor stream and its clock loop is running.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import DataType
-from vip_chi_base_test import vip_chi_base_test, WRITE_READ_ADDR_C
+from chi_base_test import chi_base_test, WRITE_READ_ADDR_C
 
 
-class tc_chi_d_perf_smoke(vip_chi_base_test):
+class tc_chi_d_perf_smoke(chi_base_test):
 
   # Perf counters default on; make the dependency explicit for this test.
   def configure_tb_cfg(self):

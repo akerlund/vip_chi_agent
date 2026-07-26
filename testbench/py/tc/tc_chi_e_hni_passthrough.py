@@ -6,17 +6,17 @@
 # observed the forwarded requests, and the readback payload matches. At
 # CHI_E_WIDE_CFG (DATA_BYTES = 64) a Size-6 (64 B) access is a single wide DAT
 # beat, so the CompData carries exactly one beat.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import ReqOpcode, RspOpcode, DatOpcode, DataType
-from vip_chi_e_hni_base_test import vip_chi_e_hni_base_test
-from vip_chi_tb_pkg import E_HNI_WRITE_READ_ADDR_C
+from chi_e_hni_base_test import chi_e_hni_base_test
+from chi_tb_pkg import E_HNI_WRITE_READ_ADDR_C
 
 
-class tc_chi_e_hni_passthrough(vip_chi_e_hni_base_test):
+class tc_chi_e_hni_passthrough(chi_e_hni_base_test):
 
   async def run_phase(self):
     self.raise_objection()

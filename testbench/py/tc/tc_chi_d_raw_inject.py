@@ -5,20 +5,20 @@
 # the SN-F, then verify the monitors observe the exact flit fields -- proving the
 # raw_override path drives arbitrary bit patterns byte-for-byte, bypassing the
 # item generator and legality checks.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import DatOpcode, RspOpcode, Resp, RespErr, mask
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 from vip_chi_raw_seq import vip_chi_raw_seq
-from vip_chi_tb_pkg import RNI_NODE_ID_C, SNF_NODE_ID_C
+from chi_tb_pkg import RNI_NODE_ID_C, SNF_NODE_ID_C
 
 NON_SECURE_C = 1
 
 
-class tc_chi_d_raw_inject(vip_chi_base_test):
+class tc_chi_d_raw_inject(chi_base_test):
 
   # The raw DAT/RSP flits are deliberately injected with no matching outstanding
   # request, so the always-on scoreboard would (correctly) flag them as orphans.

@@ -3,14 +3,14 @@
 #
 # WriteNoSnpPtl with a byte-enable mask then a readback: the SN-F commits only
 # the enabled bytes, so the read returns the byte-masked payload.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import Role, ReqOpcode, RspOpcode, DatOpcode
-from vip_chi_base_test import vip_chi_base_test
-from vip_chi_tb_pkg import WRITE_ADDR_C
+from chi_base_test import chi_base_test
+from chi_tb_pkg import WRITE_ADDR_C
 
 WRITE_DATA = 0x0011_2233_4455_6677_8899_AABB_CCDD_EEFF
 WRITE_BE = 0b1111_0000_0011_0101
@@ -24,7 +24,7 @@ def _expected_partial(data, be, data_bytes):
   return result
 
 
-class tc_chi_d_write_partial_smoke(vip_chi_base_test):
+class tc_chi_d_write_partial_smoke(chi_base_test):
 
   async def run_phase(self):
     self.raise_objection()

@@ -4,7 +4,7 @@
 # Confirms the link handshake is active on both endpoints, drops to idle across a
 # reset pulse, re-asserts after reset release, and that a read completes normally
 # on the reactivated link.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ from cocotb.triggers import RisingEdge
 from pyuvm import ConfigDB
 
 from vip_chi_types_pkg import Role
-from vip_chi_base_test import vip_chi_base_test
-from vip_chi_tb_pkg import READ_ADDR_C
+from chi_base_test import chi_base_test
+from chi_tb_pkg import READ_ADDR_C
 
 
-class tc_chi_d_link_reactivation(vip_chi_base_test):
+class tc_chi_d_link_reactivation(chi_base_test):
 
   def _snf_bus(self):
     return ConfigDB().get(self, "", "snf_vif")

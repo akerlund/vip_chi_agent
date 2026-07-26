@@ -1,8 +1,8 @@
-class tc_chi_d_scoreboard_negctl extends vip_chi_base_test;
+class tc_chi_d_scoreboard_negctl extends chi_base_test;
 
   `uvm_component_utils(tc_chi_d_scoreboard_negctl)
 
-  vip_chi_scoreboard_negctl_catcher sb_catcher;
+  chi_scoreboard_negctl_catcher sb_catcher;
   vip_chi_raw_seq #(CHI_D_CFG_C)      snf_raw_seq;
 
   // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@
 # inject an SN-F separated-return CompData + Comp pair (manual injection) and
 # verify the responder-side DAT/RSP fields (dat_resp[er], tag/tu/tagop, fwd_state)
 # reach the wire.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
@@ -15,10 +15,10 @@ from __future__ import annotations
 from vip_chi_types_pkg import (
   Dir, Role, ReqOpcode, DatOpcode, RspOpcode, Resp, RespErr, ReqOrder, mask,
 )
-from vip_chi_e_base_test import vip_chi_e_base_test
+from chi_e_base_test import chi_e_base_test
 from vip_chi_pipelined_seq import vip_chi_pipelined_seq
 from vip_chi_item import vip_chi_item
-from vip_chi_tb_pkg import (
+from chi_tb_pkg import (
   E_DBID_RESP_ORD_ADDR_C, E_DBID_RESP_ORD_RNI_NODE_ID_C,
   E_DBID_RESP_ORD_SNF_NODE_ID_C, E_PERSIST_ADDR_C,
   E_PERSIST_RNI_NODE_ID_C, E_PERSIST_SNF_NODE_ID_C,
@@ -28,7 +28,7 @@ from vip_chi_tb_pkg import (
 NON_SECURE_C = 1
 
 
-class tc_chi_e_signal_drivability(vip_chi_e_base_test):
+class tc_chi_e_signal_drivability(chi_e_base_test):
 
   # SN-F flits are injected with no matching RN-I request, so the always-on
   # scoreboard would (correctly) flag them as orphans; disable it for this

@@ -5,13 +5,13 @@
 # RN-I must drive a CompAck back), then read them back. The SN-F waits for a
 # matching CompAck per write (txn_id + src/tgt); a missed CompAck stalls the SN-F
 # and the read-back fails, so passing proves the CompAck handshake overlapped.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import RspOpcode, DatOpcode
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 
 N_C = 6
 BASE_ADDR_C = 0x2C00_0000
@@ -19,7 +19,7 @@ SIZE_C = 6
 SETTLE_C = 20
 
 
-class tc_chi_d_multi_outstanding_compack(vip_chi_base_test):
+class tc_chi_d_multi_outstanding_compack(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     rni_cfg.multi_outstanding = True

@@ -46,7 +46,7 @@ class tc_chi_base_seq_smoke extends uvm_test;
     vip_chi_item                 #(CHI_E_WIDE_CFG_C) preview_item_e_dat;
     vip_chi_write_zero_seq       #(CHI_E_WIDE_CFG_C) write_zero_seq_e;
     vip_chi_write_zero_seq       #(CHI_D_WIDE_CFG_C) write_zero_seq_d;
-    vip_chi_write_zero_fatal_catcher                 write_zero_catcher;
+    chi_write_zero_fatal_catcher                 write_zero_catcher;
     vip_chi_pipelined_seq        #(CHI_D_WIDE_CFG_C) pipelined_seq;
 
     addr_t addr_list [];

@@ -8,27 +8,27 @@
 # does not, the scoreboard has silently gone vacuous and the test fails. The
 # deliberately-injected orphan error is demoted by a logging.Filter catcher so it
 # does not pollute the regression, exactly as the SV report-catcher does.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import Resp, RespErr, RspOpcode
-from vip_chi_base_test import vip_chi_base_test, WRITE_READ_ADDR_C
+from chi_base_test import chi_base_test, WRITE_READ_ADDR_C
 from vip_chi_raw_seq import vip_chi_raw_seq
-from vip_chi_scoreboard_negctl_catcher import vip_chi_scoreboard_negctl_catcher
-from vip_chi_tb_pkg import RNI_NODE_ID_C, SNF_NODE_ID_C
+from chi_scoreboard_negctl_catcher import chi_scoreboard_negctl_catcher
+from chi_tb_pkg import RNI_NODE_ID_C, SNF_NODE_ID_C
 
 ORPHAN_TXN_C = 0xF7
 
 
-class tc_chi_d_scoreboard_negctl(vip_chi_base_test):
+class tc_chi_d_scoreboard_negctl(chi_base_test):
 
   async def run_phase(self):
     self.raise_objection()
 
     scoreboard = self.tb_env.scoreboard
-    catcher = vip_chi_scoreboard_negctl_catcher("sb_orphan_catcher")
+    catcher = chi_scoreboard_negctl_catcher("sb_orphan_catcher")
     # Catch (and demote) the single orphan error the scoreboard is expected to
     # emit, so it does not count against the regression verdict.
     scoreboard.logger.addFilter(catcher)

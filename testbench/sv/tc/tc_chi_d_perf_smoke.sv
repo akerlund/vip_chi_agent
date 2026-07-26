@@ -9,7 +9,7 @@
 // component is wired to the monitor stream and its clock loop is running -- so a
 // future regression that silently disconnects it (or stalls its vif) is caught.
 // ===========================================================================
-class tc_chi_d_perf_smoke extends vip_chi_base_test;
+class tc_chi_d_perf_smoke extends chi_base_test;
 
   `uvm_component_utils(tc_chi_d_perf_smoke)
 

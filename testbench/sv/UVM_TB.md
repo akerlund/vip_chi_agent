@@ -1,13 +1,13 @@
 # vip_chi example — UVM testbench guide
 
 This document explains how the `vip_chi` example testbench is built and, in
-detail, how the structural top (`tb/vip_chi_tb_top.sv`) works. For the
+detail, how the structural top (`tb/chi_tb_top.sv`) works. For the
 per-testcase catalog see [../TEST_CASES.md](../TEST_CASES.md); for the
 quick-start / regression-runner notes see [README.md](README.md).
 
 The example is **DUT-less**. There is no design in the middle: the top provides
 the peer-side wiring that cross-connects two real UVM agents on each link
-(`RN↔SN`, or `RN↔HN↔SN`). Each link is a `vip_chi_link_adapter` instance (see
+(`RN↔SN`, or `RN↔HN↔SN`). Each link is a `chi_link_adapter` instance (see
 §3.5) — the top hosts interfaces and joins them; it never fabricates CHI
 traffic. All supported links co-exist in the build; a testcase selects a
 topology by driving the matching agents, and idle agents stay parked.
@@ -17,8 +17,8 @@ topology by driving the matching agents, and idle agents stay parked.
 ## 1. Component hierarchy
 
 ```text
-uvm_test_top : vip_chi_base_test (or vip_chi_e_base_test for the CHI-E tests)
-  └─ env : vip_chi_tb_env
+uvm_test_top : chi_base_test (or chi_e_base_test for the CHI-E tests)
+  └─ env : chi_tb_env
        ├─ rni_agent   : vip_chi_agent #(CHI_D_CFG_C, chi_d_types_t, RNI)   // integrated requester
        ├─ snf_agent   : vip_chi_agent #(CHI_D_CFG_C, chi_d_types_t, SNF)   // integrated responder
        ├─ hrni0_agent : vip_chi_agent #(CHI_D_CFG_C, chi_d_types_t, RNI)   // HN-I requester, port 0
@@ -27,7 +27,7 @@ uvm_test_top : vip_chi_base_test (or vip_chi_e_base_test for the CHI-E tests)
        ├─ hsnf1_agent : vip_chi_agent #(CHI_D_CFG_C, chi_d_types_t, SNF)   // HN-I responder, SN target 1
        ├─ hni_agent   : vip_chi_hni_agent #(CHI_D_CFG_C, chi_d_types_t, 2, 2)  // HN-I proxy (2 RN x 2 SN)
        ├─ coverage    : vip_chi_coverage #(CHI_D_CFG_C)
-       ├─ virtual_sequencer : vip_chi_virtual_sequencer  (rni / snf / hrni0 / hrni1 sequencer handles)
+       ├─ virtual_sequencer : chi_virtual_sequencer  (rni / snf / hrni0 / hrni1 sequencer handles)
        └─ per-channel uvm_tlm_analysis_fifos (rni_*, snf_*, hsnf0_req, hsnf1_req)
 ```
 
@@ -39,19 +39,19 @@ the agents of the topology it exercises; the rest sit idle.
 
 Ownership and lifecycle:
 
-- **`vip_chi_base_test`** owns the shared `vip_chi_tb_config` object, builds all
+- **`chi_base_test`** owns the shared `chi_tb_config` object, builds all
   agent cfgs as `UVM_ACTIVE`, publishes `tb_cfg` + per-agent cfgs through
   `uvm_config_db`, and exposes the hooks tests override:
   `configure_tb_cfg()`, `configure_agent_cfgs()`.
-- **`vip_chi_tb_env`** builds all agents, the coverage subscriber, the
+- **`chi_tb_env`** builds all agents, the coverage subscriber, the
   observation FIFOs, and the virtual sequencer, and connects monitor analysis
   ports into the FIFOs + coverage.
-- **`vip_chi_tb_top`** is structural only: it hosts the interfaces, binds SVA,
-  generates clock/reset, and joins the interfaces with `vip_chi_link_adapter`
+- **`chi_tb_top`** is structural only: it hosts the interfaces, binds SVA,
+  generates clock/reset, and joins the interfaces with `chi_link_adapter`
   instances.
 - The **CHI-E focused tests** (`tc_chi_e_*`, `tc_chi_e_mte`, `tc_chi_e_persist`,
-  `tc_chi_e_dbid_resp_ord`) all extend `vip_chi_e_base_test`, which builds
-  `vip_chi_e_tb_env` — a real RN-I **and** SN-F agent pair on the wide CHI-E
+  `tc_chi_e_dbid_resp_ord`) all extend `chi_e_base_test`, which builds
+  `chi_e_tb_env` — a real RN-I **and** SN-F agent pair on the wide CHI-E
   link (`chi_e_wide_rni_if ↔ chi_e_wide_snf_if`), joined by the `e_wide_link`
   adapter when `tb_cfg.run_e_wide_integrated` is set. There is no faked peer.
 
@@ -61,7 +61,7 @@ Ownership and lifecycle:
 
 There is no topology mux. Each topology has its own dedicated interfaces and
 agents, all present in every build, each link permanently wired by a static
-`vip_chi_link_adapter`. A test "selects" its topology purely by which agents it
+`chi_link_adapter`. A test "selects" its topology purely by which agents it
 drives sequences on; the others stay idle. This is why `tb_top` needs no mode
 decode and no wiring logic.
 
@@ -71,14 +71,14 @@ decode and no wiring logic.
 | HN-I pass-through | `hrni0_agent` → `hsnf0_agent` | `hni_rni0_if` ↔ `hni_rn0_if`, `hni_sn0_if` ↔ `hni_snf0_if` |
 | HN-I fan-in | `hrni0` + `hrni1` → `hsnf0` | + `hni_rni1_if` ↔ `hni_rn1_if` |
 | HN-I crossbar | `hrni0` + `hrni1` → `hsnf0` + `hsnf1` | + `hni_sn1_if` ↔ `hni_snf1_if` (proxy address-decodes) |
-| CHI-E | `vip_chi_e_tb_env` RN-I → SN-F | `chi_e_wide_rni_if` ↔ `chi_e_wide_snf_if` |
+| CHI-E | `chi_e_tb_env` RN-I → SN-F | `chi_e_wide_rni_if` ↔ `chi_e_wide_snf_if` |
 
 Every link always has two real agents on it — there are no synthetic-peer modes.
 Testing one agent in isolation is done with a real peer plus directed stimulus,
 not by faking the peer in the top.
 
 The wide CHI-E link's `e_wide_link` adapter is the only one gated (by the `tb_cfg`
-`run_e_wide_integrated` flag every `vip_chi_e_base_test` sets), so the CHI-E
+`run_e_wide_integrated` flag every `chi_e_base_test` sets), so the CHI-E
 interfaces stay parked at idle during CHI-D tests. `tc_chi_e_mte`, `tc_chi_e_persist`,
 `tc_chi_e_dbid_resp_ord`, and the `tc_chi_e_*` smokes run on it.
 
@@ -87,9 +87,9 @@ agents a test drives sequences on.
 
 ---
 
-## 3. `vip_chi_tb_top` in detail
+## 3. `chi_tb_top` in detail
 
-The top is almost entirely interface instances plus one `vip_chi_link_adapter`
+The top is almost entirely interface instances plus one `chi_link_adapter`
 per link. The only other content is clock/reset generation and the `config_db`
 handoff — no topology mux, no mode decode, no fabricated traffic, no credit or
 SVA-enable logic.
@@ -131,8 +131,8 @@ The wide CHI-E datapath (`CHI_E_WIDE_CFG_C`, `chi_e_wide_types_t`):
 
 | Instance | Role | Used by |
 | --- | --- | --- |
-| `chi_e_wide_rni_if` | RN-I | `vip_chi_e_tb_env.rni_agent` |
-| `chi_e_wide_snf_if` | SN-F | `vip_chi_e_tb_env.snf_agent` |
+| `chi_e_wide_rni_if` | RN-I | `chi_e_tb_env.rni_agent` |
+| `chi_e_wide_snf_if` | SN-F | `chi_e_tb_env.snf_agent` |
 
 Compile-coverage anchors (never carry executable traffic — they only force the
 interface to elaborate at wider flit shapes so parameterization breakage is
@@ -152,7 +152,7 @@ stays low (x-safe) and idle/unused interfaces raise no spurious assertions.
 
 ### 3.4 Links (static adapters)
 
-Every link is a **`vip_chi_link_adapter`** instance — a small module that
+Every link is a **`chi_link_adapter`** instance — a small module that
 cross-wires a requester-polarity endpoint's `tx*` onto a completer-polarity
 endpoint's `rx*` and vice-versa. Because each topology owns dedicated interfaces
 (§2), every interface has exactly one partner, so all six adapters are just

@@ -9,9 +9,9 @@
 // -- a silent skip would leave the feature unverified, so this test is the
 // regression guard that keeps the prediction live. The test also self-checks the
 // same values so it fails loudly even with the scoreboard disabled.
-class tc_chi_d_atomic_predict extends vip_chi_base_test;
+class tc_chi_d_atomic_predict extends chi_base_test;
 
-  // item_t is the package-level typedef (vip_chi_tb_pkg). Do NOT re-typedef it
+  // item_t is the package-level typedef (chi_tb_pkg). Do NOT re-typedef it
   // at class scope: a shadowing `typedef vip_chi_item #(CHI_D_CFG_C) item_t;` used
   // in a localparam type below sends VCS elaboration into an infinite spin.
   `uvm_component_utils(tc_chi_d_atomic_predict)

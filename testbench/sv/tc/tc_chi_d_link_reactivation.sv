@@ -1,4 +1,4 @@
-class tc_chi_d_link_reactivation extends vip_chi_base_test;
+class tc_chi_d_link_reactivation extends chi_base_test;
 
   `uvm_component_utils(tc_chi_d_link_reactivation)
 

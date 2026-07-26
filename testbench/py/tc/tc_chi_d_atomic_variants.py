@@ -7,7 +7,7 @@
 # seed value is its own address); an independent reference model predicts the
 # post-op value and a readback confirms it. Returning-data ops (load/swap/compare)
 # also return the pre-op value.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
@@ -15,15 +15,15 @@ from __future__ import annotations
 from vip_chi_types_pkg import (
   AtomicOp, ReqOpcode, RspOpcode, DatOpcode, atomic_op_to_req_opcode, mask, clog2,
 )
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 from vip_chi_atomic_seq import (
   vip_chi_atomic_store_seq, vip_chi_atomic_load_seq,
   vip_chi_atomic_swap_seq, vip_chi_atomic_compare_seq,
 )
-from vip_chi_tb_pkg import ATOMIC_VARIANT_BASE_ADDR_C, ATOMIC_VARIANT_ADDR_STRIDE_C
+from chi_tb_pkg import ATOMIC_VARIANT_BASE_ADDR_C, ATOMIC_VARIANT_ADDR_STRIDE_C
 
 
-class tc_chi_d_atomic_variants(vip_chi_base_test):
+class tc_chi_d_atomic_variants(chi_base_test):
 
   def _variant_addr(self, index):
     return ATOMIC_VARIANT_BASE_ADDR_C + index * ATOMIC_VARIANT_ADDR_STRIDE_C

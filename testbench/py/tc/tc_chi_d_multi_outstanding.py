@@ -5,13 +5,13 @@
 # datapath (RN-I decoupled issue/completion + buffered SN-F), confirm each
 # returns its own address-derived 4-beat payload, and confirm the reads actually
 # overlapped in flight (observed_peak_outstanding > 1).
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import Role, DatOpcode
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 
 N_READS_C = 6
 MO_BASE_ADDR_C = 0x2200_0000
@@ -19,7 +19,7 @@ READ_SIZE_C = 6      # 64 bytes => 4 beats at 16 bytes/beat (CHI-D)
 BEATS_C = 4
 
 
-class tc_chi_d_multi_outstanding(vip_chi_base_test):
+class tc_chi_d_multi_outstanding(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     rni_cfg.multi_outstanding = True

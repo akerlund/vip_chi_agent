@@ -1,4 +1,4 @@
-class tc_chi_e_sep_read extends vip_chi_e_base_test;
+class tc_chi_e_sep_read extends chi_e_base_test;
 
   typedef vip_chi_item #(CHI_E_WIDE_CFG_C) item_t;
 
@@ -10,7 +10,7 @@ class tc_chi_e_sep_read extends vip_chi_e_base_test;
   // NOTE: these are plain packed-vector localparams cast at use, NOT
   // `item_t::<field>_t` typed constants. A class-scoped localparam whose type is
   // a parameterized-class-nested type hangs VCS vcs1fe code-gen indefinitely at
-  // CHI-E flit width (see vip_chi_tb_pkg convention: such constants live at
+  // CHI-E flit width (see chi_tb_pkg convention: such constants live at
   // package scope). Casting a plain literal at the call site avoids that trap.
   localparam logic [10:0] RNI_NID_C           = 11'h15;
   localparam logic [10:0] SNF_NID_C           = 11'h2a;

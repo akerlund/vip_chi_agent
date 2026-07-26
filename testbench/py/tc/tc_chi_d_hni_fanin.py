@@ -10,14 +10,14 @@
 # routing works. Traffic is issued one transaction at a time (serial SN-F
 # auto-responder); the fan-in structure (two RN links, one SN link, arbitrated
 # sends, routed completions) is what is under test.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import DataType
-from vip_chi_hni_base_test import vip_chi_hni_base_test
-from vip_chi_tb_pkg import WRITE_READ_ADDR_C
+from chi_hni_base_test import chi_hni_base_test
+from chi_tb_pkg import WRITE_READ_ADDR_C
 
 RN0_NODE_ID_C = 0x012
 RN1_NODE_ID_C = 0x013
@@ -25,7 +25,7 @@ RN0_ADDR_C = WRITE_READ_ADDR_C
 RN1_ADDR_C = WRITE_READ_ADDR_C + 0x40
 
 
-class tc_chi_d_hni_fanin(vip_chi_hni_base_test):
+class tc_chi_d_hni_fanin(chi_hni_base_test):
 
   async def run_phase(self):
     self.raise_objection()

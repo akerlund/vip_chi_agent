@@ -5,13 +5,13 @@
 # write's grant (DBIDResp) and completion (Comp) arrive as separate RSP flits.
 # The pipeline's RSP monitor must correlate both to retire on Comp. Confirms the
 # split-response writes overlap and each is handed back showing Comp.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import RspOpcode, DatOpcode
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 
 N_C = 6
 BASE_ADDR_C = 0x2B00_0000
@@ -19,7 +19,7 @@ SIZE_C = 6
 SETTLE_C = 20
 
 
-class tc_chi_d_multi_outstanding_split(vip_chi_base_test):
+class tc_chi_d_multi_outstanding_split(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     rni_cfg.multi_outstanding = True

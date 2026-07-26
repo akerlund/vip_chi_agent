@@ -5,7 +5,7 @@
 # injection (the RN-I peer is present only to bring the link up and return
 # credits) and verify the monitored DAT item preserves the responder-side DAT
 # tagging fields (dat_tagop / tag / tu) and routing, followed by a bare Comp RSP.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
@@ -13,12 +13,12 @@ from __future__ import annotations
 from vip_chi_types_pkg import (
   Dir, Role, DatOpcode, RspOpcode, Resp, RespErr, mask,
 )
-from vip_chi_e_base_test import vip_chi_e_base_test
+from chi_e_base_test import chi_e_base_test
 from vip_chi_pipelined_seq import vip_chi_pipelined_seq
 from vip_chi_item import vip_chi_item
 
 
-class tc_chi_e_snf_dat_smoke(vip_chi_e_base_test):
+class tc_chi_e_snf_dat_smoke(chi_e_base_test):
 
   # SN-F flits are injected with no matching RN-I request, so the always-on
   # scoreboard would (correctly) flag them as orphans; disable it for this

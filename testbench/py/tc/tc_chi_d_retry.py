@@ -5,13 +5,13 @@
 # RetryAck + PCrdGrant; the RN-I re-issues (AllowRetry cleared) to a final
 # CompDBIDResp. The monitor must have observed the RetryAck and the PCrdGrant,
 # and the readback confirms the retried write committed.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import RspOpcode
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 
 ADDR_C = 0x3100_0000
 SIZE_C = 4          # one 16-byte beat
@@ -19,7 +19,7 @@ SETTLE_C = 20
 WRITTEN = 0xCAFE_0001
 
 
-class tc_chi_d_retry(vip_chi_base_test):
+class tc_chi_d_retry(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     snf_cfg.force_retry_count = 1

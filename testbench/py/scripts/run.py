@@ -22,7 +22,7 @@ from pathlib import Path
 
 
 CORE_C = "akerlund::vip_chi_agent_example_py:0"
-TOP_MODULE_C = "vip_chi_tb_top"
+TOP_MODULE_C = "chi_tb_top"
 SUMMARY_RE_C = re.compile(r"TESTS=(?P<tests>\d+).*FAIL=(?P<fail>\d+)")
 
 

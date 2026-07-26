@@ -16,7 +16,7 @@ Effort legend: S (hours) / M (a day) / L (multi-day).
 
 Source-review findings from the MakeUnique / DCT / rename follow-up pass.
 
-- **MakeUnique DCT anti-vacuity** — `vip_chi_coh_make_unique_dct_base_test`
+- **MakeUnique DCT anti-vacuity** — `chi_coh_make_unique_dct_base_test`
   currently only enables `hnf_enable_snoop_fwd` and inherits the base zero-readback
   assertions. If the HN-F DCT gate falls back to the normal dirty-snoop path, the
   test can still pass. Add an explicit monitor-FIFO check that RN-F1 observed

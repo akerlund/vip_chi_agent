@@ -6,7 +6,7 @@
 # second completion while the credit is held (no DAT arrives, the sequence does
 # not finish), then recovers cleanly once the credit is released. rni/snf DAT
 # pools are held at one apiece to preserve the stall shape.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
@@ -14,12 +14,12 @@ from __future__ import annotations
 import cocotb
 
 from vip_chi_types_pkg import Role, clog2
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 from vip_chi_read_seq import vip_chi_read_seq
-from vip_chi_tb_pkg import READ_ADDR_C
+from chi_tb_pkg import READ_ADDR_C
 
 
-class tc_chi_d_credit_starvation(vip_chi_base_test):
+class tc_chi_d_credit_starvation(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     rni_cfg.initial_dat_credits = 1

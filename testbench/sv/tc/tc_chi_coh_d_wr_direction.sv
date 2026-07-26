@@ -15,7 +15,7 @@
 // CHI-D only: the classification is opcode-based and identical at CHI-E, so one
 // concrete test suffices (no shared base).
 // ===========================================================================
-class tc_chi_coh_d_wr_direction extends vip_chi_coherent_base_test #(CHI_D_CFG_C, chi_d_types_t);
+class tc_chi_coh_d_wr_direction extends chi_coherent_base_test #(CHI_D_CFG_C, chi_d_types_t);
 
   typedef vip_chi_item #(CHI_D_CFG_C) item_t;
 

@@ -4,17 +4,17 @@
 # A write + readback to a DECERR-configured SN-F address through the proxy: the
 # HN-I must relay the SN-F's NDERR completion (RSP resp_err on both the write and
 # read, and per-beat dat_resp_err on the read) verbatim back to the RN-I.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import RespErr, DataType
-from vip_chi_hni_base_test import vip_chi_hni_base_test
-from vip_chi_tb_pkg import DECERR_ADDR_C
+from chi_hni_base_test import chi_hni_base_test
+from chi_tb_pkg import DECERR_ADDR_C
 
 
-class tc_chi_d_hni_decerr(vip_chi_hni_base_test):
+class tc_chi_d_hni_decerr(chi_hni_base_test):
 
   def configure(self):
     self.hsnf0_cfg.add_decerr_range(DECERR_ADDR_C, DECERR_ADDR_C + 0x3F)

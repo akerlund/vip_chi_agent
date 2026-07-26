@@ -6,22 +6,22 @@
 # observed completions: the non-sep form retires on a single Comp; the sep form
 # retires on a Persist + CompPersist pair. Neither produces DAT traffic, and the
 # completion routing fields must mirror the request.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import ReqOpcode, RspOpcode
-from vip_chi_e_base_test import vip_chi_e_base_test
+from chi_e_base_test import chi_e_base_test
 from vip_chi_persist_seq import vip_chi_persist_seq
-from vip_chi_tb_pkg import (
+from chi_tb_pkg import (
   E_PERSIST_ADDR_C, E_PERSIST_SEP_ADDR_C,
   E_PERSIST_RNI_NODE_ID_C, E_PERSIST_SNF_NODE_ID_C,
   E_PERSIST_SEP_RNI_NODE_ID_C, E_PERSIST_SEP_SNF_NODE_ID_C,
 )
 
 
-class tc_chi_e_persist(vip_chi_e_base_test):
+class tc_chi_e_persist(chi_e_base_test):
 
   async def run_phase(self):
     self.raise_objection()

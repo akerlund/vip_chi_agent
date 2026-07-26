@@ -5,18 +5,18 @@
 # path and the RN->SN write-DAT (operand) relay. Confirms the SN-F on the far
 # side observed a forwarded atomic opcode at the right address and the RN-I got
 # its single completion back.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import AtomicOp, clog2, req_opcode_is_atomic
-from vip_chi_hni_base_test import vip_chi_hni_base_test
+from chi_hni_base_test import chi_hni_base_test
 from vip_chi_atomic_seq import vip_chi_atomic_seq
-from vip_chi_tb_pkg import WRITE_READ_ADDR_C
+from chi_tb_pkg import WRITE_READ_ADDR_C
 
 
-class tc_chi_d_hni_atomic(vip_chi_hni_base_test):
+class tc_chi_d_hni_atomic(chi_hni_base_test):
 
   async def run_phase(self):
     self.raise_objection()

@@ -6,13 +6,13 @@
 # SN-F RMW writes seed+operand back. Read every granule back to confirm the
 # overlapped read-modify-writes landed, and assert the atomics coexisted in
 # flight (peak > 1). Atomics ride the unified mixed loop as a bidirectional kind.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import DatOpcode, clog2
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 from vip_chi_atomic_seq import vip_chi_atomic_load_seq
 
 N_C = 6
@@ -20,7 +20,7 @@ BASE_ADDR_C = 0x2F00_0000
 SETTLE_C = 20
 
 
-class tc_chi_d_multi_outstanding_atomic(vip_chi_base_test):
+class tc_chi_d_multi_outstanding_atomic(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     rni_cfg.multi_outstanding = True

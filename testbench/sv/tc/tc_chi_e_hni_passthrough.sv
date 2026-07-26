@@ -1,4 +1,4 @@
-class tc_chi_e_hni_passthrough extends vip_chi_e_proxy_base_test;
+class tc_chi_e_hni_passthrough extends chi_e_proxy_base_test;
 
   typedef vip_chi_item #(CHI_E_WIDE_CFG_C) item_t;
 

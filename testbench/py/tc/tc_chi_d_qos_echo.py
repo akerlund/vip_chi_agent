@@ -3,18 +3,18 @@
 #
 # The SN-F must echo the full QoS on both completion legs: the write CompDBIDResp
 # (RSP) and the read CompData (DAT).
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
-from vip_chi_base_test import vip_chi_base_test
-from vip_chi_tb_pkg import WRITE_READ_ADDR_C
+from chi_base_test import chi_base_test
+from chi_tb_pkg import WRITE_READ_ADDR_C
 
 QOS_C = 0xA
 
 
-class tc_chi_d_qos_echo(vip_chi_base_test):
+class tc_chi_d_qos_echo(chi_base_test):
 
   async def run_phase(self):
     self.raise_objection()

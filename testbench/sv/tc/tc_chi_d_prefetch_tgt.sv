@@ -1,4 +1,4 @@
-class tc_chi_d_prefetch_tgt extends vip_chi_base_test;
+class tc_chi_d_prefetch_tgt extends chi_base_test;
 
   `uvm_component_utils(tc_chi_d_prefetch_tgt)
 
@@ -16,7 +16,7 @@ class tc_chi_d_prefetch_tgt extends vip_chi_base_test;
   // ---------------------------------------------------------------------------
   task run_phase(input uvm_phase phase);
 
-    vip_chi_prefetch_tgt_seq seq;
+    chi_prefetch_tgt_seq seq;
     item_t                   req_item;
     item_t                   rsp_item;
     item_t                   responses[$];

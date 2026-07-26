@@ -4,17 +4,17 @@
 # With split_write_rsp the SN-F grants a separate DBIDResp then a deferred Comp.
 # Runs the non-CompAck and the CompAck (ordered) case; the latter also drives an
 # RN-I CompAck and uses the NCBWrDataCompAck write-data opcode.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import Role, DataType, RspOpcode, DatOpcode
-from vip_chi_base_test import vip_chi_base_test
-from vip_chi_tb_pkg import WRITE_ADDR_C
+from chi_base_test import chi_base_test
+from chi_tb_pkg import WRITE_ADDR_C
 
 
-class tc_chi_d_split_write_rsp(vip_chi_base_test):
+class tc_chi_d_split_write_rsp(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     snf_cfg.split_write_rsp = True

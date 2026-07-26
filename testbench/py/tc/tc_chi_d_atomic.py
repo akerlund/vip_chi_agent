@@ -5,7 +5,7 @@
 # AtomicCompare (combined compare+swap Size) at one address and checks the
 # operand DAT, the returned pre-op CompData, and that the SN-F backing store is
 # updated at each step (final readback == the compare swap value).
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
@@ -13,12 +13,12 @@ from __future__ import annotations
 from vip_chi_types_pkg import (
   Role, AtomicOp, ReqOpcode, RspOpcode, DatOpcode, clog2,
 )
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 from vip_chi_atomic_seq import vip_chi_atomic_seq
-from vip_chi_tb_pkg import ATOMIC_ADDR_C
+from chi_tb_pkg import ATOMIC_ADDR_C
 
 
-class tc_chi_d_atomic(vip_chi_base_test):
+class tc_chi_d_atomic(chi_base_test):
 
   async def _atomic(self, op, size, operands):
     seq = vip_chi_atomic_seq("atomic_seq", cfg=self.chi_cfg)

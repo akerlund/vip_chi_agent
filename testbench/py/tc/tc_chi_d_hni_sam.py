@@ -7,13 +7,13 @@
 # target 0. Only the configured SAM ranges below split them across the two SN
 # targets -- so a clean pass proves the SAM range table (not the fallback stride)
 # drove the routing.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import DataType
-from vip_chi_hni_base_test import vip_chi_hni_base_test
+from chi_hni_base_test import chi_hni_base_test
 from vip_chi_hni_sam import vip_chi_hni_sam
 
 RN0_NODE_ID_C = 0x012
@@ -22,7 +22,7 @@ SN0_ADDR_C = 0x3000_8000
 SN1_ADDR_C = 0x3001_8000
 
 
-class tc_chi_d_hni_sam(vip_chi_hni_base_test):
+class tc_chi_d_hni_sam(chi_hni_base_test):
 
   def configure_hni(self, hni):
     # Two explicit 64 KB ranges mapping to SN targets 0 and 1.

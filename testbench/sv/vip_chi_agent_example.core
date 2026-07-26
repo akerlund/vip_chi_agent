@@ -8,21 +8,21 @@ filesets:
       # Compilation unit: entry point compiled directly by the simulator
       - tb/tb.svh
       # Include files: accessed via +incdir+ (included by the .svh or tb/tc packages)
-      - tb/vip_chi_tb_config.sv:                            {is_include_file: true}
-      - tb/vip_chi_virtual_sequencer.sv:                    {is_include_file: true}
-      - tb/vip_chi_tb_env.sv:                               {is_include_file: true}
-      - tb/vip_chi_e_tb_env.sv:                             {is_include_file: true}
-      - tb/vip_chi_e_proxy_tb_env.sv:                       {is_include_file: true}
-      - tb/vip_chi_coherent_tb_env.sv:                      {is_include_file: true}
-      - tb/vip_chi_tb_pkg.sv:                               {is_include_file: true}
-      - tb/vip_chi_write_zero_fatal_catcher.sv:             {is_include_file: true}
-      - tb/vip_chi_scoreboard_negctl_catcher.sv:            {is_include_file: true}
-      - tb/vip_chi_coherency_negctl_catcher.sv:             {is_include_file: true}
-      - tc/vip_chi_base_test.sv:                            {is_include_file: true}
-      - tc/vip_chi_e_base_test.sv:                          {is_include_file: true}
-      - tc/vip_chi_e_proxy_base_test.sv:                    {is_include_file: true}
-      - tc/vip_chi_coherent_base_test.sv:                   {is_include_file: true}
-      - tc/vip_chi_coherent_e_base_test.sv:                 {is_include_file: true}
+      - tb/chi_tb_config.sv:                            {is_include_file: true}
+      - tb/chi_virtual_sequencer.sv:                    {is_include_file: true}
+      - tb/chi_tb_env.sv:                               {is_include_file: true}
+      - tb/chi_e_tb_env.sv:                             {is_include_file: true}
+      - tb/chi_e_proxy_tb_env.sv:                       {is_include_file: true}
+      - tb/chi_coherent_tb_env.sv:                      {is_include_file: true}
+      - tb/chi_tb_pkg.sv:                               {is_include_file: true}
+      - tb/chi_write_zero_fatal_catcher.sv:             {is_include_file: true}
+      - tb/chi_scoreboard_negctl_catcher.sv:            {is_include_file: true}
+      - tb/chi_coherency_negctl_catcher.sv:             {is_include_file: true}
+      - tc/chi_base_test.sv:                            {is_include_file: true}
+      - tc/chi_e_base_test.sv:                          {is_include_file: true}
+      - tc/chi_e_proxy_base_test.sv:                    {is_include_file: true}
+      - tc/chi_coherent_base_test.sv:                   {is_include_file: true}
+      - tc/chi_coherent_e_base_test.sv:                 {is_include_file: true}
       - tc/tc_chi_cfg_item_smoke.sv:                        {is_include_file: true}
       - tc/tc_chi_item_smoke.sv:                            {is_include_file: true}
       - tc/tc_chi_base_seq_smoke.sv:                        {is_include_file: true}
@@ -35,7 +35,7 @@ filesets:
       - tc/tc_chi_d_reset.sv:                               {is_include_file: true}
       - tc/tc_chi_d_credit_starvation.sv:                   {is_include_file: true}
       - tc/tc_chi_d_link_reactivation.sv:                   {is_include_file: true}
-      - tb/vip_chi_prefetch_tgt_seq.sv:                     {is_include_file: true}
+      - tb/chi_prefetch_tgt_seq.sv:                     {is_include_file: true}
       - tc/tc_chi_d_prefetch_tgt.sv:                        {is_include_file: true}
       - tc/tc_chi_d_atomic.sv:                              {is_include_file: true}
       - tc/tc_chi_d_atomic_variants.sv:                     {is_include_file: true}
@@ -80,108 +80,108 @@ filesets:
       - tc/tc_chi_e_sep_read.sv:                            {is_include_file: true}
       - tc/tc_chi_d_scoreboard_negctl.sv:                   {is_include_file: true}
       - tc/tc_chi_d_perf_smoke.sv:                          {is_include_file: true}
-      - tc/vip_chi_coh_read_no_snoop_base_test.sv:          {is_include_file: true}
+      - tc/chi_coh_read_no_snoop_base_test.sv:          {is_include_file: true}
       - tc/tc_chi_coh_d_read_no_snoop.sv:                   {is_include_file: true}
       - tc/tc_chi_coh_e_read_no_snoop.sv:                   {is_include_file: true}
-      - tc/vip_chi_coh_read_then_unique_base_test.sv:       {is_include_file: true}
+      - tc/chi_coh_read_then_unique_base_test.sv:       {is_include_file: true}
       - tc/tc_chi_coh_d_read_then_unique.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_read_then_unique.sv:                {is_include_file: true}
-      - tc/vip_chi_coh_shared_read_base_test.sv:            {is_include_file: true}
+      - tc/chi_coh_shared_read_base_test.sv:            {is_include_file: true}
       - tc/tc_chi_coh_d_shared_read.sv:                     {is_include_file: true}
       - tc/tc_chi_coh_e_shared_read.sv:                     {is_include_file: true}
-      - tc/vip_chi_coh_negctl_base_test.sv:                 {is_include_file: true}
+      - tc/chi_coh_negctl_base_test.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_d_negctl.sv:                          {is_include_file: true}
       - tc/tc_chi_coh_e_negctl.sv:                          {is_include_file: true}
-      - tc/vip_chi_coh_dirty_forward_base_test.sv:          {is_include_file: true}
+      - tc/chi_coh_dirty_forward_base_test.sv:          {is_include_file: true}
       - tc/tc_chi_coh_d_dirty_forward.sv:                   {is_include_file: true}
       - tc/tc_chi_coh_e_dirty_forward.sv:                   {is_include_file: true}
-      - tc/vip_chi_coh_writeback_evict_base_test.sv:        {is_include_file: true}
+      - tc/chi_coh_writeback_evict_base_test.sv:        {is_include_file: true}
       - tc/tc_chi_coh_d_writeback_evict.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_writeback_evict.sv:                 {is_include_file: true}
-      - tc/vip_chi_coh_read_after_writeback_base_test.sv:   {is_include_file: true}
+      - tc/chi_coh_read_after_writeback_base_test.sv:   {is_include_file: true}
       - tc/tc_chi_coh_d_read_after_writeback.sv:            {is_include_file: true}
       - tc/tc_chi_coh_e_read_after_writeback.sv:            {is_include_file: true}
-      - tc/vip_chi_coh_data_negctl_base_test.sv:            {is_include_file: true}
+      - tc/chi_coh_data_negctl_base_test.sv:            {is_include_file: true}
       - tc/tc_chi_coh_d_data_negctl.sv:                     {is_include_file: true}
       - tc/tc_chi_coh_e_data_negctl.sv:                     {is_include_file: true}
-      - tc/vip_chi_coh_stress_base_test.sv:                 {is_include_file: true}
+      - tc/chi_coh_stress_base_test.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_d_stress.sv:                          {is_include_file: true}
       - tc/tc_chi_coh_e_stress.sv:                          {is_include_file: true}
-      - tc/vip_chi_coh_snp_backpressure_base_test.sv:       {is_include_file: true}
+      - tc/chi_coh_snp_backpressure_base_test.sv:       {is_include_file: true}
       - tc/tc_chi_coh_d_snp_backpressure.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_snp_backpressure.sv:                {is_include_file: true}
-      - tc/vip_chi_coh_reset_mid_snoop_base_test.sv:        {is_include_file: true}
+      - tc/chi_coh_reset_mid_snoop_base_test.sv:        {is_include_file: true}
       - tc/tc_chi_coh_d_reset_mid_snoop.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_reset_mid_snoop.sv:                 {is_include_file: true}
-      - tc/vip_chi_coh_cmo_invalidate_base_test.sv:         {is_include_file: true}
+      - tc/chi_coh_cmo_invalidate_base_test.sv:         {is_include_file: true}
       - tc/tc_chi_coh_d_cmo_invalidate.sv:                  {is_include_file: true}
       - tc/tc_chi_coh_e_cmo_invalidate.sv:                  {is_include_file: true}
-      - tc/vip_chi_coh_read_once_base_test.sv:              {is_include_file: true}
+      - tc/chi_coh_read_once_base_test.sv:              {is_include_file: true}
       - tc/tc_chi_coh_d_read_once.sv:                       {is_include_file: true}
       - tc/tc_chi_coh_e_read_once.sv:                       {is_include_file: true}
-      - tc/vip_chi_coh_write_unique_base_test.sv:           {is_include_file: true}
+      - tc/chi_coh_write_unique_base_test.sv:           {is_include_file: true}
       - tc/tc_chi_coh_d_write_unique.sv:                    {is_include_file: true}
       - tc/tc_chi_coh_e_write_unique.sv:                    {is_include_file: true}
-      - tc/vip_chi_coh_write_unique_ptl_base_test.sv:       {is_include_file: true}
+      - tc/chi_coh_write_unique_ptl_base_test.sv:       {is_include_file: true}
       - tc/tc_chi_coh_d_write_unique_ptl.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_write_unique_ptl.sv:                {is_include_file: true}
-      - tc/vip_chi_coh_make_unique_base_test.sv:            {is_include_file: true}
+      - tc/chi_coh_make_unique_base_test.sv:            {is_include_file: true}
       - tc/tc_chi_coh_d_make_unique.sv:                     {is_include_file: true}
       - tc/tc_chi_coh_e_make_unique.sv:                     {is_include_file: true}
-      - tc/vip_chi_coh_make_unique_dct_base_test.sv:        {is_include_file: true}
+      - tc/chi_coh_make_unique_dct_base_test.sv:        {is_include_file: true}
       - tc/tc_chi_coh_d_make_unique_dct.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_make_unique_dct.sv:                 {is_include_file: true}
-      - tc/vip_chi_coh_make_unique_negctl_base_test.sv:     {is_include_file: true}
+      - tc/chi_coh_make_unique_negctl_base_test.sv:     {is_include_file: true}
       - tc/tc_chi_coh_d_make_unique_negctl.sv:              {is_include_file: true}
       - tc/tc_chi_coh_e_make_unique_negctl.sv:              {is_include_file: true}
-      - tc/vip_chi_coh_cache_evict_base_test.sv:            {is_include_file: true}
+      - tc/chi_coh_cache_evict_base_test.sv:            {is_include_file: true}
       - tc/tc_chi_coh_d_cache_evict.sv:                     {is_include_file: true}
       - tc/tc_chi_coh_e_cache_evict.sv:                     {is_include_file: true}
-      - tc/vip_chi_coh_transition_sweep_base_test.sv:       {is_include_file: true}
+      - tc/chi_coh_transition_sweep_base_test.sv:       {is_include_file: true}
       - tc/tc_chi_coh_d_transition_sweep.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_transition_sweep.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_make_read_unique.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_cmo_negctl.sv:                      {is_include_file: true}
-      - tc/vip_chi_coh_excl_success_base_test.sv:           {is_include_file: true}
+      - tc/chi_coh_excl_success_base_test.sv:           {is_include_file: true}
       - tc/tc_chi_coh_d_excl_success.sv:                    {is_include_file: true}
       - tc/tc_chi_coh_e_excl_success.sv:                    {is_include_file: true}
-      - tc/vip_chi_coh_excl_fail_store_base_test.sv:        {is_include_file: true}
+      - tc/chi_coh_excl_fail_store_base_test.sv:        {is_include_file: true}
       - tc/tc_chi_coh_d_excl_fail_store.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_excl_fail_store.sv:                 {is_include_file: true}
-      - tc/vip_chi_coh_excl_fail_snoop_base_test.sv:        {is_include_file: true}
+      - tc/chi_coh_excl_fail_snoop_base_test.sv:        {is_include_file: true}
       - tc/tc_chi_coh_d_excl_fail_snoop.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_excl_fail_snoop.sv:                 {is_include_file: true}
-      - tc/vip_chi_coh_excl_negctl_base_test.sv:            {is_include_file: true}
+      - tc/chi_coh_excl_negctl_base_test.sv:            {is_include_file: true}
       - tc/tc_chi_coh_d_excl_negctl.sv:                     {is_include_file: true}
       - tc/tc_chi_coh_e_excl_negctl.sv:                     {is_include_file: true}
-      - tc/vip_chi_coh_fwd_shared_base_test.sv:             {is_include_file: true}
+      - tc/chi_coh_fwd_shared_base_test.sv:             {is_include_file: true}
       - tc/tc_chi_coh_d_fwd_shared.sv:                      {is_include_file: true}
       - tc/tc_chi_coh_e_fwd_shared.sv:                      {is_include_file: true}
-      - tc/vip_chi_coh_fwd_unique_base_test.sv:             {is_include_file: true}
+      - tc/chi_coh_fwd_unique_base_test.sv:             {is_include_file: true}
       - tc/tc_chi_coh_d_fwd_unique.sv:                      {is_include_file: true}
       - tc/tc_chi_coh_e_fwd_unique.sv:                      {is_include_file: true}
-      - tc/vip_chi_coh_fwd_dirty_base_test.sv:              {is_include_file: true}
+      - tc/chi_coh_fwd_dirty_base_test.sv:              {is_include_file: true}
       - tc/tc_chi_coh_d_fwd_dirty.sv:                       {is_include_file: true}
       - tc/tc_chi_coh_e_fwd_dirty.sv:                       {is_include_file: true}
-      - tc/vip_chi_coh_fwd_data_negctl_base_test.sv:        {is_include_file: true}
+      - tc/chi_coh_fwd_data_negctl_base_test.sv:        {is_include_file: true}
       - tc/tc_chi_coh_d_fwd_data_negctl.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_fwd_data_negctl.sv:                 {is_include_file: true}
-      - tc/vip_chi_coh_snf_read_miss_base_test.sv:          {is_include_file: true}
+      - tc/chi_coh_snf_read_miss_base_test.sv:          {is_include_file: true}
       - tc/tc_chi_coh_d_snf_read_miss.sv:                   {is_include_file: true}
       - tc/tc_chi_coh_e_snf_read_miss.sv:                   {is_include_file: true}
-      - tc/vip_chi_coh_snf_writeback_readback_base_test.sv: {is_include_file: true}
+      - tc/chi_coh_snf_writeback_readback_base_test.sv: {is_include_file: true}
       - tc/tc_chi_coh_d_snf_writeback_readback.sv:          {is_include_file: true}
       - tc/tc_chi_coh_e_snf_writeback_readback.sv:          {is_include_file: true}
-      - tc/vip_chi_coh_snf_data_negctl_base_test.sv:        {is_include_file: true}
+      - tc/chi_coh_snf_data_negctl_base_test.sv:        {is_include_file: true}
       - tc/tc_chi_coh_d_snf_data_negctl.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_snf_data_negctl.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_d_line_granularity.sv:                {is_include_file: true}
       - tc/tc_chi_coh_d_wr_direction.sv:                    {is_include_file: true}
       - tc/tc_chi_d_qos_echo.sv:                            {is_include_file: true}
       - tc/tc_chi_opcode_pool_safe.sv:                      {is_include_file: true}
-      - tc/vip_chi_tc_pkg.sv:                               {is_include_file: true}
-      - tb/vip_chi_link_adapter.sv:                         {is_include_file: true}
-      - tb/vip_chi_tb_top.sv:                               {is_include_file: true}
+      - tc/chi_tc_pkg.sv:                               {is_include_file: true}
+      - tb/chi_link_adapter.sv:                         {is_include_file: true}
+      - tb/chi_tb_top.sv:                               {is_include_file: true}
     file_type: systemVerilogSource
     depend:
       - "akerlund::vip_chi_agent:1.0.0"
@@ -189,7 +189,7 @@ filesets:
 
 targets:
   default:
-    toplevel: vip_chi_tb_top
+    toplevel: chi_tb_top
     filesets:
       - tb
     tools:

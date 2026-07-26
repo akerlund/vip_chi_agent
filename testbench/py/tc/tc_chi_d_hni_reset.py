@@ -8,7 +8,7 @@
 # unwinds) and then restarts -- a fresh write+read relays end-to-end. The
 # RN-facing and SN-facing DAT credit pools are held at one apiece so the stalled
 # read parks deterministically.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ from __future__ import annotations
 import cocotb
 
 from vip_chi_types_pkg import ReqOpcode
-from vip_chi_hni_base_test import vip_chi_hni_base_test
+from chi_hni_base_test import chi_hni_base_test
 from vip_chi_read_seq import vip_chi_read_seq
-from vip_chi_tb_pkg import WRITE_READ_ADDR_C
+from chi_tb_pkg import WRITE_READ_ADDR_C
 
 
-class tc_chi_d_hni_reset(vip_chi_hni_base_test):
+class tc_chi_d_hni_reset(chi_hni_base_test):
 
   def configure(self):
     # Hold RN-facing and SN-facing DAT credit pools at one apiece so a stalled

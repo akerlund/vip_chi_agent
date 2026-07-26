@@ -10,7 +10,7 @@
 //   - write completion (CompDBIDResp) QoS == 0xA   (B1, RSP leg)
 //   - read completion  (CompData)     QoS == 0xA   (P3c, DAT leg)
 // ===========================================================================
-class tc_chi_d_qos_echo extends vip_chi_base_test;
+class tc_chi_d_qos_echo extends chi_base_test;
 
   `uvm_component_utils(tc_chi_d_qos_echo)
 

@@ -7,14 +7,14 @@
 # node id) and that SN-F 0 observed only RN0's address and SN-F 1 only RN1's
 # (request address decode routed to the right SN). Traffic is sequential (serial
 # SN-F responders); the crossbar structure is what is under test.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import DataType
-from vip_chi_hni_base_test import vip_chi_hni_base_test
-from vip_chi_tb_pkg import WRITE_READ_ADDR_C
+from chi_hni_base_test import chi_hni_base_test
+from chi_tb_pkg import WRITE_READ_ADDR_C
 
 RN0_NODE_ID_C = 0x012
 RN1_NODE_ID_C = 0x013
@@ -22,7 +22,7 @@ SN0_ADDR_C = WRITE_READ_ADDR_C
 SN1_ADDR_C = WRITE_READ_ADDR_C + 0x1000
 
 
-class tc_chi_d_hni_xbar(vip_chi_hni_base_test):
+class tc_chi_d_hni_xbar(chi_hni_base_test):
 
   async def run_phase(self):
     self.raise_objection()

@@ -11,12 +11,12 @@ testcase catalog is [../TEST_CASES.md](../TEST_CASES.md).
 The Python flow has one HDL shell and one Python testbench top:
 
 ```text
-tb/vip_chi_hdl_top.sv
-tb/vip_chi_tb_top.py
+tb/chi_hdl_top.sv
+tb/chi_tb_top.py
 vip_chi_agent_example_py.core
 ```
 
-`vip_chi_hdl_top.sv` exposes the Verilator-visible flat nets. `vip_chi_tb_top.py`
+`chi_hdl_top.sv` exposes the Verilator-visible flat nets. `chi_tb_top.py`
 creates the `ChiBus` objects, publishes them through pyUVM `ConfigDB`, and
 contains one static cocotb test entry per public `tc_*` testcase.
 

@@ -4,20 +4,20 @@
 # Launch N pipelined WriteNoSnpFull requests through the multi-outstanding WRITE
 # datapath, confirm each returns its combined CompDBIDResp completion with
 # NormalOkay, and confirm the write REQs actually overlapped in flight.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import Role, RspOpcode, RespErr
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 
 N_WRITES_C = 6
 WR_BASE_ADDR_C = 0x2400_0000
 WRITE_SIZE_C = 6
 
 
-class tc_chi_d_multi_outstanding_write(vip_chi_base_test):
+class tc_chi_d_multi_outstanding_write(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     rni_cfg.multi_outstanding = True

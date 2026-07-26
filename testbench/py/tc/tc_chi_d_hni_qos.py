@@ -5,15 +5,15 @@
 # time (both addresses share address bit 12, so they contend for one SN). Given a
 # QoS arbitration collection window on the HN-I, it must forward the high-QoS
 # request first, so SN-F 0 sees RN1's read before RN0's.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 import cocotb
 
-from vip_chi_hni_base_test import vip_chi_hni_base_test
-from vip_chi_tb_pkg import WRITE_READ_ADDR_C
+from chi_hni_base_test import chi_hni_base_test
+from chi_tb_pkg import WRITE_READ_ADDR_C
 
 RN0_NODE_ID_C = 0x012
 RN1_NODE_ID_C = 0x013
@@ -23,7 +23,7 @@ LOW_QOS_C = 0x2
 HIGH_QOS_C = 0xD
 
 
-class tc_chi_d_hni_qos(vip_chi_hni_base_test):
+class tc_chi_d_hni_qos(chi_hni_base_test):
 
   def configure_hni(self, hni):
     # Collection window so both requestors are captured before it arbitrates.

@@ -6,13 +6,13 @@
 # the atomic, then reads the granule back. Covers AtomicStore0(ADD, non-returning)
 # and the returning AtomicSwap / AtomicCompare(match): the returning ops return
 # the pre-op seed, and the read-back confirms the committed post-op value.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import AtomicOp, clog2, mask
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 from vip_chi_atomic_seq import vip_chi_atomic_seq
 
 STORE_ADDR_C = 0x3A00_0000
@@ -21,7 +21,7 @@ COMPARE_ADDR_C = 0x3A00_0200
 SETTLE_C = 8
 
 
-class tc_chi_d_atomic_predict(vip_chi_base_test):
+class tc_chi_d_atomic_predict(chi_base_test):
 
   async def _seed_write(self, addr, value, beat_size):
     wr = self.rni0_wr_seq

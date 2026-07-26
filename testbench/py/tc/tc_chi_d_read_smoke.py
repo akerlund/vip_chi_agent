@@ -4,17 +4,17 @@
 # ReadNoSnp through the integrated pair: checks the observed REQ opcode/addr, the
 # CompData response (role SN-F, opcode, txn_id/dbid/src/tgt echo), the 4-beat
 # reassembly, and the deterministic SN-F read pattern (READ_ADDR + beat).
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import Role, ReqOpcode, DatOpcode
-from vip_chi_base_test import vip_chi_base_test
-from vip_chi_tb_pkg import READ_ADDR_C
+from chi_base_test import chi_base_test
+from chi_tb_pkg import READ_ADDR_C
 
 
-class tc_chi_d_read_smoke(vip_chi_base_test):
+class tc_chi_d_read_smoke(chi_base_test):
 
   async def run_phase(self):
     self.raise_objection()

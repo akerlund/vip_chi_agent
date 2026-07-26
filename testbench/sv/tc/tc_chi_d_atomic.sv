@@ -1,4 +1,4 @@
-class tc_chi_d_atomic extends vip_chi_base_test;
+class tc_chi_d_atomic extends chi_base_test;
 
   typedef vip_chi_item #(CHI_D_CFG_C) item_t;
 

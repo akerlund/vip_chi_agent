@@ -2,11 +2,11 @@
 // tc_chi_coh_d_writeback_evict
 //
 // CHI-D (CHI_D_CFG_C / chi_d_types_t) runnable
-// specialization of vip_chi_coh_writeback_evict_base_test; the scenario body and its
+// specialization of chi_coh_writeback_evict_base_test; the scenario body and its
 // documentation live in that file.
 // ===========================================================================
 class tc_chi_coh_d_writeback_evict extends
-  vip_chi_coh_writeback_evict_base_test #(CHI_D_CFG_C, chi_d_types_t);
+  chi_coh_writeback_evict_base_test #(CHI_D_CFG_C, chi_d_types_t);
   `uvm_component_utils(tc_chi_coh_d_writeback_evict)
   function new(input string name, input uvm_component parent = null);
     super.new(name, parent);

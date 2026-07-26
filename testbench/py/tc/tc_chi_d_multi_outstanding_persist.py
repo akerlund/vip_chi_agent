@@ -5,13 +5,13 @@
 # grant -- it just issues its REQ and completes on a single Comp RSP. Confirms the
 # pipeline overlaps these RSP-only, no-data transactions (peak > 1) and hands each
 # back with its Comp completion.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import ReqOpcode, RspOpcode
-from vip_chi_base_test import vip_chi_base_test
+from chi_base_test import chi_base_test
 from vip_chi_persist_seq import vip_chi_persist_seq
 
 N_C = 6
@@ -19,7 +19,7 @@ BASE_ADDR_C = 0x3000_0000
 SIZE_C = 6
 
 
-class tc_chi_d_multi_outstanding_persist(vip_chi_base_test):
+class tc_chi_d_multi_outstanding_persist(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     rni_cfg.multi_outstanding = True

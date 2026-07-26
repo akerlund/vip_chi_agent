@@ -4,8 +4,8 @@
 #
 # This smoke build proves the current shared-scenario slices:
 # - vip_chi_types_pkg + vip_chi_if elaborate with exact CHI-D and CHI-E shapes
-# - one shared vip_chi_tb_top hosts every scenario; each link is a
-#   vip_chi_link_adapter joining two real agents, and the active topology is
+# - one shared chi_tb_top hosts every scenario; each link is a
+#   chi_link_adapter joining two real agents, and the active topology is
 #   selected by testcase configuration instead of one top per scenario
 # - vip_chi_agent_pkg packages the current class surface, including the first
 #   sequencer cut, and can be consumed through a single package import

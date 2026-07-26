@@ -7,20 +7,20 @@
 # has crossed back -- forcing observed_peak_outstanding to exactly 1 even though
 # the sequence is pipelined. Each write completes on Comp; readback confirms the
 # data landed through the proxy.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import ReqOpcode, RspOpcode, DatOpcode, DataType
-from vip_chi_hni_base_test import vip_chi_hni_base_test
+from chi_hni_base_test import chi_hni_base_test
 
 N_C = 3
 BASE_ADDR_C = 0x2C00_0000
 SIZE_C = 6
 
 
-class tc_chi_d_hni_split_write_rsp(vip_chi_hni_base_test):
+class tc_chi_d_hni_split_write_rsp(chi_hni_base_test):
 
   def configure(self):
     self.hrni0_cfg.multi_outstanding = True

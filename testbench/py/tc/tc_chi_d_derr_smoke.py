@@ -4,17 +4,17 @@
 # A priming write (NormalOkay, commits) then a read to a DERR-configured SN-F
 # address: the read completion + every DAT beat carry DERR while still returning
 # the committed data.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import Role, DataType, RespErr
-from vip_chi_base_test import vip_chi_base_test
-from vip_chi_tb_pkg import DERR_ADDR_C
+from chi_base_test import chi_base_test
+from chi_tb_pkg import DERR_ADDR_C
 
 
-class tc_chi_d_derr_smoke(vip_chi_base_test):
+class tc_chi_d_derr_smoke(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     snf_cfg.add_derr_range(DERR_ADDR_C, DERR_ADDR_C + 0x3F)

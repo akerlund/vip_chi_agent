@@ -3,23 +3,23 @@
 #
 # Verify PrefetchTgt is accepted as a no-completion hint: the RN-I drives only the
 # REQ and retires the item locally (RN-I role), and no RSP or DAT ever comes back.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import ReqOpcode, Role
-from vip_chi_base_test import vip_chi_base_test
-from vip_chi_prefetch_tgt_seq import vip_chi_prefetch_tgt_seq
-from vip_chi_tb_pkg import READ_ADDR_C
+from chi_base_test import chi_base_test
+from chi_prefetch_tgt_seq import chi_prefetch_tgt_seq
+from chi_tb_pkg import READ_ADDR_C
 
 
-class tc_chi_d_prefetch_tgt(vip_chi_base_test):
+class tc_chi_d_prefetch_tgt(chi_base_test):
 
   async def run_phase(self):
     self.raise_objection()
 
-    seq = vip_chi_prefetch_tgt_seq("prefetch_tgt_seq", cfg=self.chi_cfg)
+    seq = chi_prefetch_tgt_seq("prefetch_tgt_seq", cfg=self.chi_cfg)
     seq.reset()
     seq.set_requests(1)
     seq.set_initial_addr(READ_ADDR_C + 0x180)

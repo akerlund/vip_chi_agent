@@ -5,22 +5,22 @@
 # data and no DBID grant, and completes with a two-part separated response: an
 # intermediate Persist then a final CompPersist. The pipeline's RSP monitor
 # consumes the intermediate Persist and retires each CMO on its CompPersist.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import ReqOpcode, RspOpcode
-from vip_chi_e_base_test import vip_chi_e_base_test
+from chi_e_base_test import chi_e_base_test
 from vip_chi_persist_seq import vip_chi_persist_seq
-from vip_chi_tb_pkg import (
+from chi_tb_pkg import (
   E_PERSIST_SEP_ADDR_C, E_PERSIST_SEP_RNI_NODE_ID_C, E_PERSIST_SEP_SNF_NODE_ID_C,
 )
 
 N_C = 6
 
 
-class tc_chi_e_multi_outstanding_persist_sep(vip_chi_e_base_test):
+class tc_chi_e_multi_outstanding_persist_sep(chi_e_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     rni_cfg.multi_outstanding = True

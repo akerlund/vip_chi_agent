@@ -3,17 +3,17 @@
 #
 # A write + read to a DECERR-configured SN-F address: both completions carry
 # NDERR, the write is not committed, and the read returns zeroed placeholders.
-# Runs under: testbench/py/tb/vip_chi_tb_top.py
+# Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
 from __future__ import annotations
 
 from vip_chi_types_pkg import Role, DataType, RespErr, chi_xfer_dat_beats
-from vip_chi_base_test import vip_chi_base_test
-from vip_chi_tb_pkg import DECERR_ADDR_C
+from chi_base_test import chi_base_test
+from chi_tb_pkg import DECERR_ADDR_C
 
 
-class tc_chi_d_decerr_smoke(vip_chi_base_test):
+class tc_chi_d_decerr_smoke(chi_base_test):
 
   def configure(self, rni_cfg, snf_cfg):
     snf_cfg.add_decerr_range(DECERR_ADDR_C, DECERR_ADDR_C + 0x3F)
