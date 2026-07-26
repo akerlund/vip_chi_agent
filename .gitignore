@@ -26,3 +26,6 @@ verdiLog/
 
 # Local working docs — not for version control
 docs/PORTING_PLAN.md
+
+# Local cocotb runners — not for version control
+testbench/py/run_*.py
