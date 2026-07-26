@@ -20,6 +20,39 @@ pair, joined by the `e_wide_link` adapter), `COH` = the coherent RN-F/HN-F
 subsystem (`vip_chi_coherent_tb_env`: two RN-F requesters + one multi-port HN-F
 home node, joined over the SNP-carrying links).
 
+### pyUVM/cocotb port
+
+The Python port (`testbench/py/`) uses one Verilator HDL shell and one Python
+testbench top:
+
+```text
+testbench/py/tb/vip_chi_hdl_top.sv
+testbench/py/tb/vip_chi_tb_top.py
+testbench/py/vip_chi_agent_example_py.core
+```
+
+`vip_chi_hdl_top.sv` exposes all flat-net endpoint groups with unique prefixes.
+`vip_chi_tb_top.py` creates the matching `ChiBus` objects, publishes them
+through pyUVM `ConfigDB`, and contains one static cocotb wrapper per public
+`tc_*.py` testcase. The public command-line name is always the `tc_*` name;
+internal cocotb wrapper names such as `tb_read_smoke` are not user-facing.
+
+Run it from `testbench/py`:
+
+```sh
+./scripts/run.py --build
+./scripts/run.py -t tc_chi_d_read_smoke --no-build
+./scripts/run.py --all --no-build
+```
+
+The script uses FuseSoC for the Verilator build/run commands. FuseSoC does not
+provide a project-aware `--all` switch, so the script discovers the static
+cocotb wrappers in `vip_chi_tb_top.py`, maps them back to public `tc_*` names,
+and runs one simulator process per testcase.
+
+The three building-block smokes below (`tc_chi_cfg_item_smoke`,
+`tc_chi_item_smoke`, `tc_chi_base_seq_smoke`) are SV-only with no Python port.
+
 ---
 
 ## Building-block smokes
@@ -147,29 +180,3 @@ silent, so a disabled or disconnected checker cannot pass unnoticed.
 | --- | --- | --- |
 | `tc_chi_d_perf_smoke` | INT | guard for `vip_chi_perf_counters` (latency / throughput / retry / back-pressure off a reset-gated cycle counter): drives reads and writes then fails unless the read/write completion counts, the latency accumulator, and the cycle counter are all non-zero. |
 | `tc_chi_d_scoreboard_negctl` | INT | guard for the always-on `vip_chi_scoreboard`: after one clean write it raw-injects an orphan `Comp` RSP (bogus TxnID); a report catcher demotes the induced "Orphan RSP" error and the test fails unless the checker actually fired. |
-
----
-
-## Coverage gaps (owed)
-
-Tracked in `vip_chi/docs/IMPLEMENTATION_PLAN.md`:
-
-- ~~No standalone scoreboard~~ — **addressed**: `vip_chi_scoreboard` now runs on
-  every non-opt-out test (lifecycle/completion, request fidelity, and
-  predictable write→read data). Thinning the duplicated per-test FIFO compares
-  to lean on it is a deferred follow-up.
-- ~~HN-I: a **runtime** CHI-E datapath test, reset-recovery, and
-  backpressure/credit-hold through the proxy~~ — **addressed**:
-  `tc_chi_e_hni_passthrough` (runtime CHI-E through the proxy), `tc_chi_d_hni_reset`
-  (all-links reset teardown/rebuild), and `tc_chi_d_hni_backpressure` (credit-hold)
-  now cover these.
-- ~~Coherent subsystem dirty forwarding + writeback~~ — **addressed** (M4b):
-  `tc_chi_coh_d_dirty_forward` (`SnpRespData` + PassDirty), `tc_chi_coh_d_writeback_evict`
-  and `tc_chi_coh_d_read_after_writeback` (`Evict`, `WriteBackFull`/`CopyBackWrData`),
-  over the M4a tx-flit arbiter. Each test checks coherent data integrity
-  end-to-end; SNP-channel credit SVA is bound to the coherent interfaces, and
-  ordinary coherent REQ/RSP/DAT `vip_chi_sva` endpoint binds are available behind
-  `VIP_CHI_ENABLE_COH_REQ_DAT_SVA`. Folding an always-on coherent data-integrity
-  check into Checker D remains owed (M4b-3).
-- Coherent **coverage (owed, M5)**: coherent-REQ / snoop-opcode / snoop-resp /
-  cache-transition / directory-occupancy covergroups, and CHI-E coherent parity.
