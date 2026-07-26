@@ -14,11 +14,21 @@ chi_d_types_t and `tc_chi_coh_e_<x>.sv` fixes CHI_E_WIDE_CFG_C /
 chi_e_wide_types_t. Both names run independently; there is no separate
 hand-maintained CHI-E scenario copy.
 
-Legend for the **Mode** column: `INT` = integrated RN-I↔SN-F, `HNI*` = HN-I proxy
-modes, `E` = the wide CHI-E link (`vip_chi_e_tb_env`: a real RN-I + SN-F agent
-pair, joined by the `e_wide_link` adapter), `COH` = the coherent RN-F/HN-F
-subsystem (`vip_chi_coherent_tb_env`: two RN-F requesters + one multi-port HN-F
-home node, joined over the SNP-carrying links).
+## Mode Legend
+
+| Mode | Meaning |
+| --- | --- |
+| `n/a` | Object/unit smoke that does not build a link-level testbench. |
+| `RNI` | RN-I sequence/unit smoke without a full integrated datapath. |
+| `INT` | Integrated RN-I↔SN-F datapath. |
+| `E-RNI` | Exact CHI-E RN-I-side smoke. |
+| `E-SNF` | Exact CHI-E SN-F-side manual completion smoke. |
+| `E-SNF-A` | Exact CHI-E autonomous SN-F responder smoke. |
+| `E` | Wide CHI-E RN-I↔SN-F integrated datapath. |
+| `HNI` | HN-I proxy path through one RN and one SN port. |
+| `HNI-FANIN` | HN-I proxy path with multiple RN ports targeting one SN. |
+| `HNI-XBAR` | HN-I proxy crossbar path with address-routed SN ports. |
+| `COH` | Coherent RN-F/HN-F subsystem over SNP-capable links. |
 
 ### pyUVM/cocotb port
 
@@ -86,7 +96,7 @@ The three building-block smokes below (`tc_chi_cfg_item_smoke`,
 
 Opt-in transaction overlap on the point-to-point RN-I↔SN-F path
 (`cfg.multi_outstanding`), off by default so every other test stays strictly
-serial. See `vip_chi/docs/IMPLEMENTATION_PLAN.md` §P4.
+serial. See [../docs/IMPLEMENTATION_PLAN.md](../docs/IMPLEMENTATION_PLAN.md).
 
 | Test | Mode | Proves |
 | --- | --- | --- |
@@ -128,8 +138,9 @@ serial. See `vip_chi/docs/IMPLEMENTATION_PLAN.md` §P4.
 
 ## HN-I proxy suite
 
-These route through the `vip_chi_hni_agent` proxy (see [UVM_TB.md](UVM_TB.md)
-§1–3 and `vip_chi/README.md`). Because the RN-I monitors watch the RN↔HN links
+These route through the `vip_chi_hni_agent` proxy (see
+[sv/UVM_TB.md](sv/UVM_TB.md) §1–3 and [../README.md](../README.md)). Because the
+RN-I monitors watch the RN↔HN links
 and the SN-F monitors watch the HN↔SN links, these tests verify both that the RN
 saw correct completions **and** that the SN actually received the forwarded
 request — i.e. the proxy relayed rather than short-circuited.
