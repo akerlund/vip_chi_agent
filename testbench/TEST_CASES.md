@@ -1,10 +1,10 @@
-# vip_chi example — test-case catalog
+# vip_chi testbench testcase catalog
 
-The shared regression currently runs 100+ UVM testcases. Each exercises a topology
-purely by which agents it drives (see [UVM_TB.md](UVM_TB.md) §2) and checks
-observed monitor items against sequence responses / expected payloads. Run one
-by passing `+UVM_TESTNAME=<name>` to the built simulator (see the repo README);
-this catalog is the authoritative list.
+The shared regression currently runs 100+ testcases across the SystemVerilog UVM
+and pyUVM/cocotb flows. Each testcase exercises a topology purely by which
+agents it drives (see [sv/UVM_TB.md](sv/UVM_TB.md) §2 for the SV harness model)
+and checks observed monitor items against sequence responses or expected
+payloads. This catalog is the authoritative list.
 
 Most coherent scenarios run at both CHI-D and wide CHI-E from a single
 parameterized body: `vip_chi_<scenario>_base_test #(CFG_P, TYPES_T)` extends the
@@ -22,13 +22,13 @@ home node, joined over the SNP-carrying links).
 
 ### pyUVM/cocotb port
 
-The Python port (`testbench/py/`) uses one Verilator HDL shell and one Python
+The Python port (`py/`) uses one Verilator HDL shell and one Python
 testbench top:
 
 ```text
-testbench/py/tb/vip_chi_hdl_top.sv
-testbench/py/tb/vip_chi_tb_top.py
-testbench/py/vip_chi_agent_example_py.core
+py/tb/vip_chi_hdl_top.sv
+py/tb/vip_chi_tb_top.py
+py/vip_chi_agent_example_py.core
 ```
 
 `vip_chi_hdl_top.sv` exposes all flat-net endpoint groups with unique prefixes.

@@ -77,7 +77,7 @@ verification items called out below.
 
 Update (2026-06-24, later): a first P4 probe that replaced the free-running
 `TxnID` counter with a **`2**txn_id_width`-indexed** in-flight bitmap, keeping
-serial control flow, regressed `timeout 60s ... vcs -buk` in `examples/vip_chi`
+serial control flow, regressed `timeout 60s ... vcs -buk` in `testbench/sv`
 to exit `124` during VCS elaboration/codegen. Reverting it restored exit `0`.
 
 Update (2026-07-05): **P4 read pipeline shipped.** The elaboration landmine was
@@ -505,7 +505,7 @@ vip_chi_agent/
 │              base_seq, read_seq, write_seq, write_zero_seq, pipelined_seq,
 │              atomic_seq, persist_seq, raw_seq; planned: pcrd_retry_seq,
 │              snf_mem_preload_seq, snf_decerr_seq, snf_derr_seq)
-└── yml/compile.yml
+└── vip_chi_agent.core
 ```
 
 `vip_chi_link_ctrl.sv` and a separate `vip_chi_driver.sv` dispatch shell from the
@@ -1076,43 +1076,28 @@ allocator.
 
 ---
 
-## 17. Compile order (`yml/compile.yml`)
+## 17. Compile order (FuseSoC cores)
 
 ```
-1. vip_memory_pkg, bool_pkg          (submodules/vip/vip_memory, submodules/vip/bool)
+1. vip_memory_pkg, bool_pkg          (submodules/vip_memory)
 2. vip_chi_types_pkg
 3. vip_chi_if
 4. vip_chi_agent_pkg                 (lcrd_mgr, cfg_agent, cfg_item, item, sequencer,
                                       monitor, coverage, driver_rni/snf[/hni], agent,
                                       seq_lib/*)
 5. vip_chi_sva                       (after vip_chi_if)
-6. examples/vip_chi_agent/sv/tb/tb.svh        (tb pkg + tc pkg + vip_chi_tb_top)
+6. testbench/sv/tb/tb.svh        (tb pkg + tc pkg + vip_chi_tb_top)
 ```
 
 ---
 
-## 18. Example testbench (`examples/vip_chi_agent/`)
+## 18. Example testbenches (`testbench/`)
 
-`tb/tb.svh` is the single FuseSoC-compiled wrapper (includes `vip_chi_tb_pkg.sv`,
-`vip_chi_tc_pkg.sv`, `vip_chi_tb_top.sv`). `vip_chi_tb_top.sv` instantiates the
-RN-I and SN-F interfaces, cross-wires the active channels (incl. link sideband),
-hosts the per-interface `vip_chi_sva` binds, and provides negative-test control
-(synthetic reset pulses, held-credit queue/replay). Harness scenarios (RN-I
-loopback / manual SN-F / autonomous SN-F) are selected via
-`vip_chi_tb_config.tb_mode` published by `vip_chi_base_test`, not by parsing
-`+UVM_TESTNAME`. `vip_chi_tb_env.sv` builds the two agents, the shared
-`vip_chi_coverage`, observation FIFOs, the virtual sequencer, and resets
-coverage per reset epoch; directed tests consume those FIFOs directly. The env
-also builds `vip_chi_scoreboard`, connected in parallel to the same monitor
-ports, which provides always-on RN-I↔SN-F transaction checking: (A) per-txn
-lifecycle/completion contract, (B) cross-agent request fidelity /
-relayed-exactly-once, and (C) an independent predictable-only write→read data
-check. It uses a requester-frame transaction table (the raw monitor `txn_key`
-cannot join a REQ to its orientation-flipped completion), a `{stream,dbid}`
-side-index to bind write-DAT, and a `return_txn_id` exception (deferred) for
-separated reads. Gated per-test by `tb_cfg.scoreboard_enable` /
-`scoreboard_check_data`; it augments the per-test FIFO compares (thinning them is
-a deferred follow-up). See `SCOREBOARD_PLAN.md`.
+`testbench/` owns the DUT-less example regressions. The SystemVerilog UVM flow is
+under `testbench/sv` and the pyUVM/cocotb flow is under `testbench/py`; both use
+one shared structural harness and a shared testcase catalog. See
+`testbench/README.md`, `testbench/TEST_CASES.md`, and
+`testbench/sv/UVM_TB.md` for the current flow and hierarchy documentation.
 
 ---
 

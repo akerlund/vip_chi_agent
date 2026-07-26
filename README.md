@@ -36,6 +36,9 @@ higher-level features. The heavy reference material lives under `docs/`:
 - [docs/SCOREBOARD_PLAN.md](docs/SCOREBOARD_PLAN.md) — the Checker-C / Checker-D
   scoreboard design.
 - [docs/FUTURE_WORK.md](docs/FUTURE_WORK.md) — the backlog (optional breadth/depth; charter complete).
+- [testbench/README.md](testbench/README.md) — shared SV/Python testbench
+  overview and run commands.
+- [testbench/TEST_CASES.md](testbench/TEST_CASES.md) — shared testcase catalog.
 
 ---
 
@@ -522,46 +525,17 @@ spans two links, so the home node tears both down together).
 
 ---
 
-## Example Testbench
+## Example Testbenches
 
-[testbench/sv](testbench/sv) is a DUT-less structural top that
-cross-wires the agents in several modes — integrated RN-I↔SN-F, RN-I loopback,
-SN-F manual/auto, HN-I passthrough/fan-in/crossbar, a CHI-E sidecar, and the
-coherent RN-F/HN-F topology — driven by 100+ testcases.
+[testbench](testbench) contains the DUT-less example regressions. There are two
+flows for the same testcase catalog:
 
-```text
-testbench/sv/
-├── tb/
-│   ├── vip_chi_tb_top.sv          — top: interface instances + per-mode cross-wiring
-│   ├── vip_chi_tb_pkg.sv          — CHI_D / CHI_D_WIDE / CHI_E_WIDE cfg + type typedefs
-│   ├── vip_chi_tb_config.sv       — shared harness config (reset pulse, CHI-E enable)
-│   ├── vip_chi_tb_env.sv          — CHI-D env (RN-I + SN-F + 2x2 HN-I + coverage + scoreboard + perf)
-│   ├── vip_chi_coherent_tb_env.sv — coherent RN-F/HN-F env
-│   ├── vip_chi_e_tb_env.sv / vip_chi_e_proxy_tb_env.sv — CHI-E envs
-│   ├── vip_chi_link_adapter.sv    — cross-wires two role interfaces into one CHI link
-│   └── vip_chi_virtual_sequencer.sv — rni / snf / hrni0 / hrni1 sequencer handles
-├── tc/                            — vip_chi_base_test + tc_chi_* / tc_chi_coh_* testcases
-└── vip_chi_agent_example.core     — FuseSoC core (build manifest)
-```
+- [testbench/sv](testbench/sv) is the SystemVerilog UVM flow, built with
+  FuseSoC and VCS.
+- [testbench/py](testbench/py) is the pyUVM/cocotb flow, built with FuseSoC and
+  Verilator.
 
-### Building and running
-
-Built with [FuseSoC](https://github.com/olofk/fusesoc) driving VCS (UVM-1.2).
-Run from the repository root (a single recursive `--cores-root .` discovers the
-agent, the example, and both submodule cores).
-
-```sh
-# One-time: fetch the submodule dependencies (vip_memory, vip_report_server)
-git submodule update --init
-
-# Build the example testbench (VCS elaborate + compile of the whole env)
-fusesoc --cores-root . run --target default --tool vcs --setup --build \
-        akerlund::vip_chi_agent_example:0
-
-# Run one testcase on the built simulator (any tc_chi_* / tc_chi_coh_* name)
-cd build/akerlund__vip_chi_agent_example_0/default-vcs
-./akerlund__vip_chi_agent_example_0 +UVM_TESTNAME=tc_chi_d_write_read_smoke -l vcs.log
-```
-
-A passing run ends with `Test (<name>) PASS` and `UVM_ERROR: 0 / UVM_FATAL: 0`.
-The full testcase catalog is in [testbench/sv/TEST_CASES.md](testbench/sv/TEST_CASES.md).
+Both flows use one shared structural harness and cover integrated RN-I/SN-F,
+HN-I proxy, CHI-E, and coherent RN-F/HN-F scenarios. See
+[testbench/README.md](testbench/README.md) for run commands and
+[testbench/TEST_CASES.md](testbench/TEST_CASES.md) for the testcase catalog.

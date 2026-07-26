@@ -2,15 +2,15 @@
 
 This document explains how the `vip_chi` example testbench is built and, in
 detail, how the structural top (`tb/vip_chi_tb_top.sv`) works. For the
-per-testcase catalog see [TEST_CASES.md](TEST_CASES.md); for the quick-start /
-regression-runner notes see [README.md](README.md).
+per-testcase catalog see [../TEST_CASES.md](../TEST_CASES.md); for the
+quick-start / regression-runner notes see [README.md](README.md).
 
 The example is **DUT-less**. There is no design in the middle: the top provides
 the peer-side wiring that cross-connects two real UVM agents on each link
 (`RN↔SN`, or `RN↔HN↔SN`). Each link is a `vip_chi_link_adapter` instance (see
 §3.5) — the top hosts interfaces and joins them; it never fabricates CHI
-traffic. Which links are active is chosen by a single **structural mode** the
-testcase selects — the top never inspects `+UVM_TESTNAME`.
+traffic. All supported links co-exist in the build; a testcase selects a
+topology by driving the matching agents, and idle agents stay parked.
 
 ---
 

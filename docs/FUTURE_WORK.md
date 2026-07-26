@@ -29,15 +29,6 @@ Source-review findings from the MakeUnique / DCT / rename follow-up pass.
   the fallback itself can still wedge. Either fatal locally on missing data for a
   fwd snoop or teach the HN-F to consume the fallback deliberately. *Effort S/M;
   risk med.*
-- **Regression script scope mismatch** — `examples/vip_chi_agent/README.md` calls
-  `scripts/compile.sh` the full regression, but the script's `TESTS` list does not
-  include the coherent suite or the new `tc_chi_coh_{d,e}_make_unique_dct` tests.
-  Either extend the script or rename the README claim to a compile/integrated-smoke
-  flow. *Effort S; risk low.*
-- **Rename/reorg documentation drift** — docs still contain old `examples/vip_chi`
-  paths and pre-reorg `tb/` / `tc/` links instead of `examples/vip_chi_agent` and
-  `sv/tb` / `sv/tc`. Refresh the command snippets and links after the
-  `vip_chi_agent/sv` layout move. *Effort S; risk low.*
 - **Stale transition-coverage comment** — `vip_chi_coherency_checker` still says
   the cache-transition sweep closes "30 reachable bins" even though the reduced
   model documents 11 reachable transition tuples. Update the comment or make it
