@@ -33,8 +33,6 @@ higher-level features. The heavy reference material lives under `docs/`:
   API, the HN-I expansion (§20), and the open interop findings (§22).
 - [docs/CHI_PRIMER.md](docs/CHI_PRIMER.md) — background on the CHI channels and
   flows the VIP models.
-- [docs/SCOREBOARD_PLAN.md](docs/SCOREBOARD_PLAN.md) — the Checker-C / Checker-D
-  scoreboard design.
 - [docs/FUTURE_WORK.md](docs/FUTURE_WORK.md) — the backlog (optional breadth/depth; charter complete).
 - [testbench/README.md](testbench/README.md) — shared SV/Python testbench
   overview and run commands.

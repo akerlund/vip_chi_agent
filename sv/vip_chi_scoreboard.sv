@@ -44,7 +44,6 @@ import vip_chi_types_pkg::*;
 //
 // It connects in parallel to the same monitor analysis ports the observation
 // FIFOs and coverage already use, so the per-test FIFO draining is untouched.
-// See vip_chi/docs/SCOREBOARD_PLAN.md for the full rationale.
 // -----------------------------------------------------------------------------
 
 // Which requester stream an observation arrived on (TxnID alone is not unique

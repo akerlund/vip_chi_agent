@@ -233,7 +233,7 @@ predictable-only write→read data check — and is gated per-test by
 `tb_cfg.scoreboard_enable` / `scoreboard_check_data`. Full night regression is
 46/46 green with the scoreboard active on the 40 traffic-driving tests (silent
 on all); a negative control confirms it reports a dropped completion as
-incomplete. See `SCOREBOARD_PLAN.md`.
+incomplete.
 
 Update (2026-07-12): **plan reconciled to the shipped tree; safe per-test check
 thinning.** This revision folds the outcomes of two standing reviews directly
@@ -1284,7 +1284,7 @@ every read is consistent with the writes actually observed on the wire), **not**
 DUT-vs-reference. It mirrors `vip_chi_coverage` exactly: `uvm_analysis_imp_decl`
 per stream, connected **in parallel** to the same monitor analysis ports the
 per-test FIFOs already use (analysis ports broadcast a copy per subscriber, so
-the tests' `get()` draining is untouched). Deep design in `SCOREBOARD_PLAN.md`.
+the tests' `get()` draining is untouched).
 
 **One shared transaction table**, keyed by TxnID with a DBID→txn side-index, is
 the spine all three checkers ride. A **requester-frame** table is required: the
