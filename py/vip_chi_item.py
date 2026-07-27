@@ -585,3 +585,57 @@ class vip_chi_item(uvm_sequence_item):
             f"addr=0x{int(self.addr):x} size={int(self.size)} "
             f"beats={len(self.data)} dat_opcode=0x{int(self.dat_opcode):x} "
             f"raw={int(self.raw_override)}")
+
+
+# ==============================================================================
+# Field-model deferral
+#
+# @vsc.randobj's interposer builds a field model at the end of every
+# construction, which is ~0.52 ms of the ~0.62 ms it costs to build an item.
+# The monitor mints one item per observed flit and the raw sequence one per
+# hand-packed request; both set `raw_override` and fill every field directly,
+# so the constraint model they build is never used.
+#
+# Deferring is safe rather than merely cheap: pyvsc's get_model() rebuilds the
+# model on demand, so an item that unexpectedly does get randomized simply pays
+# the cost then and solves identically. The deferral suppresses the
+# construction-time build and nothing else.
+#
+# This has to be a scoped swap rather than a subclass override: pyvsc installs
+# build_field_model onto the decorated class itself, so a method defined in the
+# class body would be replaced by the decorator.
+# ==============================================================================
+
+_vsc_build_field_model = vip_chi_item.build_field_model
+_defer_depth = 0
+
+
+def _deferred_build_field_model(self, name=None):
+  if _defer_depth > 0:
+    return None
+  return _vsc_build_field_model(self, name)
+
+
+class defer_field_model:
+  """Context manager: construct vip_chi_items without building their pyvsc
+  constraint model. Use it only where the item is a data carrier that is never
+  randomized.
+
+  Safe under cocotb because item construction is synchronous - no await can
+  interleave between __enter__ and __exit__ - and the depth counter keeps
+  nested uses correct.
+  """
+
+  def __enter__(self):
+    global _defer_depth
+    if _defer_depth == 0:
+      vip_chi_item.build_field_model = _deferred_build_field_model
+    _defer_depth += 1
+    return self
+
+  def __exit__(self, exc_type, exc, tb):
+    global _defer_depth
+    _defer_depth -= 1
+    if _defer_depth == 0:
+      vip_chi_item.build_field_model = _vsc_build_field_model
+    return False

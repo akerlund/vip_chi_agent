@@ -35,7 +35,7 @@ from vip_chi_types_pkg import (
   req_opcode_is_atomic, chi_xfer_dat_beats,
 )
 from vip_chi_if import ChiBus, CHANNELS
-from vip_chi_item import vip_chi_item
+from vip_chi_item import vip_chi_item, defer_field_model
 
 # Opcodes whose REQ ships data upstream (direction_from_opcode WRITE set).
 _WRITE_DIR_OPCODES = {
@@ -83,7 +83,10 @@ def direction_from_opcode(opcode: int) -> Dir:
 
 def req_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_item:
   f = unpack(cfg, "req", flit)
-  it = vip_chi_item("monitor_req_item", cfg)
+  # Observed traffic: every field is filled from the flit and the item is
+  # never randomized, so skip the constraint-model build.
+  with defer_field_model():
+    it = vip_chi_item("monitor_req_item", cfg)
   it.raw_override = True                     # observed, not solver-produced
   it.role = int(observed_role)
   it.direction = int(direction_from_opcode(f["opcode"]))
@@ -101,7 +104,10 @@ def req_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_i
 
 def rsp_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_item:
   f = unpack(cfg, "rsp", flit)
-  it = vip_chi_item("monitor_rsp_item", cfg)
+  # Observed traffic: every field is filled from the flit and the item is
+  # never randomized, so skip the constraint-model build.
+  with defer_field_model():
+    it = vip_chi_item("monitor_rsp_item", cfg)
   it.raw_override = True
   it.role = int(observed_role)
   it.src_id, it.tgt_id, it.txn_id = f["srcid"], f["tgtid"], f["txnid"]
@@ -116,7 +122,10 @@ def rsp_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_i
 def dat_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_item:
   """Single-beat view of one DAT flit (the live monitor reassembles bursts)."""
   f = unpack(cfg, "dat", flit)
-  it = vip_chi_item("monitor_dat_item", cfg)
+  # Observed traffic: every field is filled from the flit and the item is
+  # never randomized, so skip the constraint-model build.
+  with defer_field_model():
+    it = vip_chi_item("monitor_dat_item", cfg)
   it.raw_override = True
   it.role = int(observed_role)
   it.src_id, it.tgt_id, it.txn_id = f["srcid"], f["tgtid"], f["txnid"]
@@ -131,7 +140,10 @@ def dat_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_i
 
 def snp_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_item:
   f = unpack(cfg, "snp", flit)
-  it = vip_chi_item("monitor_snp_item", cfg)
+  # Observed traffic: every field is filled from the flit and the item is
+  # never randomized, so skip the constraint-model build.
+  with defer_field_model():
+    it = vip_chi_item("monitor_snp_item", cfg)
   it.raw_override = True
   it.role = int(observed_role)
   it.is_snoop = True
@@ -214,7 +226,9 @@ class vip_chi_monitor(uvm_monitor):
 
     it = self.dat_item_by_key.get(key)
     if it is None:
-      it = vip_chi_item("monitor_dat_item", self.cfg)
+      # Observed traffic, never randomized - skip the constraint model.
+      with defer_field_model():
+        it = vip_chi_item("monitor_dat_item", self.cfg)
       it.raw_override = True
       it.role = int(observed_role)
       it.direction = int(Dir.WRITE) if is_write_data else int(Dir.READ)

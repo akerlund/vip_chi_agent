@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from vip_chi_types_pkg import ChiCfg, pack
 from vip_chi_base_seq import vip_chi_base_seq
-from vip_chi_item import vip_chi_item
+from vip_chi_item import vip_chi_item, defer_field_model
 
 
 class vip_chi_raw_seq(vip_chi_base_seq):
@@ -33,7 +33,10 @@ class vip_chi_raw_seq(vip_chi_base_seq):
     self.items = []
 
   def _new_item(self):
-    return vip_chi_item("raw_item", cfg=self.CFG)
+    # Raw items are hand-packed by set_raw_* and never randomized, so skip the
+    # constraint-model build.
+    with defer_field_model():
+      return vip_chi_item("raw_item", cfg=self.CFG)
 
   def add_raw_req(self, fields):
     item = self._new_item()
