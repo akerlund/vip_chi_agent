@@ -66,7 +66,7 @@ filesets:
       - sv/vip_chi_agent_pkg.sv:                  {is_include_file: true}
     file_type: systemVerilogSource
     depend:
-      - "akerlund::vip_memory:2.0.0"
+      - "akerlund::vip_memory:2.0.1"
 
 targets:
   default:
