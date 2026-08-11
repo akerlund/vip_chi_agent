@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import cocotb
 from cocotb.triggers import FallingEdge
 
 from pyuvm import uvm_env, uvm_tlm_analysis_fifo, ConfigDB
@@ -33,6 +34,7 @@ from chi_virtual_sequencer import chi_virtual_sequencer
 from vip_chi_perf_counters import vip_chi_perf_counters
 from vip_chi_scoreboard import vip_chi_scoreboard
 from vip_chi_coverage import vip_chi_coverage
+from sva.bind_chi import bind_chi
 
 
 class chi_tb_env(uvm_env):
@@ -55,6 +57,8 @@ class chi_tb_env(uvm_env):
   def build_phase(self):
     rni_vif = ConfigDB().get(self, "", "rni_vif")
     snf_vif = ConfigDB().get(self, "", "snf_vif")
+    self.rni_vif = rni_vif
+    self.snf_vif = snf_vif
 
     ConfigDB().set(self, "rni_agent", "vif", rni_vif)
     ConfigDB().set(self, "rni_agent", "role", Role.RNI)
@@ -66,6 +70,11 @@ class chi_tb_env(uvm_env):
     self.perf = vip_chi_perf_counters("perf", self)
     self.scoreboard = vip_chi_scoreboard("scoreboard", self)
     self.coverage = vip_chi_coverage("coverage", self)
+    # Link-layer protocol checkers, one per interface, mirroring the per-bind
+    # vip_chi_sva instances in the SV harness. They are plain coroutines rather
+    # than uvm_components: they watch nets, not analysis traffic.
+    self.rni_sva = bind_chi(rni_vif, "rni_sva")
+    self.snf_sva = bind_chi(snf_vif, "snf_sva")
     self.vseq = chi_virtual_sequencer("virtual_sequencer", self)
 
     self.rni_req_fifo = uvm_tlm_analysis_fifo("rni_req_fifo", self)
@@ -128,10 +137,27 @@ class chi_tb_env(uvm_env):
   # Watch the shared RN-I reset and forward it into local checker state.
   # ---------------------------------------------------------------------------
   async def run_phase(self):
+    # The protocol checkers watch nets continuously and own their own reset
+    # handling, so they are started once here rather than restarted by
+    # handle_reset below.
+    cocotb.start_soon(self.rni_sva.run())
+    cocotb.start_soon(self.snf_sva.run())
+
     bus = self.rni_agent.vif
     while True:
       await FallingEdge(bus.rst_n)
       self.handle_reset()
+
+  def report_phase(self):
+    # pyUVM runs check_phase TOP-DOWN, unlike UVM, so an assertion placed there
+    # can run before the components below have finished folding in their state.
+    # report_phase is bottom-up and is where the port puts end-of-test asserts.
+    for checker in (self.rni_sva, self.snf_sva):
+      checker.report(self.logger)
+    total = self.rni_sva.errors + self.snf_sva.errors
+    assert total == 0, (
+      f"CHI protocol checkers reported {total} violation(s): "
+      f"rni_sva={self.rni_sva.errors} snf_sva={self.snf_sva.errors}")
 
   def handle_reset(self):
     self.coverage.handle_reset()

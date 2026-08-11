@@ -20,6 +20,36 @@ vip_chi_agent_example_py.core
 creates the `ChiBus` objects, publishes them through pyUVM `ConfigDB`, and
 contains one static cocotb test entry per public `tc_*` testcase.
 
+## Protocol Checkers
+
+`py/sva/` is the cocotb mirror of the SV `vip_chi_sva` binds: `bind_chi.py`
+for the REQ/RSP/DAT link layer and `bind_chi_snp.py` for the SNP channel,
+split across two modules for the same reason SV splits them, so a
+non-coherent link never evaluates SNP checks.
+
+They are plain coroutines rather than `uvm_component`s, because they watch
+nets rather than analysis traffic. `chi_tb_env` builds one per interface,
+starts them in `run_phase`, and asserts their violation counts are zero in
+`report_phase` -- not `check_phase`, which pyUVM runs TOP-DOWN, so an
+assertion there can fire before the components below have folded in their
+state.
+
+Each check names a stable rule and its IHI 0050 clause, and the end-of-test
+summary lists every rule that was evaluated with its pass and fail counts, so
+a rule that never ran is visible as absent rather than passing silently.
+
+Two deliberate differences from the SV checker, both recorded in the module
+headers:
+
+* **X-propagation checks are absent.** Verilator is 2-state, so
+  `p_{req,rsp,dat}_known_when_valid` and `p_snp_known_when_valid` could never
+  fire and are not ported.
+* **No per-rule severity control.** The AXI4 sibling has a check registry
+  offering disable/warn per rule; the CHI SV checker does not, reporting
+  through plain `$error`. Adding one here only would give the Python flow a
+  control plane the SV flow lacks, which is the divergence this layer exists
+  to prevent. If it is wanted, it belongs in `sv/` first.
+
 ## Build And Run
 
 Run from this directory:

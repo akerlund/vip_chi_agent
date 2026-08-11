@@ -349,6 +349,17 @@ module vip_chi_sva #(
   data_id_t rxdat_expected_data_id;
   int unsigned rxdat_burst_count;
   dat_opcode_t rxdat_burst_opcode;
+  // Sticky "this interface has carried link traffic at least once". Gates
+  // p_link_restarts_after_reset_release; see the comment on that property for
+  // why it deliberately is NOT reset with everything else.
+  bit link_ever_active;
+
+  always_ff @(posedge vif.clk) begin
+    if (link_is_active()) begin
+      link_ever_active <= 1'b1;
+    end
+  end
+
   int unsigned txreq_lcrd_count;
   int unsigned txrsp_lcrd_count;
   int unsigned txdat_lcrd_count;
@@ -878,8 +889,20 @@ module vip_chi_sva #(
         (!vif.txdatflitv && !vif.txdatflitpend && !vif.txdatlcrdv);
   endproperty
 
+  // NOT gated on checks_enable, unlike every other property here, and the
+  // exception is the whole point. checks_enable is this interface's current
+  // link activity, and the attempt starts at $rose(rst_n) -- the one moment the
+  // link is guaranteed idle, because p_link_sideband_idle_during_reset requires
+  // it. `disable iff` therefore killed every attempt at cycle 0 and the check
+  // could never fire: it read as "if the link is up, the link comes up".
+  //
+  // link_ever_active is the gate that carries the intended meaning. It latches
+  // the first time this interface's link activates and deliberately survives
+  // reset, so an interface whose agent is never built stays unarmed (no
+  // spurious failure on an idle link), while one that has carried traffic must
+  // bring its link back after every later reset release.
   property p_link_restarts_after_reset_release;
-    @(posedge vif.clk) disable iff (!checks_enable)
+    @(posedge vif.clk) disable iff (!link_ever_active)
       $rose(vif.rst_n) |=> ##[0:LINK_ACT_WINDOW_P] link_is_active();
   endproperty
 
