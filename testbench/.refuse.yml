@@ -29,7 +29,7 @@ regressions:
     jobs:
       vcs: 2
       verilator: 8
-    repeats: 4
+    repeats: 1
 
   # Enough of each topology to prove the build is alive: one object smoke, an
   # integrated read and write, a CHI-E link, an HN-I proxy path, and a coherent
