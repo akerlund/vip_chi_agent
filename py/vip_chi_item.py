@@ -51,9 +51,13 @@ _WRITE_OPCODES_D = [_RO.WRITE_NO_SNP_PTL, _RO.WRITE_NO_SNP_FULL,
 _WRITE_OPCODES_E = _WRITE_OPCODES_D + [_RO.WRITE_NO_SNP_ZERO,
                                        _RO.CLEAN_SHARED_PERSIST_SEP]
 
-# Coherent RN-F legal REQ opcode sets (con_opcode_legal_rnf).
-_RNF_READ_OPCODES = [_RO.READ_SHARED, _RO.READ_CLEAN, _RO.READ_UNIQUE,
-                     _RO.MAKE_READ_UNIQUE, _RO.READ_ONCE]
+# Coherent RN-F legal REQ opcode sets (con_opcode_legal_rnf). MakeReadUnique is
+# 0x41, which needs the 7-bit CHI-E REQ opcode field -- randomizing it under
+# CHI-D would emit a flit that truncates to 0x01 (ReadShared) on the wire, so it
+# joins the read set only for issue E.
+_RNF_READ_OPCODES_D = [_RO.READ_SHARED, _RO.READ_CLEAN, _RO.READ_UNIQUE,
+                       _RO.READ_ONCE]
+_RNF_READ_OPCODES_E = _RNF_READ_OPCODES_D + [_RO.MAKE_READ_UNIQUE]
 _RNF_WRITE_OPCODES = [_RO.WRITE_BACK_FULL, _RO.WRITE_CLEAN_FULL, _RO.EVICT,
                       _RO.CLEAN_UNIQUE, _RO.MAKE_UNIQUE, _RO.CLEAN_INVALID,
                       _RO.MAKE_INVALID, _RO.WRITE_UNIQUE_FULL, _RO.WRITE_UNIQUE_PTL]
@@ -97,6 +101,8 @@ class vip_chi_item(uvm_sequence_item):
     self._clog2_db_p1 = clog2(cfg.data_bytes) + 1
     self._read_set = _READ_OPCODES_E if self._issue_e else _READ_OPCODES_D
     self._write_set = _WRITE_OPCODES_E if self._issue_e else _WRITE_OPCODES_D
+    self._rnf_read_set = _RNF_READ_OPCODES_E if self._issue_e \
+                         else _RNF_READ_OPCODES_D
 
     # ---- rand scalar fields (REQ) -----------------------------------------
     self.direction = vsc.rand_bit_t(1)
@@ -318,8 +324,11 @@ class vip_chi_item(uvm_sequence_item):
     if int(direction) == int(Dir.READ):
       legal = {int(_RO.READ_NO_SNP), int(_RO.PREFETCH_TGT), int(_RO.PCRD_RETURN),
                int(_RO.READ_SHARED), int(_RO.READ_CLEAN), int(_RO.READ_UNIQUE),
-               int(_RO.MAKE_READ_UNIQUE), int(_RO.READ_ONCE)}
-      if v == int(_RO.READ_NO_SNP_SEP):
+               int(_RO.READ_ONCE)}
+      # MakeReadUnique is 0x41 and so needs the 7-bit CHI-E REQ opcode field; in
+      # CHI-D it does not fit and would be truncated to 0x01 (ReadShared) on the
+      # wire. ReadNoSnpSep is issue-gated for protocol rather than width reasons.
+      if v in (int(_RO.READ_NO_SNP_SEP), int(_RO.MAKE_READ_UNIQUE)):
         return self._issue_e
       return v in legal
     if int(direction) == int(Dir.WRITE):
@@ -431,7 +440,7 @@ class vip_chi_item(uvm_sequence_item):
     with vsc.if_then(self.s_raw_override == 0):
       with vsc.if_then(self.role == int(Role.RNF)):
         with vsc.if_then(self.direction == int(Dir.READ)):
-          self.opcode.inside(vsc.rangelist(*[int(o) for o in _RNF_READ_OPCODES]))
+          self.opcode.inside(vsc.rangelist(*[int(o) for o in self._rnf_read_set]))
         with vsc.if_then(self.direction == int(Dir.WRITE)):
           self.opcode.inside(vsc.rangelist(*[int(o) for o in _RNF_WRITE_OPCODES]))
 

@@ -33,6 +33,7 @@ test wrappers in Python.
 testbench/
 ├── README.md                  # shared testbench overview
 ├── TEST_CASES.md              # shared testcase catalog
+├── .refuse.yml                # named regression targets, shared by both flows
 ├── sv/
 │   ├── README.md              # VCS/UVM run notes
 │   ├── UVM_TB.md              # detailed SV harness guide
@@ -79,3 +80,37 @@ cd testbench/py
 
 See [sv/README.md](sv/README.md) and [py/README.md](py/README.md) for
 flow-specific notes.
+
+## Named regressions
+
+[.refuse.yml](.refuse.yml) defines regression targets shared by both flows, run
+through `refuse` from either testbench directory:
+
+```sh
+cd testbench/py                       # or testbench/sv
+refuse verilator --list-regressions   # or: refuse simv --list-regressions
+refuse verilator --regression smoke
+refuse verilator --regression full
+```
+
+Both flows run the same public `tc_*` names, so one profile selects the same
+scenarios on either side.
+
+| Profile | Selects |
+| --- | --- |
+| `full` | everything, 4 seeded repeats |
+| `smoke` | one scenario per topology: integrated read/write, CHI-E link, HN-I proxy, coherent at both issues |
+| `unit` | object-level smokes and the config self-check (no link topology) |
+| `link` | point-to-point RN-I ↔ SN-F datapath |
+| `pipeline` | the opt-in multi-outstanding overlap family |
+| `chi_e` | exact CHI-E behaviour, non-coherent and coherent |
+| `proxy` | HN-I proxy paths |
+| `coherent` | RN-F / HN-F subsystem over the SNP channel, both issues |
+| `dataid` | DAT beat placement by `DataID` and its malformed-burst negative control |
+| `negative` | every test that provokes a checker on purpose, including the anti-vacuity guards that are not named `*_negctl` |
+| `coverage` | everything, with coverage collection enabled |
+
+A regression selector that matches nothing is an error, so a profile cannot
+silently stop covering what it names. Adding a negative control means adding it
+to `negative`, not just naming it well: a violation test selected by no profile
+is a test that never runs.

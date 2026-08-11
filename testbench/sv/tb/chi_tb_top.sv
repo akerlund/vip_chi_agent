@@ -154,22 +154,45 @@ module chi_tb_top;
   vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
     coh_e_dsnf0_if (.clk(clk), .rst_n(rst_n_int));
 
+  // Agent-free A0 link: a third width shape (7-bit node IDs, 32-byte data bus)
+  // driven directly by tc_chi_a0_smoke rather than by any agent, so the
+  // interface and the link adapter are exercised at a geometry no other SV link
+  // here uses. Idle in every other testcase.
+  vip_chi_if #(.CFG_P(CHI_A0_CFG_C), .FLIT_TYPES_T(chi_a0_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+    a0_rni_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_A0_CFG_C), .FLIT_TYPES_T(chi_a0_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
+    a0_snf_if (.clk(clk), .rst_n(rst_n_int));
+
   // --- Protocol-checker (vip_chi_sva) binds -----------------------------------
   // checks_enable is an inline expression on each interface's own link-active:
   // an interface whose agent is not built/driving never activates its link, so
   // its `=== 1'b1` gate stays low (x-safe) and it raises no spurious assertions.
+  //
+  // dat_reorder_allowed stands the DataID-ordering checks down on every bind.
+  // Only a testcase whose completer deliberately emits DAT beats out of DataID
+  // order raises it, through tb_cfg (see the always_ff that latches tb_cfg
+  // below); the beat-count, TxnID and credit checks are unaffected either way.
+  // No declaration initializer: the always_ff below is the only driver, and a
+  // declaration assignment counts as a second procedural driver (ICPD_INIT).
+  // The reset branch there is what makes it 0 before any traffic.
+  bit chi_dat_reorder_allowed;
+
   vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
     rni_sva (.vif(rni_if),
-      .checks_enable((rni_if.txlinkactivereq === 1'b1) || (rni_if.rxlinkactivereq === 1'b1)));
+      .checks_enable((rni_if.txlinkactivereq === 1'b1) || (rni_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed));
   vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
     snf_sva (.vif(snf_if),
-      .checks_enable((snf_if.txlinkactivereq === 1'b1) || (snf_if.rxlinkactivereq === 1'b1)));
+      .checks_enable((snf_if.txlinkactivereq === 1'b1) || (snf_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed));
   vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
     rni_e_sva (.vif(chi_e_wide_rni_if),
-      .checks_enable((chi_e_wide_rni_if.txlinkactivereq === 1'b1) || (chi_e_wide_rni_if.rxlinkactivereq === 1'b1)));
+      .checks_enable((chi_e_wide_rni_if.txlinkactivereq === 1'b1) || (chi_e_wide_rni_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed));
   vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
     snf_e_sva (.vif(chi_e_wide_snf_if),
-      .checks_enable((chi_e_wide_snf_if.txlinkactivereq === 1'b1) || (chi_e_wide_snf_if.rxlinkactivereq === 1'b1)));
+      .checks_enable((chi_e_wide_snf_if.txlinkactivereq === 1'b1) || (chi_e_wide_snf_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed));
 
   // Coherent REQ/RSP/DAT checker binds. The SNP channel has a separate checker
   // below; the RN-F endpoint sees the full coherent REQ/RSP/DAT link traffic while
@@ -180,19 +203,23 @@ module chi_tb_top;
   vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_rnf0_sva (.vif(coh_rnf0_if),
-      .checks_enable((coh_rnf0_if.txlinkactivereq === 1'b1) || (coh_rnf0_if.rxlinkactivereq === 1'b1)));
+      .checks_enable((coh_rnf0_if.txlinkactivereq === 1'b1) || (coh_rnf0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed));
   vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_rnf1_sva (.vif(coh_rnf1_if),
-      .checks_enable((coh_rnf1_if.txlinkactivereq === 1'b1) || (coh_rnf1_if.rxlinkactivereq === 1'b1)));
+      .checks_enable((coh_rnf1_if.txlinkactivereq === 1'b1) || (coh_rnf1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed));
   vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_e_rnf0_sva (.vif(coh_e_rnf0_if),
-      .checks_enable((coh_e_rnf0_if.txlinkactivereq === 1'b1) || (coh_e_rnf0_if.rxlinkactivereq === 1'b1)));
+      .checks_enable((coh_e_rnf0_if.txlinkactivereq === 1'b1) || (coh_e_rnf0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed));
   vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_e_rnf1_sva (.vif(coh_e_rnf1_if),
-      .checks_enable((coh_e_rnf1_if.txlinkactivereq === 1'b1) || (coh_e_rnf1_if.rxlinkactivereq === 1'b1)));
+      .checks_enable((coh_e_rnf1_if.txlinkactivereq === 1'b1) || (coh_e_rnf1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed));
 `endif
 
   // SNP-channel protocol checker on the coherent RN-F / HN-F links. Role-agnostic:
@@ -249,12 +276,15 @@ module chi_tb_top;
   // the pulse is not retriggered. This is the only place the top reads tb_cfg.
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      reset_pulse_countdown <= 0;
+      reset_pulse_countdown   <= 0;
+      chi_dat_reorder_allowed <= 1'b0;
     end
     else begin
       if (tb_cfg == null) begin
         void'(uvm_config_db #(chi_tb_config)::get(null, "*", "tb_cfg", tb_cfg));
       end
+
+      chi_dat_reorder_allowed <= (tb_cfg != null) && tb_cfg.dat_reorder_allowed;
 
       if ((tb_cfg != null) && (tb_cfg.reset_pulse_cycles > 0) && (reset_pulse_countdown == 0)) begin
         reset_pulse_countdown <= tb_cfg.reset_pulse_cycles;
@@ -272,6 +302,7 @@ module chi_tb_top;
   // adapter too -- credit starvation is exercised through the RN-I driver's
   // cfg.hold_dat_credit, not a harness wire pinch.)
   chi_link_adapter int_link     (.rn(rni_if),      .sn(snf_if));
+  chi_link_adapter a0_link      (.rn(a0_rni_if),   .sn(a0_snf_if));
   chi_link_adapter hni_rn0_link (.rn(hni_rni0_if), .sn(hni_rn0_if));
   chi_link_adapter hni_rn1_link (.rn(hni_rni1_if), .sn(hni_rn1_if));
   chi_link_adapter hni_sn0_link (.rn(hni_sn0_if),  .sn(hni_snf0_if));
@@ -301,6 +332,12 @@ module chi_tb_top;
 
   // --- Interface handoff to the agents + run_test() ---------------------------
   initial begin
+    // Agent-free A0 link, published to the testcase itself (no agent owns it).
+    uvm_config_db #(virtual vip_chi_if #(CHI_A0_CFG_C, chi_a0_types_t, VIP_CHI_ROLE_RNI_E))::set(
+      uvm_root::get(), "uvm_test_top", "a0_rni_vif", a0_rni_if);
+    uvm_config_db #(virtual vip_chi_if #(CHI_A0_CFG_C, chi_a0_types_t, VIP_CHI_ROLE_SNF_E))::set(
+      uvm_root::get(), "uvm_test_top", "a0_snf_vif", a0_snf_if);
+
     // Integrated pair.
     uvm_config_db #(virtual vip_chi_if #(CHI_D_CFG_C, chi_d_types_t, VIP_CHI_ROLE_RNI_E))::set(
       uvm_root::get(), "uvm_test_top.env.rni_agent", "vif", rni_if);

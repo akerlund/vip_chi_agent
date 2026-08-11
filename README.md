@@ -293,21 +293,54 @@ ports remain available.
 Per-agent runtime policy lives on
 [vip_chi_cfg_agent](sv/vip_chi_cfg_agent.sv):
 
+Every field below exists under the same name in the Python port
+([py/vip_chi_cfg_agent.py](py/vip_chi_cfg_agent.py)) unless the row says
+otherwise.
+
 | Group | Fields |
 |-------|--------|
 | Identity | `role`, `is_active` |
-| Outstanding | `max_outstanding_read` / `_write` (16), `max_pcrd_budget` (8) |
+| Reporting | `{req,rsp,dat}_verbosity` (`UVM_HIGH`) — per-channel monitor/driver print level. **SV only**; the Python port prints through pyUVM's own logger. |
+| Outstanding | `max_outstanding_read` / `_write` (16); `max_pcrd_budget` (8, 0 = unbounded) — requester bound on P-credits banked but unconsumed, summed over every `PCrdType`. A completer only grants a credit against a `RetryAck` it already sent, so exceeding the budget means it granted credits it never owed. |
 | Pipeline (opt-in) | `multi_outstanding`, `multi_outstanding_write`, `multi_outstanding_mixed`; read back `observed_peak_outstanding`, `observed_peak_mixed_inflight` |
 | Credits | `initial_{req,rsp,dat}_credits` (8), `{req,rsp,dat}_send_credit_cap` (64), `hold_dat_credit` |
 | Completer policy | `split_write_rsp`, `ordered_dbid_resp`, `decerr_ranges[]`, `derr_ranges[]`, `mem_cfg` |
+| Completer DAT order | `snf_reverse_dat_beats` (0) — SN-F returns read beats in descending `DataID`. CHI places a beat by its `DataID`, not by its position in the burst, so this is a legal ordering a monitor must reassemble correctly. |
 | Retry | `force_retry_count` |
-| Coverage / delays | `coverage_enabled`, `link_act_delay_{min,max}`, per-channel `*_valid_delay_{min,max}` |
+| Timeouts | `compack_timeout_cycles` (10000) — SN-F gives up waiting for a `CompAck` after this many cycles |
+| Negative testing | `allow_raw_override` (1) — master gate for the item's `raw_*` flit-injection view |
+| Coverage | `coverage_enabled` |
+| Delays | `link_act_delay_{enabled,min,max}`, per-channel `{req,rsp,dat}_valid_delay_{enabled,min,max}` |
+| Coherent — SNP credits | `initial_snp_credits` (8), `snp_send_credit_cap` (64), `hold_snp_credit` — the SNP-channel mirror of the DAT credit knobs; an RN-F advertises SNP receive credits so the HN-F may source snoops, and `hold_snp_credit` starves that pool at runtime |
+| Coherent — HN-F policy | `coh_read_shared_state` (`SC`) / `coh_read_unique_state` (`UC`) — cache state granted per coherent-read class; `hnf_snoop_latency` (0) — cycles the HN-F waits before issuing a snoop; `exclusives_enabled` (1) — master enable for LL/SC monitor modeling; `hnf_enable_snoop_fwd` (0) — opt-in DCT (forwarding snoops) |
+| Coherent — RN-F cache | `rnf_cache_max_lines` (0 = unbounded) — cache capacity in lines; beyond it a clean victim is silently evicted |
+| Coherent — two-level memory | `hnf_downstream_en` (0), `hnf_downstream_snf_id` (0) — when set, the HN-F issues downstream `ReadNoSnp`/`WriteNoSnpFull` to a real SN-F instead of terminating against its own `vip_mem` |
+| Negative controls | see the table below |
 
 The static width/issue envelope is the `vip_chi_cfg_t CFG_P` type parameter
 (issue, node-id/addr widths, data bytes, CHI-E feature enables). The HN-I proxy
 additionally accepts an optional `vip_chi_hni_sam` and a QoS `arb_window` via
 `uvm_config_db`. See [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)
 §10 (config) and §12 (stimulus API) for the field-level reference.
+
+### Negative-control knobs
+
+Every always-on checker in this VIP ships a knob that deliberately breaks the
+invariant it guards, plus a testcase that proves the check fires. That is how a
+green regression is shown to be green because the design is correct rather than
+because the checker is vacuous. **All default to 0.** Setting one outside its own
+negative-control test produces a coherency failure that looks like a VIP bug, so
+they are listed here rather than left to a grep.
+
+| Knob | What it breaks | Proves |
+|------|----------------|--------|
+| `hnf_suppress_snoops` | HN-F grants coherent reads without snooping the other sharers, so two RN-Fs can end up duplicate Unique owners | the coherency checker's single-writer invariant |
+| `hnf_corrupt_dirty_merge` | HN-F drops the dirty data a `SnpRespData` forwards and completes the requester from stale memory | the coherency checker's data-integrity check |
+| `hnf_force_excl_success` | HN-F reports `ExclOkay` on every exclusive `CleanUnique`, even across an intervening conflict | the coherency checker's exclusive-access invariant |
+| `hnf_corrupt_fwd_data` | HN-F corrupts forwarded data on the DCT relay leg, so the requester's `CompData` no longer matches what the snoopee forwarded | the forwarded-data integrity check |
+| `hnf_downstream_corrupt_data` | HN-F XOR-inverts data relayed from a downstream SN-F fetch | the end-to-end (two-level memory) integrity check |
+| `hnf_downstream_force_decerr` | HN-F treats a downstream SN-F fetch as a `DECERR` | the downstream error-propagation path |
+| `snf_duplicate_dat_beat` | SN-F sends the final beat of a read burst carrying `DataID` 0 again, so one beat position is delivered twice and one never at all | the monitor's duplicate-`DataID` and missing-beat checks |
 
 ---
 

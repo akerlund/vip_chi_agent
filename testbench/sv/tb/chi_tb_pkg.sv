@@ -18,6 +18,21 @@ package chi_tb_pkg;
   };
 
 
+  // A0: a third width shape, used only by tc_chi_a0_smoke to exercise the
+  // interface and the link adapter at narrower node IDs and a 32-byte data bus
+  // than any agent-driven link here. Mirrors A0_CFG in the Python HDL shell.
+  localparam vip_chi_cfg_t CHI_A0_CFG_C = '{
+    ISSUE_P         : VIP_CHI_ISSUE_D_E,
+    NODE_ID_WIDTH_P : 7,
+    ADDR_WIDTH_P    : 44,
+    DATA_BYTES_P    : 32,
+    DATACHECK_EN_P  : 1'b0,
+    POISON_EN_P     : 1'b0,
+    MPAM_EN_P       : 1'b0,
+    PARITY_EN_P     : 1'b0
+  };
+
+
   localparam vip_chi_cfg_t CHI_D_WIDE_CFG_C = '{
     ISSUE_P         : VIP_CHI_ISSUE_D_E,
     NODE_ID_WIDTH_P : 11,
@@ -40,6 +55,7 @@ package chi_tb_pkg;
     PARITY_EN_P     : 1'b0
   };
 
+  typedef vip_chi_types_d #(CHI_A0_CFG_C) chi_a0_types_t;
   typedef vip_chi_types_d #(CHI_D_CFG_C) chi_d_types_t;
   typedef vip_chi_types_d #(CHI_D_WIDE_CFG_C) chi_d_wide_types_t;
   typedef vip_chi_types_e #(CHI_E_WIDE_CFG_C) chi_e_wide_types_t;

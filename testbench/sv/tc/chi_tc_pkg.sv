@@ -11,6 +11,8 @@ package chi_tc_pkg;
   `include "chi_write_zero_fatal_catcher.sv"
   `include "chi_scoreboard_negctl_catcher.sv"
   `include "chi_coherency_negctl_catcher.sv"
+  `include "chi_dataid_negctl_catcher.sv"
+  `include "chi_pcrd_leak_negctl_catcher.sv"
   `include "chi_base_test.sv"
   `include "chi_e_base_test.sv"
   `include "chi_e_proxy_base_test.sv"
@@ -172,5 +174,10 @@ package chi_tc_pkg;
   `include "tc_chi_coh_d_wr_direction.sv"
   `include "tc_chi_d_qos_echo.sv"
   `include "tc_chi_opcode_pool_safe.sv"
+  `include "tc_chi_a0_smoke.sv"
+  `include "tc_chi_cfg_invalid.sv"
+  `include "tc_chi_dataid_out_of_order.sv"
+  `include "tc_chi_dataid_duplicate.sv"
+  `include "tc_chi_pcrd_leak.sv"
 
 endpackage

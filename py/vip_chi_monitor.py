@@ -166,12 +166,22 @@ class vip_chi_monitor(uvm_monitor):
     self.rsp_port = uvm_analysis_port("rsp_port", self)
     self.dat_port = uvm_analysis_port("dat_port", self)
     self.snp_port = uvm_analysis_port("snp_port", self)
+    # DataID placement violations seen so far (duplicate, out-of-range, or a
+    # position no beat carried). A self.logger.error() does not auto-fail pyUVM,
+    # so the negative-control testcase asserts on this counter. Deliberately not
+    # cleared by _reset_state(): it is a whole-run tally, not per-transfer state.
+    self.n_dataid_violation = 0
     self._reset_state()
 
   def _reset_state(self):
     # DAT reassembly state, keyed by (role, src, tgt, txnid).
     self.dat_item_by_key = {}
     self.dat_beats_by_key = {}
+    # Which beat positions of an in-flight transfer have already been written,
+    # so a repeated DataID is reported rather than silently overwriting the
+    # earlier beat, and a position never written is reported at transfer close.
+    # Only populated on the DataID-placed path.
+    self.dat_beat_seen_by_key = {}
     # REQ->DAT beat-count correlation.
     self.rd_beats_by_txnid = {}
     self.wr_beats_by_txnid = {}
@@ -238,21 +248,68 @@ class vip_chi_monitor(uvm_monitor):
       it.dat_opcode = f["opcode"]
       if self.cfg.is_e:
         it.dat_tagop = f.get("tagop", 0)
-      it.data, it.be = [], []
-      it.data_id, it.cc_id = [], []
-      it.dat_resp, it.dat_resp_err = [], []
-      it.tag, it.tu = [], []
+      # Sized up front on the DataID-placed path so a beat can be written to
+      # its own position; the fallback path still appends in arrival order.
+      n = expected if expected > 0 else 0
+      it.data, it.be = [0] * n, [0] * n
+      it.data_id, it.cc_id = [0] * n, [0] * n
+      it.dat_resp, it.dat_resp_err = [0] * n, [0] * n
+      it.tag, it.tu = [0] * n, [0] * n
       self.dat_item_by_key[key] = it
       self.dat_beats_by_key[key] = 0
+      if expected > 0:
+        self.dat_beat_seen_by_key[key] = [False] * expected
 
-    it.data.append(f["data"])
-    it.be.append(f["be"])
-    it.data_id.append(f["dataid"])
-    it.cc_id.append(f["ccid"])
-    it.dat_resp.append(f["resp"])
-    it.dat_resp_err.append(f["resperr"])
-    it.tag.append(f.get("tag", 0))
-    it.tu.append(f.get("tu", 0))
+    # Place by DataID when the beat count is known; the running receive counter
+    # stays the index only where no count is available to bound DataID against.
+    if expected > 0:
+      # The beat count can only become known once the correlating REQ or DBID
+      # grant has been seen. That always precedes the data in this VIP, but an
+      # item opened on the unknown-count path must not KeyError if it does not:
+      # size the placement state on first use instead of assuming allocation.
+      seen = self.dat_beat_seen_by_key.get(key)
+      if seen is None or len(seen) < expected:
+        seen = (seen or []) + [False] * (expected - len(seen or []))
+        self.dat_beat_seen_by_key[key] = seen
+        for lst in (it.data, it.be, it.data_id, it.cc_id,
+                    it.dat_resp, it.dat_resp_err, it.tag, it.tu):
+          lst.extend([0] * (expected - len(lst)))
+
+      beat_index = int(f["dataid"])
+      if beat_index >= expected:
+        # Unplaceable: report it and drop the payload, but still count the beat
+        # so the transfer retires. Its empty slot is named at transfer close.
+        self.n_dataid_violation += 1
+        self.logger.error(
+          f"[{self.get_name()}] DAT DataID {beat_index} is outside the "
+          f"{expected}-beat transfer for txn_id 0x{dat_txn:x} -- beat dropped")
+        self.dat_beats_by_key[key] += 1
+        if self.dat_beats_by_key[key] >= expected:
+          self._retire_dat_transfer(key, it, dat_txn, is_write_data, expected)
+        return
+      if self.dat_beat_seen_by_key[key][beat_index]:
+        self.n_dataid_violation += 1
+        self.logger.error(
+          f"[{self.get_name()}] duplicate DAT DataID {beat_index} for txn_id "
+          f"0x{dat_txn:x}: this beat position was already delivered")
+      self.dat_beat_seen_by_key[key][beat_index] = True
+      it.data[beat_index] = f["data"]
+      it.be[beat_index] = f["be"]
+      it.data_id[beat_index] = f["dataid"]
+      it.cc_id[beat_index] = f["ccid"]
+      it.dat_resp[beat_index] = f["resp"]
+      it.dat_resp_err[beat_index] = f["resperr"]
+      it.tag[beat_index] = f.get("tag", 0)
+      it.tu[beat_index] = f.get("tu", 0)
+    else:
+      it.data.append(f["data"])
+      it.be.append(f["be"])
+      it.data_id.append(f["dataid"])
+      it.cc_id.append(f["ccid"])
+      it.dat_resp.append(f["resp"])
+      it.dat_resp_err.append(f["resperr"])
+      it.tag.append(f.get("tag", 0))
+      it.tu.append(f.get("tu", 0))
     self.dat_beats_by_key[key] += 1
 
     if expected > 0:
@@ -261,13 +318,31 @@ class vip_chi_monitor(uvm_monitor):
       done = not flit_pending
 
     if done:
-      self.dat_port.write(it)
-      del self.dat_item_by_key[key]
-      del self.dat_beats_by_key[key]
-      if is_write_data:
-        self.wr_beats_by_dbid.pop(dat_txn, None)
-      else:
-        self.rd_beats_by_txnid.pop(dat_txn, None)
+      self._retire_dat_transfer(key, it, dat_txn, is_write_data, expected)
+
+  # Publish a completed DAT transfer and drop its reassembly state.
+  #
+  # Every beat position must have been filled. On the DataID-placed path a
+  # duplicate or out-of-range DataID consumes a beat of the expected count
+  # without filling its slot, so the gap it leaves is named here instead of
+  # being published as an untouched (zero) beat that reads as a data mismatch.
+  def _retire_dat_transfer(self, key, it, dat_txn, is_write_data, expected):
+    if expected > 0:
+      for i, seen in enumerate(self.dat_beat_seen_by_key[key]):
+        if not seen:
+          self.n_dataid_violation += 1
+          self.logger.error(
+            f"[{self.get_name()}] DAT transfer for txn_id 0x{dat_txn:x} closed "
+            f"with no beat carrying DataID {i} (of {expected})")
+
+    self.dat_port.write(it)
+    del self.dat_item_by_key[key]
+    del self.dat_beats_by_key[key]
+    self.dat_beat_seen_by_key.pop(key, None)
+    if is_write_data:
+      self.wr_beats_by_dbid.pop(dat_txn, None)
+    else:
+      self.rd_beats_by_txnid.pop(dat_txn, None)
 
   # ==========================================================================
   async def monitor_start(self):

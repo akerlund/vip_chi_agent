@@ -188,6 +188,27 @@ class vip_chi_driver_snf(uvm_driver):
     dw = self.bus.cfg.data_bytes * 8
     return (_I(addr) + beat_index) & ((1 << dw) - 1)
 
+  # Beat position carried by the send_index'th DAT beat of a read burst. CHI
+  # places a beat by its DataID rather than by its position in the burst, so the
+  # completer may send the positions in any order as long as each beat carries
+  # the payload belonging to the DataID it announces.
+  #
+  #   default                    : ascending, 0 .. beat_count-1
+  #   cfg.snf_reverse_dat_beats  : descending, beat_count-1 .. 0
+  #   cfg.snf_duplicate_dat_beat : the last send repeats position 0, so one
+  #     position is delivered twice and the last position never at all -- the
+  #     negative control for the monitor's duplicate/missing DataID checks
+  #
+  # A single-beat transfer has nothing to reorder, so both knobs are inert.
+  def dat_beat_position(self, send_index, beat_count):
+    if beat_count <= 1:
+      return send_index
+    if self.cfg.snf_duplicate_dat_beat and send_index == (beat_count - 1):
+      return 0
+    if self.cfg.snf_reverse_dat_beats:
+      return beat_count - 1 - send_index
+    return send_index
+
   def read_data_beat(self, addr, beat_index):
     beat_addr = _I(addr) + beat_index * self.bus.cfg.data_bytes
     if self._has_row(beat_addr):
@@ -589,7 +610,11 @@ class vip_chi_driver_snf(uvm_driver):
 
     dat_op = int(DatOpcode.DATA_SEP_RESP) if is_sep else int(DatOpcode.COMP_DATA)
     be_all = (1 << cfg.be_width) - 1
-    for beat_index in range(beat_count):
+    for send_index in range(beat_count):
+      # Which beat position this send carries. The knobs move the position
+      # without touching the payload, so a beat always carries the data
+      # belonging to the DataID it announces.
+      beat_index = self.dat_beat_position(send_index, beat_count)
       fields = {
         "data": 0 if is_decerr else self.read_data_beat(req_addr, beat_index),
         "be": 0 if is_decerr else be_all,
@@ -604,7 +629,7 @@ class vip_chi_driver_snf(uvm_driver):
       await self.wait_for_credit(self.dat_lcrd)
       await bus.rising()
       self.drive_idle_sideband()
-      bus.drive(txsactive=1, txdatflitpend=1 if beat_index != (beat_count - 1) else 0,
+      bus.drive(txsactive=1, txdatflitpend=1 if send_index != (beat_count - 1) else 0,
                 txdatflitv=1)
       bus.drive_flit("dat", fields)
       await bus.rising()

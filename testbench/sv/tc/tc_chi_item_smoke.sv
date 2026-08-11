@@ -126,6 +126,12 @@ class tc_chi_item_smoke extends uvm_test;
         tc_name))
     end
 
+    // The Python twin also asserts that the helper rejects MakeReadUnique under
+    // CHI-D. That check cannot be written here: req_opcode_t is 6 bits wide for
+    // CHI-D, so req_opcode_t'(7'h41) truncates to 6'h01 before the call and the
+    // helper is asked about ReadShared instead. The value is simply not
+    // expressible at this type, which is the same guarantee by other means.
+
     chi_d_item.min_addr = vip_chi_item #(CHI_D_WIDE_CFG_C)::addr_t'('h1000);
     chi_d_item.max_addr = vip_chi_item #(CHI_D_WIDE_CFG_C)::addr_t'('h1003);
     chi_d_item.set_size(3'd2);
@@ -191,11 +197,14 @@ class tc_chi_item_smoke extends uvm_test;
         tc_name))
     end
 
-    if (chi_e_item.req_opcode_is_legal(
+    // MakeReadUnique is the mirror of the CHI-D assertion above: the opcode is
+    // legal for a coherent read exactly when the REQ opcode field is wide enough
+    // to carry 7'h41, which is issue E.
+    if (!chi_e_item.req_opcode_is_legal(
           vip_chi_item #(CHI_E_WIDE_CFG_C)::req_opcode_t'(VIP_CHI_REQ_MAKE_READ_UNIQUE_C),
           VIP_CHI_DIR_READ_E)) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] CHI-E legality helper accepted deferred MakeReadUnique opcode",
+        "FATAL [%s] CHI-E legality helper rejected MakeReadUnique opcode",
         tc_name))
     end
 

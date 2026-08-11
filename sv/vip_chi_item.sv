@@ -531,8 +531,26 @@ class vip_chi_item #(
 
   // ---------------------------------------------------------------------------
   // Check whether one REQ opcode is legal for this CFG_P and direction.
+  //
+  // Two encodings (MakeReadUnique 7'h41, WriteNoSnpZero 7'h44) do not fit the
+  // CHI-D 6-bit REQ opcode field at all, so they are matched at full width
+  // BEFORE the truncating case below. Writing them as `req_opcode_t'(...)` case
+  // items would alias them onto unrelated CHI-D opcodes (7'h41 -> 6'h01, which
+  // is ReadShared) and silently answer for the wrong opcode.
   // ---------------------------------------------------------------------------
   function bit req_opcode_is_legal(input req_opcode_t value, input vip_chi_dir_t dir);
+
+    logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] wide;
+
+    wide = VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(value);
+
+    if (wide == VIP_CHI_REQ_MAKE_READ_UNIQUE_C) begin
+      return (dir == VIP_CHI_DIR_READ_E) && (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E);
+    end
+
+    if (wide == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C) begin
+      return (dir == VIP_CHI_DIR_WRITE_E) && (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E);
+    end
 
     case (dir)
       VIP_CHI_DIR_READ_E: begin
@@ -542,7 +560,8 @@ class vip_chi_item #(
           req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C),
           req_opcode_t'(VIP_CHI_REQ_READ_SHARED_C),
           req_opcode_t'(VIP_CHI_REQ_READ_CLEAN_C),
-          req_opcode_t'(VIP_CHI_REQ_READ_UNIQUE_C): begin
+          req_opcode_t'(VIP_CHI_REQ_READ_UNIQUE_C),
+          req_opcode_t'(VIP_CHI_REQ_READ_ONCE_C): begin
             return 1'b1;
           end
           req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C): begin
@@ -581,10 +600,13 @@ class vip_chi_item #(
           req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_C),
           req_opcode_t'(VIP_CHI_REQ_EVICT_C),
           req_opcode_t'(VIP_CHI_REQ_CLEAN_UNIQUE_C),
-          req_opcode_t'(VIP_CHI_REQ_MAKE_UNIQUE_C): begin
+          req_opcode_t'(VIP_CHI_REQ_MAKE_UNIQUE_C),
+          req_opcode_t'(VIP_CHI_REQ_CLEAN_INVALID_C),
+          req_opcode_t'(VIP_CHI_REQ_MAKE_INVALID_C),
+          req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_C),
+          req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C): begin
             return 1'b1;
           end
-          req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C),
           req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C): begin
             return (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E);
           end
@@ -1343,16 +1365,32 @@ class vip_chi_item #(
   // ---------------------------------------------------------------------------
   constraint con_opcode_legal_rnf {
     if (!raw_override && (role == VIP_CHI_ROLE_RNF_E)) {
+      // MakeReadUnique acquires Unique AND fetches data (read-family
+      // completion). Its 7'h41 encoding needs the CHI-E REQ opcode field:
+      // req_opcode_t'() would truncate it to 6'h01 under CHI-D, quietly adding
+      // a second way to say ReadShared rather than a new opcode. The two sets
+      // are written as if/else rather than a base set plus an issue-E addition,
+      // because constraints conjoin: a second `inside` would INTERSECT with the
+      // first and remove MakeReadUnique instead of adding it.
       if (direction == VIP_CHI_DIR_READ_E) {
-        opcode inside {
-          req_opcode_t'(VIP_CHI_REQ_READ_SHARED_C),
-          req_opcode_t'(VIP_CHI_REQ_READ_CLEAN_C),
-          req_opcode_t'(VIP_CHI_REQ_READ_UNIQUE_C),
-          // MakeReadUnique acquires Unique AND fetches data (read-family completion).
-          req_opcode_t'(VIP_CHI_REQ_MAKE_READ_UNIQUE_C),
-          // ReadOnce is a non-allocating snapshot read (M2).
-          req_opcode_t'(VIP_CHI_REQ_READ_ONCE_C)
-        };
+        if (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) {
+          opcode inside {
+            req_opcode_t'(VIP_CHI_REQ_READ_SHARED_C),
+            req_opcode_t'(VIP_CHI_REQ_READ_CLEAN_C),
+            req_opcode_t'(VIP_CHI_REQ_READ_UNIQUE_C),
+            // ReadOnce is a non-allocating snapshot read (M2).
+            req_opcode_t'(VIP_CHI_REQ_READ_ONCE_C),
+            req_opcode_t'(VIP_CHI_REQ_MAKE_READ_UNIQUE_C)
+          };
+        }
+        else {
+          opcode inside {
+            req_opcode_t'(VIP_CHI_REQ_READ_SHARED_C),
+            req_opcode_t'(VIP_CHI_REQ_READ_CLEAN_C),
+            req_opcode_t'(VIP_CHI_REQ_READ_UNIQUE_C),
+            req_opcode_t'(VIP_CHI_REQ_READ_ONCE_C)
+          };
+        }
       }
       else {
         opcode inside {

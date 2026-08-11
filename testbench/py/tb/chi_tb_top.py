@@ -86,6 +86,19 @@ async def _reset_and_publish(dut, test_name: str, entries: list[tuple[str, ChiBu
   await uvm_root().run_test(test_name, keep_set={ConfigDB})
 
 
+async def _run_unit(dut, test_name: str) -> None:
+  """Run one object-level testcase that builds no link topology.
+
+  No ChiBus is published because nothing under test touches the wires; the clock
+  runs only so the cocotb scheduler has something to advance.
+  """
+  importlib.import_module(test_name)
+  cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+  dut.rst_n.value = 1
+  await RisingEdge(dut.clk)
+  await uvm_root().run_test(test_name, keep_set={ConfigDB})
+
+
 async def _run_d_link(dut, test_name: str) -> None:
   """Run one CHI-D integrated RN-I to SN-F testcase."""
   await _reset_and_publish(dut, test_name, [
@@ -720,6 +733,62 @@ async def tc_chi_d_atomic_variants(dut) -> None:
 async def tc_chi_d_credit_starvation(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_d_credit_starvation"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_base_seq_smoke", timeout_time=60, timeout_unit="ms")
+async def tc_chi_base_seq_smoke(dut) -> None:
+  """Run this public object-level testcase with no link topology."""
+  test_name = "tc_chi_base_seq_smoke"
+  await _run_unit(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_item_smoke", timeout_time=60, timeout_unit="ms")
+async def tc_chi_item_smoke(dut) -> None:
+  """Run this public object-level testcase with no link topology."""
+  test_name = "tc_chi_item_smoke"
+  await _run_unit(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_cfg_item_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_cfg_item_smoke(dut) -> None:
+  """Run this public object-level testcase with no link topology."""
+  test_name = "tc_chi_cfg_item_smoke"
+  await _run_unit(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_opcode_pool_safe", timeout_time=60, timeout_unit="ms")
+async def tc_chi_opcode_pool_safe(dut) -> None:
+  """Run this public object-level testcase with no link topology."""
+  test_name = "tc_chi_opcode_pool_safe"
+  await _run_unit(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_cfg_invalid", timeout_time=20, timeout_unit="ms")
+async def tc_chi_cfg_invalid(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_cfg_invalid"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_dataid_duplicate", timeout_time=20, timeout_unit="ms")
+async def tc_chi_dataid_duplicate(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_dataid_duplicate"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_dataid_out_of_order", timeout_time=20, timeout_unit="ms")
+async def tc_chi_dataid_out_of_order(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_dataid_out_of_order"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_pcrd_leak", timeout_time=20, timeout_unit="ms")
+async def tc_chi_pcrd_leak(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_pcrd_leak"
   await _run_d_link(dut, test_name)
 
 

@@ -1,7 +1,11 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs 100+ testcases across the SystemVerilog UVM
-and pyUVM/cocotb flows. Each testcase exercises a topology purely by which
+The shared regression currently runs **129 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **129 pyUVM/cocotb**
+testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
+maintained here as part of adding a testcase, not re-derived: adding one means
+adding its row below and updating this paragraph. Each testcase exercises a
+topology purely by which
 agents it drives (see [sv/UVM_TB.md](sv/UVM_TB.md) §2 for the SV harness model)
 and checks observed monitor items against sequence responses or expected
 payloads. This catalog is the authoritative list.
@@ -60,8 +64,7 @@ provide a project-aware `--all` switch, so the script discovers the static
 cocotb tests in `chi_tb_top.py` by their public `tc_*` names and runs one
 simulator process per testcase.
 
-The three building-block smokes below (`tc_chi_cfg_item_smoke`,
-`tc_chi_item_smoke`, `tc_chi_base_seq_smoke`) are SV-only with no Python port.
+Both flows run the same list of testcase names.
 
 ---
 
@@ -70,8 +73,11 @@ The three building-block smokes below (`tc_chi_cfg_item_smoke`,
 | Test | Mode | Proves |
 | --- | --- | --- |
 | `tc_chi_cfg_item_smoke` | n/a | cfg-item defaults and `reset()` behavior. |
+| `tc_chi_cfg_invalid` | n/a | `vip_chi_cfg_agent::is_valid()` runtime self-check: one case per rule, each starting from a default config and breaking exactly one thing, plus legal and warn-only configs that must stay accepted. Catches both a rule that stops working and a rule that starts rejecting a legal setup. |
 | `tc_chi_item_smoke` | n/a | item randomization, legality, copy/compare, and payload handling across CHI-D and CHI-E shapes. |
 | `tc_chi_base_seq_smoke` | RNI | base-sequence helpers, wrapper sequences, and the write-zero legality path. |
+| `tc_chi_opcode_pool_safe` | n/a | `PCrdReturn` is not drawable from the non-coherent legal-opcode pools: an RN-I item randomized many times across both directions and both issues never lands on it, and every drawn opcode is accepted by the legality helper. A drawn `PCrdReturn` would wedge the driver with no diagnostic. The coherent RN-F pool is drawn the same way and cross-checked against the helper, so the two hand-written opcode tables cannot drift apart. |
+| `tc_chi_a0_smoke` | n/a | the interface and `chi_link_adapter` at a third flit geometry (7-bit node IDs, 32-byte data): an agent-free link-activation handshake and one REQ flit checked verbatim on the far side. The Python twin additionally checks its packing codec against the HDL net widths — a check with no SV counterpart, since the SV interface carries the flit struct itself. |
 
 ## Integrated non-coherent datapath
 
@@ -91,6 +97,7 @@ The three building-block smokes below (`tc_chi_cfg_item_smoke`,
 | `tc_chi_d_decerr_smoke` | INT | DECERR / NDERR behavior for writes and reads in a configured address window. |
 | `tc_chi_d_derr_smoke` | INT | DERR-marked read data returned from the backing store. |
 | `tc_chi_d_raw_inject` | INT | raw RN-I REQ + raw SN-F DAT/RSP injection, incl. verbatim observation of an illegal opcode (negative testing). |
+| `tc_chi_dataid_out_of_order` | INT | DAT beats are placed by `DataID`, not by arrival: `snf_reverse_dat_beats` makes the SN-F return a 4-beat read in DESCENDING `DataID` and the payload must still reassemble in address order, in the monitor's item and in the requester's own response. The SVA `DataID`-ordering checks (which hold this VIP's in-order emission convention, not a CHI rule) stand down via `tb_cfg.dat_reorder_allowed`. |
 
 ## Multi-outstanding pipeline
 
@@ -191,3 +198,5 @@ silent, so a disabled or disconnected checker cannot pass unnoticed.
 | --- | --- | --- |
 | `tc_chi_d_perf_smoke` | INT | guard for `vip_chi_perf_counters` (latency / throughput / retry / back-pressure off a reset-gated cycle counter): drives reads and writes then fails unless the read/write completion counts, the latency accumulator, and the cycle counter are all non-zero. |
 | `tc_chi_d_scoreboard_negctl` | INT | guard for the always-on `vip_chi_scoreboard`: after one clean write it raw-injects an orphan `Comp` RSP (bogus TxnID); a report catcher demotes the induced "Orphan RSP" error and the test fails unless the checker actually fired. |
+| `tc_chi_dataid_duplicate` | INT | guard for the monitor's DataID placement checks: `snf_duplicate_dat_beat` makes the SN-F send the last beat of a read burst carrying `DataID` 0 again, so one position arrives twice and one never; a report catcher demotes both induced errors and the test fails unless BOTH the duplicate and the missing-beat check fired. Arrival-order reassembly sees neither fault -- the beat count still adds up. |
+| `tc_chi_pcrd_leak` | INT | guard for the RN-I's end-of-test P-credit accounting: with the pipeline enabled (the path that banks credits) a bare `PCrdGrant` that bounces nothing is injected from the SN-F; a report catcher demotes the induced leak error and the test fails unless the driver's `check_phase` actually reported it. A leaked P-credit changes nothing observable otherwise — the traffic completes and the run goes green. |

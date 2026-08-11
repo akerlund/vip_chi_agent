@@ -1138,6 +1138,70 @@ class vip_chi_driver_rni #(
   endtask
 
   // ---------------------------------------------------------------------------
+  // A P-credit granted and never consumed is a leaked protocol credit: the
+  // completer set aside a re-issue slot this requester never took, and nothing
+  // else in the flow notices -- the traffic completes, the test passes, and the
+  // retry handshake is left half-finished. Name whatever is still banked at end
+  // of test, with its PCrdType, so the leak is attributable.
+  //
+  // A reset clears the bank (handle_reset), which is correct: credits do not
+  // survive a link teardown, so only a leak in the final reset-free stretch is
+  // reported.
+  // ---------------------------------------------------------------------------
+  function void check_phase(input uvm_phase phase);
+
+    vip_chi_pcrd_type_t pcrd_type;
+
+    super.check_phase(phase);
+
+    if (this.pcrd_pool_total() == 0) begin
+      return;
+    end
+
+    if (this.pcrd_pool.first(pcrd_type)) begin
+      do begin
+        if (this.pcrd_pool[pcrd_type] > 0) begin
+          `uvm_error(get_name(), $sformatf(
+            "[%s] %0d P-credit(s) of PCrdType 0x%0h were granted and never consumed at end of test: the retry handshake is left half-finished",
+            get_name(), this.pcrd_pool[pcrd_type], pcrd_type))
+        end
+      end while (this.pcrd_pool.next(pcrd_type));
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Total P-credits currently banked and unconsumed, summed over every PCrdType.
+  // ---------------------------------------------------------------------------
+  protected function int unsigned pcrd_pool_total();
+    vip_chi_pcrd_type_t t;
+    pcrd_pool_total = 0;
+    if (this.pcrd_pool.first(t)) begin
+      do begin
+        pcrd_pool_total += this.pcrd_pool[t];
+      end while (this.pcrd_pool.next(t));
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // cfg.max_pcrd_budget bounds how many P-credits this requester is willing to
+  // hold at once. A completer may only grant a credit against a RetryAck it has
+  // already sent, so the bank can never legitimately outgrow the number of
+  // requests this node has in flight: exceeding the budget means the completer
+  // granted credits it never owed, and the surplus would otherwise sit in the
+  // pool authorizing re-issues that nothing bounced. 0 disables the bound.
+  // ---------------------------------------------------------------------------
+  protected function void check_pcrd_budget();
+    if (this.cfg.max_pcrd_budget <= 0) begin
+      return;
+    end
+    if (this.pcrd_pool_total() > int'(this.cfg.max_pcrd_budget)) begin
+      `uvm_error(get_name(), $sformatf(
+        "[%s] banked P-credits (%0d) exceeded cfg.max_pcrd_budget (%0d): the completer granted more protocol credits than it bounced requests",
+        get_name(), this.pcrd_pool_total(), this.cfg.max_pcrd_budget))
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Wait for one PCrdGrant on the inbound RSP channel (the credit that lets a
   // retried request be re-issued). PCrdGrant is not tied to a TxnID; a single-RN
   // requester simply consumes the next grant.
@@ -1343,6 +1407,8 @@ class vip_chi_driver_rni #(
     txn_id_t           expected_txn_id;
     vip_chi_resp_t     dat_resp_q[$];
     vip_chi_resp_err_t dat_resp_err_q[$];
+    bit                placeable;
+    int                beat_pos;
 
     expected_txn_id = this.expected_read_completion_txn_id(req);
 
@@ -1396,14 +1462,27 @@ class vip_chi_driver_rni #(
     req.dat_resp     = new[dat_resp_q.size()];
     req.dat_resp_err = new[dat_resp_err_q.size()];
 
-    foreach (data_q[i]) begin
+    // Place each beat at the position its DataID names, not at the position it
+    // arrived in: CHI lets the beats of one transfer return in any order, and a
+    // sequence reading back req.data[] must see the payload in address order
+    // regardless. A DataID outside the burst cannot be placed, so that beat
+    // keeps its arrival slot and the arrival order stands for the whole burst
+    // -- the monitor is the component that reports the malformed DataID.
+    placeable = 1'b1;
+    foreach (data_id_q[i]) begin
+      if (int'(data_id_q[i]) >= data_q.size()) begin
+        placeable = 1'b0;
+      end
+    end
 
-      req.data[i]         = data_q[i];
-      req.be[i]           = be_q[i];
-      req.data_id[i]      = data_id_q[i];
-      req.cc_id[i]        = cc_id_q[i];
-      req.dat_resp[i]     = dat_resp_q[i];
-      req.dat_resp_err[i] = dat_resp_err_q[i];
+    foreach (data_q[i]) begin
+      beat_pos                   = placeable ? int'(data_id_q[i]) : i;
+      req.data[beat_pos]         = data_q[i];
+      req.be[beat_pos]           = be_q[i];
+      req.data_id[beat_pos]      = data_id_q[i];
+      req.cc_id[beat_pos]        = cc_id_q[i];
+      req.dat_resp[beat_pos]     = dat_resp_q[i];
+      req.dat_resp_err[beat_pos] = dat_resp_err_q[i];
     end
 
     @(this.vif_rni.g_drv.rni_cb);
@@ -1818,6 +1897,7 @@ class vip_chi_driver_rni #(
       // PCrdType for a bounced entry to consume, then step off (no ctx lookup).
       if (op == rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C)) begin
         this.pcrd_pool[flit.pcrdtype] += 1;
+        this.check_pcrd_budget();
         @(this.vif_rni.g_drv.rni_cb);
         this.drive_idle_sideband();
         continue;

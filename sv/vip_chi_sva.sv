@@ -38,7 +38,14 @@ module vip_chi_sva #(
   parameter int            LINK_ACT_WINDOW_P = 32
   )(
     vip_chi_if vif,
-    input bit  checks_enable
+    input bit  checks_enable,
+    // The DAT beats of one transfer may legally arrive in any order -- DataID
+    // carries the position, not arrival. This VIP's own drivers always emit them
+    // in order, so the DataID-ordering checks below hold that convention by
+    // default and catch a driver regression. Drive this high on a link whose
+    // completer deliberately reorders beats: the ordering checks stand down,
+    // everything else (beat counts, TxnID stability, credits) keeps checking.
+    input bit  dat_reorder_allowed
   );
 
   typedef vip_chi_types #(CFG_P)::txn_id_t     txn_id_t;
@@ -583,7 +590,8 @@ module vip_chi_sva #(
         if (!txdat_burst_active) begin
           txdat_burst_count <= 1;
           txdat_burst_opcode <= dat_opcode_t'(vif.txdatflit.opcode);
-          if (data_id_t'(vif.txdatflit.dataid) != data_id_t'('0)) begin
+          if (!dat_reorder_allowed &&
+              (data_id_t'(vif.txdatflit.dataid) != data_id_t'('0))) begin
             $error("vip_chi_sva: first TX DAT beat did not start at dataid 0");
           end
 
@@ -631,7 +639,8 @@ module vip_chi_sva #(
             $error("vip_chi_sva: TX DAT burst changed txnid before txdatflitpend dropped");
           end
 
-          if (data_id_t'(vif.txdatflit.dataid) != txdat_expected_data_id) begin
+          if (!dat_reorder_allowed &&
+              (data_id_t'(vif.txdatflit.dataid) != txdat_expected_data_id)) begin
             $error("vip_chi_sva: TX DAT burst dataid was not sequential");
           end
 
@@ -684,7 +693,8 @@ module vip_chi_sva #(
         if (!rxdat_burst_active) begin
           rxdat_burst_count <= 1;
           rxdat_burst_opcode <= dat_opcode_t'(vif.rxdatflit.opcode);
-          if (data_id_t'(vif.rxdatflit.dataid) != data_id_t'('0)) begin
+          if (!dat_reorder_allowed &&
+              (data_id_t'(vif.rxdatflit.dataid) != data_id_t'('0))) begin
             $error("vip_chi_sva: first RX DAT beat did not start at dataid 0");
           end
 
@@ -732,7 +742,8 @@ module vip_chi_sva #(
             $error("vip_chi_sva: RX DAT burst changed txnid before rxdatflitpend dropped");
           end
 
-          if (data_id_t'(vif.rxdatflit.dataid) != rxdat_expected_data_id) begin
+          if (!dat_reorder_allowed &&
+              (data_id_t'(vif.rxdatflit.dataid) != rxdat_expected_data_id)) begin
             $error("vip_chi_sva: RX DAT burst dataid was not sequential");
           end
 

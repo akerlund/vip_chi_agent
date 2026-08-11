@@ -9,6 +9,11 @@ class chi_tb_config extends uvm_object;
   bit scoreboard_check_data;
   // Standalone perf-counter gating (always-on instrumentation, opt-out per test).
   bit perf_enable;
+  // Stand the SVA DataID-ordering checks down: set by a test whose completer
+  // deliberately returns DAT beats out of DataID order. Those checks hold this
+  // VIP's own in-order emission convention, not a CHI rule -- CHI places a beat
+  // by its DataID -- so a reordering test must clear them and nothing else.
+  bit dat_reorder_allowed;
 
   `uvm_object_utils_begin(chi_tb_config)
     `uvm_field_int(run_e_wide_integrated, UVM_DEFAULT)
@@ -16,6 +21,7 @@ class chi_tb_config extends uvm_object;
     `uvm_field_int(scoreboard_enable, UVM_DEFAULT)
     `uvm_field_int(scoreboard_check_data, UVM_DEFAULT)
     `uvm_field_int(perf_enable, UVM_DEFAULT)
+    `uvm_field_int(dat_reorder_allowed, UVM_DEFAULT)
   `uvm_object_utils_end
 
   function new(input string name = "chi_tb_config");
@@ -29,6 +35,7 @@ class chi_tb_config extends uvm_object;
     this.scoreboard_enable      = 1'b1;
     this.scoreboard_check_data  = 1'b1;
     this.perf_enable            = 1'b1;
+    this.dat_reorder_allowed    = 1'b0;
   endfunction
 
   function void request_reset_pulse(input int cycles = 3);

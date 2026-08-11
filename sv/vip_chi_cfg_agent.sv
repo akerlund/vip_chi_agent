@@ -43,7 +43,13 @@ class vip_chi_cfg_agent extends uvm_object;
 
   int max_outstanding_read  = 16;
   int max_outstanding_write = 16;
-  int max_pcrd_budget       = 8;
+
+  // Requester bound on P-credits banked but not yet consumed, summed over every
+  // PCrdType. A completer may only grant a protocol credit against a RetryAck it
+  // has already sent, so the bank cannot legitimately outgrow this node's own
+  // bounced requests; going past the budget means the completer granted credits
+  // it never owed. 0 disables the bound. Ignored by the completer roles.
+  int max_pcrd_budget = 8;
 
   // Opt-in multi-outstanding datapath (P4). Default 0 preserves the strict
   // serial path every existing testcase relies on. When set on BOTH the RN-I
@@ -105,6 +111,23 @@ class vip_chi_cfg_agent extends uvm_object;
 
   bit split_write_rsp = 1'b0;
   bit ordered_dbid_resp = 1'b0;
+
+  // Completer DAT beat ordering. CHI identifies a beat's position by its DataID,
+  // not by its position in the burst, so a completer is free to return the beats
+  // of one transfer in any order. This VIP's completers emit them in ascending
+  // DataID by default; set this to have the SN-F return read data in DESCENDING
+  // DataID instead, which is what proves the monitor reassembles by DataID
+  // rather than by arrival. A link carrying reordered beats must also be told to
+  // stand down the DataID-ordering assertions (+CHI_DAT_REORDER in the example
+  // testbench), which exist to hold the default convention.
+  bit snf_reverse_dat_beats = 1'b0;
+
+  // Negative-control knob for the monitor's duplicate-DataID check: when set,
+  // the SN-F sends the FINAL beat of a read burst carrying DataID 0 again
+  // instead of its own position, so one position is delivered twice and one
+  // never at all. Both the duplicate check and the missing-beat check must fire.
+  // Default 0 keeps every burst well formed.
+  bit snf_duplicate_dat_beat = 1'b0;
 
   vip_mem_config mem_cfg;
 
@@ -230,6 +253,274 @@ class vip_chi_cfg_agent extends uvm_object;
   function new(input string name = "vip_chi_cfg_agent");
     super.new(name);
     this.mem_cfg = vip_mem_config::type_id::create("mem_cfg");
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // One delay window. An inverted min/max makes $urandom_range see a reversed
+  // range, so the draw stops meaning what the knob names say.
+  // ---------------------------------------------------------------------------
+  protected function bit check_delay_window(
+    input string chan,
+    input int    delay_min,
+    input int    delay_max,
+    input bit    silent
+  );
+    check_delay_window = 1'b1;
+
+    if (delay_min < 0) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "%s_valid_delay_min is %0d; a delay cannot be negative", chan, delay_min))
+      end
+      check_delay_window = 1'b0;
+    end
+
+    if (delay_min > delay_max) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "%s_valid_delay window is inverted: min %0d > max %0d",
+          chan, delay_min, delay_max))
+      end
+      check_delay_window = 1'b0;
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // TRUE when two inclusive address ranges share at least one address.
+  // ---------------------------------------------------------------------------
+  protected function bit ranges_overlap(
+    input logic [VIP_CHI_MAX_ADDR_WIDTH_C-1:0] a_base,
+    input logic [VIP_CHI_MAX_ADDR_WIDTH_C-1:0] a_limit,
+    input logic [VIP_CHI_MAX_ADDR_WIDTH_C-1:0] b_base,
+    input logic [VIP_CHI_MAX_ADDR_WIDTH_C-1:0] b_limit
+  );
+    return (a_base <= b_limit) && (b_base <= a_limit);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // is_valid -- runtime configuration self-check.
+  //
+  // vip_chi_agent::check_cfg_p() validates the ELABORATION parameters. This
+  // validates the runtime object, which had no equivalent: an inconsistent
+  // combination used to be discarded silently or to fail much later, deep inside
+  // a driver, with a message that named the symptom rather than the cause.
+  //
+  // Reports EVERY problem it finds rather than stopping at the first, so one run
+  // tells the user everything they need to change. Returns 1 when clean.
+  //
+  // `silent` suppresses the reports and returns the verdict only, so a test can
+  // assert on validity without polluting its own error count.
+  //
+  // Two related rules live outside this function because they need information
+  // the cfg object does not carry: `role` versus the agent's `ROLE_P`, and
+  // max_outstanding_* versus the TxnID width, both checked in
+  // vip_chi_agent::build_phase where CFG_P and ROLE_P are in scope.
+  // ---------------------------------------------------------------------------
+  function bit is_valid(input bit silent = 1'b1);
+
+    is_valid = 1'b1;
+
+    // ---- Outstanding / pipeline --------------------------------------------
+    if (this.max_outstanding_read < 1) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "max_outstanding_read is %0d; must be >= 1 (1 = strictly serial reads)",
+          this.max_outstanding_read))
+      end
+      is_valid = 1'b0;
+    end
+
+    if (this.max_outstanding_write < 1) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "max_outstanding_write is %0d; must be >= 1 (1 = strictly serial writes)",
+          this.max_outstanding_write))
+      end
+      is_valid = 1'b0;
+    end
+
+    if (this.max_pcrd_budget < 0) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "max_pcrd_budget is %0d; use 0 to leave the P-credit bank unbounded",
+          this.max_pcrd_budget))
+      end
+      is_valid = 1'b0;
+    end
+
+    // The overlap-path selectors do nothing on their own: the RN-I only leaves
+    // the serial issue path when multi_outstanding is set, so setting one of
+    // these alone discards the user's intent without a word.
+    if (this.multi_outstanding_write && !this.multi_outstanding) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG",
+          "multi_outstanding_write is set without multi_outstanding: the write overlap path never engages")
+      end
+      is_valid = 1'b0;
+    end
+
+    if (this.multi_outstanding_mixed && !this.multi_outstanding) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG",
+          "multi_outstanding_mixed is set without multi_outstanding: the mixed overlap loop never engages")
+      end
+      is_valid = 1'b0;
+    end
+
+    // ---- Link credits -------------------------------------------------------
+    // The initial grant is advertised on the wire and then accumulates against
+    // the local cap; a grant larger than its own cap can never be fully banked.
+    if (this.initial_req_credits > this.req_send_credit_cap) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "initial_req_credits (%0d) exceeds req_send_credit_cap (%0d)",
+          this.initial_req_credits, this.req_send_credit_cap))
+      end
+      is_valid = 1'b0;
+    end
+
+    if (this.initial_rsp_credits > this.rsp_send_credit_cap) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "initial_rsp_credits (%0d) exceeds rsp_send_credit_cap (%0d)",
+          this.initial_rsp_credits, this.rsp_send_credit_cap))
+      end
+      is_valid = 1'b0;
+    end
+
+    if (this.initial_dat_credits > this.dat_send_credit_cap) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "initial_dat_credits (%0d) exceeds dat_send_credit_cap (%0d)",
+          this.initial_dat_credits, this.dat_send_credit_cap))
+      end
+      is_valid = 1'b0;
+    end
+
+    if (this.initial_snp_credits > this.snp_send_credit_cap) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "initial_snp_credits (%0d) exceeds snp_send_credit_cap (%0d)",
+          this.initial_snp_credits, this.snp_send_credit_cap))
+      end
+      is_valid = 1'b0;
+    end
+
+    // ---- Completer policy ---------------------------------------------------
+    if (this.force_retry_count < 0) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "force_retry_count is %0d; use 0 to never bounce a retryable request",
+          this.force_retry_count))
+      end
+      is_valid = 1'b0;
+    end
+
+    if (this.compack_timeout_cycles < 0) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "compack_timeout_cycles is %0d; must not be negative",
+          this.compack_timeout_cycles))
+      end
+      is_valid = 1'b0;
+    end
+
+    // An address in both windows has two contradictory fates: DECERR completes
+    // the request with a non-data error, DERR returns data marked corrupt. The
+    // completer checks DECERR first, so the DERR entry is silently unreachable.
+    foreach (this.decerr_ranges[i]) begin
+      if (this.decerr_ranges[i].base > this.decerr_ranges[i].limit) begin
+        if (!silent) begin
+          `uvm_error("VIP_CHI_CFG", $sformatf(
+            "decerr_ranges[%0d] is inverted: base 0x%0h > limit 0x%0h",
+            i, this.decerr_ranges[i].base, this.decerr_ranges[i].limit))
+        end
+        is_valid = 1'b0;
+      end
+    end
+
+    foreach (this.derr_ranges[i]) begin
+      if (this.derr_ranges[i].base > this.derr_ranges[i].limit) begin
+        if (!silent) begin
+          `uvm_error("VIP_CHI_CFG", $sformatf(
+            "derr_ranges[%0d] is inverted: base 0x%0h > limit 0x%0h",
+            i, this.derr_ranges[i].base, this.derr_ranges[i].limit))
+        end
+        is_valid = 1'b0;
+      end
+    end
+
+    foreach (this.decerr_ranges[i]) begin
+      foreach (this.derr_ranges[j]) begin
+        if (this.ranges_overlap(this.decerr_ranges[i].base, this.decerr_ranges[i].limit,
+                                this.derr_ranges[j].base,   this.derr_ranges[j].limit)) begin
+          if (!silent) begin
+            `uvm_error("VIP_CHI_CFG", $sformatf(
+              "decerr_ranges[%0d] (0x%0h..0x%0h) overlaps derr_ranges[%0d] (0x%0h..0x%0h): DECERR wins, so the DERR window is unreachable there",
+              i, this.decerr_ranges[i].base, this.decerr_ranges[i].limit,
+              j, this.derr_ranges[j].base,   this.derr_ranges[j].limit))
+          end
+          is_valid = 1'b0;
+        end
+      end
+    end
+
+    // ---- Coherent -----------------------------------------------------------
+    if (this.rnf_cache_max_lines < 0) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "rnf_cache_max_lines is %0d; use 0 for an unbounded cache",
+          this.rnf_cache_max_lines))
+      end
+      is_valid = 1'b0;
+    end
+
+    // A bounded cache evicts CLEAN victims silently and has no writeback path
+    // for a dirty one, so a single-line bound fatals in the driver as soon as
+    // the workload dirties a second line. Warn rather than reject: it is a legal
+    // setting for a workload that never does.
+    if ((this.rnf_cache_max_lines > 0) && (this.rnf_cache_max_lines < 2)) begin
+      if (!silent) begin
+        `uvm_warning("VIP_CHI_CFG", $sformatf(
+          "rnf_cache_max_lines is %0d: writeback-on-eviction of a DIRTY victim is not modeled, so a workload that dirties more lines than this will fatal in the RN-F driver",
+          this.rnf_cache_max_lines))
+      end
+    end
+
+    // The negative-control knobs deliberately break coherency. Leaving one set
+    // outside its own negative-control test turns a real failure into a
+    // mystifying one, so say so -- but do not reject: the negative-control tests
+    // are exactly the legitimate users.
+    if (this.hnf_suppress_snoops || this.hnf_corrupt_dirty_merge ||
+        this.hnf_force_excl_success || this.hnf_corrupt_fwd_data ||
+        this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
+        this.snf_duplicate_dat_beat) begin
+      if (!silent) begin
+        `uvm_warning("VIP_CHI_CFG", $sformatf(
+          "a negative-control knob is set (suppress_snoops=%0b corrupt_dirty_merge=%0b force_excl_success=%0b corrupt_fwd_data=%0b downstream_corrupt_data=%0b downstream_force_decerr=%0b snf_duplicate_dat_beat=%0b): this deliberately breaks the invariant a checker guards",
+          this.hnf_suppress_snoops, this.hnf_corrupt_dirty_merge,
+          this.hnf_force_excl_success, this.hnf_corrupt_fwd_data,
+          this.hnf_downstream_corrupt_data, this.hnf_downstream_force_decerr,
+          this.snf_duplicate_dat_beat))
+      end
+    end
+
+    if (this.hnf_downstream_en && this.hnf_suppress_snoops) begin
+      if (!silent) begin
+        `uvm_warning("VIP_CHI_CFG",
+          "hnf_downstream_en with hnf_suppress_snoops: the two-level hierarchy runs against a home that is deliberately incoherent")
+      end
+    end
+
+    // ---- Delays -------------------------------------------------------------
+    is_valid &= this.check_delay_window("link_act", this.link_act_delay_min,
+                                        this.link_act_delay_max, silent);
+    is_valid &= this.check_delay_window("req", this.req_valid_delay_min,
+                                        this.req_valid_delay_max, silent);
+    is_valid &= this.check_delay_window("rsp", this.rsp_valid_delay_min,
+                                        this.rsp_valid_delay_max, silent);
+    is_valid &= this.check_delay_window("dat", this.dat_valid_delay_min,
+                                        this.dat_valid_delay_max, silent);
   endfunction
 
 endclass

@@ -65,12 +65,28 @@ class vip_chi_monitor #(
   uvm_analysis_port #(item_t) dat_port;
   uvm_analysis_port #(item_t) snp_port;
 
-  // Per-transfer DAT reassembly state, keyed by {role,src,tgt,txnid}. Beats are
-  // stored in arrival order (not by absolute DataID) and a transfer retires on
-  // its correlated beat count when known (see the correlation maps below),
-  // falling back to the advisory FLITPEND deassert only when the count is not.
+  // Per-transfer DAT reassembly state, keyed by {role,src,tgt,txnid}. A transfer
+  // retires on its correlated beat count when known (see the correlation maps
+  // below), falling back to the advisory FLITPEND deassert only when the count
+  // is not.
+  //
+  // Beats are PLACED BY DataID whenever the expected beat count is known: CHI
+  // lets the beats of one transfer arrive in any order precisely because DataID
+  // carries the position, so indexing by arrival order silently mis-assembles a
+  // payload the moment a completer exercises that permission -- and the failure
+  // surfaces downstream as a scoreboard data mismatch pointing at the data path
+  // rather than at the reassembly. The running receive counter remains the
+  // placement index only on the fallback path, where no beat count is known and
+  // therefore no DataID range can be validated.
   protected item_t dat_item_by_key[string];
   protected int    dat_received_beats_by_key[string];
+
+  // Which beat positions of an in-flight transfer have already been written, so
+  // a repeated DataID is reported rather than silently overwriting the earlier
+  // beat, and a position never written is reported when the transfer closes.
+  // Only populated on the DataID-placed path.
+  typedef bit dat_beat_seen_t [];
+  protected dat_beat_seen_t dat_beat_seen_by_key[string];
 
   // REQ->DAT beat-count correlation. Reads echo the requester TxnID on the
   // returning data, so their expected beat count is keyed by TxnID. Writes and
@@ -170,6 +186,7 @@ class vip_chi_monitor #(
   function void handle_reset();
     this.dat_item_by_key.delete();
     this.dat_received_beats_by_key.delete();
+    this.dat_beat_seen_by_key.delete();
     this.rd_beats_by_txnid.delete();
     this.wr_beats_by_txnid.delete();
     this.wr_beats_by_dbid.delete();
@@ -399,9 +416,11 @@ class vip_chi_monitor #(
     txn_id_t   dat_txn_id;
     bit        is_write_data;
     int        expected_beats;
-    int        alloc_beats;
-    int        beat_index;
-    bit        transfer_done;
+    int              alloc_beats;
+    int              beat_index;
+    bit              place_beat;
+    bit              transfer_done;
+    dat_beat_seen_t  beat_seen;
 
     dat_txn_id    = txn_id_t'(flit.txnid);
     is_write_data = this.dat_opcode_is_write_data(dat_opcode_t'(flit.opcode));
@@ -454,10 +473,61 @@ class vip_chi_monitor #(
 
       this.dat_item_by_key[key] = item;
       this.dat_received_beats_by_key[key] = 0;
+      if (expected_beats > 0) begin
+        beat_seen = new[expected_beats];
+        this.dat_beat_seen_by_key[key] = beat_seen;
+      end
     end
 
-    item       = this.dat_item_by_key[key];
-    beat_index = this.dat_received_beats_by_key[key];  // arrival order, not absolute DataID
+    item = this.dat_item_by_key[key];
+
+    // Place by DataID when the beat count is known; the running receive counter
+    // stays the index only where no count is available to bound DataID against.
+    place_beat = 1'b1;
+    if (expected_beats > 0) begin
+      // The beat count can only become known once the correlating REQ or DBID
+      // grant has been seen. That always precedes the data in this VIP, but an
+      // item opened on the unknown-count path must still be placeable if it does
+      // not: size the placement state on first use rather than assuming it.
+      if (!this.dat_beat_seen_by_key.exists(key)) begin
+        beat_seen = new[expected_beats];
+        this.dat_beat_seen_by_key[key] = beat_seen;
+      end
+      else if (this.dat_beat_seen_by_key[key].size() < expected_beats) begin
+        beat_seen = new[expected_beats](this.dat_beat_seen_by_key[key]);
+        this.dat_beat_seen_by_key[key] = beat_seen;
+      end
+
+      beat_index = int'(flit.dataid);
+
+      if (beat_index >= expected_beats) begin
+        // Unplaceable: report it and drop the payload, but still count the beat
+        // so the transfer retires. Its empty slot is named at transfer close.
+        `uvm_error(get_name(), $sformatf(
+          "[%s] DAT DataID %0d is outside the %0d-beat transfer for txn_id 0x%0h -- beat dropped",
+          get_name(), beat_index, expected_beats, dat_txn_id))
+        place_beat = 1'b0;
+      end
+      else begin
+        if (this.dat_beat_seen_by_key[key][beat_index]) begin
+          `uvm_error(get_name(), $sformatf(
+            "[%s] duplicate DAT DataID %0d for txn_id 0x%0h: this beat position was already delivered",
+            get_name(), beat_index, dat_txn_id))
+        end
+        this.dat_beat_seen_by_key[key][beat_index] = 1'b1;
+      end
+    end
+    else begin
+      beat_index = this.dat_received_beats_by_key[key];
+    end
+
+    if (!place_beat) begin
+      this.dat_received_beats_by_key[key]++;
+      if (this.dat_received_beats_by_key[key] >= expected_beats) begin
+        this.retire_dat_transfer(key, item, dat_txn_id, is_write_data, expected_beats);
+      end
+      return;
+    end
 
     if (beat_index >= item.data.size()) begin
       item.data         = new[beat_index + 1](item.data);
@@ -490,15 +560,44 @@ class vip_chi_monitor #(
     end
 
     if (transfer_done) begin
-      this.dat_port.write(item);
-      this.dat_item_by_key.delete(key);
-      this.dat_received_beats_by_key.delete(key);
-      if (is_write_data) begin
-        this.wr_beats_by_dbid.delete(dat_txn_id);
+      this.retire_dat_transfer(key, item, dat_txn_id, is_write_data, expected_beats);
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Publish a completed DAT transfer and drop its reassembly state.
+  //
+  // Every beat position must have been filled. On the DataID-placed path a
+  // duplicate or out-of-range DataID consumes a beat of the expected count
+  // without filling its slot, so the gap it leaves is named here instead of
+  // being published as an untouched (zero) beat that reads as a data mismatch.
+  // ---------------------------------------------------------------------------
+  protected function void retire_dat_transfer(
+    input string   key,
+    input item_t   item,
+    input txn_id_t dat_txn_id,
+    input bit      is_write_data,
+    input int      expected_beats
+  );
+    if ((expected_beats > 0) && this.dat_beat_seen_by_key.exists(key)) begin
+      for (int i = 0; i < expected_beats; i++) begin
+        if (!this.dat_beat_seen_by_key[key][i]) begin
+          `uvm_error(get_name(), $sformatf(
+            "[%s] DAT transfer for txn_id 0x%0h closed with no beat carrying DataID %0d (of %0d)",
+            get_name(), dat_txn_id, i, expected_beats))
+        end
       end
-      else begin
-        this.rd_beats_by_txnid.delete(dat_txn_id);
-      end
+    end
+
+    this.dat_port.write(item);
+    this.dat_item_by_key.delete(key);
+    this.dat_received_beats_by_key.delete(key);
+    this.dat_beat_seen_by_key.delete(key);
+    if (is_write_data) begin
+      this.wr_beats_by_dbid.delete(dat_txn_id);
+    end
+    else begin
+      this.rd_beats_by_txnid.delete(dat_txn_id);
     end
   endfunction
 

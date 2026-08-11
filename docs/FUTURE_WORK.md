@@ -3,10 +3,13 @@
 The planned charter (Tiers A/B/C — SNP channel, RN-F/HN-F coherent subsystem,
 Checker D, coherent coverage, HN-I proxy, scoreboard, perf counters, exclusives,
 CMO, DCT forwarding, SN-F-behind-HN-F, MakeUnique, bounded-cache eviction) is
-**complete and tested** — regression **124/124** green on branch `dram`
-(2026-07-20). This file is the single remaining backlog: optional breadth (more
-of the CHI feature surface) and depth (hardening what already ships). Nothing
-here is required by any current consumer.
+**complete and tested** — every charter item has a named testcase in
+[../testbench/TEST_CASES.md](../testbench/TEST_CASES.md). The regression is
+**129 SV + 129 PY** — the same list on both flows — last verified green in full
+on branch `dev` (2026-08-07). This file is the single
+remaining backlog: optional breadth (more of
+the CHI feature surface) and depth (hardening what already ships). Nothing here
+is required by any current consumer.
 
 Effort legend: S (hours) / M (a day) / L (multi-day).
 
@@ -33,6 +36,47 @@ Source-review findings from the MakeUnique / DCT / rename follow-up pass.
   the cache-transition sweep closes "30 reachable bins" even though the reduced
   model documents 11 reachable transition tuples. Update the comment or make it
   denominator-neutral. *Effort S; risk low.*
+
+## Current review follow-up (2026-08-07)
+
+- ~~**`req_opcode_is_legal()` disagrees between the ports.**~~ *Resolved
+  2026-08-11.* The SV helper was stale for `ReadOnce`, `CleanInvalid`,
+  `MakeInvalid`, `WriteUniqueFull` and `WriteUniquePtl` — all five are carried
+  end-to-end by both ports (driver, HN-F, coherency checker, coverage, SVA) and
+  are now accepted unconditionally on both sides.
+
+  `MakeReadUnique` turned out **not** to be the same case, and neither port had
+  it right. Its encoding is `0x41`, which does not fit the 6-bit CHI-D REQ
+  opcode field, so it is legal only under issue E — like `WriteNoSnpZero`
+  (`0x44`). SV rejected it for both issues; Python accepted it for both. Both
+  helpers now gate it on `ISSUE_P`/`is_e`.
+
+  Two related defects fell out of that and are also fixed:
+
+  - `con_opcode_legal_rnf` offered `MakeReadUnique` to CHI-D RN-F
+    randomization in both ports. In SV the `req_opcode_t'()` cast truncated it
+    to `6'h01`, silently adding a second way to draw `ReadShared`; in Python
+    `opcode` is a flat `rand_bit_t(7)` with no such cast, so a free CHI-D RN-F
+    draw could land on `0x41` and produce an item claiming `MakeReadUnique`
+    that truncates to `ReadShared` at pack time. The read pool is now
+    issue-split in both ports.
+
+    No existing test emitted such a flit, and none could have: every coherent
+    sequence pins `x.opcode == opcode_val` from `_choose_opcode()`, so the RN-F
+    pool is only ever checked for satisfiability against an already-decided
+    opcode and never selects one. The defect is on the VIP's public
+    randomization surface — a caller doing `item.randomize()` with
+    `role == RNF` and no opcode pin — which is what the new test does and what
+    nothing exercised before.
+  - The SV helper wrote its two wide opcodes as `req_opcode_t'(...)` case
+    items, which under CHI-D aliased them onto unrelated opcodes and answered
+    for the wrong one. Both are now matched at full width ahead of the
+    truncating case.
+
+  `tc_chi_opcode_pool_safe` previously drew from the RN-I pool only, which is
+  why the RN-F divergence survived; it now cross-checks the RN-F pool against
+  the helper on both issues in both ports (verified non-vacuous by
+  reintroducing the pool bug, which fails at draw 0).
 
 ---
 

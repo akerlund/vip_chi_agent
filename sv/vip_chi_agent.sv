@@ -85,10 +85,22 @@ class vip_chi_agent #(
 
     if (!uvm_config_db #(vip_chi_cfg_agent)::get(this, "", "cfg", this.cfg)) begin
       this.cfg = vip_chi_cfg_agent::type_id::create("default_cfg");
+      this.cfg.role = ROLE_P;
+    end
+
+    // ROLE_P is authoritative and always wins, so a disagreeing cfg.role has
+    // never made the run wrong -- it just vanished. Say so: a cfg built for a
+    // different role usually carries other settings meant for that role too,
+    // and those do NOT get corrected.
+    if (this.cfg.role != ROLE_P) begin
+      `uvm_warning(get_name(), $sformatf(
+        "[%s] cfg.role is %0d but the agent is elaborated with ROLE_P=%0d; ROLE_P wins. Only the role field is corrected -- any other role-specific knob on this cfg is applied as-is",
+        get_name(), this.cfg.role, ROLE_P))
     end
 
     this.cfg.role = ROLE_P;
     this.check_cfg_p();
+    this.check_cfg();
 
     if ((this.cfg.is_active == UVM_ACTIVE) && (ROLE_P == VIP_CHI_ROLE_MONITOR_E)) begin
       `uvm_fatal(get_name(), $sformatf(
@@ -302,6 +314,39 @@ class vip_chi_agent #(
 
     if ((this.cfg.is_active == UVM_ACTIVE) && (this.sequencer != null)) begin
       this.sequencer.handle_reset(phase);
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Validate the RUNTIME config object. cfg.is_valid() owns every rule the cfg
+  // can judge on its own; the two rules that need CFG_P are checked here,
+  // because a TxnID pool is a property of the elaborated width, not of the cfg.
+  // ---------------------------------------------------------------------------
+  protected function void check_cfg();
+    int txn_id_count;
+    int txn_id_width;
+
+    void'(this.cfg.is_valid(.silent(1'b0)));
+
+    // A requester allocates one TxnID per in-flight transaction, so it cannot
+    // have more outstanding than the ID space holds -- past that the allocator
+    // has nothing left to hand out and the request thread stalls with no
+    // diagnostic. Only the requester roles allocate, so only they are bound.
+    if ((ROLE_P == VIP_CHI_ROLE_RNI_E) || (ROLE_P == VIP_CHI_ROLE_RNF_E)) begin
+      txn_id_width = $bits(item_t::txn_id_t);
+      txn_id_count = 2 ** txn_id_width;
+
+      if (this.cfg.max_outstanding_read > txn_id_count) begin
+        `uvm_error(get_name(), $sformatf(
+          "[%s] cfg.max_outstanding_read (%0d) exceeds the %0d TxnIDs a %0d-bit TxnID field can hold",
+          get_name(), this.cfg.max_outstanding_read, txn_id_count, txn_id_width))
+      end
+
+      if (this.cfg.max_outstanding_write > txn_id_count) begin
+        `uvm_error(get_name(), $sformatf(
+          "[%s] cfg.max_outstanding_write (%0d) exceeds the %0d TxnIDs a %0d-bit TxnID field can hold",
+          get_name(), this.cfg.max_outstanding_write, txn_id_count, txn_id_width))
+      end
     end
   endfunction
 

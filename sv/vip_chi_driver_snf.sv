@@ -223,6 +223,36 @@ class vip_chi_driver_snf #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Beat position carried by the send_index'th DAT beat of a read burst. CHI
+  // places a beat by its DataID rather than by its position in the burst, so the
+  // completer is free to send the positions in any order as long as each beat
+  // carries the payload belonging to the DataID it announces.
+  //
+  //   default                  : ascending, 0 .. beat_count-1
+  //   cfg.snf_reverse_dat_beats: descending, beat_count-1 .. 0
+  //   cfg.snf_duplicate_dat_beat: the last send repeats position 0, so one
+  //     position is delivered twice and the last position never at all -- the
+  //     negative control for the monitor's duplicate/missing DataID checks
+  //
+  // A single-beat transfer has nothing to reorder, so both knobs are inert.
+  // ---------------------------------------------------------------------------
+  protected function int dat_beat_position(input int send_index, input int beat_count);
+    if (beat_count <= 1) begin
+      return send_index;
+    end
+
+    if (this.cfg.snf_duplicate_dat_beat && (send_index == (beat_count - 1))) begin
+      return 0;
+    end
+
+    if (this.cfg.snf_reverse_dat_beats) begin
+      return (beat_count - 1 - send_index);
+    end
+
+    return send_index;
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Serve read data from vip_mem when a row has been written; otherwise fall
   // back to the current deterministic pattern so untouched-address smokes stay
   // stable.
@@ -1223,6 +1253,7 @@ class vip_chi_driver_snf #(
     dat_flit_t flit;
     item_t     resp_sep_rsp;
     int        beat_count;
+    int        beat_index;
     size_t     req_size;
     addr_t     req_addr;
     txn_id_t   req_txn_id;
@@ -1278,7 +1309,13 @@ class vip_chi_driver_snf #(
       this.drive_rsp(resp_sep_rsp);
     end
 
-    for (int beat_index = 0; beat_index < beat_count; beat_index++) begin
+    for (int send_index = 0; send_index < beat_count; send_index++) begin
+
+      // Which beat position this send carries. Ascending by default; the two
+      // cfg knobs move the position without touching the payload, so the data a
+      // beat carries always belongs to the DataID it announces.
+      beat_index = this.dat_beat_position(send_index, beat_count);
+
       flit = '0;
       flit.data       = is_decerr ? '0 : this.read_data_beat(req_addr, beat_index);
       flit.be         = is_decerr ? '0 : '1;
@@ -1305,7 +1342,7 @@ class vip_chi_driver_snf #(
       @(this.vif_snf.g_drv.snf_cb);
       this.drive_idle_sideband();
       this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b1;
-      this.vif_snf.g_drv.snf_cb.txdatflitpend   <= (beat_index != (beat_count - 1));
+      this.vif_snf.g_drv.snf_cb.txdatflitpend   <= (send_index != (beat_count - 1));
       this.vif_snf.g_drv.snf_cb.txdatflit       <= flit;
       this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b1;
 

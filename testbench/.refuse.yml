@@ -1,0 +1,145 @@
+# Shared regression targets for both CHI testbench flows.
+#
+# Job counts are split by simulator. VCS runs against a small floating licence
+# pool shared with everything else on the machine; Verilator is free and can run
+# as wide as the host allows.
+#
+# Both flows run the same public `tc_*` names AND the same list, so every profile
+# selects exactly the same scenarios on either side. A selector that matches
+# nothing is an error, which is what keeps that true: a testcase added to one
+# flow only will fail the profile that names it.
+
+coverage:
+  enabled: false
+  verilator:
+    build_args:
+      - --coverage-line
+      - --coverage-toggle
+      - --coverage-fsm
+      - --coverage-expr
+    report: true
+    lcov: true
+    html: true
+
+regressions:
+
+  full:
+    tests:
+      - match: "^tc_.*$"
+    jobs:
+      vcs: 2
+      verilator: 8
+    repeats: 4
+
+  # Enough of each topology to prove the build is alive: one object smoke, an
+  # integrated read and write, a CHI-E link, an HN-I proxy path, and a coherent
+  # scenario per issue.
+  smoke:
+    tests:
+      - match: "^tc_chi_item_smoke$"
+      - match: "^tc_chi_d_(read_smoke|write_read_smoke)$"
+      - match: "^tc_chi_e_req_smoke$"
+      - match: "^tc_chi_d_hni_passthrough$"
+      - match: "^tc_chi_coh_(d|e)_read_no_snoop$"
+    jobs:
+      vcs: 2
+      verilator: 4
+    repeats: 1
+
+  # Object-level smokes and the config self-check: no link-level topology, so
+  # these are the fastest thing that still fails on a broken type or knob.
+  unit:
+    tests:
+      - match: "^tc_chi_(cfg_item_smoke|item_smoke|base_seq_smoke)$"
+      - match: "^tc_chi_(cfg_invalid|opcode_pool_safe|a0_smoke)$"
+    jobs:
+      vcs: 2
+      verilator: 4
+    repeats: 1
+
+  # Point-to-point RN-I <-> SN-F datapath, excluding the pipeline and proxy
+  # families that have their own profiles below.
+  link:
+    tests:
+      - match: "^tc_chi_d_(read_smoke|write_read_smoke|write_partial_smoke)$"
+      - match: "^tc_chi_d_(ordered_read|ordered_write|split_write_rsp)$"
+      - match: "^tc_chi_d_(atomic|atomic_variants|atomic_predict)$"
+      - match: "^tc_chi_d_(decerr_smoke|derr_smoke|prefetch_tgt|qos_echo)$"
+      - match: "^tc_chi_d_(raw_inject|reset|link_reactivation|credit_starvation)$"
+      - match: "^tc_chi_d_retry$"
+    jobs:
+      vcs: 2
+      verilator: 6
+    repeats: 1
+
+  # Opt-in transaction overlap (cfg.multi_outstanding), off in every other test.
+  pipeline:
+    tests:
+      - match: "^tc_chi_d_multi_outstanding.*$"
+      - match: "^tc_chi_e_multi_outstanding.*$"
+    jobs:
+      vcs: 2
+      verilator: 6
+    repeats: 1
+
+  # Exact CHI-E behaviour: MTE, DBIDRespOrd, separated reads, zero writes.
+  chi_e:
+    tests:
+      - match: "^tc_chi_e_.*$"
+      - match: "^tc_chi_coh_e_.*$"
+    jobs:
+      vcs: 2
+      verilator: 6
+    repeats: 1
+
+  # HN-I proxy: fan-in, crossbar, SAM routing, QoS arbitration.
+  proxy:
+    tests:
+      - match: "^tc_chi_d_hni_.*$"
+      - match: "^tc_chi_e_hni_.*$"
+    jobs:
+      vcs: 2
+      verilator: 4
+    repeats: 1
+
+  # RN-F / HN-F coherent subsystem over the SNP channel, both issues.
+  coherent:
+    tests:
+      - match: "^tc_chi_coh_.*$"
+    jobs:
+      vcs: 2
+      verilator: 8
+    repeats: 1
+
+  # DAT beat placement by DataID, and the malformed-burst negative control that
+  # proves the duplicate / missing-beat checks are not vacuous.
+  dataid:
+    tests:
+      - match: "^tc_chi_dataid_.*$"
+    jobs:
+      vcs: 1
+      verilator: 2
+    repeats: 1
+
+  # Every test that provokes a checker on purpose. The name is "negative", not
+  # "tc_chi_*_negctl": the anti-vacuity guards for the always-on components
+  # belong to the same family even though they are not named for it, and a
+  # violation test selected by no profile is a test that never runs. Adding a
+  # negative control means adding it here, not just naming it well.
+  negative:
+    tests:
+      - match: "^tc_chi_.*_negctl$"
+      - match: "^tc_chi_(d_perf_smoke|dataid_duplicate|pcrd_leak)$"
+    jobs:
+      vcs: 2
+      verilator: 5
+    repeats: 1
+
+  coverage:
+    tests:
+      - match: "^tc_.*$"
+    jobs:
+      vcs: 2
+      verilator: 8
+    coverage: true
+    repeats: 1

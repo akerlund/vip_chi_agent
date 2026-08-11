@@ -66,8 +66,22 @@ class vip_chi_agent(uvm_agent):
       self.cfg = ConfigDB().get(self, "", "cfg")
     except Exception:
       self.cfg = VipChiCfgAgent("default_cfg")
+      self.cfg.role = self.role
+
+    # The agent's role is authoritative and always wins, so a disagreeing
+    # cfg.role has never made the run wrong -- it just vanished. Say so: a cfg
+    # built for a different role usually carries other settings meant for that
+    # role too, and those do NOT get corrected.
+    if Role(self.cfg.role) != self.role:
+      self.logger.warning(
+        f"[{self.get_name()}] cfg.role is {Role(self.cfg.role).name} but the "
+        f"agent is built as {self.role.name}; the agent role wins. Only the "
+        f"role field is corrected -- any other role-specific knob on this cfg "
+        f"is applied as-is")
+
     self.cfg.role = self.role
     self._check_chi_cfg(self.vif.cfg)
+    self._check_cfg()
 
     is_active = (self.cfg.is_active == UVM_ACTIVE)
     if is_active and self.role == Role.MONITOR:
@@ -101,6 +115,28 @@ class vip_chi_agent(uvm_agent):
   def _publish_to_children(self):
     for key, val in (("vif", self.vif), ("cfg", self.cfg), ("role", self.role)):
       ConfigDB().set(self, "*", key, val)
+
+  # Validate the RUNTIME config object. cfg.is_valid() owns every rule the cfg
+  # can judge on its own; the one rule that needs the elaborated envelope is
+  # checked here, because a TxnID pool is a property of the width, not the cfg.
+  def _check_cfg(self):
+    self.cfg.is_valid(silent=False, logger=self.logger)
+
+    # A requester allocates one TxnID per in-flight transaction, so it cannot
+    # have more outstanding than the ID space holds -- past that the allocator
+    # has nothing left to hand out and the request thread stalls with no
+    # diagnostic. Only the requester roles allocate, so only they are bound.
+    if self.role not in (Role.RNI, Role.RNF):
+      return
+
+    width = self.vif.cfg.txn_id_width
+    count = 1 << width
+    for knob in ("max_outstanding_read", "max_outstanding_write"):
+      value = getattr(self.cfg, knob)
+      if value > count:
+        self.logger.error(
+          f"[{self.get_name()}] cfg.{knob} ({value}) exceeds the {count} "
+          f"TxnIDs a {width}-bit TxnID field can hold")
 
   def _check_chi_cfg(self, chi_cfg):
     # Validate the static CHI geometry consumed by the interface and helpers

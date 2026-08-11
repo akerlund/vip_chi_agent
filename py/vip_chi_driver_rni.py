@@ -113,6 +113,8 @@ class vip_chi_driver_rni(uvm_driver):
     self.mx_ctx = []          # in-flight _MxCtx entries
     self._accepted = []       # items accepted off the sequencer, awaiting issue
     self.pcrd_pool = {}       # PCrdType -> banked PCrdGrant credit count
+    self.n_pcrd_budget_violation = 0  # banked credits past cfg.max_pcrd_budget
+    self.n_pcrd_leak = 0              # credits still banked at end of test
 
     self.req_lcrd = VipChiLcrdMgr("req_lcrd_mgr")
     self.rsp_lcrd = VipChiLcrdMgr("rsp_lcrd_mgr")
@@ -670,17 +672,78 @@ class vip_chi_driver_rni(uvm_driver):
       await bus.rising()
       self.drive_idle_sideband()
 
-    req.data = data_q
-    req.be = be_q
-    req.data_id = id_q
-    req.cc_id = cc_q
-    req.dat_resp = resp_q
-    req.dat_resp_err = err_q
+    # Place each beat at the position its DataID names, not at the position it
+    # arrived in: CHI lets the beats of one transfer return in any order, and a
+    # sequence reading back req.data[] must see the payload in address order
+    # regardless. A DataID outside the burst cannot be placed, so that beat keeps
+    # its arrival slot and the arrival order stands for the whole burst -- the
+    # monitor is the component that reports the malformed DataID.
+    n = len(data_q)
+    order = list(range(n))
+    if all(int(d) < n for d in id_q):
+      order = [int(d) for d in id_q]
+
+    req.data = [0] * n
+    req.be = [0] * n
+    req.data_id = [0] * n
+    req.cc_id = [0] * n
+    req.dat_resp = [0] * n
+    req.dat_resp_err = [0] * n
+    for i, pos in enumerate(order):
+      req.data[pos] = data_q[i]
+      req.be[pos] = be_q[i]
+      req.data_id[pos] = id_q[i]
+      req.cc_id[pos] = cc_q[i]
+      req.dat_resp[pos] = resp_q[i]
+      req.dat_resp_err[pos] = err_q[i]
 
     await bus.rising()
     self.drive_idle_sideband()
     if clear_activity:
       bus.drive(txsactive=0)
+
+  # ==========================================================================
+  # A P-credit granted and never consumed is a leaked protocol credit: the
+  # completer set aside a re-issue slot this requester never took, and nothing
+  # else in the flow notices -- the traffic completes, the test passes, and the
+  # retry handshake is left half-finished. Name whatever is still banked at end
+  # of test, with its PCrdType, so the leak is attributable.
+  #
+  # A reset clears the bank (handle_reset), which is correct: credits do not
+  # survive a link teardown, so only a leak in the final reset-free stretch is
+  # reported. A self.logger.error() does not auto-fail pyUVM, so the leak also
+  # bumps a public counter a test can assert on.
+  # ==========================================================================
+  def check_phase(self):
+    for pcrd_type, count in sorted(self.pcrd_pool.items()):
+      if count > 0:
+        self.n_pcrd_leak += count
+        self.logger.error(
+          f"[{self.get_name()}] {count} P-credit(s) of PCrdType "
+          f"0x{int(pcrd_type):x} were granted and never consumed at end of "
+          f"test: the retry handshake is left half-finished")
+
+  # ==========================================================================
+  # cfg.max_pcrd_budget bounds how many P-credits this requester is willing to
+  # hold at once. A completer may only grant a credit against a RetryAck it has
+  # already sent, so the bank can never legitimately outgrow the number of
+  # requests this node has in flight: exceeding the budget means the completer
+  # granted credits it never owed, and the surplus would otherwise sit in the
+  # pool authorizing re-issues that nothing bounced. 0 disables the bound.
+  # ==========================================================================
+  # A self.logger.error() does not auto-fail pyUVM, so the violation also bumps
+  # a public counter a test can assert on (same idiom as the checkers).
+  def check_pcrd_budget(self):
+    budget = int(self.cfg.max_pcrd_budget)
+    if budget <= 0:
+      return
+    total = sum(self.pcrd_pool.values())
+    if total > budget:
+      self.n_pcrd_budget_violation += 1
+      self.logger.error(
+        f"[{self.get_name()}] banked P-credits ({total}) exceeded "
+        f"cfg.max_pcrd_budget ({budget}): the completer granted more protocol "
+        f"credits than it bounced requests")
 
   # ==========================================================================
   # Protocol-credit retry (no-op unless the request allowed retry and the SN-F
@@ -965,6 +1028,7 @@ class vip_chi_driver_rni(uvm_driver):
       # PCrdGrant is credit-typed, not TxnID-tied: bank one credit and step off.
       if op == int(RspOpcode.PCRD_GRANT):
         self.pcrd_pool[flit["pcrdtype"]] = self.pcrd_pool.get(flit["pcrdtype"], 0) + 1
+        self.check_pcrd_budget()
         await bus.rising()
         self.drive_idle_sideband()
         continue
