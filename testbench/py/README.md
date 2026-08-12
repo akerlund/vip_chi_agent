@@ -34,9 +34,23 @@ starts them in `run_phase`, and asserts their violation counts are zero in
 assertion there can fire before the components below have folded in their
 state.
 
+`bind_chi.py` has two layers. The **link** layer judges a single sample: flit
+and credit gating on link state, `FLITPEND`, reset idle, deactivation, the
+L-credit shadow, and the post-reset restart window. The **transaction** layer
+tracks requests across cycles: TxnID reuse, write data against its DBID grant,
+CompAck ordering, DAT burst placement and beat counts, completion timeouts,
+atomic data return, and ordered-read receipts.
+
 Each check names a stable rule and its IHI 0050 clause, and the end-of-test
 summary lists every rule that was evaluated with its pass and fail counts, so
 a rule that never ran is visible as absent rather than passing silently.
+
+A DAT burst may legally arrive in any beat order -- `DataID` carries the
+position, not arrival -- but this VIP's own drivers always emit in order, so
+the DataID-ordering rules hold that convention by default and catch a driver
+regression. A test whose completer deliberately reorders beats sets
+`tb_cfg.dat_reorder_allowed`: those two rules stand down and the beat-count,
+TxnID and credit rules keep checking.
 
 Two deliberate differences from the SV checker, both recorded in the module
 headers:

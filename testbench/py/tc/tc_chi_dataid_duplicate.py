@@ -28,6 +28,12 @@ class tc_chi_dataid_duplicate(chi_base_test):
     # DataID checks own this scenario, so keep the scoreboard's payload check out
     # of the verdict. Everything else about the transfer stays checked.
     self.tb_cfg.scoreboard_check_data = False
+    # Same reasoning for the protocol checkers' DataID-ordering rules: the
+    # repeated position makes the burst 0,1,2,0, which those rules correctly
+    # call non-sequential. They hold this VIP's in-order emission convention and
+    # own a different question from the one under test here -- stand them down
+    # and let the monitor's duplicate / missing-beat checks judge this burst.
+    self.tb_cfg.dat_reorder_allowed = True
 
   async def run_phase(self):
     self.raise_objection()

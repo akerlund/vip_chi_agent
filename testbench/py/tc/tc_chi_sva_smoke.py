@@ -29,7 +29,13 @@ import logging
 
 from pyuvm import uvm_test
 
-from sva.bind_chi import bind_chi, _LINK_ACT_WINDOW_C
+from sva.bind_chi import bind_chi, _flit_slices, _LINK_ACT_WINDOW_C
+from vip_chi_types_pkg import ChiCfg, DatOpcode, ReqOpcode, ReqOrder, Role, RspOpcode
+
+# The standalone topology's CHI-D datapath: 16 bytes, so a size-6 (64-byte)
+# transfer is a 4-beat burst and a size-4 (16-byte) one is a single beat.
+_DATA_BYTES_C = 16
+_TIMEOUT_CYCLES_C = 8   # short, so a timeout can be provoked in a few cycles
 
 # A link in RUN: some request and some acknowledge, which is the role-agnostic
 # condition bind_chi._link_is_running tests for.
@@ -54,11 +60,47 @@ def _sample(base: dict, **over) -> dict:
       s[f"{d}{ch}flitv"] = 0
       s[f"{d}{ch}flitpend"] = 0
       s[f"{d}{ch}lcrdv"] = 0
+      s[f"{d}{ch}flit"] = None
   s.update(over)
   return s
 
 
-def _checker() -> bind_chi:
+# Every field the checker slices out of a flit, so a hand-built one is never
+# short a key the real sampler would always have supplied.
+_FLIT_DEFAULTS = {
+  "req": {"opcode": 0, "txnid": 0, "returntxnid": 0, "size": 0,
+          "expcompack": 0, "order": int(ReqOrder.NONE)},
+  "rsp": {"opcode": 0, "txnid": 0, "dbid": 0},
+  "dat": {"opcode": 0, "txnid": 0, "dbid": 0, "dataid": 0},
+}
+
+
+def _flit(d: str, ch: str, pend: int = 0, **fields) -> dict:
+  """A cycle carrying one flit on {d}{ch}, as _sample() overrides."""
+  return {
+    f"{d}{ch}flitv": 1,
+    f"{d}{ch}flitpend": pend,
+    f"{d}{ch}flit": dict(_FLIT_DEFAULTS[ch], **fields),
+  }
+
+
+def _req(d="tx", pend=0, **fields):
+  return _sample(_RUN, **_flit(d, "req", pend, **fields))
+
+
+def _rsp(d="rx", pend=0, **fields):
+  return _sample(_RUN, **_flit(d, "rsp", pend, **fields))
+
+
+def _dat(d="tx", pend=0, **fields):
+  return _sample(_RUN, **_flit(d, "dat", pend, **fields))
+
+
+def _idle(n: int = 1):
+  return [_sample(_RUN) for _ in range(n)]
+
+
+def _checker(role: Role = Role.RNI) -> bind_chi:
   """A bind_chi with no bus, driven by hand.
 
   The checks are pure functions of the sampled dict, so they can be called
@@ -78,6 +120,25 @@ def _checker() -> bind_chi:
   c._checks_enable = True
   c._lcrd = {}
   c._link_ever_active = False
+
+  # The transaction layer needs the configuration the constructor derives from
+  # the bus. CHI-D over a 16-byte datapath is the shape the standalone topology
+  # already runs, so the beat arithmetic below matches what the real checkers
+  # on that link compute.
+  cfg = ChiCfg(data_bytes=_DATA_BYTES_C)
+  c._enable_completion_timeout = True
+  c._timeout_cycles = _TIMEOUT_CYCLES_C
+  c.tb_cfg = None
+  c._is_requester = role in (Role.RNI, Role.RNF)
+  c._is_completer = role in (Role.SNF, Role.HNF)
+  c._is_rni = role == Role.RNI
+  c._is_snf = role == Role.SNF
+  c._req_dir = "tx" if c._is_requester else "rx"
+  c._completion_dir = "rx" if c._is_requester else "tx"
+  c._slices = _flit_slices(cfg)
+  c._data_id_mask = (1 << cfg.data_id_width) - 1
+  c._data_bytes = cfg.data_bytes
+
   c._reset_state()
   return c
 
@@ -91,6 +152,12 @@ def _feed(checker: bind_chi, samples: list[dict]) -> None:
     if prev is not None:
       checker._check_deactivate_idle(prev, s)
     prev = s
+
+
+def _feed_txn(checker: bind_chi, samples: list[dict]) -> None:
+  """Drive the transaction layer, one cycle per sample."""
+  for s in samples:
+    checker._check_transactions(s)
 
 
 class tc_chi_sva_smoke(uvm_test):
@@ -182,7 +249,204 @@ class tc_chi_sva_smoke(uvm_test):
       "a checker must start unarmed so an interface with no agent cannot "
       "report a spurious restart failure")
 
+    # =======================================================================
+    # Transaction layer
+    # =======================================================================
+    # Everything below is judged across cycles rather than from one sample, so
+    # each case drives a short scripted transaction rather than a single flit.
+
+    # ---- A TxnID reused while its first use is still outstanding ----------
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=4),
+      _req(opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=4),
+    ])
+    assert self._fired(c, "CHI_TXNID_REUSE_REQUESTER") == 1, (
+      "a TxnID reused while the first request was in flight was not reported")
+
+    # ---- ...and a completer sees the same reuse from its own side ---------
+    c = _checker(Role.SNF)
+    _feed_txn(c, [
+      _req("rx", opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=4),
+      _req("rx", opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=4),
+    ])
+    assert self._fired(c, "CHI_TXNID_REUSE_COMPLETER") == 1, (
+      "a completer did not report an inbound reused TxnID")
+
+    # ---- Write data sent with no DBID grant behind it ---------------------
+    c = _checker()
+    _feed_txn(c, [
+      _dat(opcode=int(DatOpcode.NON_COPY_BACK_WR_DATA), txnid=3, dbid=3),
+    ])
+    assert self._fired(c, "CHI_WRITE_DAT_BEFORE_DBID") == 1, (
+      "write DAT ahead of its DBID grant was not reported")
+
+    # ---- Write data tagged with a TxnID that is not its DBID --------------
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.WRITE_NO_SNP_FULL), txnid=4, size=4),
+      _rsp(opcode=int(RspOpcode.DBID_RESP), txnid=4, dbid=4),
+      _dat(opcode=int(DatOpcode.NON_COPY_BACK_WR_DATA), txnid=9, dbid=4),
+    ])
+    assert self._fired(c, "CHI_WRITE_DAT_TXNID_MATCHES_DBID") == 1, (
+      "write DAT whose txnid did not match its DBID was not reported")
+    assert self._fired(c, "CHI_WRITE_DAT_BEFORE_DBID") == 0, (
+      "a granted write was miscounted as ungranted")
+
+    # ---- CompAck with nothing to acknowledge ------------------------------
+    c = _checker()
+    _feed_txn(c, [_rsp("tx", opcode=int(RspOpcode.COMP_ACK), txnid=2)])
+    assert self._fired(c, "CHI_COMPACK_BEFORE_COMPLETION") == 1, (
+      "CompAck ahead of any completion was not reported")
+    assert self._fired(c, "CHI_COMPACK_WITHOUT_EXPCOMPACK") == 1, (
+      "CompAck for a request that never asked for one was not reported")
+
+    # ---- A burst that does not start at DataID 0 --------------------------
+    c = _checker()
+    _feed_txn(c, [_dat(opcode=int(DatOpcode.COMP_DATA), txnid=1, dataid=1)])
+    assert self._fired(c, "CHI_TX_DAT_FIRST_BEAT_DATAID_ZERO") == 1, (
+      "a burst starting away from dataid 0 was not reported")
+
+    # ---- A burst whose DataIDs skip a position ----------------------------
+    c = _checker()
+    _feed_txn(c, [
+      _dat(pend=1, opcode=int(DatOpcode.COMP_DATA), txnid=1, dataid=0),
+      _dat(opcode=int(DatOpcode.COMP_DATA), txnid=1, dataid=2),
+    ])
+    assert self._fired(c, "CHI_TX_DAT_DATAID_SEQUENTIAL") == 1, (
+      "a non-sequential dataid inside a burst was not reported")
+
+    # ---- A burst that changes TxnID mid-flight ----------------------------
+    c = _checker()
+    _feed_txn(c, [
+      _dat(pend=1, opcode=int(DatOpcode.COMP_DATA), txnid=1, dataid=0),
+      _dat(opcode=int(DatOpcode.COMP_DATA), txnid=2, dataid=1),
+    ])
+    assert self._fired(c, "CHI_TX_DAT_TXNID_STABLE") == 1, (
+      "a burst that changed txnid before flitpend dropped was not reported")
+
+    # ---- Write burst shorter than the size its request asked for ----------
+    # size 6 = 64 bytes over the 16-byte datapath = 4 beats; one is sent.
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.WRITE_NO_SNP_FULL), txnid=4, size=6),
+      _rsp(opcode=int(RspOpcode.DBID_RESP), txnid=4, dbid=4),
+      _dat(opcode=int(DatOpcode.NON_COPY_BACK_WR_DATA), txnid=4, dbid=4),
+    ])
+    assert self._fired(c, "CHI_TX_WRITE_DAT_BEAT_COUNT") == 1, (
+      "a write burst shorter than its granted size was not reported")
+
+    # ---- Read completion carrying the wrong DAT opcode --------------------
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=4),
+      _dat("rx", opcode=int(DatOpcode.DATA_SEP_RESP), txnid=5),
+    ])
+    assert self._fired(c, "CHI_RX_READ_COMPLETION_DAT_OPCODE") == 1, (
+      "a read completion with the wrong DAT opcode was not reported")
+
+    # ---- Read completion shorter than the size its request asked for ------
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=6),
+      _dat("rx", opcode=int(DatOpcode.COMP_DATA), txnid=5),
+    ])
+    assert self._fired(c, "CHI_RX_READ_COMPLETION_DAT_BEAT_COUNT") == 1, (
+      "a read completion shorter than its request size was not reported")
+
+    # ---- A request that is never completed --------------------------------
+    c = _checker()
+    _feed_txn(c, [_req(opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=4)]
+                 + _idle(_TIMEOUT_CYCLES_C + 2))
+    assert self._fired(c, "CHI_COMPLETION_FOLLOWS_REQ") == 1, (
+      "a request left uncompleted past the timeout was not reported")
+
+    # ---- A data-returning atomic answered with a bare Comp ----------------
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.ATOMIC_LOAD_0), txnid=6, size=4),
+      _rsp(opcode=int(RspOpcode.COMP), txnid=6),
+    ])
+    assert self._fired(c, "CHI_ATOMIC_RETURN_USES_DAT_COMPLETION") == 1, (
+      "an atomic completed without returning its data was not reported")
+
+    # ---- An ordered read whose data arrives before its ReadReceipt --------
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=4,
+           order=int(ReqOrder.REQ_ORDER)),
+      _dat("rx", opcode=int(DatOpcode.COMP_DATA), txnid=5),
+    ])
+    assert self._fired(c, "CHI_ORDERED_READ_RECEIPT_BEFORE_DAT") == 1, (
+      "an ordered read completed before its ReadReceipt was not reported")
+
+    # =======================================================================
+    # Positive controls: well-formed transactions must fire nothing
+    # =======================================================================
+    # These matter more than the negatives above. Each check runs on every
+    # cycle of every testcase in the suite, so one that false-fires on ordinary
+    # traffic is worse than one that never fires at all.
+
+    # ---- A four-beat read, request through last completion beat -----------
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=6),
+      _dat("rx", pend=1, opcode=int(DatOpcode.COMP_DATA), txnid=5, dataid=0),
+      _dat("rx", pend=1, opcode=int(DatOpcode.COMP_DATA), txnid=5, dataid=1),
+      _dat("rx", pend=1, opcode=int(DatOpcode.COMP_DATA), txnid=5, dataid=2),
+      _dat("rx", opcode=int(DatOpcode.COMP_DATA), txnid=5, dataid=3),
+    ] + _idle(_TIMEOUT_CYCLES_C + 2))
+    assert c.errors == 0, (
+      f"a well-formed four-beat read raised {c.errors} violation(s): "
+      f"{sorted(c.fail_count)}")
+
+    # ---- A four-beat write, request through CompAck -----------------------
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.WRITE_NO_SNP_FULL), txnid=7, size=6,
+           expcompack=1),
+      _rsp(opcode=int(RspOpcode.COMP_DBID_RESP), txnid=7, dbid=7),
+      _dat(pend=1, opcode=int(DatOpcode.NON_COPY_BACK_WR_DATA),
+           txnid=7, dbid=7, dataid=0),
+      _dat(pend=1, opcode=int(DatOpcode.NON_COPY_BACK_WR_DATA),
+           txnid=7, dbid=7, dataid=1),
+      _dat(pend=1, opcode=int(DatOpcode.NON_COPY_BACK_WR_DATA),
+           txnid=7, dbid=7, dataid=2),
+      _dat(opcode=int(DatOpcode.NON_COPY_BACK_WR_DATA),
+           txnid=7, dbid=7, dataid=3),
+      _rsp("tx", opcode=int(RspOpcode.COMP_ACK), txnid=7),
+    ] + _idle(_TIMEOUT_CYCLES_C + 2))
+    assert c.errors == 0, (
+      f"a well-formed four-beat write raised {c.errors} violation(s): "
+      f"{sorted(c.fail_count)}")
+
+    # ---- An ordered read receipted before its data ------------------------
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=4,
+           order=int(ReqOrder.REQ_ORDER)),
+      _rsp(opcode=int(RspOpcode.READ_RECEIPT), txnid=5),
+      _dat("rx", opcode=int(DatOpcode.COMP_DATA), txnid=5),
+    ] + _idle(_TIMEOUT_CYCLES_C + 2))
+    assert self._fired(c, "CHI_ORDERED_READ_RECEIPT_BEFORE_DAT") == 0, (
+      "a correctly receipted ordered read was reported as out of order")
+    assert c.errors == 0, (
+      f"a well-formed ordered read raised {c.errors} violation(s): "
+      f"{sorted(c.fail_count)}")
+
+    # ---- A retried request may reuse its TxnID ----------------------------
+    # RetryAck retires the bounced request, so the re-issue is not a reuse.
+    c = _checker()
+    _feed_txn(c, [
+      _req(opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=4),
+      _rsp(opcode=int(RspOpcode.RETRY_ACK), txnid=5),
+      _req(opcode=int(ReqOpcode.READ_NO_SNP), txnid=5, size=4),
+      _dat("rx", opcode=int(DatOpcode.COMP_DATA), txnid=5),
+    ] + _idle(_TIMEOUT_CYCLES_C + 2))
+    assert self._fired(c, "CHI_TXNID_REUSE_REQUESTER") == 0, (
+      "a TxnID re-issued after a RetryAck was reported as a reuse")
+
     self.logger.info(
       "Test (tc_chi_sva_smoke) PASS: every bind_chi check family reported its "
-      "induced violation, and neither positive control false-fired")
+      "induced violation, and no positive control false-fired")
     self.drop_objection()

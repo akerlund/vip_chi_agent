@@ -25,6 +25,13 @@ class tc_chi_dataid_out_of_order(chi_base_test):
   def configure(self, rni_cfg, snf_cfg):
     snf_cfg.snf_reverse_dat_beats = True
 
+  def configure_tb_cfg(self):
+    # Reversing the beat order is legal -- DataID carries the position -- but it
+    # is not this VIP's own emission convention, which the protocol checkers'
+    # DataID-ordering rules hold by default. Stand them down for this test; the
+    # beat-count, TxnID and credit rules keep checking.
+    self.tb_cfg.dat_reorder_allowed = True
+
   async def run_phase(self):
     self.raise_objection()
 

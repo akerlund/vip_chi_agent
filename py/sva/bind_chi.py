@@ -7,12 +7,27 @@
 #
 ################################################################################
 #
-# pyUVM/cocotb port of sv/vip_chi_sva.sv -- CHI link-layer protocol checker.
+# pyUVM/cocotb port of sv/vip_chi_sva.sv -- CHI REQ/RSP/DAT protocol checker.
 #
 # The SV concurrent assertions become a per-clock-edge monitor coroutine, the
 # same idiom the vip_axi4_agent sibling uses (py/sva/bind_axi4_rd.py). Every
 # reported violation increments `self.errors` and names its rule and its
 # IHI 0050 clause; tests assert errors == 0.
+#
+# Two layers, in the order they appear below:
+#
+#   link        -- judged from a single sample: flit/credit gating on link
+#                  state, FLITPEND, reset idle, deactivation, the L-credit
+#                  shadow, and the post-reset restart window.
+#   transaction -- tracked across cycles: TxnID reuse, write data against its
+#                  DBID grant, CompAck ordering, DAT burst placement and beat
+#                  counts, completion timeouts, atomic data return, and
+#                  ordered-read receipts.
+#
+# The SV transaction checks live in an always_ff, so within one cycle every
+# state read sees the value from the start of that cycle. This port reproduces
+# that with _post/_flush rather than mutating in place; see the comment there
+# for why it matters.
 #
 # Start with: cocotb.start_soon(bind_chi(bus).run())
 #
@@ -47,6 +62,19 @@ import logging
 
 from cocotb.triggers import RisingEdge
 
+from vip_chi_types_pkg import (
+  DatOpcode,
+  ReqOpcode,
+  ReqOrder,
+  Role,
+  RspOpcode,
+  chi_xfer_dat_beats,
+  flit_layout,
+  req_opcode_is_atomic,
+  req_opcode_is_atomic_compare,
+  req_opcode_is_atomic_returning_data,
+)
+
 # L-credit tracking caps, mirroring REQ/RSP/DAT_SEND_CAP_C in the SV checker.
 # These bound the shadow counter, not the protocol: a grant past the cap means
 # the peer is granting more credit than any sane pool holds.
@@ -69,6 +97,142 @@ _CAPS_C = {
   "dat": _DAT_SEND_CAP_C,
 }
 
+# Cycles a request may wait for its completion before the checker calls it a
+# hang, mirroring the SV TIMEOUT_CYCLES_P default.
+_TIMEOUT_CYCLES_C = 1024
+
+_REQUESTER_ROLES_C = (Role.RNI, Role.RNF)
+_COMPLETER_ROLES_C = (Role.SNF, Role.HNF)
+
+# Flit fields this checker reads, per channel. Only these are sliced out of the
+# raw flit: unpacking the whole DAT flit every beat would drag the multi-hundred
+# bit `data` field through a big-int shift for a checker that never looks at it.
+_FLIT_FIELDS_C = {
+  "req": ("opcode", "txnid", "returntxnid", "size", "expcompack", "order"),
+  "rsp": ("opcode", "txnid", "dbid"),
+  "dat": ("opcode", "txnid", "dbid", "dataid"),
+}
+
+# Opcode classes, mirroring the SV req_opcode_is_* / is_write_* functions.
+_COHERENT_READ_OPCODES_C = frozenset({
+  int(ReqOpcode.READ_SHARED), int(ReqOpcode.READ_CLEAN),
+  int(ReqOpcode.READ_UNIQUE), int(ReqOpcode.MAKE_READ_UNIQUE),
+  int(ReqOpcode.READ_ONCE),
+})
+_COHERENT_WRITE_DATA_OPCODES_C = frozenset({
+  int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL),
+  int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL),
+})
+# MakeUnique completes on an RSP-only Comp (no data), like CleanUnique.
+_COHERENT_RSP_ONLY_OPCODES_C = frozenset({
+  int(ReqOpcode.EVICT), int(ReqOpcode.CLEAN_INVALID),
+  int(ReqOpcode.MAKE_INVALID), int(ReqOpcode.CLEAN_UNIQUE),
+  int(ReqOpcode.MAKE_UNIQUE),
+})
+# Non-coherent opcodes whose completion this checker models.
+_MODELED_COMPLETION_OPCODES_C = frozenset({
+  int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL),
+  int(ReqOpcode.WRITE_NO_SNP_ZERO), int(ReqOpcode.CLEAN_SHARED_PERSIST),
+  int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP),
+})
+_NON_COHERENT_WRITE_OPCODES_C = frozenset({
+  int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL),
+  int(ReqOpcode.WRITE_NO_SNP_ZERO),
+})
+_ORDERED_READ_OPCODES_C = frozenset({
+  int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP),
+})
+_WRITE_DAT_OPCODES_C = frozenset({
+  int(DatOpcode.NON_COPY_BACK_WR_DATA), int(DatOpcode.NCB_WR_DATA_COMP_ACK),
+  int(DatOpcode.COPY_BACK_WR_DATA),
+})
+_READ_COMPLETION_DAT_OPCODES_C = frozenset({
+  int(DatOpcode.COMP_DATA), int(DatOpcode.DATA_SEP_RESP),
+})
+# Grant responses: each carries a DBID authorizing the write data that follows.
+_DBID_GRANT_OPCODES_C = frozenset({
+  int(RspOpcode.DBID_RESP), int(RspOpcode.DBID_RESP_ORD),
+  int(RspOpcode.COMP_DBID_RESP),
+})
+_PLAIN_COMPLETION_RSP_OPCODES_C = frozenset({
+  int(RspOpcode.COMP), int(RspOpcode.COMP_DBID_RESP),
+})
+
+
+def _req_opcode_is_coherent_read(opcode: int) -> bool:
+  return int(opcode) in _COHERENT_READ_OPCODES_C
+
+
+def _req_has_modeled_completion(opcode: int) -> bool:
+  op = int(opcode)
+  return (op in _MODELED_COMPLETION_OPCODES_C
+          or op in _COHERENT_READ_OPCODES_C
+          or op in _COHERENT_WRITE_DATA_OPCODES_C
+          or op in _COHERENT_RSP_ONLY_OPCODES_C
+          or req_opcode_is_atomic(op))
+
+
+def _req_completion_uses_dat(opcode: int) -> bool:
+  op = int(opcode)
+  return (op in (int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP))
+          or op in _COHERENT_READ_OPCODES_C
+          or req_opcode_is_atomic_returning_data(op))
+
+
+def _is_write_req_opcode(opcode: int) -> bool:
+  op = int(opcode)
+  return (op in _NON_COHERENT_WRITE_OPCODES_C
+          or op in _COHERENT_WRITE_DATA_OPCODES_C
+          or req_opcode_is_atomic(op))
+
+
+def _is_final_rsp_completion(opcode: int, rsp_opcode: int) -> bool:
+  """Does this RSP retire the request, or is it an intermediate response?"""
+  if _req_completion_uses_dat(opcode):
+    # The completion arrives on DAT; no RSP retires such a request.
+    return False
+  if int(opcode) == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP):
+    return int(rsp_opcode) == int(RspOpcode.COMP_PERSIST)
+  return int(rsp_opcode) in _PLAIN_COMPLETION_RSP_OPCODES_C
+
+
+def _completion_txn_for_req(opcode: int, req_txn_id: int,
+                            return_txn_id: int) -> int:
+  """The TxnID the completion will carry.
+
+  ReadNoSnpSep returns its data under ReturnTxnID rather than the request's own
+  TxnID, so the DAT-side bookkeeping must be keyed by that instead.
+  """
+  if int(opcode) == int(ReqOpcode.READ_NO_SNP_SEP):
+    return int(return_txn_id)
+  return int(req_txn_id)
+
+
+def _expected_completion_dat_opcode(opcode: int) -> int:
+  if int(opcode) == int(ReqOpcode.READ_NO_SNP_SEP):
+    return int(DatOpcode.DATA_SEP_RESP)
+  return int(DatOpcode.COMP_DATA)
+
+
+def _flit_slices(cfg):
+  """{channel: {field: (shift, mask)}} for the fields this checker reads.
+
+  Flits are packed MSB-first, so a field's shift is the total width of every
+  field below it.
+  """
+  out = {}
+  for channel, wanted in _FLIT_FIELDS_C.items():
+    layout = flit_layout(cfg, channel)
+    pos = sum(w for _, w in layout)
+    slices = {}
+    for name, width in layout:
+      pos -= width
+      if name in wanted:
+        slices[name] = (pos, (1 << width) - 1)
+    out[channel] = slices
+  return out
+
 
 class bind_chi:
   """CHI link-layer protocol checker for one interface.
@@ -80,7 +244,10 @@ class bind_chi:
   """
 
   def __init__(self, bus, name: str = "bind_chi",
-               checks_enable: bool | None = None):
+               checks_enable: bool | None = None,
+               enable_completion_timeout: bool = True,
+               timeout_cycles: int = _TIMEOUT_CYCLES_C,
+               tb_cfg=None):
     self.bus = bus
     self.log = logging.getLogger(name)
     self.errors = 0
@@ -98,6 +265,31 @@ class bind_chi:
     # reset-restart check only; deliberately NOT cleared by _reset_state, since
     # surviving reset is exactly what makes it usable as that gate.
     self._link_ever_active = False
+
+    # The completion timeout stands down on a link whose completions this
+    # checker cannot see end to end -- a coherent RN-F link, where the HN-F may
+    # answer from another RN-F's snoop data. Mirrors ENABLE_COMPLETION_TIMEOUT_P.
+    self._enable_completion_timeout = enable_completion_timeout
+    self._timeout_cycles = timeout_cycles
+    # Read live each cycle rather than latched at build, mirroring the SV top,
+    # which re-reads tb_cfg every clock so a testcase can raise the knob before
+    # its traffic starts.
+    self.tb_cfg = tb_cfg
+
+    role = getattr(bus, "role", None)
+    self._is_requester = role in _REQUESTER_ROLES_C
+    self._is_completer = role in _COMPLETER_ROLES_C
+    self._is_rni = role == Role.RNI
+    self._is_snf = role == Role.SNF
+    # The direction a completion travels on: inbound at a requester, outbound at
+    # a completer. Requests travel the other way.
+    self._req_dir = "tx" if self._is_requester else "rx"
+    self._completion_dir = "rx" if self._is_requester else "tx"
+
+    self._slices = _flit_slices(bus.cfg)
+    self._data_id_mask = (1 << bus.cfg.data_id_width) - 1
+    self._data_bytes = bus.cfg.data_bytes
+
     self._reset_state()
 
   # ---------------------------------------------------------------------------
@@ -143,11 +335,67 @@ class bind_chi:
   # State
   # ---------------------------------------------------------------------------
   def _reset_state(self) -> None:
+    self._reset_tracking_state()
+    self._act_countdown = None
+
+  def _reset_tracking_state(self) -> None:
+    """Everything the SV always_ff clears on `!checks_enable || !rst_n`.
+
+    Split out from _reset_state because the restart-window countdown must NOT
+    be cleared here: it arms at reset release, the one moment the link is
+    guaranteed idle and therefore the enable gate is low. Clearing it on the
+    disable path would disarm the check on the very cycle it was armed.
+    """
     # The L-credit shadow. One pool per channel per direction, each starting at
     # 0 on reset and capturing its initial pool automatically, because that
     # pool arrives as real LCRDV pulses on the wire once the link activates.
     self._lcrd = {f"{d}{ch}": 0 for d in ("tx", "rx") for ch in _CHANNELS_C}
-    self._act_countdown = None
+
+    # Per-TxnID bookkeeping. The SV declares these as arrays sized by the TxnID
+    # space and clears them on reset; a dict with a zero default is the same
+    # thing without allocating the whole space up front.
+    self._req_inflight = {}
+    self._req_exp_comp_ack = {}
+    self._write_completion_seen = {}
+    self._write_grant_seen_by_dbid = {}
+    self._expected_write_beats_by_txn = {}
+    self._expected_write_beats_by_dbid = {}
+    self._expected_write_valid_by_dbid = {}
+    self._expected_completion_beats_by_txn = {}
+    self._expected_completion_opcode_by_txn = {}
+    self._expected_completion_valid_by_txn = {}
+    self._dat_completion_req_valid_by_txn = {}
+    self._dat_completion_req_txn_by_txn = {}
+
+    self._burst = {
+      d: {"active": False, "txn_id": 0, "expected_data_id": 0, "count": 0,
+          "opcode": int(DatOpcode.COMP_DATA)}
+      for d in ("tx", "rx")
+    }
+
+    # In-flight temporal attempts, one record per armed SV property thread.
+    self._pending_completion = []
+    self._pending_atomic = []
+    self._pending_ordered = []
+
+    self._nba = []
+
+  # ---------------------------------------------------------------------------
+  # Deferred state updates
+  # ---------------------------------------------------------------------------
+  # The SV checks live in an always_ff, so every state read in a cycle sees the
+  # value from the START of that cycle and every write lands at the end of it.
+  # Reading the dicts directly and posting writes here reproduces that: without
+  # it, a request and the response that consumes its bookkeeping arriving in the
+  # same cycle would see each other's updates and the checks would disagree with
+  # the SV port on exactly the traffic that is hardest to reason about.
+  def _post(self, target: dict, key, value) -> None:
+    self._nba.append((target, key, value))
+
+  def _flush(self) -> None:
+    for target, key, value in self._nba:
+      target[key] = value
+    self._nba = []
 
   # ---------------------------------------------------------------------------
   # Link state predicates, mirroring the SV functions of the same names.
@@ -179,13 +427,38 @@ class bind_chi:
     for ch in _CHANNELS_C:
       names += [f"tx{ch}flitv", f"tx{ch}flitpend", f"tx{ch}lcrdv",
                 f"rx{ch}flitv", f"rx{ch}flitpend", f"rx{ch}lcrdv"]
-    return {n: g(n) for n in names}
+    s = {n: g(n) for n in names}
+    # Flit contents only where a flit is actually being presented. Every check
+    # that reads them is already guarded by the same flitv, so a None here is
+    # never dereferenced -- and skipping the slice on idle cycles keeps this
+    # coroutine off the critical path of every clock edge.
+    for ch in _CHANNELS_C:
+      for d in ("tx", "rx"):
+        s[f"{d}{ch}flit"] = self._flit_fields(d, ch) if s[f"{d}{ch}flitv"] else None
+    return s
+
+  def _flit_fields(self, direction: str, channel: str) -> dict:
+    raw = self.bus.get_or(f"{direction}{channel}flit")
+    return {name: (raw >> shift) & bits
+            for name, (shift, bits) in self._slices[channel].items()}
 
   def _enabled(self, s: dict) -> bool:
     if self._checks_enable is not None:
       return self._checks_enable
     # Mirrors the SV bind expression: this interface's own link activity.
     return bool(s["txlinkactivereq"] or s["rxlinkactivereq"])
+
+  def _dat_reorder_allowed(self) -> bool:
+    """DAT beats may legally arrive in any order -- DataID carries the position.
+
+    This VIP's own drivers always emit them in order, so the DataID-ordering
+    checks hold that convention by default and catch a driver regression. A
+    testcase whose completer deliberately reorders beats raises the knob: the
+    ordering checks stand down, and the beat-count, TxnID and credit checks
+    keep checking.
+    """
+    return bool(self.tb_cfg is not None
+                and getattr(self.tb_cfg, "dat_reorder_allowed", False))
 
   # ---------------------------------------------------------------------------
   async def run(self) -> None:
@@ -224,6 +497,12 @@ class bind_chi:
         self._check_lcrd(cur)
         if prev is not None and prev_rst == 1:
           self._check_deactivate_idle(prev, cur)
+        self._check_transactions(cur)
+      else:
+        # The SV always_ff clears its state whenever checks_enable is low, so a
+        # link that goes down and comes back does not carry stale bookkeeping
+        # across the gap.
+        self._reset_tracking_state()
 
       prev, prev_rst = cur, rst
 
@@ -359,3 +638,416 @@ class bind_chi:
                 "link activation did not restart after reset release",
                 "section 13.4")
       self._act_countdown = None
+
+  # ===========================================================================
+  # Transaction layer
+  # ===========================================================================
+  # Everything below tracks requests across cycles rather than judging a single
+  # sample, and is the part of the checker that can say a link is carrying
+  # traffic that is individually well-formed but collectively wrong: a TxnID
+  # reused while its first use is still outstanding, write data sent before it
+  # was granted a buffer, a burst whose beat count contradicts the size its
+  # request asked for, a request that is never completed at all.
+  # ===========================================================================
+
+  # Beats of write payload the request itself will be followed by.
+  def _req_write_payload_beats(self, opcode: int, size: int) -> int:
+    op = int(opcode)
+    # AtomicCompare Size is the COMBINED compare+swap size: the write payload
+    # spans the whole 2**Size operand region in one contiguous run.
+    if req_opcode_is_atomic_compare(op):
+      return chi_xfer_dat_beats(size, self._data_bytes)
+    if (req_opcode_is_atomic(op)
+        or op in (int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL))
+        or op in _COHERENT_WRITE_DATA_OPCODES_C):
+      return chi_xfer_dat_beats(size, self._data_bytes)
+    return 0
+
+  # Beats of payload the completion will carry back.
+  def _req_completion_payload_beats(self, opcode: int, size: int) -> int:
+    op = int(opcode)
+    # AtomicCompare's CompData returns only the pre-op value of the compared
+    # location -- one operand, which is half of the 2**Size operand span.
+    if req_opcode_is_atomic_compare(op):
+      return chi_xfer_dat_beats(size, self._data_bytes) // 2
+    if (op in (int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP))
+        or op in _COHERENT_READ_OPCODES_C
+        or req_opcode_is_atomic_returning_data(op)):
+      return chi_xfer_dat_beats(size, self._data_bytes)
+    return 0
+
+  # ---------------------------------------------------------------------------
+  def _check_transactions(self, s: dict) -> None:
+    if self._is_requester:
+      self._observe_request(s, "tx", "CHI_TXNID_REUSE_REQUESTER",
+                            "requester reused a TxnID while the earlier "
+                            "request was still in flight")
+      self._observe_requester_responses(s)
+      self._check_write_dat_grant(s)
+      self._check_comp_ack(s)
+    elif self._is_completer:
+      self._observe_request(s, "rx", "CHI_TXNID_REUSE_COMPLETER",
+                            "completer observed a reused request TxnID while "
+                            "the earlier request was still in flight")
+      self._observe_completer_responses(s)
+
+    for d in ("tx", "rx"):
+      self._check_dat_burst(s, d)
+
+    self._check_completion_timeout(s)
+    self._check_atomic_dat_completion(s)
+    self._check_ordered_read_receipt(s)
+
+    self._flush()
+
+  # ---------------------------------------------------------------------------
+  # A request goes out (requester) or arrives (completer).
+  # ---------------------------------------------------------------------------
+  def _observe_request(self, s: dict, d: str, reuse_rule: str,
+                       reuse_msg: str) -> None:
+    if not s[f"{d}reqflitv"]:
+      return
+    f = s[f"{d}reqflit"]
+    opcode = f["opcode"]
+    txn = f["txnid"]
+
+    if _req_has_modeled_completion(opcode):
+      # A TxnID identifies an outstanding transaction. Reusing one before its
+      # first use retires makes the two indistinguishable to every downstream
+      # tracker, including this checker.
+      self._chk(reuse_rule, not self._req_inflight.get(txn, False),
+                reuse_msg, "section 2.3")
+      self._post(self._req_inflight, txn, True)
+      self._arm_completion(s, f)
+
+    self._post(self._expected_write_beats_by_txn, txn,
+               self._req_write_payload_beats(opcode, f["size"]))
+
+    beats = self._req_completion_payload_beats(opcode, f["size"])
+    if beats:
+      completion_txn = _completion_txn_for_req(opcode, txn, f["returntxnid"])
+      self._post(self._expected_completion_beats_by_txn, completion_txn, beats)
+      self._post(self._expected_completion_opcode_by_txn, completion_txn,
+                 _expected_completion_dat_opcode(opcode))
+      self._post(self._expected_completion_valid_by_txn, completion_txn, True)
+      self._post(self._dat_completion_req_valid_by_txn, completion_txn, True)
+      self._post(self._dat_completion_req_txn_by_txn, completion_txn, txn)
+
+    if _is_write_req_opcode(opcode):
+      self._post(self._req_exp_comp_ack, txn, bool(f["expcompack"]))
+      self._post(self._write_completion_seen, txn, False)
+
+  def _arm_completion(self, s: dict, f: dict) -> None:
+    """Start the temporal attempts a request opens."""
+    opcode = f["opcode"]
+    txn = f["txnid"]
+    completion_txn = _completion_txn_for_req(opcode, txn, f["returntxnid"])
+    rec = {"opcode": opcode, "req_txn": txn, "completion_txn": completion_txn}
+
+    if self._enable_completion_timeout:
+      self._pending_completion.append(dict(rec, remaining=self._timeout_cycles))
+
+    # The atomic and ordered-read rules are vantage-specific in the SV port
+    # (an RN-I and an SN-F property each), so they are gated on the exact role
+    # rather than on the requester/completer split.
+    if self._is_rni or self._is_snf:
+      if req_opcode_is_atomic_returning_data(opcode):
+        self._pending_atomic.append(dict(rec))
+      if (int(opcode) in _ORDERED_READ_OPCODES_C
+          and int(f["order"]) != int(ReqOrder.NONE)):
+        self._pending_ordered.append(dict(rec))
+
+  # ---------------------------------------------------------------------------
+  # Responses seen at a requester: grants and completions arriving inbound.
+  # ---------------------------------------------------------------------------
+  def _observe_requester_responses(self, s: dict) -> None:
+    if not s["rxrspflitv"]:
+      return
+    f = s["rxrspflit"]
+    opcode = int(f["opcode"])
+    txn = f["txnid"]
+
+    if opcode in _DBID_GRANT_OPCODES_C:
+      self._record_write_grant(f, mark_grant_seen=True)
+    if opcode in _PLAIN_COMPLETION_RSP_OPCODES_C:
+      self._post(self._write_completion_seen, txn, True)
+      self._post(self._req_inflight, txn, False)
+    elif opcode == int(RspOpcode.COMP_PERSIST):
+      self._post(self._req_inflight, txn, False)
+    elif opcode == int(RspOpcode.RETRY_ACK):
+      # A RetryAck retires the bounced request: the completer did not accept
+      # it, so its TxnID is released and the requester re-issues after the
+      # matching PCrdGrant. Clearing the marker keeps that legitimate re-issue
+      # from reading as a TxnID reuse.
+      self._post(self._req_inflight, txn, False)
+
+  # ---------------------------------------------------------------------------
+  # Responses driven by a completer: the grants it issues, outbound.
+  # ---------------------------------------------------------------------------
+  def _observe_completer_responses(self, s: dict) -> None:
+    if not s["txrspflitv"]:
+      return
+    f = s["txrspflit"]
+    opcode = int(f["opcode"])
+
+    if opcode in _DBID_GRANT_OPCODES_C:
+      # A completer knows what it granted, but not whether the requester will
+      # honour it, so it records the expected burst size without the
+      # grant-seen marker the requester side uses to police its own DAT.
+      self._record_write_grant(f, mark_grant_seen=False)
+    if opcode == int(RspOpcode.RETRY_ACK):
+      # Mirror of the requester side: a RetryAck this node drove retires the
+      # bounced request's TxnID.
+      self._post(self._req_inflight, f["txnid"], False)
+
+  def _record_write_grant(self, f: dict, mark_grant_seen: bool) -> None:
+    """Carry a request's expected write size across to its granted DBID.
+
+    The write data that follows is tagged with the DBID, not with the request's
+    TxnID, so the beat-count expectation has to be re-keyed here or the burst
+    check would have nothing to compare against.
+    """
+    dbid = f["dbid"]
+    beats = self._expected_write_beats_by_txn.get(f["txnid"], 0)
+    if mark_grant_seen:
+      self._post(self._write_grant_seen_by_dbid, dbid, True)
+    self._post(self._expected_write_beats_by_dbid, dbid, beats)
+    self._post(self._expected_write_valid_by_dbid, dbid, beats != 0)
+
+  # ---------------------------------------------------------------------------
+  # Write data must be authorized by a grant, and must carry that grant's DBID.
+  # ---------------------------------------------------------------------------
+  def _check_write_dat_grant(self, s: dict) -> None:
+    if not s["txdatflitv"]:
+      return
+    f = s["txdatflit"]
+    if int(f["opcode"]) not in _WRITE_DAT_OPCODES_C:
+      return
+
+    dbid = f["dbid"]
+    self._chk("CHI_WRITE_DAT_BEFORE_DBID",
+              self._write_grant_seen_by_dbid.get(dbid, False),
+              "write DAT was sent before a DBID-bearing grant response",
+              "section 2.6")
+    self._chk("CHI_WRITE_DAT_TXNID_MATCHES_DBID", f["txnid"] == dbid,
+              "write DAT txnid did not match DBID on the wire",
+              "section 2.6")
+
+    if not s["txdatflitpend"]:
+      # Last beat: the grant is spent.
+      self._post(self._write_grant_seen_by_dbid, dbid, False)
+
+  # ---------------------------------------------------------------------------
+  # CompAck acknowledges a completion, and only where one was asked for.
+  # ---------------------------------------------------------------------------
+  def _check_comp_ack(self, s: dict) -> None:
+    if not s["txrspflitv"]:
+      return
+    f = s["txrspflit"]
+    if int(f["opcode"]) != int(RspOpcode.COMP_ACK):
+      return
+
+    txn = f["txnid"]
+    self._chk("CHI_COMPACK_BEFORE_COMPLETION",
+              self._write_completion_seen.get(txn, False),
+              "CompAck was sent before a write completion response",
+              "section 2.6")
+    self._chk("CHI_COMPACK_WITHOUT_EXPCOMPACK",
+              self._req_exp_comp_ack.get(txn, False),
+              "CompAck was sent for a request without ExpCompAck",
+              "section 2.6")
+
+    self._post(self._req_exp_comp_ack, txn, False)
+    self._post(self._write_completion_seen, txn, False)
+
+  # ---------------------------------------------------------------------------
+  # DAT bursts: beat placement, TxnID stability, and the closing beat count.
+  # ---------------------------------------------------------------------------
+  def _check_dat_burst(self, s: dict, d: str) -> None:
+    if not s[f"{d}datflitv"]:
+      return
+    f = s[f"{d}datflit"]
+    st = self._burst[d]
+    up = d.upper()
+    more = bool(s[f"{d}datflitpend"])
+    reorder = self._dat_reorder_allowed()
+
+    if not st["active"]:
+      self._post(st, "count", 1)
+      self._post(st, "opcode", int(f["opcode"]))
+      if not reorder:
+        self._chk(f"CHI_{up}_DAT_FIRST_BEAT_DATAID_ZERO", f["dataid"] == 0,
+                  f"first {up} DAT beat did not start at dataid 0",
+                  "section 2.9")
+      if more:
+        self._post(st, "active", True)
+        self._post(st, "txn_id", f["txnid"])
+        self._post(st, "expected_data_id", (f["dataid"] + 1) & self._data_id_mask)
+      else:
+        self._close_burst(s, d, int(f["opcode"]), f, 1)
+      return
+
+    self._chk(f"CHI_{up}_DAT_TXNID_STABLE", f["txnid"] == st["txn_id"],
+              f"{up} DAT burst changed txnid before {d}datflitpend dropped",
+              "section 2.9")
+    if not reorder:
+      self._chk(f"CHI_{up}_DAT_DATAID_SEQUENTIAL",
+                f["dataid"] == st["expected_data_id"],
+                f"{up} DAT burst dataid was not sequential", "section 2.9")
+
+    self._post(st, "count", st["count"] + 1)
+    if more:
+      self._post(st, "expected_data_id",
+                 (st["expected_data_id"] + 1) & self._data_id_mask)
+      return
+
+    self._close_burst(s, d, st["opcode"], f, st["count"] + 1)
+    self._post(st, "active", False)
+    self._post(st, "txn_id", 0)
+    self._post(st, "expected_data_id", 0)
+    self._post(st, "count", 0)
+    self._post(st, "opcode", int(DatOpcode.COMP_DATA))
+
+  def _close_burst(self, s: dict, d: str, opcode: int, f: dict,
+                   beats: int) -> None:
+    """Last beat of a burst: does its length match what the request asked for?
+
+    Which side of the link a burst is judged from depends on the role. Write
+    data flows requester -> completer, so it is outbound at a requester and
+    inbound at a completer; read completions flow the other way.
+    """
+    up = d.upper()
+    outbound = (d == "tx")
+    write_side = self._is_requester if outbound else self._is_completer
+    completion_side = self._is_completer if outbound else self._is_requester
+
+    if write_side and opcode in _WRITE_DAT_OPCODES_C:
+      dbid = f["dbid"]
+      if self._expected_write_valid_by_dbid.get(dbid, False):
+        self._chk(f"CHI_{up}_WRITE_DAT_BEAT_COUNT",
+                  self._expected_write_beats_by_dbid.get(dbid, 0) == beats,
+                  f"{up} write DAT burst beat count did not match the granted "
+                  f"request size", "section 2.9")
+      self._post(self._expected_write_valid_by_dbid, dbid, False)
+      return
+
+    if completion_side and opcode in _READ_COMPLETION_DAT_OPCODES_C:
+      txn = f["txnid"]
+      if not self._expected_completion_valid_by_txn.get(txn, False):
+        return
+      self._chk(f"CHI_{up}_READ_COMPLETION_DAT_OPCODE",
+                self._expected_completion_opcode_by_txn.get(txn) == opcode,
+                f"{up} read completion DAT opcode did not match the request "
+                f"type", "section 2.9")
+      self._chk(f"CHI_{up}_READ_COMPLETION_DAT_BEAT_COUNT",
+                self._expected_completion_beats_by_txn.get(txn, 0) == beats,
+                f"{up} read completion DAT burst beat count did not match the "
+                f"request size", "section 2.9")
+      self._post(self._expected_completion_valid_by_txn, txn, False)
+      if self._dat_completion_req_valid_by_txn.get(txn, False):
+        self._post(self._req_inflight,
+                   self._dat_completion_req_txn_by_txn.get(txn, 0), False)
+        self._post(self._dat_completion_req_valid_by_txn, txn, False)
+
+  # ---------------------------------------------------------------------------
+  # Temporal attempts
+  # ---------------------------------------------------------------------------
+  def _final_completion_observed(self, s: dict, opcode: int, req_txn: int,
+                                 completion_txn: int) -> bool:
+    """Is the completion that retires this request on the wire right now?"""
+    cd = self._completion_dir
+    if _req_completion_uses_dat(opcode):
+      if not s[f"{cd}datflitv"] or s[f"{cd}datflitpend"]:
+        return False
+      f = s[f"{cd}datflit"]
+      return (f["txnid"] == completion_txn
+              and int(f["opcode"]) == _expected_completion_dat_opcode(opcode))
+    if not s[f"{cd}rspflitv"]:
+      return False
+    f = s[f"{cd}rspflit"]
+    return (f["txnid"] == req_txn
+            and _is_final_rsp_completion(opcode, f["opcode"]))
+
+  def _check_completion_timeout(self, s: dict) -> None:
+    """Every request this checker models must eventually be completed.
+
+    A link that stops making progress otherwise fails as a test timeout with no
+    indication of which transaction stalled; this names it.
+    """
+    if not self._pending_completion:
+      return
+    still = []
+    for rec in self._pending_completion:
+      if self._final_completion_observed(s, rec["opcode"], rec["req_txn"],
+                                         rec["completion_txn"]):
+        self._chk("CHI_COMPLETION_FOLLOWS_REQ", True,
+                  "request was not completed within the timeout window",
+                  "section 2.3")
+        continue
+      if rec["remaining"] <= 0:
+        self._err("CHI_COMPLETION_FOLLOWS_REQ",
+                  f"request txnid={rec['req_txn']} opcode=0x{rec['opcode']:x} "
+                  f"was not completed within {self._timeout_cycles} cycles",
+                  "section 2.3")
+        continue
+      rec["remaining"] -= 1
+      still.append(rec)
+    self._pending_completion = still
+
+  def _check_atomic_dat_completion(self, s: dict) -> None:
+    """A data-returning atomic completes on DAT, never on a bare Comp.
+
+    The returned pre-op value is the whole point of the transaction, so a
+    completer that answers with Comp has silently dropped it.
+    """
+    if not self._pending_atomic:
+      return
+    cd = self._completion_dir
+    still = []
+    for rec in self._pending_atomic:
+      if s[f"{cd}rspflitv"]:
+        f = s[f"{cd}rspflit"]
+        if (f["txnid"] == rec["req_txn"]
+            and int(f["opcode"]) in _PLAIN_COMPLETION_RSP_OPCODES_C):
+          self._err("CHI_ATOMIC_RETURN_USES_DAT_COMPLETION",
+                    f"data-returning atomic txnid={rec['req_txn']} was "
+                    f"completed by an RSP instead of returning data on DAT",
+                    "section 2.12")
+          continue
+      if (s[f"{cd}datflitv"] and not s[f"{cd}datflitpend"]
+          and s[f"{cd}datflit"]["txnid"] == rec["completion_txn"]
+          and int(s[f"{cd}datflit"]["opcode"]) == int(DatOpcode.COMP_DATA)):
+        self._chk("CHI_ATOMIC_RETURN_USES_DAT_COMPLETION", True,
+                  "data-returning atomic returned its data on DAT",
+                  "section 2.12")
+        continue
+      still.append(rec)
+    self._pending_atomic = still
+
+  def _check_ordered_read_receipt(self, s: dict) -> None:
+    """An ordered read is receipted before its data, not after.
+
+    ReadReceipt is what releases the requester's ordering hazard. Data arriving
+    first means the requester was told the read completed before it was told
+    the read was ordered, which defeats the ordering it asked for.
+    """
+    if not self._pending_ordered:
+      return
+    cd = self._completion_dir
+    still = []
+    for rec in self._pending_ordered:
+      if self._final_completion_observed(s, rec["opcode"], rec["req_txn"],
+                                         rec["completion_txn"]):
+        self._err("CHI_ORDERED_READ_RECEIPT_BEFORE_DAT",
+                  f"ordered read txnid={rec['req_txn']} was completed before "
+                  f"its ReadReceipt", "section 2.7")
+        continue
+      if (s[f"{cd}rspflitv"]
+          and s[f"{cd}rspflit"]["txnid"] == rec["req_txn"]
+          and int(s[f"{cd}rspflit"]["opcode"]) == int(RspOpcode.READ_RECEIPT)):
+        self._chk("CHI_ORDERED_READ_RECEIPT_BEFORE_DAT", True,
+                  "ordered read was receipted before its completion",
+                  "section 2.7")
+        continue
+      still.append(rec)
+    self._pending_ordered = still

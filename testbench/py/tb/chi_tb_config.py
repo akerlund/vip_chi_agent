@@ -36,6 +36,10 @@ class chi_tb_config:
     self.scoreboard_check_data = True
     # Standalone perf-counter gating (always-on, opt-out per test).
     self.perf_enable = True
+    # Stand the protocol checkers' DataID-ordering rules down. Only a test whose
+    # completer deliberately emits DAT beats out of DataID order raises this;
+    # the beat-count, TxnID and credit checks are unaffected either way.
+    self.dat_reorder_allowed = False
 
   def request_reset_pulse(self, cycles=3):
     self.reset_pulse_cycles = max(1, int(cycles))
