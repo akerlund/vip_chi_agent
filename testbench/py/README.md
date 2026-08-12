@@ -28,11 +28,25 @@ split across two modules for the same reason SV splits them, so a
 non-coherent link never evaluates SNP checks.
 
 They are plain coroutines rather than `uvm_component`s, because they watch
-nets rather than analysis traffic. `chi_tb_env` builds one per interface,
-starts them in `run_phase`, and asserts their violation counts are zero in
+nets rather than analysis traffic. An env builds them per interface, starts
+them in `run_phase`, and asserts their violation counts are zero in
 `report_phase` -- not `check_phase`, which pyUVM runs TOP-DOWN, so an
 assertion there can fire before the components below have folded in their
 state.
+
+| Env | `bind_chi` | `bind_chi_snp` |
+| --- | --- | --- |
+| `chi_tb_env` | RN-I, SN-F | not applicable (no SNP channel) |
+| `chi_coherent_tb_env` | both RN-F links | all four RN-F / HN-F links |
+
+On the coherent topology `bind_chi` watches the RN-F end only: that endpoint
+sees the full link traffic, and the HN-F end of the same wires would report
+every violation a second time. `bind_chi_snp` watches both ends, because each
+exercises a different half of the channel -- the HN-F side drives snoops and
+its `txsnp` send-credit shadow, the RN-F side receives them and shadows
+`rxsnp`. The completion timeout stands down on coherent links: an HN-F may
+complete a request from another RN-F's snoop data, so a request and its
+completion are not both visible on any one link.
 
 `bind_chi.py` has two layers. The **link** layer judges a single sample: flit
 and credit gating on link state, `FLITPEND`, reset idle, deactivation, the

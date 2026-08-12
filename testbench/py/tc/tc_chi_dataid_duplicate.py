@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from chi_base_test import chi_base_test
+from chi_dataid_negctl_catcher import chi_dataid_negctl_catcher
 from chi_tb_pkg import READ_ADDR_C
 
 BEATS_C = 4     # size 6 = 64 bytes over a 16-byte CHI-D data bus
@@ -38,26 +39,50 @@ class tc_chi_dataid_duplicate(chi_base_test):
   async def run_phase(self):
     self.raise_objection()
 
-    rd = self.rni0_rd_seq
-    rd.reset()
-    rd.set_requests(1)
-    rd.set_initial_addr(READ_ADDR_C)
-    rd.set_size(6)
-    rd.set_allow_retry(0)
-    rd.set_get_response(True)
-    rd.set_verbose(False)
-    await rd.start(self.v_sqr.rni_sequencer)
+    # The two errors below are induced on purpose, so they are demoted rather
+    # than left in the log to read as real failures. The catcher is what proves
+    # they happened: asserting on the monitor's counter alone would pass on two
+    # duplicate reports and never notice the missing-beat check had gone
+    # silent. The burst crosses the link, so both endpoints see both faults.
+    catcher = chi_dataid_negctl_catcher("dataid_negctl_catcher")
+    monitors = (self.tb_env.rni_agent.monitor, self.tb_env.snf_agent.monitor)
+    for mon in monitors:
+      mon.logger.addFilter(catcher)
 
-    dat_item = await self.tb_env.rni_dat_fifo.get()
-    assert len(dat_item.data) == BEATS_C
+    try:
+      rd = self.rni0_rd_seq
+      rd.reset()
+      rd.set_requests(1)
+      rd.set_initial_addr(READ_ADDR_C)
+      rd.set_size(6)
+      rd.set_allow_retry(0)
+      rd.set_get_response(True)
+      rd.set_verbose(False)
+      await rd.start(self.v_sqr.rni_sequencer)
 
-    mon = self.tb_env.rni_agent.monitor
-    # Two distinct faults from the one malformed burst: DataID 0 arrived twice,
-    # and no beat ever carried the last position.
-    assert mon.n_dataid_violation >= 2, (
-      "monitor did not flag the duplicated DataID and the missing beat "
-      f"(n_dataid_violation={mon.n_dataid_violation}) -- the DataID placement "
-      "checks may be vacuous")
+      dat_item = await self.tb_env.rni_dat_fifo.get()
+      await self.wait_clocks(8)
+    finally:
+      # A failed assertion below must not leave the filter installed on a
+      # logger that outlives this test.
+      for mon in monitors:
+        mon.logger.removeFilter(catcher)
 
-    self.logger.info("Test (tc_chi_dataid_duplicate) PASS")
+    assert len(dat_item.data) == BEATS_C, (
+      f"monitor reassembled {len(dat_item.data)} beats, expected {BEATS_C}")
+
+    # Two distinct faults from the one malformed burst, each with its own check:
+    # DataID 0 arrived twice, and no beat ever carried the last position.
+    assert catcher.saw_duplicate_error, (
+      "monitor did NOT flag the repeated DataID -- the duplicate check may be "
+      "vacuous")
+    assert catcher.saw_missing_error, (
+      "monitor did NOT flag the position no beat carried -- the missing-beat "
+      "check may be vacuous")
+    assert self.tb_env.rni_agent.monitor.n_dataid_violation >= 2, (
+      "the requester's DataID violation counter did not move with the reports")
+
+    self.logger.info(
+      "Test (tc_chi_dataid_duplicate) PASS: monitor flagged both the "
+      "duplicated and the missing DataID")
     self.drop_objection()

@@ -17,36 +17,20 @@
 
 from __future__ import annotations
 
-import logging
-
 from vip_chi_types_pkg import Resp, RespErr, RspOpcode
 from chi_base_test import chi_base_test, WRITE_READ_ADDR_C
+from chi_pcrd_leak_negctl_catcher import chi_pcrd_leak_negctl_catcher
 from vip_chi_raw_seq import vip_chi_raw_seq
 from chi_tb_pkg import RNI_NODE_ID_C, SNF_NODE_ID_C
 
 PCRD_TYPE_C = 0x3
 
 
-class _pcrd_leak_catcher(logging.Filter):
-  """Demote the leak error this test induces on purpose, and record that it fired."""
-
-  def __init__(self):
-    super().__init__()
-    self.saw_leak_error = False
-
-  def filter(self, record):
-    if record.levelno >= logging.ERROR and "never consumed" in record.getMessage():
-      self.saw_leak_error = True
-      record.levelno = logging.INFO
-      record.levelname = "INFO"
-    return True
-
-
 class tc_chi_pcrd_leak(chi_base_test):
 
   def __init__(self, name, parent):
     super().__init__(name, parent)
-    self.catcher = _pcrd_leak_catcher()
+    self.catcher = chi_pcrd_leak_negctl_catcher("pcrd_leak_negctl_catcher")
 
   def configure_tb_cfg(self):
     # The injected PCrdGrant bounces nothing, so the scoreboard opens a context

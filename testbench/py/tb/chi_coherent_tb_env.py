@@ -23,10 +23,13 @@
 
 from __future__ import annotations
 
+import cocotb
 from cocotb.triggers import FallingEdge
 
 from pyuvm import uvm_env, uvm_tlm_analysis_fifo, ConfigDB
 
+from sva.bind_chi import bind_chi
+from sva.bind_chi_snp import bind_chi_snp
 from vip_chi_types_pkg import Role
 from vip_chi_agent import vip_chi_agent
 from vip_chi_hnf_agent import vip_chi_hnf_agent
@@ -47,6 +50,8 @@ class chi_coherent_tb_env(uvm_env):
     self.perf = None
     self.coh_checker = None
     self.cov = None
+    self.rnf_sva = []
+    self.snp_sva = []
     self.hrnf0_req_fifo = None
     self.hrnf0_rsp_fifo = None
     self.hrnf0_dat_fifo = None
@@ -86,6 +91,30 @@ class chi_coherent_tb_env(uvm_env):
     self.perf = vip_chi_perf_counters("perf", self)
     self.coh_checker = vip_chi_coherency_checker("coh_checker", self)
     self.cov = vip_chi_coverage("cov", self)
+
+    # Protocol checkers, mirroring the coherent binds in the SV harness.
+    #
+    # REQ/RSP/DAT is watched from the RN-F end only. The RN-F endpoint sees the
+    # full link traffic, and the HN-F end of the same wires would report every
+    # violation a second time.
+    #
+    # The completion timeout stands down here, as it does on the SV coherent
+    # binds: an HN-F may complete a request from another RN-F's snoop data, so a
+    # request and its completion are not both visible on any one link and a
+    # timeout would fire on correct traffic.
+    self.rnf_sva = [
+      bind_chi(hrnf0_vif, "hrnf0_sva", enable_completion_timeout=False),
+      bind_chi(hrnf1_vif, "hrnf1_sva", enable_completion_timeout=False),
+    ]
+    # SNP is watched from BOTH ends, because each end exercises a different half
+    # of the channel: the HN-F side drives snoops and its txsnp send-credit
+    # shadow, the RN-F side receives them and shadows rxsnp.
+    self.snp_sva = [
+      bind_chi_snp(hnfr0_vif, "hnfr0_snp_sva"),
+      bind_chi_snp(hnfr1_vif, "hnfr1_snp_sva"),
+      bind_chi_snp(hrnf0_vif, "hrnf0_snp_sva"),
+      bind_chi_snp(hrnf1_vif, "hrnf1_snp_sva"),
+    ]
 
     self.hrnf0_req_fifo = uvm_tlm_analysis_fifo("hrnf0_req_fifo", self)
     self.hrnf0_rsp_fifo = uvm_tlm_analysis_fifo("hrnf0_rsp_fifo", self)
@@ -145,12 +174,33 @@ class chi_coherent_tb_env(uvm_env):
       tb_cfg = None
     if tb_cfg is not None:
       self.perf.enable = tb_cfg.perf_enable
+      # Re-read every cycle rather than latched here, so a test may raise
+      # dat_reorder_allowed any time before its traffic starts.
+      for checker in self.rnf_sva:
+        checker.tb_cfg = tb_cfg
 
   async def run_phase(self):
+    # The protocol checkers watch nets continuously and own their own reset
+    # handling, so they are started once here rather than restarted below.
+    for checker in self.rnf_sva + self.snp_sva:
+      cocotb.start_soon(checker.run())
+
     bus = self.hrnf0_agent.vif
     while True:
       await FallingEdge(bus.rst_n)
       self.handle_reset()
+
+  def report_phase(self):
+    # pyUVM runs check_phase TOP-DOWN, unlike UVM, so an assertion placed there
+    # can run before the components below have finished folding in their state.
+    # report_phase is bottom-up and is where the port puts end-of-test asserts.
+    checkers = self.rnf_sva + self.snp_sva
+    for checker in checkers:
+      checker.report(self.logger)
+    total = sum(checker.errors for checker in checkers)
+    assert total == 0, (
+      f"CHI protocol checkers reported {total} violation(s): "
+      + " ".join(f"{c.log.name}={c.errors}" for c in checkers if c.errors))
 
   def handle_reset(self):
     self.perf.handle_reset()
