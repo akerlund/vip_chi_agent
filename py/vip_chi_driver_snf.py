@@ -77,6 +77,44 @@ class vip_chi_driver_snf(uvm_driver):
     self._driver_tasks = []
     self.agent_owned = False
 
+    # TXSACTIVE outstanding-window state. See tx_activity_begin().
+    self.tx_active_count = 0
+    self._tx_active_extend = 0
+
+  # ==========================================================================
+  # TXSACTIVE outstanding-window drive.
+  #
+  # Deliberately the same shape as vip_chi_driver_rni's -- same method names,
+  # same counter semantics -- rather than a shared base: the SV SN-F does not
+  # inherit the SV RN-I either, and the two flows are kept structurally
+  # parallel so a reader can diff them.
+  #
+  # TXSACTIVE must span the whole window in which this node may have snoopable
+  # transactions outstanding, not bracket each flit. For a completer that
+  # window runs from taking a request off the wire to finishing its last
+  # completion flit, so the count -- not any one response -- decides the level.
+  # ==========================================================================
+  def tx_activity_begin(self):
+    self.tx_active_count += 1
+    self._tx_active_extend = 0
+    self.bus.drive(txsactive=1)
+
+  def tx_activity_end(self):
+    if self.tx_active_count > 0:
+      self.tx_active_count -= 1
+    if self.tx_active_count == 0:
+      self._tx_active_extend = max(0, int(self.cfg.txsactive_extend_max_cycles))
+
+  # Called once per cycle from credit_loop, so the extension counts cycles
+  # rather than callers.
+  def tx_activity_tick(self):
+    if self.tx_active_count > 0:
+      return
+    if self._tx_active_extend > 0:
+      self._tx_active_extend -= 1
+      return
+    self.bus.drive(txsactive=0)
+
   # ==========================================================================
   def build_phase(self):
     self.bus = ConfigDB().get(self, "", "vif")
@@ -153,6 +191,8 @@ class vip_chi_driver_snf(uvm_driver):
     self._kill_driver_tasks()
     self.retries_issued = 0
     self.captured_reqs = []
+    self.tx_active_count = 0
+    self._tx_active_extend = 0
     self.reset_credit_state()
     self.reset_outputs()
 
@@ -247,12 +287,18 @@ class vip_chi_driver_snf(uvm_driver):
   async def manual_dispatch_loop(self):
     while True:
       item = await self.seq_item_port.get_next_item()
-      if getattr(item, "raw_override", False):
-        await self.drive_raw_item(item)
-      elif len(item.data) > 0:
-        await self.drive_dat_item(item)
-      else:
-        await self.drive_rsp_item(item)
+      # A manually injected completion is outbound activity that no captured
+      # request accounts for, so it opens a window of its own.
+      self.tx_activity_begin()
+      try:
+        if getattr(item, "raw_override", False):
+          await self.drive_raw_item(item)
+        elif len(item.data) > 0:
+          await self.drive_dat_item(item)
+        else:
+          await self.drive_rsp_item(item)
+      finally:
+        self.tx_activity_end()
       self.seq_item_port.item_done()
 
   # --------------------------------------------------------------------------
@@ -261,6 +307,7 @@ class vip_chi_driver_snf(uvm_driver):
     while True:
       await bus.rising()
       self.drive_idle_sideband()
+      self.tx_activity_tick()
       bus.drive(txreqlcrdv=1 if self.req_lcrdv_pending else 0)
       bus.drive(txrsplcrdv=1 if self.rsp_lcrdv_pending else 0)
       bus.drive(txdatlcrdv=1 if self.dat_lcrdv_pending else 0)
@@ -315,7 +362,14 @@ class vip_chi_driver_snf(uvm_driver):
 
       req = bus.sample_flit("req", "rx")
       self.schedule_req_credit_return()
-      await self.dispatch_auto_response(req)
+      # The window opens when the request comes off the wire -- from here until
+      # the last completion flit this node owes a response, which is exactly
+      # what TXSACTIVE reports.
+      self.tx_activity_begin()
+      try:
+        await self.dispatch_auto_response(req)
+      finally:
+        self.tx_activity_end()
 
   # ==========================================================================
   # Buffered responder loop (opt-in via cfg.multi_outstanding): one coroutine
@@ -337,13 +391,20 @@ class vip_chi_driver_snf(uvm_driver):
       if bus.get("rxreqflitv"):
         self.schedule_req_credit_return()
         self.captured_reqs.append(bus.sample_flit("req", "rx"))
+        # Opened at capture, not at dispatch: a buffered request is already
+        # outstanding while it waits its turn in the queue, and the sideband
+        # has to say so.
+        self.tx_activity_begin()
 
   async def req_response_loop(self):
     bus = self.bus
     while True:
       if self.captured_reqs:
         req = self.captured_reqs.pop(0)
-        await self.dispatch_auto_response(req)
+        try:
+          await self.dispatch_auto_response(req)
+        finally:
+          self.tx_activity_end()
       else:
         await bus.rising()
         self.drive_idle_sideband()
@@ -409,11 +470,11 @@ class vip_chi_driver_snf(uvm_driver):
     await self.wait_for_credit(self.rsp_lcrd)
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txsactive=1, txrspflitpend=0, txrspflitv=1)
+    bus.drive(txrspflitpend=0, txrspflitv=1)
     bus.drive_flit("rsp", fields)
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txrspflitv=0, txsactive=0)
+    bus.drive(txrspflitv=0)
     bus.drive_flit("rsp", {})
 
   async def drive_rsp_item(self, rsp):
@@ -445,7 +506,7 @@ class vip_chi_driver_snf(uvm_driver):
       await self.wait_for_credit(self.dat_lcrd)
       await bus.rising()
       self.drive_idle_sideband()
-      bus.drive(txsactive=1, txdatflitpend=1 if i != (n - 1) else 0, txdatflitv=1)
+      bus.drive(txdatflitpend=1 if i != (n - 1) else 0, txdatflitv=1)
       bus.drive_flit("dat", fields)
       await bus.rising()
       self.drive_idle_sideband()
@@ -453,7 +514,6 @@ class vip_chi_driver_snf(uvm_driver):
       bus.drive_flit("dat", {})
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txsactive=0)
 
   # ==========================================================================
   # Auto responses.
@@ -629,7 +689,7 @@ class vip_chi_driver_snf(uvm_driver):
       await self.wait_for_credit(self.dat_lcrd)
       await bus.rising()
       self.drive_idle_sideband()
-      bus.drive(txsactive=1, txdatflitpend=1 if send_index != (beat_count - 1) else 0,
+      bus.drive(txdatflitpend=1 if send_index != (beat_count - 1) else 0,
                 txdatflitv=1)
       bus.drive_flit("dat", fields)
       await bus.rising()
@@ -638,7 +698,6 @@ class vip_chi_driver_snf(uvm_driver):
       bus.drive_flit("dat", {})
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txsactive=0)
 
   def _apply_atomic_variant(self, variant, current, operand):
     dw = self.bus.cfg.data_bytes * 8
@@ -755,7 +814,7 @@ class vip_chi_driver_snf(uvm_driver):
         await self.wait_for_credit(self.dat_lcrd)
         await bus.rising()
         self.drive_idle_sideband()
-        bus.drive(txsactive=1, txdatflitpend=1 if b != (granule - 1) else 0, txdatflitv=1)
+        bus.drive(txdatflitpend=1 if b != (granule - 1) else 0, txdatflitv=1)
         bus.drive_flit("dat", fields)
         await bus.rising()
         self.drive_idle_sideband()
@@ -763,7 +822,6 @@ class vip_chi_driver_snf(uvm_driver):
         bus.drive_flit("dat", {})
       await bus.rising()
       self.drive_idle_sideband()
-      bus.drive(txsactive=0)
     elif self.cfg.split_write_rsp:
       await self.drive_rsp({
         "opcode": int(RspOpcode.COMP), "srcid": req_tgt, "tgtid": req_src,
@@ -818,11 +876,9 @@ class vip_chi_driver_snf(uvm_driver):
     await self.wait_for_credit(lcrd)
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txsactive=1)
     bus.drive(**{f"tx{channel}flitpend": flitpend, f"tx{channel}flitv": 1})
     bus.sig[f"tx{channel}flit"].value = int(raw_value)
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(**{f"tx{channel}flitpend": 0, f"tx{channel}flitv": 0})
     bus.drive_flit(channel, {})
-    bus.drive(txsactive=0)

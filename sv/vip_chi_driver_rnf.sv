@@ -313,7 +313,13 @@ class vip_chi_driver_rnf #(
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
 
+      // A snoop response is outbound activity this node owes the home, so it
+      // opens a TXSACTIVE window of its own: the request-side count knows
+      // nothing about it, and a SnpRespData burst can span many cycles during
+      // which the sideband must not drop.
+      this.tx_activity_begin();
       this.process_snoop(snp);
+      this.tx_activity_end();
     end
   endtask
 
@@ -495,13 +501,12 @@ class vip_chi_driver_rnf #(
 
     // Serialize against the request thread's own flit drivers: the snoop
     // responder runs concurrently with seq_loop, so both would otherwise drive
-    // txsactive / the RSP flit group in the same cycle. Taken after credit and
-    // held only across the two beat edges (never a completion wait), so it can
-    // never wedge against a writeback DAT burst on the request thread (M4).
+    // the RSP flit group in the same cycle. Taken after credit and held only
+    // across the two beat edges (never a completion wait), so it can never
+    // wedge against a writeback DAT burst on the request thread (M4).
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
-    this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b1;
     this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txrspflit     <= flit;
     this.vif_rni.g_drv.rni_cb.txrspflitv    <= 1'b1;
@@ -510,7 +515,6 @@ class vip_chi_driver_rnf #(
     this.drive_idle_sideband();
     this.vif_rni.g_drv.rni_cb.txrspflitv    <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txrspflit     <= '0;
-    this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b0;
     this.release_tx_flit();
   endtask
 
@@ -558,7 +562,6 @@ class vip_chi_driver_rnf #(
 
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
-      this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b1;
       this.vif_rni.g_drv.rni_cb.txdatflitpend <= (i != (n_beats - 1));
       this.vif_rni.g_drv.rni_cb.txdatflit     <= flit;
       this.vif_rni.g_drv.rni_cb.txdatflitv    <= 1'b1;
@@ -572,7 +575,6 @@ class vip_chi_driver_rnf #(
 
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
-    this.vif_rni.g_drv.rni_cb.txsactive <= 1'b0;
     this.release_tx_flit();
   endtask
 

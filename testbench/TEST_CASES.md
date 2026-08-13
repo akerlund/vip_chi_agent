@@ -102,6 +102,7 @@ exception of `tc_chi_sva_smoke` described at the top of this file.
 | `tc_chi_d_write_partial_smoke` | INT | byte-enable-masked writeback and readback. |
 | `tc_chi_d_ordered_write` | INT | `CompDBIDResp` followed by `CompAck` for ordered writes. |
 | `tc_chi_d_ordered_read` | INT | ordered `ReadNoSnp` returns `ReadReceipt` before `CompData`. |
+| `tc_chi_txsactive_window` | INT | `TXSACTIVE` is held across the whole outstanding window rather than pulsed per flit. Four pipelined reads, both link ends sampled every cycle: each vantage must show at least one cycle asserted with no flit moving (which a per-flit pulse cannot produce), must never drop between its first assertion and the last flit, and must drop once the traffic drains. |
 | `tc_chi_d_split_write_rsp` | INT | `DBIDResp` plus deferred `Comp`, with optional trailing `CompAck` under `ExpCompAck`. |
 | `tc_chi_d_prefetch_tgt` | INT | `PrefetchTgt` treated as a no-completion hint. |
 | `tc_chi_d_atomic` | INT | atomic store/load/swap/compare smoke using the SN-F backing memory for operand capture, RMW, old-data return, and readback. |

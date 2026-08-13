@@ -58,6 +58,12 @@ class vip_chi_monitor #(
   typedef FLIT_TYPES_T::vip_chi_snp_flit_t     snp_flit_t;
 
   virtual vip_chi_if #(CFG_P, FLIT_TYPES_T, ROLE_P) vif;
+
+  // cg_sactive sample scratch.
+  protected bit sactive_sampled_once;
+  protected bit txsactive_sample;
+  protected bit rxsactive_sample;
+  protected bit sactive_flit_moving_sample;
   vip_chi_cfg_agent                                 cfg;
 
   uvm_analysis_port #(item_t) req_port;
@@ -104,6 +110,7 @@ class vip_chi_monitor #(
   // ---------------------------------------------------------------------------
   function new(input string name, input uvm_component parent);
     super.new(name, parent);
+    this.cg_sactive = new();
     this.req_port = new("req_port", this);
     this.rsp_port = new("rsp_port", this);
     this.dat_port = new("dat_port", this);
@@ -124,6 +131,68 @@ class vip_chi_monitor #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // TXSACTIVE / RXSACTIVE sideband coverage.
+  //
+  // Lives here rather than in vip_chi_coverage because these are per-interface
+  // WIRES sampled every cycle, while that collector is item-fed and shared
+  // across roles -- it never sees the interface, and an item-boundary sample
+  // would be a constant now that the sideband is held for the whole window.
+  //
+  // cx_tx_traffic is the bin that matters: TXSACTIVE asserted on a cycle with
+  // NO flit moving is the held-across-the-window behaviour, which a per-flit
+  // pulse could never produce. Its absence would mean the sideband had gone
+  // back to bracketing individual flits.
+  covergroup cg_sactive;
+    option.per_instance = 1;
+
+    cp_txsactive: coverpoint this.txsactive_sample {
+      bins low  = {1'b0};
+      bins high = {1'b1};
+    }
+
+    cp_rxsactive: coverpoint this.rxsactive_sample {
+      bins low  = {1'b0};
+      bins high = {1'b1};
+    }
+
+    cp_flit_moving: coverpoint this.sactive_flit_moving_sample {
+      bins idle    = {1'b0};
+      bins traffic = {1'b1};
+    }
+
+    cx_tx_traffic: cross cp_txsactive, cp_flit_moving;
+    cx_tx_rx:      cross cp_txsactive, cp_rxsactive;
+  endgroup
+
+  // Sampled only when the covered tuple changes: the bins are three bits wide,
+  // so a per-cycle sample would add cost without adding information.
+  protected function void sample_sactive();
+
+    bit tx_now;
+    bit rx_now;
+    bit moving_now;
+
+    tx_now = this.vif.monitor_cb.txsactive;
+    rx_now = this.vif.monitor_cb.rxsactive;
+    moving_now = this.vif.monitor_cb.txreqflitv || this.vif.monitor_cb.txrspflitv ||
+                 this.vif.monitor_cb.txdatflitv || this.vif.monitor_cb.rxreqflitv ||
+                 this.vif.monitor_cb.rxrspflitv || this.vif.monitor_cb.rxdatflitv;
+
+    if (this.sactive_sampled_once &&
+        (tx_now == this.txsactive_sample) &&
+        (rx_now == this.rxsactive_sample) &&
+        (moving_now == this.sactive_flit_moving_sample)) begin
+      return;
+    end
+
+    this.txsactive_sample            = tx_now;
+    this.rxsactive_sample            = rx_now;
+    this.sactive_flit_moving_sample  = moving_now;
+    this.sactive_sampled_once        = 1'b1;
+    this.cg_sactive.sample();
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Public sampling entry point. The parent agent owns the reset watcher and
   // forks this task only while rst_n is deasserted.
   // ---------------------------------------------------------------------------
@@ -136,6 +205,8 @@ class vip_chi_monitor #(
       if (!this.vif.rst_n) begin
         continue;
       end
+
+      this.sample_sactive();
 
       if (this.vif.monitor_cb.txreqflitv) begin
         this.publish_req(this.vif.monitor_cb.txreqflit, ROLE_P);

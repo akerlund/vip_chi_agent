@@ -203,7 +203,15 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
       await bus.rising()
       self.drive_idle_sideband()
 
-      await self.process_snoop(snp)
+      # A snoop response is outbound activity this node owes the home, so it
+      # opens a TXSACTIVE window of its own: the request-side count knows
+      # nothing about it, and a SnpRespData burst can span many cycles during
+      # which the sideband must not drop.
+      self.tx_activity_begin()
+      try:
+        await self.process_snoop(snp)
+      finally:
+        self.tx_activity_end()
 
   # ==========================================================================
   # Resulting state after a snoop for the clean/no-data cases:
@@ -288,12 +296,12 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     await self.acquire_tx_flit()
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txsactive=1, txrspflitpend=0, txrspflitv=1)
+    bus.drive(txrspflitpend=0, txrspflitv=1)
     bus.drive_flit("rsp", fields)
 
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txrspflitv=0, txsactive=0)
+    bus.drive(txrspflitv=0)
     bus.drive_flit("rsp", {})
     self.release_tx_flit()
 
@@ -320,7 +328,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
 
       await bus.rising()
       self.drive_idle_sideband()
-      bus.drive(txsactive=1, txdatflitpend=1 if i != (n_beats - 1) else 0, txdatflitv=1)
+      bus.drive(txdatflitpend=1 if i != (n_beats - 1) else 0, txdatflitv=1)
       bus.drive_flit("dat", fields)
 
       await bus.rising()
@@ -330,7 +338,6 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
 
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txsactive=0)
     self.release_tx_flit()
 
   # ==========================================================================

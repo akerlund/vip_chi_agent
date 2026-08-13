@@ -53,7 +53,13 @@ and credit gating on link state, `FLITPEND`, reset idle, deactivation, the
 L-credit shadow, and the post-reset restart window. The **transaction** layer
 tracks requests across cycles: TxnID reuse, write data against its DBID grant,
 CompAck ordering, DAT burst placement and beat counts, completion timeouts,
-atomic data return, and ordered-read receipts.
+atomic data return, and ordered-read receipts. It also judges the
+`TXSACTIVE` sideband against that window: asserted whenever anything is
+outstanding (requester vantage only -- the signal reports the transmitting
+node's own transactions, and a completer has none of its own), and dropped
+within a bounded number of fully idle cycles afterwards, since a sideband that
+never falls carries no information. `tb_cfg.txsactive_extend_max_cycles` widens
+that bound for a node that holds the signal speculatively.
 
 Each check names a stable rule and its IHI 0050 clause, and the end-of-test
 summary lists every rule that was evaluated with its pass and fail counts, so
@@ -65,6 +71,13 @@ the DataID-ordering rules hold that convention by default and catch a driver
 regression. A test whose completer deliberately reorders beats sets
 `tb_cfg.dat_reorder_allowed`: those two rules stand down and the beat-count,
 TxnID and credit rules keep checking.
+
+`TXSACTIVE` / `RXSACTIVE` functional coverage lives in `vip_chi_monitor.py`
+rather than `vip_chi_coverage.py`: these are per-interface wires sampled every
+cycle, while the coverage collector is item-fed and shared across roles, so it
+never sees the interface. The bin that matters there is the sideband asserted on
+a cycle with no flit moving -- a per-flit pulse cannot produce it, so its
+absence would mean the drive had regressed to bracketing individual flits.
 
 Two deliberate differences from the SV checker, both recorded in the module
 headers:

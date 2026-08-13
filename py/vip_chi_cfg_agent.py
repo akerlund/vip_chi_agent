@@ -46,6 +46,16 @@ class VipChiCfgAgent:
     # node's own bounced requests. 0 disables the bound.
     self.max_pcrd_budget = 8
 
+    # Speculative TXSACTIVE extension, in cycles past the close of the
+    # outstanding window. TXSACTIVE says the node MAY have snoopable
+    # transactions outstanding, so holding it longer than strictly necessary is
+    # always legal -- it only costs the receiver the chance to gate its snoop
+    # logic. Raising this models a node that keeps the sideband up briefly in
+    # anticipation of more traffic. Default 0 drops it as soon as the window
+    # closes, which is the tightest legal behaviour and the one the checks
+    # bound against.
+    self.txsactive_extend_max_cycles = 0
+
     # Opt-in multi-outstanding datapath (Tier B). Default off = strict serial.
     self.multi_outstanding = False
     self.multi_outstanding_write = False
@@ -166,6 +176,11 @@ class VipChiCfgAgent:
     if self.max_pcrd_budget < 0:
       err(f"max_pcrd_budget is {self.max_pcrd_budget}; use 0 to leave the "
           f"P-credit bank unbounded")
+    # No SV counterpart: there the field is `int unsigned`, so the language
+    # already rules this out.
+    if self.txsactive_extend_max_cycles < 0:
+      err(f"txsactive_extend_max_cycles is {self.txsactive_extend_max_cycles}; "
+          f"use 0 to drop TXSACTIVE as soon as the outstanding window closes")
 
     # The overlap-path selectors do nothing on their own: the RN-I only leaves
     # the serial issue path when multi_outstanding is set, so setting one of

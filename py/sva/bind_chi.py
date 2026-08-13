@@ -101,6 +101,14 @@ _CAPS_C = {
 # hang, mirroring the SV TIMEOUT_CYCLES_P default.
 _TIMEOUT_CYCLES_C = 1024
 
+# Idle cycles a sender may keep TXSACTIVE up past the close of its outstanding
+# window before CHI_TXSACTIVE_DEASSERT_BOUNDED calls it stuck. Deliberately
+# loose: a checker watching the wire cannot see the moment the SENDER considers
+# a transaction retired, only the moment its last flit went by, so the bound has
+# to clear that gap. It is a stuck-signal check, not a latency measurement --
+# cfg.txsactive_extend_max_cycles is what a test tightens or extends.
+_TXSACTIVE_SETTLE_CYCLES_C = 16
+
 _REQUESTER_ROLES_C = (Role.RNI, Role.RNF)
 _COMPLETER_ROLES_C = (Role.SNF, Role.HNF)
 
@@ -377,6 +385,12 @@ class bind_chi:
     self._pending_completion = []
     self._pending_atomic = []
     self._pending_ordered = []
+
+    # TXSACTIVE over-assertion tracking: consecutive fully-idle cycles with the
+    # sideband still up, and a latch so one stuck episode reports once rather
+    # than once per cycle.
+    self._txsactive_idle_cycles = 0
+    self._txsactive_reported = False
 
     self._nba = []
 
@@ -697,8 +711,82 @@ class bind_chi:
     self._check_completion_timeout(s)
     self._check_atomic_dat_completion(s)
     self._check_ordered_read_receipt(s)
+    self._check_txsactive(s)
 
     self._flush()
+
+  # ---------------------------------------------------------------------------
+  # TXSACTIVE against the outstanding window.
+  #
+  # TXSACTIVE tells the receiver this node may have snoopable transactions
+  # outstanding. The receiver's use for it is to decide when it can stop
+  # watching for snoop traffic, so the failure that matters is UNDER-assertion:
+  # the sideband low while transactions are still in flight tells the receiver
+  # it may stand down when it may not.
+  #
+  # Over-assertion is legal -- "may have" is permissive -- so the second check
+  # is not its mirror. It bounds how long the signal may stay up once the link
+  # has gone completely quiet, which catches a sender that raises TXSACTIVE and
+  # then never lowers it: still legal by the letter, but it makes the sideband
+  # carry no information at all.
+  # ---------------------------------------------------------------------------
+  def _check_txsactive(self, s: dict) -> None:
+    outstanding = sum(1 for v in self._req_inflight.values() if v)
+
+    # Requester vantage only. TXSACTIVE reports the TRANSMITTING node's own
+    # outstanding transactions, and a completer has none: the requests it is
+    # servicing belong to the requester at the other end of the link, which is
+    # the node whose sideband covers them. This checker's _req_inflight tracks
+    # received requests at a completer, so it would otherwise read that peer's
+    # window off the wrong wire.
+    if outstanding and self._is_requester:
+      self._chk(
+        "CHI_TXSACTIVE_COVERS_OUTSTANDING", bool(s["txsactive"]),
+        f"TXSACTIVE was low with {outstanding} transaction(s) still "
+        f"outstanding: the window it reports must cover every one of them, "
+        f"not just the cycles carrying flits",
+        "section 13.4")
+
+    # An episode ends the moment anything happens on the link. That is what
+    # keeps the bound clear of a sender's own retire tail: the completion, and
+    # any CompAck chasing it, are flits, so the count only runs once the link
+    # is genuinely idle AND this checker sees nothing outstanding.
+    link_quiet = not outstanding and not any(
+      s[f"{d}{ch}flitv"] for d in ("tx", "rx") for ch in _CHANNELS_C)
+
+    limit = _TXSACTIVE_SETTLE_CYCLES_C + self._txsactive_extend_max_cycles
+
+    if not (link_quiet and s["txsactive"]):
+      # The episode ended. Score it as a pass -- whether it ended because the
+      # sideband dropped or because traffic resumed, it did not stay up
+      # indefinitely, which is what this rule asserts. Scoring the ENDING (and
+      # not merely staying silent) is what keeps the rule out of the summary's
+      # blind spot: a check that only ever reports failures is indistinguishable
+      # from one that never runs.
+      if self._txsactive_idle_cycles and not self._txsactive_reported:
+        self._chk("CHI_TXSACTIVE_DEASSERT_BOUNDED", True, "", "section 13.4")
+      self._txsactive_idle_cycles = 0
+      self._txsactive_reported = False
+      return
+
+    self._txsactive_idle_cycles += 1
+    if self._txsactive_idle_cycles <= limit or self._txsactive_reported:
+      return
+
+    self._txsactive_reported = True
+    self._chk(
+      "CHI_TXSACTIVE_DEASSERT_BOUNDED", False,
+      f"TXSACTIVE stayed asserted for {self._txsactive_idle_cycles} cycles "
+      f"with nothing outstanding and no flit on any channel (bound is "
+      f"{limit}): a sideband that never drops reports nothing",
+      "section 13.4")
+
+  @property
+  def _txsactive_extend_max_cycles(self) -> int:
+    # Read live rather than latched, like the reorder knob, so a testcase can
+    # raise it before its traffic starts.
+    return max(0, int(getattr(self.tb_cfg, "txsactive_extend_max_cycles", 0)
+                      if self.tb_cfg is not None else 0))
 
   # ---------------------------------------------------------------------------
   # A request goes out (requester) or arrives (completer).

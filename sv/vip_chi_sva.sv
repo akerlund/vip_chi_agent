@@ -45,7 +45,13 @@ module vip_chi_sva #(
     // default and catch a driver regression. Drive this high on a link whose
     // completer deliberately reorders beats: the ordering checks stand down,
     // everything else (beat counts, TxnID stability, credits) keeps checking.
-    input bit  dat_reorder_allowed
+    input bit  dat_reorder_allowed,
+    // Cycles a sender may keep TXSACTIVE asserted past the close of its
+    // outstanding window (cfg_agent.txsactive_extend_max_cycles). An input
+    // rather than a parameter, like dat_reorder_allowed above and for the same
+    // reason: a testcase sets the knob at run time, and elaboration is over by
+    // then.
+    input int  txsactive_extend_max_cycles
   );
 
   typedef vip_chi_types #(CFG_P)::txn_id_t     txn_id_t;
@@ -63,6 +69,15 @@ module vip_chi_sva #(
     (ROLE_P == VIP_CHI_ROLE_RNI_E) || (ROLE_P == VIP_CHI_ROLE_RNF_E);
   localparam bit ROLE_IS_COMPLETER_C =
     (ROLE_P == VIP_CHI_ROLE_SNF_E) || (ROLE_P == VIP_CHI_ROLE_HNF_E);
+
+  // Idle cycles a sender may keep TXSACTIVE up past the close of its
+  // outstanding window before p_txsactive_deassert_bounded calls it stuck.
+  // Deliberately loose: a checker watching the wire cannot see the moment the
+  // SENDER considers a transaction retired, only the moment its last flit went
+  // by, so the bound has to clear that gap. It is a stuck-signal check, not a
+  // latency measurement -- TXSACTIVE_EXTEND_MAX_CYCLES_P is what a test
+  // tightens or extends.
+  localparam int TXSACTIVE_SETTLE_CYCLES_C = 16;
 
   // Any link-activate sideband asserted: the link is somewhere between STOP and
   // STOP (i.e. ACTIVATING / RUN / DEACTIVATING). This is the correct gate for the
@@ -367,6 +382,35 @@ module vip_chi_sva #(
   int unsigned rxrsp_lcrd_count;
   int unsigned rxdat_lcrd_count;
   bit req_inflight_by_txn[TXN_ID_COUNT_C];
+
+  // Running population count of req_inflight_by_txn. Maintained alongside the
+  // array rather than reduced from it: the TxnID space is 1024 entries on CHI-D
+  // and 4096 on CHI-E, and p_txsactive_covers_outstanding needs the answer on
+  // EVERY clock, which is not something to spend a full-array reduction on.
+  //
+  // Every site that sets or clears a bit contributes to req_outstanding_delta,
+  // a blocking accumulator applied once at the end of this always_ff. That is
+  // what keeps the count right when a request goes out in the same cycle a
+  // completion retires another: one NBA update carrying the net change, rather
+  // than several read-modify-writes all reading the same stale value.
+  int unsigned req_outstanding_count;
+  int          req_outstanding_delta;
+
+  // Consecutive fully-idle cycles with TXSACTIVE still up, and a latch so one
+  // stuck episode reports once rather than once per cycle.
+  int unsigned txsactive_idle_cycles;
+  bit          txsactive_bound_reported;
+
+  // Nothing this checker knows to be outstanding, and not a single flit moving
+  // in either direction on any channel. The flit terms are what keep the
+  // deassert bound clear of a sender's own retire tail: a completion, and any
+  // CompAck chasing it, are flits, so the idle run only starts once the link is
+  // genuinely quiet.
+  function automatic bit link_quiet();
+    return ((req_outstanding_count == 0) &&
+            !vif.txreqflitv && !vif.txrspflitv && !vif.txdatflitv &&
+            !vif.rxreqflitv && !vif.rxrspflitv && !vif.rxdatflitv);
+  endfunction
   bit dat_completion_req_valid_by_txn[TXN_ID_COUNT_C];
   txn_id_t dat_completion_req_txn_by_txn[TXN_ID_COUNT_C];
 
@@ -388,6 +432,10 @@ module vip_chi_sva #(
         dat_completion_req_txn_by_txn[txn_i] <= '0;
       end
 
+      req_outstanding_count <= 0;
+      txsactive_idle_cycles <= 0;
+      txsactive_bound_reported <= 1'b0;
+
       txdat_burst_active    <= 1'b0;
       txdat_burst_txn_id    <= '0;
       txdat_expected_data_id <= '0;
@@ -406,6 +454,8 @@ module vip_chi_sva #(
       rxdat_lcrd_count      <= 0;
     end
     else begin
+      req_outstanding_delta = 0;
+
       // Each pool is credited by the LCRDV that authorizes the flit it counts,
       // which travels opposite to that flit on the same channel (see the link
       // adapter's cross-wire). A tx<chan> send is granted by the inbound
@@ -432,6 +482,9 @@ module vip_chi_sva #(
           if (req_has_modeled_completion(req_opcode)) begin
             if (req_inflight_by_txn[txn_idx]) begin
               $error("vip_chi_sva: requester reused a TxnID while the earlier request was still in flight");
+            end
+            if (!req_inflight_by_txn[txn_idx]) begin
+              req_outstanding_delta++;
             end
             req_inflight_by_txn[txn_idx] <= 1'b1;
           end
@@ -487,15 +540,24 @@ module vip_chi_sva #(
               expected_write_valid_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <=
                 (expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] != 0);
               write_completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b1;
+              if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
+                req_outstanding_delta--;
+              end
               req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
             end
 
             rsp_opcode_t'(VIP_CHI_RSP_COMP_C): begin
               write_completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b1;
+              if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
+                req_outstanding_delta--;
+              end
               req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
             end
 
             rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C): begin
+              if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
+                req_outstanding_delta--;
+              end
               req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
             end
 
@@ -504,6 +566,9 @@ module vip_chi_sva #(
               // accept it, so its TxnID is released and the requester re-issues
               // after the matching PCrdGrant. Clear the in-flight marker so that
               // legitimate re-issue is not flagged as a TxnID reuse.
+              if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
+                req_outstanding_delta--;
+              end
               req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
             end
 
@@ -553,6 +618,9 @@ module vip_chi_sva #(
             if (req_inflight_by_txn[txn_idx]) begin
               $error("vip_chi_sva: completer observed a reused request TxnID while the earlier request was still in flight");
             end
+            if (!req_inflight_by_txn[txn_idx]) begin
+              req_outstanding_delta++;
+            end
             req_inflight_by_txn[txn_idx] <= 1'b1;
           end
           expected_write_beats_by_txn[txn_idx] <= req_write_payload_beats(
@@ -589,6 +657,9 @@ module vip_chi_sva #(
               // Mirror of the RN-I side: a RetryAck this SN-F drove retires the
               // bounced request's TxnID, so clear the in-flight marker and allow
               // the requester's re-issue to reuse it without a reuse violation.
+              if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))]) begin
+                req_outstanding_delta--;
+              end
               req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
             end
             default: begin
@@ -638,6 +709,9 @@ module vip_chi_sva #(
                 end
                 expected_completion_valid_by_txn[txn_idx] <= 1'b0;
                 if (dat_completion_req_valid_by_txn[txn_idx]) begin
+                  if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])]) begin
+                    req_outstanding_delta--;
+                  end
                   req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])] <= 1'b0;
                   dat_completion_req_valid_by_txn[txn_idx] <= 1'b0;
                 end
@@ -686,6 +760,9 @@ module vip_chi_sva #(
                 end
                 expected_completion_valid_by_txn[txn_idx] <= 1'b0;
                 if (dat_completion_req_valid_by_txn[txn_idx]) begin
+                  if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])]) begin
+                    req_outstanding_delta--;
+                  end
                   req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])] <= 1'b0;
                   dat_completion_req_valid_by_txn[txn_idx] <= 1'b0;
                 end
@@ -741,6 +818,9 @@ module vip_chi_sva #(
                 end
                 expected_completion_valid_by_txn[txn_idx] <= 1'b0;
                 if (dat_completion_req_valid_by_txn[txn_idx]) begin
+                  if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])]) begin
+                    req_outstanding_delta--;
+                  end
                   req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])] <= 1'b0;
                   dat_completion_req_valid_by_txn[txn_idx] <= 1'b0;
                 end
@@ -789,6 +869,9 @@ module vip_chi_sva #(
                 end
                 expected_completion_valid_by_txn[txn_idx] <= 1'b0;
                 if (dat_completion_req_valid_by_txn[txn_idx]) begin
+                  if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])]) begin
+                    req_outstanding_delta--;
+                  end
                   req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])] <= 1'b0;
                   dat_completion_req_valid_by_txn[txn_idx] <= 1'b0;
                 end
@@ -801,6 +884,23 @@ module vip_chi_sva #(
             rxdat_burst_opcode     <= dat_opcode_t'(VIP_CHI_DAT_COMP_DATA_C);
           end
         end
+      end
+
+      // One NBA update carrying the net change every site above contributed.
+      req_outstanding_count <= req_outstanding_count + req_outstanding_delta;
+
+      // An episode ends the moment anything happens on the link, which is what
+      // keeps the bound clear of a sender's own retire tail.
+      if (link_quiet() && vif.txsactive) begin
+        txsactive_idle_cycles <= txsactive_idle_cycles + 1;
+        if (txsactive_idle_cycles >
+            (TXSACTIVE_SETTLE_CYCLES_C + txsactive_extend_max_cycles)) begin
+          txsactive_bound_reported <= 1'b1;
+        end
+      end
+      else begin
+        txsactive_idle_cycles    <= 0;
+        txsactive_bound_reported <= 1'b0;
       end
     end
   end
@@ -909,6 +1009,38 @@ module vip_chi_sva #(
   property p_link_deactivate_when_idle;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
       !link_is_active() |=> !vif.txsactive;
+  endproperty
+
+  // TXSACTIVE against the outstanding window.
+  //
+  // TXSACTIVE tells the receiver this node may have snoopable transactions
+  // outstanding. The receiver's use for it is to decide when it can stop
+  // watching for snoop traffic, so the failure that matters is UNDER-assertion:
+  // the sideband low while transactions are still in flight tells the receiver
+  // it may stand down when it may not.
+  //
+  // Requester vantage only. TXSACTIVE reports the TRANSMITTING node's own
+  // outstanding transactions, and a completer has none: the requests it is
+  // servicing belong to the requester at the other end of the link, which is
+  // the node whose sideband covers them. req_outstanding_count tracks received
+  // requests at a completer, so it would otherwise read that peer's window off
+  // the wrong wire.
+  property p_txsactive_covers_outstanding;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n ||
+                                    !ROLE_IS_REQUESTER_C)
+      (req_outstanding_count > 0) |-> vif.txsactive;
+  endproperty
+
+  // Over-assertion is legal -- "may have" is permissive -- so this is not the
+  // mirror of the property above. It bounds how long the signal may stay up
+  // once the link has gone completely quiet, which catches a sender that raises
+  // TXSACTIVE and then never lowers it: still legal by the letter, but it makes
+  // the sideband carry no information at all.
+  property p_txsactive_deassert_bounded;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      !(link_quiet() && vif.txsactive && !txsactive_bound_reported &&
+        (txsactive_idle_cycles >
+         (TXSACTIVE_SETTLE_CYCLES_C + txsactive_extend_max_cycles)));
   endproperty
 
   property p_rni_completion_follows_req;
@@ -1116,6 +1248,12 @@ module vip_chi_sva #(
 
   assert property (p_link_deactivate_when_idle)
     else $error("vip_chi_sva: link entered DEACTIVATE while transmit activity was still present");
+
+  assert property (p_txsactive_covers_outstanding)
+    else $error("vip_chi_sva: TXSACTIVE was low with transactions still outstanding");
+
+  assert property (p_txsactive_deassert_bounded)
+    else $error("vip_chi_sva: TXSACTIVE stayed asserted with nothing outstanding and no flit on any channel");
 
 endmodule
 

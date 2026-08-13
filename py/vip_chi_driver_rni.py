@@ -131,9 +131,13 @@ class vip_chi_driver_rni(uvm_driver):
 
     # TX flit-driving mutex (SV tx_flit_arb). Serializes concurrent flit drivers
     # -- the coherent RN-F snoop responder vs the request thread -- on the shared
-    # txsactive / tx*flit signals. Uncontended in the RN-I cut (one TX thread), so
-    # acquire returns without advancing time -> byte-identical RN-I timing.
+    # tx*flit signals. Uncontended in the RN-I cut (one TX thread), so acquire
+    # returns without advancing time -> byte-identical RN-I timing.
     self._tx_flit_locked = False
+
+    # TXSACTIVE outstanding-window state. See tx_activity_begin().
+    self.tx_active_count = 0
+    self._tx_active_extend = 0
 
   # ==========================================================================
   def build_phase(self):
@@ -211,6 +215,8 @@ class vip_chi_driver_rni(uvm_driver):
     self._accepted = []
     self.pcrd_pool = {}
     self._tx_flit_locked = False
+    self.tx_active_count = 0
+    self._tx_active_extend = 0
     self.reset_credit_state()
     self.reset_outputs()
 
@@ -218,13 +224,68 @@ class vip_chi_driver_rni(uvm_driver):
     self.bus.drive(txlinkactiveack=self.bus.get("rxlinkactivereq"))
 
   # ==========================================================================
+  # TXSACTIVE outstanding-window drive.
+  #
+  # TXSACTIVE tells the receiver this node MAY have snoopable transactions
+  # outstanding, so it must stay asserted across that WHOLE window -- not
+  # bracket each flit. A per-flit pulse drops the signal to zero while requests
+  # are still in flight, which is precisely the interval a receiver reads it to
+  # decide whether it can gate its snoop logic.
+  #
+  # So the signal is a level driven from a counter rather than a pulse driven
+  # by whoever happens to be sending. Every transaction brackets itself with
+  # begin/end, and the count -- not any one transaction -- decides the level.
+  # That is what makes overlapping transactions correct: with the pipeline
+  # running, one transaction retiring no longer drops the sideband out from
+  # under the others still outstanding.
+  #
+  # The window counted here is EVERY outstanding transaction, not just the
+  # snoopable ones. Over-assertion is always legal (the signal is permissive --
+  # "may have"), under-assertion is the protocol violation, and counting
+  # uniformly keeps one mechanism across roles that have no snoopable traffic
+  # at all. cfg.txsactive_extend_max_cycles then holds it a bounded number of
+  # cycles past the close, modelling a node that speculates on more traffic.
+  #
+  # Assertion is immediate (in the caller's cycle, as the old per-flit pulse
+  # was) and only the DROP is deferred to the per-cycle tick, so the sideband
+  # still rises in the same cycle as the first flit it covers.
+  # ==========================================================================
+  def tx_activity_begin(self):
+    self.tx_active_count += 1
+    self._tx_active_extend = 0
+    self.bus.drive(txsactive=1)
+
+  def tx_activity_end(self):
+    if self.tx_active_count > 0:
+      self.tx_active_count -= 1
+    if self.tx_active_count == 0:
+      self._tx_active_extend = max(0, int(self.cfg.txsactive_extend_max_cycles))
+
+  # Called once per cycle from credit_loop -- once, so the extension counts
+  # cycles rather than callers. With the default extension of 0 the drop lands
+  # on the first edge after the window closes, which is the cycle the per-flit
+  # pulse used to drop on.
+  def tx_activity_tick(self):
+    if self.tx_active_count > 0:
+      return
+    if self._tx_active_extend > 0:
+      self._tx_active_extend -= 1
+      return
+    self.bus.drive(txsactive=0)
+
+  # ==========================================================================
   # TX flit-driving mutex + coherent-role extension hooks (empty in RN-I).
   #
-  # A coroutine that drives txsactive / a tx*flit group brackets its beat section
-  # with acquire/release so concurrent drivers (the RN-F snoop responder vs the
+  # A coroutine that drives a tx*flit group brackets its beat section with
+  # acquire/release so concurrent drivers (the RN-F snoop responder vs the
   # request thread) never write the shared TX signals in the same timestep. When
   # free, acquire returns immediately (no edge) -- so the single-threaded RN-I
   # path is timing-unchanged.
+  #
+  # txsactive is deliberately NOT among the signals this protects. It is a level
+  # driven from tx_active_count, so two concurrent senders compute the same
+  # value and cannot disagree; it also has to stay asserted ACROSS the gaps when
+  # neither holds the key, which a mutex-guarded signal could not.
   # ==========================================================================
   async def acquire_tx_flit(self):
     while self._tx_flit_locked:
@@ -276,7 +337,13 @@ class vip_chi_driver_rni(uvm_driver):
 
   # Signal a pipelined sequence that this item's transaction has fully retired.
   # Harmless (no-op) for the serial, non-pipelined path where no event was set.
+  # The one retire point both paths share: the serial loop reaches it through
+  # _complete_item(), the mixed pipeline calls it directly as a context is
+  # deleted. Closing the TXSACTIVE window here rather than at either call site
+  # is what keeps the sideband up across a pipelined run -- the count only
+  # reaches zero once the LAST outstanding transaction has retired.
   def _signal_mo_done(self, item):
+    self.tx_activity_end()
     evt = getattr(item, "_mo_evt", None)
     if evt is not None:
       evt.set()
@@ -318,6 +385,7 @@ class vip_chi_driver_rni(uvm_driver):
     while True:
       await bus.rising()
       self.drive_idle_sideband()
+      self.tx_activity_tick()
 
       if bus.get("rxdatflitv"):
         self.seen_rx_dat_flit = True
@@ -434,7 +502,6 @@ class vip_chi_driver_rni(uvm_driver):
 
         await bus.rising()
         self.drive_idle_sideband()
-        bus.drive(txsactive=0)
         self.free_txn_id(_I(req.txn_id))
         self.on_transaction_complete(req)
         self._complete_item(req)
@@ -449,7 +516,6 @@ class vip_chi_driver_rni(uvm_driver):
         else:
           await bus.rising()
           self.drive_idle_sideband()
-          bus.drive(txsactive=0)
 
         self.free_txn_id(_I(req.txn_id))
         self.on_transaction_complete(req)
@@ -487,7 +553,13 @@ class vip_chi_driver_rni(uvm_driver):
     await self.acquire_tx_flit()
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txsactive=1, txreqflitpend=0, txreqflitv=1)
+    # alloc_id is exactly "this is a fresh transaction", so it is also the right
+    # predicate for opening the TXSACTIVE window: handle_retry() and the mixed
+    # pipeline both re-issue with alloc_id=False, and a re-issue must not open a
+    # second window over a transaction that already has one.
+    if alloc_id:
+      self.tx_activity_begin()
+    bus.drive(txreqflitpend=0, txreqflitv=1)
     bus.drive_flit("req", fields)
 
     await bus.rising()
@@ -545,7 +617,7 @@ class vip_chi_driver_rni(uvm_driver):
     await self.acquire_tx_flit()
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txsactive=1, txrspflitpend=0, txrspflitv=1)
+    bus.drive(txrspflitpend=0, txrspflitv=1)
     bus.drive_flit("rsp", fields)
 
     await bus.rising()
@@ -634,7 +706,12 @@ class vip_chi_driver_rni(uvm_driver):
         f"[{self.get_name()}] PersistSep final completion opcode "
         f"0x{flit['opcode']:x} was not CompPersist")
 
-  async def collect_read_completion(self, req, clear_activity=True):
+  # No clear_activity parameter any more: TXSACTIVE is closed at the shared
+  # retire point, so a collector no longer needs to know whether it is the
+  # serial path (which used to drop the sideband here) or the pipelined one
+  # (which had to be told not to, or it would have dropped it while its peers
+  # were still outstanding).
+  async def collect_read_completion(self, req):
     bus = self.bus
     expected = self.expected_read_completion_txn_id(req)
     data_q, be_q, id_q, cc_q, resp_q, err_q = [], [], [], [], [], []
@@ -699,8 +776,6 @@ class vip_chi_driver_rni(uvm_driver):
 
     await bus.rising()
     self.drive_idle_sideband()
-    if clear_activity:
-      bus.drive(txsactive=0)
 
   # ==========================================================================
   # A P-credit granted and never consumed is a leaked protocol credit: the
@@ -820,7 +895,10 @@ class vip_chi_driver_rni(uvm_driver):
     await self.acquire_tx_flit()
     await bus.rising()
     self.drive_idle_sideband()
-    bus.drive(txsactive=1)
+    # A raw flit is a single injected packet with no completion to wait for, but
+    # it still retires through the shared point below, so opening here keeps one
+    # begin paired with one end exactly as a normal request does.
+    self.tx_activity_begin()
     bus.drive(**{f"tx{channel}flitpend": flitpend, f"tx{channel}flitv": 1})
     bus.sig[f"tx{channel}flit"].value = int(raw_value)
 
@@ -828,7 +906,6 @@ class vip_chi_driver_rni(uvm_driver):
     self.drive_idle_sideband()
     bus.drive(**{f"tx{channel}flitpend": 0, f"tx{channel}flitv": 0})
     bus.drive_flit(channel, {})
-    bus.drive(txsactive=0)
     self.release_tx_flit()
 
   # ==========================================================================
@@ -1108,7 +1185,7 @@ class vip_chi_driver_rni(uvm_driver):
           f"matches no outstanding read")
 
       r = self.mx_ctx[idx].item
-      await self.collect_read_completion(r, clear_activity=False)
+      await self.collect_read_completion(r)
 
       # Re-find by request TxnID: the queue may have shifted while
       # collect_read_completion() yielded (only the TX thread deletes, and it

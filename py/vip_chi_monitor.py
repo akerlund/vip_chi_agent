@@ -28,6 +28,8 @@
 
 from __future__ import annotations
 
+import vsc
+
 from pyuvm import uvm_monitor, uvm_analysis_port
 
 from vip_chi_types_pkg import (
@@ -155,6 +157,34 @@ def snp_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_i
   return it
 
 
+@vsc.covergroup
+class cg_sactive:
+  """TXSACTIVE / RXSACTIVE sideband coverage.
+
+  Lives here rather than in vip_chi_coverage because these are per-interface
+  WIRES sampled every cycle, while that collector is item-fed and shared across
+  roles -- it never sees the interface, and an item-boundary sample would be a
+  constant now that the sideband is held for the whole window.
+
+  cx_tx_traffic is the bin that matters: TXSACTIVE asserted on a cycle with NO
+  flit moving is the held-across-the-window behaviour, which a per-flit pulse
+  could never produce. Its absence would mean the sideband had gone back to
+  bracketing individual flits.
+  """
+
+  def __init__(self):
+    self.with_sample(txsactive=vsc.uint32_t(), rxsactive=vsc.uint32_t(),
+                     flit_moving=vsc.uint32_t())
+    self.cp_txsactive = vsc.coverpoint(self.txsactive, bins=dict(
+      low=vsc.bin(0), high=vsc.bin(1)))
+    self.cp_rxsactive = vsc.coverpoint(self.rxsactive, bins=dict(
+      low=vsc.bin(0), high=vsc.bin(1)))
+    self.cp_flit_moving = vsc.coverpoint(self.flit_moving, bins=dict(
+      idle=vsc.bin(0), traffic=vsc.bin(1)))
+    self.cx_tx_traffic = vsc.cross([self.cp_txsactive, self.cp_flit_moving])
+    self.cx_tx_rx = vsc.cross([self.cp_txsactive, self.cp_rxsactive])
+
+
 class vip_chi_monitor(uvm_monitor):
 
   def __init__(self, name, parent):
@@ -171,6 +201,11 @@ class vip_chi_monitor(uvm_monitor):
     # so the negative-control testcase asserts on this counter. Deliberately not
     # cleared by _reset_state(): it is a whole-run tally, not per-transfer state.
     self.n_dataid_violation = 0
+    # cg_sactive and its last-sampled tuple. Sampled only on change: the bins
+    # are three bits wide, so a per-cycle sample would add cost without adding
+    # information.
+    self.cg_sactive = cg_sactive()
+    self._sactive_last = None
     self._reset_state()
 
   def _reset_state(self):
@@ -194,6 +229,18 @@ class vip_chi_monitor(uvm_monitor):
 
   def handle_reset(self):
     self._reset_state()
+
+  def _sample_sactive(self):
+    bus = self.bus
+    moving = any(bus.get_or(f"{d}{ch}flitv")
+                 for d in ("tx", "rx") for ch in ("req", "rsp", "dat"))
+    tup = (1 if bus.get_or("txsactive") else 0,
+           1 if bus.get_or("rxsactive") else 0,
+           1 if moving else 0)
+    if tup == self._sactive_last:
+      return
+    self._sactive_last = tup
+    self.cg_sactive.sample(tup[0], tup[1], tup[2])
 
   # ==========================================================================
   # Publish helpers (stateful correlation lives here, not in the builders).
@@ -353,6 +400,8 @@ class vip_chi_monitor(uvm_monitor):
       await bus.read_only()
       if bus.in_reset():
         continue
+
+      self._sample_sactive()
 
       if bus.get_or("txreqflitv"):
         self._publish_req(bus.get("txreqflit"), me)

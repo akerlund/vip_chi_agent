@@ -81,6 +81,10 @@ class vip_chi_driver_snf #(
   // RetryAck + PCrdGrant instead of being serviced (opt-in; default 0 = off).
   protected int unsigned                                       retries_issued;
 
+  // TXSACTIVE outstanding-window state. See tx_activity_begin().
+  protected int unsigned                                       tx_active_count;
+  protected int unsigned                                       tx_active_extend;
+
   `uvm_component_param_utils(vip_chi_driver_snf #(CFG_P, FLIT_TYPES_T))
 
   // ---------------------------------------------------------------------------
@@ -121,6 +125,47 @@ class vip_chi_driver_snf #(
   protected task drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txlinkactiveack <= this.vif_snf.g_drv.snf_cb.rxlinkactivereq;
   endtask
+
+  // ---------------------------------------------------------------------------
+  // TXSACTIVE outstanding-window drive.
+  //
+  // Deliberately the same shape as vip_chi_driver_rni's -- same method names,
+  // same counter semantics -- rather than a shared base: the SN-F does not
+  // inherit the RN-I, and the two roles are kept structurally parallel so a
+  // reader can diff them.
+  //
+  // TXSACTIVE must span the whole window in which this node may have snoopable
+  // transactions outstanding, not bracket each flit. For a completer that
+  // window runs from taking a request off the wire to finishing its last
+  // completion flit, so the count -- not any one response -- decides the level.
+  // ---------------------------------------------------------------------------
+  protected function void tx_activity_begin();
+    this.tx_active_count++;
+    this.tx_active_extend = 0;
+    this.vif_snf.g_drv.snf_cb.txsactive <= 1'b1;
+  endfunction
+
+  protected function void tx_activity_end();
+    if (this.tx_active_count > 0) begin
+      this.tx_active_count--;
+    end
+    if (this.tx_active_count == 0) begin
+      this.tx_active_extend = this.cfg.txsactive_extend_max_cycles;
+    end
+  endfunction
+
+  // Called once per cycle from credit_loop, so the extension counts cycles
+  // rather than callers.
+  protected function void tx_activity_tick();
+    if (this.tx_active_count > 0) begin
+      return;
+    end
+    if (this.tx_active_extend > 0) begin
+      this.tx_active_extend--;
+      return;
+    end
+    this.vif_snf.g_drv.snf_cb.txsactive <= 1'b0;
+  endfunction
 
   // ---------------------------------------------------------------------------
   // Reset the counted local send budgets and the queued outbound LCRDV pulses.
@@ -323,6 +368,8 @@ class vip_chi_driver_snf #(
   // ---------------------------------------------------------------------------
   function void handle_reset();
     this.retries_issued = 0;
+    this.tx_active_count = 0;
+    this.tx_active_extend = 0;
     this.reset_credit_state();
     this.reset_outputs();
   endfunction
@@ -355,6 +402,7 @@ class vip_chi_driver_snf #(
       @(this.vif_snf.g_drv.snf_cb);
 
       this.drive_idle_sideband();
+      this.tx_activity_tick();
       this.vif_snf.g_drv.snf_cb.txreqlcrdv <= (this.req_lcrdv_pulses_pending != 0);
       this.vif_snf.g_drv.snf_cb.txrsplcrdv <= (this.rsp_lcrdv_pulses_pending != 0);
       this.vif_snf.g_drv.snf_cb.txdatlcrdv <= (this.dat_lcrdv_pulses_pending != 0);
@@ -429,10 +477,15 @@ class vip_chi_driver_snf #(
 
       if (this.vif_snf.g_drv.snf_cb.rxreqflitv) begin
         this.schedule_req_credit_return();
+        // The window opens when the request comes off the wire -- from here
+        // until the last completion flit this node owes a response, which is
+        // exactly what TXSACTIVE reports. Closed on every exit path below.
+        this.tx_activity_begin();
 
         if (this.should_auto_retry(this.vif_snf.g_drv.snf_cb.rxreqflit)) begin
           this.retries_issued++;
           this.drive_auto_retry(this.vif_snf.g_drv.snf_cb.rxreqflit);
+          this.tx_activity_end();
           continue;
         end
 
@@ -440,6 +493,9 @@ class vip_chi_driver_snf #(
           this.drive_auto_read_compdata(this.vif_snf.g_drv.snf_cb.rxreqflit);
         end
         else if (req_opcode_t'(this.vif_snf.g_drv.snf_cb.rxreqflit.opcode) == req_opcode_t'(VIP_CHI_REQ_PREFETCH_TGT_C)) begin
+          // A hint with no completion: the window opens and closes with nothing
+          // in between, which is the honest report -- nothing was ever owed.
+          this.tx_activity_end();
           continue;
         end
         else if (this.req_opcode_is_auto_persist(req_opcode_t'(this.vif_snf.g_drv.snf_cb.rxreqflit.opcode))) begin
@@ -454,6 +510,7 @@ class vip_chi_driver_snf #(
         else if (this.req_opcode_is_auto_write(req_opcode_t'(this.vif_snf.g_drv.snf_cb.rxreqflit.opcode))) begin
           this.drive_auto_write_comp(this.vif_snf.g_drv.snf_cb.rxreqflit);
         end
+        this.tx_activity_end();
         continue;
       end
 
@@ -464,18 +521,24 @@ class vip_chi_driver_snf #(
         continue;
       end
 
+      // A manually injected completion is outbound activity that no captured
+      // request accounts for, so it opens a window of its own.
       if (rsp.raw_override) begin
+        this.tx_activity_begin();
         this.drive_raw_item(rsp);
+        this.tx_activity_end();
         seq_item_port.item_done();
         continue;
       end
 
+      this.tx_activity_begin();
       if (rsp.data.size() > 0) begin
         this.drive_dat(rsp);
       end
       else begin
         this.drive_rsp(rsp);
       end
+      this.tx_activity_end();
       seq_item_port.item_done();
     end
   endtask
@@ -508,6 +571,10 @@ class vip_chi_driver_snf #(
       if (this.vif_snf.g_drv.snf_cb.rxreqflitv) begin
         this.schedule_req_credit_return();
         this.captured_reqs.push_back(this.vif_snf.g_drv.snf_cb.rxreqflit);
+        // Opened at capture, not at dispatch: a buffered request is already
+        // outstanding while it waits its turn in the queue, and the sideband
+        // has to say so.
+        this.tx_activity_begin();
       end
     end
   endtask
@@ -522,6 +589,7 @@ class vip_chi_driver_snf #(
       if (this.captured_reqs.size() != 0) begin
         req = this.captured_reqs.pop_front();
         this.dispatch_auto_response(req);
+        this.tx_activity_end();
       end
       else begin
         @(this.vif_snf.g_drv.snf_cb);
@@ -775,7 +843,6 @@ class vip_chi_driver_snf #(
 
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
-    this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b1;
     this.vif_snf.g_drv.snf_cb.txrspflitpend   <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txrspflit       <= flit;
     this.vif_snf.g_drv.snf_cb.txrspflitv      <= 1'b1;
@@ -784,7 +851,6 @@ class vip_chi_driver_snf #(
     this.drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txrspflitv      <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txrspflit       <= '0;
-    this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b0;
   endtask
 
   // ---------------------------------------------------------------------------
@@ -904,7 +970,6 @@ class vip_chi_driver_snf #(
 
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
-    this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b1;
     this.vif_snf.g_drv.snf_cb.txrspflitpend   <= item.raw_flitpend;
     this.vif_snf.g_drv.snf_cb.txrspflit       <= flit;
     this.vif_snf.g_drv.snf_cb.txrspflitv      <= 1'b1;
@@ -914,7 +979,6 @@ class vip_chi_driver_snf #(
     this.vif_snf.g_drv.snf_cb.txrspflitpend   <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txrspflitv      <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txrspflit       <= '0;
-    this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b0;
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1005,7 +1069,6 @@ class vip_chi_driver_snf #(
 
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
-    this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b1;
     this.vif_snf.g_drv.snf_cb.txdatflitpend   <= item.raw_flitpend;
     this.vif_snf.g_drv.snf_cb.txdatflit       <= flit;
     this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b1;
@@ -1015,7 +1078,6 @@ class vip_chi_driver_snf #(
     this.vif_snf.g_drv.snf_cb.txdatflitpend   <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txdatflit       <= '0;
-    this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b0;
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1044,7 +1106,6 @@ class vip_chi_driver_snf #(
 
       @(this.vif_snf.g_drv.snf_cb);
       this.drive_idle_sideband();
-      this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b1;
       this.vif_snf.g_drv.snf_cb.txdatflitpend   <= (i != (rsp.data.size() - 1));
       this.vif_snf.g_drv.snf_cb.txdatflit       <= flit;
       this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b1;
@@ -1058,7 +1119,6 @@ class vip_chi_driver_snf #(
 
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
-    this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b0;
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1341,7 +1401,6 @@ class vip_chi_driver_snf #(
 
       @(this.vif_snf.g_drv.snf_cb);
       this.drive_idle_sideband();
-      this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b1;
       this.vif_snf.g_drv.snf_cb.txdatflitpend   <= (send_index != (beat_count - 1));
       this.vif_snf.g_drv.snf_cb.txdatflit       <= flit;
       this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b1;
@@ -1355,7 +1414,6 @@ class vip_chi_driver_snf #(
 
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
-    this.vif_snf.g_drv.snf_cb.txsactive       <= 1'b0;
   endtask
 
   // ---------------------------------------------------------------------------

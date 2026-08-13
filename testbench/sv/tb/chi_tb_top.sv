@@ -177,22 +177,31 @@ module chi_tb_top;
   // The reset branch there is what makes it 0 before any traffic.
   bit chi_dat_reorder_allowed;
 
+  // Cycles a sender may keep TXSACTIVE up past the close of its outstanding
+  // window. Same tb_cfg-latched plumbing as chi_dat_reorder_allowed above, and
+  // for the same reason: a testcase sets it at run time.
+  int chi_txsactive_extend_max_cycles;
+
   vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
     rni_sva (.vif(rni_if),
       .checks_enable((rni_if.txlinkactivereq === 1'b1) || (rni_if.rxlinkactivereq === 1'b1)),
-      .dat_reorder_allowed(chi_dat_reorder_allowed));
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles));
   vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
     snf_sva (.vif(snf_if),
       .checks_enable((snf_if.txlinkactivereq === 1'b1) || (snf_if.rxlinkactivereq === 1'b1)),
-      .dat_reorder_allowed(chi_dat_reorder_allowed));
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles));
   vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
     rni_e_sva (.vif(chi_e_wide_rni_if),
       .checks_enable((chi_e_wide_rni_if.txlinkactivereq === 1'b1) || (chi_e_wide_rni_if.rxlinkactivereq === 1'b1)),
-      .dat_reorder_allowed(chi_dat_reorder_allowed));
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles));
   vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
     snf_e_sva (.vif(chi_e_wide_snf_if),
       .checks_enable((chi_e_wide_snf_if.txlinkactivereq === 1'b1) || (chi_e_wide_snf_if.rxlinkactivereq === 1'b1)),
-      .dat_reorder_allowed(chi_dat_reorder_allowed));
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles));
 
   // Coherent REQ/RSP/DAT checker binds. The SNP channel has a separate checker
   // below; the RN-F endpoint sees the full coherent REQ/RSP/DAT link traffic while
@@ -204,22 +213,26 @@ module chi_tb_top;
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_rnf0_sva (.vif(coh_rnf0_if),
       .checks_enable((coh_rnf0_if.txlinkactivereq === 1'b1) || (coh_rnf0_if.rxlinkactivereq === 1'b1)),
-      .dat_reorder_allowed(chi_dat_reorder_allowed));
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles));
   vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_rnf1_sva (.vif(coh_rnf1_if),
       .checks_enable((coh_rnf1_if.txlinkactivereq === 1'b1) || (coh_rnf1_if.rxlinkactivereq === 1'b1)),
-      .dat_reorder_allowed(chi_dat_reorder_allowed));
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles));
   vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_e_rnf0_sva (.vif(coh_e_rnf0_if),
       .checks_enable((coh_e_rnf0_if.txlinkactivereq === 1'b1) || (coh_e_rnf0_if.rxlinkactivereq === 1'b1)),
-      .dat_reorder_allowed(chi_dat_reorder_allowed));
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles));
   vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_e_rnf1_sva (.vif(coh_e_rnf1_if),
       .checks_enable((coh_e_rnf1_if.txlinkactivereq === 1'b1) || (coh_e_rnf1_if.rxlinkactivereq === 1'b1)),
-      .dat_reorder_allowed(chi_dat_reorder_allowed));
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles));
 `endif
 
   // SNP-channel protocol checker on the coherent RN-F / HN-F links. Role-agnostic:
@@ -278,6 +291,7 @@ module chi_tb_top;
     if (!rst_n) begin
       reset_pulse_countdown   <= 0;
       chi_dat_reorder_allowed <= 1'b0;
+      chi_txsactive_extend_max_cycles <= 0;
     end
     else begin
       if (tb_cfg == null) begin
@@ -285,6 +299,8 @@ module chi_tb_top;
       end
 
       chi_dat_reorder_allowed <= (tb_cfg != null) && tb_cfg.dat_reorder_allowed;
+      chi_txsactive_extend_max_cycles <=
+        (tb_cfg != null) ? tb_cfg.txsactive_extend_max_cycles : 0;
 
       if ((tb_cfg != null) && (tb_cfg.reset_pulse_cycles > 0) && (reset_pulse_countdown == 0)) begin
         reset_pulse_countdown <= tb_cfg.reset_pulse_cycles;

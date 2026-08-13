@@ -38,6 +38,7 @@ package chi_tc_pkg;
   `include "tc_chi_e_signal_drivability.sv"
   `include "tc_chi_d_ordered_write.sv"
   `include "tc_chi_d_ordered_read.sv"
+  `include "tc_chi_txsactive_window.sv"
   `include "tc_chi_e_dbid_resp_ord.sv"
   `include "tc_chi_e_persist.sv"
   `include "tc_chi_e_write_zero_readback.sv"

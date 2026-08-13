@@ -306,6 +306,7 @@ otherwise.
 | Credits | `initial_{req,rsp,dat}_credits` (8), `{req,rsp,dat}_send_credit_cap` (64), `hold_dat_credit` |
 | Completer policy | `split_write_rsp`, `ordered_dbid_resp`, `decerr_ranges[]`, `derr_ranges[]`, `mem_cfg` |
 | Completer DAT order | `snf_reverse_dat_beats` (0) — SN-F returns read beats in descending `DataID`. CHI places a beat by its `DataID`, not by its position in the burst, so this is a legal ordering a monitor must reassemble correctly. |
+| Sideband | `txsactive_extend_max_cycles` (0) — cycles the driver may keep `TXSACTIVE` asserted past the close of its outstanding window. `TXSACTIVE` says the node MAY have snoopable transactions outstanding, so holding it longer is always legal; 0 is the tightest legal behaviour. The matching `tb_cfg` field of the same name widens the bound the **checkers** allow, so a test exercising a speculative extension sets both — one drives, the other judges. |
 | Retry | `force_retry_count` |
 | Timeouts | `compack_timeout_cycles` (10000) — SN-F gives up waiting for a `CompAck` after this many cycles |
 | Negative testing | `allow_raw_override` (1) — master gate for the item's `raw_*` flit-injection view |

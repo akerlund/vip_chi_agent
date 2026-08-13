@@ -51,6 +51,15 @@ class vip_chi_cfg_agent extends uvm_object;
   // it never owed. 0 disables the bound. Ignored by the completer roles.
   int max_pcrd_budget = 8;
 
+  // Speculative TXSACTIVE extension, in cycles past the close of the
+  // outstanding window. TXSACTIVE says the node MAY have snoopable transactions
+  // outstanding, so holding it longer than strictly necessary is always legal --
+  // it only costs the receiver the chance to gate its snoop logic. Raising this
+  // models a node that keeps the sideband up briefly in anticipation of more
+  // traffic. Default 0 drops it as soon as the window closes, which is the
+  // tightest legal behaviour and the one the checks bound against.
+  int unsigned txsactive_extend_max_cycles = 0;
+
   // Opt-in multi-outstanding datapath (P4). Default 0 preserves the strict
   // serial path every existing testcase relies on. When set on BOTH the RN-I
   // and SN-F cfg, the RN-I decouples read issue from completion (several reads

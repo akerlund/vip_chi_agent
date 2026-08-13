@@ -115,8 +115,8 @@ class vip_chi_driver_rni #(
   // effect afterwards so the initial credit advertisement still bootstraps.
   protected bit seen_rx_dat_flit;
 
-  // Single mutex arbitrating the TX flit-driving signals (txsactive + the
-  // txreq/txrsp/txdat flit groups). In RN-I there is exactly one flit-driving
+  // Single mutex arbitrating the txreq/txrsp/txdat flit groups. In RN-I there
+  // is exactly one flit-driving
   // thread (seq_loop / mixed_tx_proc), so this key is always immediately
   // available and adds zero simulation time -- the existing waveforms are
   // byte-identical. It becomes load-bearing in RN-F, where the autonomous
@@ -128,6 +128,10 @@ class vip_chi_driver_rni #(
   // so it can never wedge against another flit driver (M4 dirty-forwarding /
   // writeback rely on this).
   protected semaphore tx_flit_arb;
+
+  // TXSACTIVE outstanding-window state. See tx_activity_begin().
+  protected int unsigned tx_active_count;
+  protected int unsigned tx_active_extend;
 
   `uvm_component_param_utils(vip_chi_driver_rni #(CFG_P, FLIT_TYPES_T, ROLE_P))
 
@@ -169,6 +173,63 @@ class vip_chi_driver_rni #(
   protected task drive_idle_sideband();
     this.vif_rni.g_drv.rni_cb.txlinkactiveack <= this.vif_rni.g_drv.rni_cb.rxlinkactivereq;
   endtask
+
+  // ---------------------------------------------------------------------------
+  // TXSACTIVE outstanding-window drive.
+  //
+  // TXSACTIVE tells the receiver this node MAY have snoopable transactions
+  // outstanding, so it must stay asserted across that WHOLE window -- not
+  // bracket each flit. A per-flit pulse drops the signal to zero while requests
+  // are still in flight, which is precisely the interval a receiver reads it to
+  // decide whether it can gate its snoop logic.
+  //
+  // So the signal is a level driven from a counter rather than a pulse driven
+  // by whoever happens to be sending. Every transaction brackets itself with
+  // begin/end, and the count -- not any one transaction -- decides the level.
+  // That is what makes overlapping transactions correct: with the pipeline
+  // running, one transaction retiring no longer drops the sideband out from
+  // under the others still outstanding.
+  //
+  // The window counted here is EVERY outstanding transaction, not just the
+  // snoopable ones. Over-assertion is always legal (the signal is permissive --
+  // "may have"), under-assertion is the protocol violation, and counting
+  // uniformly keeps one mechanism across roles that have no snoopable traffic
+  // at all. cfg.txsactive_extend_max_cycles then holds it a bounded number of
+  // cycles past the close, modelling a node that speculates on more traffic.
+  //
+  // Assertion is immediate (in the caller's cycle, as the old per-flit pulse
+  // was) and only the DROP is deferred to the per-cycle tick, so the sideband
+  // still rises in the same cycle as the first flit it covers.
+  // ---------------------------------------------------------------------------
+  protected function void tx_activity_begin();
+    this.tx_active_count++;
+    this.tx_active_extend = 0;
+    this.vif_rni.g_drv.rni_cb.txsactive <= 1'b1;
+  endfunction
+
+  protected function void tx_activity_end();
+    if (this.tx_active_count > 0) begin
+      this.tx_active_count--;
+    end
+    if (this.tx_active_count == 0) begin
+      this.tx_active_extend = this.cfg.txsactive_extend_max_cycles;
+    end
+  endfunction
+
+  // Called once per cycle from credit_loop -- once, so the extension counts
+  // cycles rather than callers. With the default extension of 0 the drop lands
+  // on the first edge after the window closes, which is the cycle the per-flit
+  // pulse used to drop on.
+  protected function void tx_activity_tick();
+    if (this.tx_active_count > 0) begin
+      return;
+    end
+    if (this.tx_active_extend > 0) begin
+      this.tx_active_extend--;
+      return;
+    end
+    this.vif_rni.g_drv.rni_cb.txsactive <= 1'b0;
+  endfunction
 
   // ---------------------------------------------------------------------------
   // Reset the counted local send budgets and the queued outbound LCRDV pulses.
@@ -312,6 +373,8 @@ class vip_chi_driver_rni #(
     this.outstanding_ids.delete();
     this.mx_ctx.delete();
     this.pcrd_pool.delete();
+    this.tx_active_count = 0;
+    this.tx_active_extend = 0;
     this.reset_credit_state();
     this.reset_outputs();
     // The agent tears down driver_start() with disable-fork on reset, which may
@@ -429,6 +492,7 @@ class vip_chi_driver_rni #(
       @(this.vif_rni.g_drv.rni_cb);
 
       this.drive_idle_sideband();
+      this.tx_activity_tick();
 
       if (this.vif_rni.g_drv.rni_cb.rxdatflitv) begin
 
@@ -497,11 +561,16 @@ class vip_chi_driver_rni #(
   endfunction
 
   // ---------------------------------------------------------------------------
-  // Take/release the TX flit-driving mutex. Every task that drives txsactive or
-  // a txreq/txrsp/txdat flit group brackets its beat-driving section with these
+  // Take/release the TX flit-driving mutex. Every task that drives a
+  // txreq/txrsp/txdat flit group brackets its beat-driving section with these
   // so concurrent flit drivers (the RN-F snoop responder vs the request thread)
   // are serialized on the shared TX signals. Always acquired AFTER credit and
   // released before any completion wait -- see tx_flit_arb's declaration.
+  //
+  // txsactive is deliberately NOT among the signals this protects. It is a
+  // level driven from tx_active_count, so two concurrent senders compute the
+  // same value and cannot disagree; it also has to stay asserted ACROSS the
+  // gaps when neither holds the key, which a mutex-guarded signal could not.
   // ---------------------------------------------------------------------------
   protected task acquire_tx_flit();
     this.tx_flit_arb.get(1);
@@ -597,7 +666,7 @@ class vip_chi_driver_rni #(
 
         @(this.vif_rni.g_drv.rni_cb);
         this.drive_idle_sideband();
-        this.vif_rni.g_drv.rni_cb.txsactive <= 1'b0;
+        this.tx_activity_end();
         this.on_transaction_complete(req);
         this.free_txn_id(req.txn_id);
         seq_item_port.item_done(req);
@@ -626,9 +695,9 @@ class vip_chi_driver_rni #(
 
           @(this.vif_rni.g_drv.rni_cb);
           this.drive_idle_sideband();
-          this.vif_rni.g_drv.rni_cb.txsactive <= 1'b0;
         end
 
+        this.tx_activity_end();
         this.on_transaction_complete(req);
         this.free_txn_id(req.txn_id);
         seq_item_port.item_done(req);
@@ -726,7 +795,13 @@ class vip_chi_driver_rni #(
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
-    this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b1;
+    // alloc_id is exactly "this is a fresh transaction", so it is also the right
+    // predicate for opening the TXSACTIVE window: handle_retry() and the mixed
+    // pipeline both re-issue with alloc_id=0, and a re-issue must not open a
+    // second window over a transaction that already has one.
+    if (alloc_id) begin
+      this.tx_activity_begin();
+    end
     this.vif_rni.g_drv.rni_cb.txreqflitpend <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txreqflit     <= flit;
     this.vif_rni.g_drv.rni_cb.txreqflitv    <= 1'b1;
@@ -809,7 +884,9 @@ class vip_chi_driver_rni #(
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
-    this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b1;
+    // A raw flit is a single injected packet with no completion to wait
+    // for, so its window is the flit itself.
+    this.tx_activity_begin();
     this.vif_rni.g_drv.rni_cb.txreqflitpend <= item.raw_flitpend;
     this.vif_rni.g_drv.rni_cb.txreqflit     <= flit;
     this.vif_rni.g_drv.rni_cb.txreqflitv    <= 1'b1;
@@ -819,7 +896,7 @@ class vip_chi_driver_rni #(
     this.vif_rni.g_drv.rni_cb.txreqflitpend <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txreqflitv    <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txreqflit     <= '0;
-    this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b0;
+    this.tx_activity_end();
     this.release_tx_flit();
   endtask
 
@@ -850,7 +927,9 @@ class vip_chi_driver_rni #(
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
-    this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b1;
+    // A raw flit is a single injected packet with no completion to wait
+    // for, so its window is the flit itself.
+    this.tx_activity_begin();
     this.vif_rni.g_drv.rni_cb.txrspflitpend <= item.raw_flitpend;
     this.vif_rni.g_drv.rni_cb.txrspflit     <= flit;
     this.vif_rni.g_drv.rni_cb.txrspflitv    <= 1'b1;
@@ -860,7 +939,7 @@ class vip_chi_driver_rni #(
     this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txrspflitv    <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txrspflit     <= '0;
-    this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b0;
+    this.tx_activity_end();
     this.release_tx_flit();
   endtask
 
@@ -897,7 +976,9 @@ class vip_chi_driver_rni #(
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
-    this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b1;
+    // A raw flit is a single injected packet with no completion to wait
+    // for, so its window is the flit itself.
+    this.tx_activity_begin();
     this.vif_rni.g_drv.rni_cb.txdatflitpend <= item.raw_flitpend;
     this.vif_rni.g_drv.rni_cb.txdatflit     <= flit;
     this.vif_rni.g_drv.rni_cb.txdatflitv    <= 1'b1;
@@ -907,7 +988,7 @@ class vip_chi_driver_rni #(
     this.vif_rni.g_drv.rni_cb.txdatflitpend <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txdatflitv    <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txdatflit     <= '0;
-    this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b0;
+    this.tx_activity_end();
     this.release_tx_flit();
   endtask
 
@@ -1381,7 +1462,6 @@ class vip_chi_driver_rni #(
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
-    this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b1;
     this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txrspflit     <= flit;
     this.vif_rni.g_drv.rni_cb.txrspflitv    <= 1'b1;
@@ -1397,7 +1477,12 @@ class vip_chi_driver_rni #(
   // Wait for the first-cut read CompData return and stamp it onto the request
   // object before sending it back through the sequencer response path.
   // ---------------------------------------------------------------------------
-  protected task collect_read_completion(inout item_t req, input bit clear_activity = 1'b1);
+  // No clear_activity argument any more: TXSACTIVE is closed at the shared
+  // retire point, so a collector no longer needs to know whether it is the
+  // serial path (which used to drop the sideband here) or the pipelined one
+  // (which had to be told not to, or it would have dropped it while its peers
+  // were still outstanding).
+  protected task collect_read_completion(inout item_t req);
 
     dat_flit_t         flit;
     data_t             data_q[$];
@@ -1487,10 +1572,6 @@ class vip_chi_driver_rni #(
 
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
-
-    if (clear_activity) begin
-      this.vif_rni.g_drv.rni_cb.txsactive <= 1'b0;
-    end
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1857,6 +1938,9 @@ class vip_chi_driver_rni #(
       if (done) begin
         seq_item_port.put_response(this.mx_ctx[i].item);
         this.free_txn_id(this.mx_ctx[i].item.txn_id);
+        // The retire point the pipelined path shares with the serial loop: the
+        // count only reaches zero once the LAST outstanding transaction is out.
+        this.tx_activity_end();
         this.mx_ctx.delete(i);
         retired = 1'b1;
       end
@@ -2032,7 +2116,7 @@ class vip_chi_driver_rni #(
       end
 
       r = this.mx_ctx[idx].item;
-      this.collect_read_completion(r, 1'b0);
+      this.collect_read_completion(r);
 
       // Re-find by request TxnID: the queue may have shifted while
       // collect_read_completion() yielded (only the TX thread deletes, and it

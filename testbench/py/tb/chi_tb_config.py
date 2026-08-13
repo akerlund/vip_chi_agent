@@ -40,6 +40,12 @@ class chi_tb_config:
     # completer deliberately emits DAT beats out of DataID order raises this;
     # the beat-count, TxnID and credit checks are unaffected either way.
     self.dat_reorder_allowed = False
+    # Cycles a sender may keep TXSACTIVE asserted past the close of its
+    # outstanding window. 0 (the default) is the tightest legal behaviour:
+    # drop it as soon as the window closes. Raising it models a node that
+    # keeps the sideband up speculatively, and widens the bound the
+    # checkers allow.
+    self.txsactive_extend_max_cycles = 0
 
   def request_reset_pulse(self, cycles=3):
     self.reset_pulse_cycles = max(1, int(cycles))
