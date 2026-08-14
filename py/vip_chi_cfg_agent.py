@@ -295,9 +295,12 @@ class VipChiCfgAgent:
           "activation: only a requester raises txlinkactivereq, so there is no "
           "activation to abort")
 
-    if self.flitpend_without_valid and self.role not in (Role.RNI, Role.RNF):
+    # The requester pulses REQ+RSP FLITPEND; the home pulses SNP FLITPEND. Both
+    # run the control, and between them they cover all three rules.
+    if self.flitpend_without_valid and self.role not in (Role.RNI, Role.RNF,
+                                                         Role.HNF):
       err("flitpend_without_valid is set on a role whose driver does not run "
-          "the pulse: it is emitted by the requester after link activation, so "
+          "the pulse: the requester emits it on REQ/RSP and the home on SNP, so "
           "on any other role it would set a flag nothing reads")
 
     # Same reasoning as the abort above, and the same failure if it is ignored:

@@ -123,6 +123,8 @@ package chi_tc_pkg;
   `include "tc_chi_coh_d_snp_backpressure.sv"
   `include "tc_chi_coh_e_snp_backpressure.sv"
   `include "chi_coh_reset_mid_snoop_base_test.sv"
+  `include "chi_coh_snp_flitpend_base_test.sv"
+  `include "tc_chi_coh_d_snp_flitpend.sv"
   `include "tc_chi_coh_d_reset_mid_snoop.sv"
   `include "tc_chi_coh_e_reset_mid_snoop.sv"
   `include "chi_coh_cmo_invalidate_base_test.sv"

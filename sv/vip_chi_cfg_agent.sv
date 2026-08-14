@@ -622,11 +622,15 @@ class vip_chi_cfg_agent extends uvm_object;
 
     // Same reasoning as the abort above, and the same failure if it is ignored:
     // deactivation is driven by whoever raised the request in the first place.
+    // The requester pulses REQ+RSP FLITPEND; the home pulses SNP FLITPEND. Both
+    // run the control, and between them they cover all three rules. Any other
+    // role would set a flag nothing reads.
     if (this.flitpend_without_valid &&
-        (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_RNF_E)) begin
+        (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_RNF_E) &&
+        (this.role != VIP_CHI_ROLE_HNF_E)) begin
       if (!silent) begin
         `uvm_error("VIP_CHI_CFG",
-          "flitpend_without_valid is set on a role whose driver does not run the pulse: it is emitted by the requester after link activation, so on any other role it would set a flag nothing reads")
+          "flitpend_without_valid is set on a role whose driver does not run the pulse: the requester emits it on REQ/RSP and the home on SNP, so on any other role it would set a flag nothing reads")
       end
       is_valid = 1'b0;
     end

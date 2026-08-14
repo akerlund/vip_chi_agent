@@ -105,6 +105,7 @@ package chi_tb_pkg;
   localparam item_e_t::tu_t      E_MTE_WRITE_TU_C     = item_e_t::tu_t'('hb);
 
   `include "chi_tb_config.sv"
+  `include "chi_check_report.svh"
 
   `include "chi_virtual_sequencer.sv"
   `include "chi_tb_env.sv"

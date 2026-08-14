@@ -9,6 +9,7 @@ filesets:
       - tb/tb.svh
       # Include files: accessed via +incdir+ (included by the .svh or tb/tc packages)
       - tb/chi_tb_config.sv:                            {is_include_file: true}
+      - tb/chi_check_report.svh:                        {is_include_file: true}
       - tb/chi_virtual_sequencer.sv:                    {is_include_file: true}
       - tb/chi_tb_env.sv:                               {is_include_file: true}
       - tb/chi_e_tb_env.sv:                             {is_include_file: true}
@@ -126,6 +127,8 @@ filesets:
       - tc/tc_chi_coh_d_snp_backpressure.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_snp_backpressure.sv:                {is_include_file: true}
       - tc/chi_coh_reset_mid_snoop_base_test.sv:        {is_include_file: true}
+      - tc/chi_coh_snp_flitpend_base_test.sv:            {is_include_file: true}
+      - tc/tc_chi_coh_d_snp_flitpend.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_d_reset_mid_snoop.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_reset_mid_snoop.sv:                 {is_include_file: true}
       - tc/chi_coh_cmo_invalidate_base_test.sv:         {is_include_file: true}

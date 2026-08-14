@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
+from pathlib import Path
 from collections import defaultdict
 
 
@@ -84,6 +85,41 @@ def main() -> int:
   seen = set()
   rules = [r for r in known if not (r in seen or seen.add(r))]
 
+  # Rules the CANONICAL registry knows about that no row mentioned at all.
+  #
+  # This is not the same thing as NEVER EXERCISED, and conflating the two is how
+  # the report lied for as long as it existed. A never-exercised rule has rows
+  # saying zero; an unexported one has no rows, so a summary built from the rows
+  # cannot see it and prints a total that reads as the whole registry. Until the
+  # coherent env exported, the seven SNP rules were in this state -- a report
+  # covering two of fourteen binds presented as a report on all of them.
+  #
+  # Read from the Python registry rather than a copy, so a rule added to the
+  # types package cannot go missing here.
+  #
+  # An absence is split in two, because only one of them is a problem. A rule the
+  # Python port cannot own -- the X/Z rules, which Verilator's 2-state model can
+  # never evaluate -- is absent BY DESIGN and is recorded as such in
+  # CHECK_IDS_SV_ONLY. Gating on those would fail every Python sweep forever and
+  # teach the reader to pass --allow-never, which would hide the real holes too.
+  #
+  # Read from the Python registry rather than a copy, so a rule added to the
+  # types package cannot go missing here.
+  unexported, by_design = [], []
+  try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "py"))
+    from vip_chi_types_pkg import CHECK_IDS, CHECK_IDS_SV_ONLY
+    for rule in CHECK_IDS:
+      if rule in seen:
+        continue
+      if rule in CHECK_IDS_SV_ONLY:
+        by_design.append((rule, CHECK_IDS_SV_ONLY[rule]))
+      else:
+        unexported.append(rule)
+  except Exception as exc:                                # pragma: no cover
+    print(f"warning: could not read the canonical registry ({exc}); "
+          f"cannot tell an unexported rule from a missing one", file=sys.stderr)
+
   never, thin, failing = [], [], []
   for rule in rules:
     n_runs = len(runs_exercising[rule])
@@ -108,6 +144,17 @@ def main() -> int:
     for rule, n in provoked:
       print(f"  {rule:<44s} {n}")
 
+  if unexported:
+    print(f"\nNOT EXPORTED -- no bind wrote a row, so nothing is known about "
+          f"them ({len(unexported)}):")
+    for rule in unexported:
+      print(f"  {rule}")
+
+  if by_design:
+    print(f"\nabsent by design ({len(by_design)}): "
+          + ", ".join(r for r, _ in by_design))
+    print(f"  reason: {by_design[0][1]}")
+
   if never:
     print(f"\nNEVER EXERCISED ({len(never)}):")
     for rule, was_disabled in never:
@@ -119,14 +166,14 @@ def main() -> int:
     for rule, n, where in thin:
       print(f"  {rule:<44s} {n}: {', '.join(where)}")
 
-  if not never and not thin and not failing:
-    print("\nevery check was exercised by more than "
+  if not never and not thin and not failing and not unexported:
+    print("\nevery check in the registry was exported, exercised by more than "
           f"{args.thin} run(s), and none failed")
 
   # A rule disabled in every run was not exercised BY REQUEST, so it is reported
   # but does not gate: failing on it would punish the user for using the feature.
   gating = [r for r, was_disabled in never if not was_disabled]
-  if gating and not args.allow_never:
+  if (gating or unexported) and not args.allow_never:
     return 1
   return 0
 

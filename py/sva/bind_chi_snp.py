@@ -25,10 +25,13 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from cocotb.triggers import RisingEdge
 
-from vip_chi_types_pkg import LasmState, lasm
+from vip_chi_types_pkg import (
+  LasmState, lasm, CheckSeverity, CHECK_IDS_SNP, CHECK_IDS_SV_ONLY,
+)
 
 # Mirrors SNP_SEND_CAP_C in the SV checker.
 _SNP_SEND_CAP_C = 64
@@ -46,16 +49,118 @@ class bind_chi_snp:
     self.pass_count: dict[str, int] = {}
     self._checks_enable = checks_enable
     self._lcrd = {"txsnp": 0, "rxsnp": 0}
+    # Sticky "this interface's link has come up at least once"; see the
+    # reset-idle gate in run().
+    self._link_ever_active = False
+    self.init_check_control()
+
+  # ---------------------------------------------------------------------------
+  # Per-check identity, enable and statistics.
+  #
+  # The same contract bind_chi carries, and it was missing here entirely: this
+  # checker had no enable map, no severity map, no CSV export, and a report()
+  # whose rule list was built from the rules that had FIRED. A summary derived
+  # from what fired cannot name what did not, so the SNP rules were the one
+  # corner of the registry where "never exercised" could not be expressed at all
+  # -- and the cross-run aggregation, which reads the CSV, had no rows for them
+  # to read.
+  # ---------------------------------------------------------------------------
+  @staticmethod
+  def _owned_rules():
+    """The SNP range, and only it.
+
+    Split from the full registry for the same reason bind_chi's is: this checker
+    has nothing to say about whether the REQ/RSP/DAT rules were exercised, and
+    printing them as "not exercised" would be a false alarm on every run.
+
+    The X/Z rule is excluded for the same reason rather than reported as never
+    exercised: Verilator is 2-state, so this port cannot own it at all, and
+    listing it would put a permanent entry in a report whose value depends on
+    every entry being actionable.
+    """
+    return tuple(r for r in CHECK_IDS_SNP if r not in CHECK_IDS_SV_ONLY)
+
+  def init_check_control(self) -> None:
+    """Seed the enable and severity maps from the whole canonical SNP range.
+
+    Seeded from the registry rather than filled in as rules fire, so a rule can
+    be disabled before it has ever been evaluated -- and so the vacuity report
+    has the full universe to compare against.
+    """
+    self.check_enable: dict[str, bool] = {r: True for r in self._owned_rules()}
+    self.check_severity: dict[str, CheckSeverity] = {
+      r: CheckSeverity.ERROR for r in self._owned_rules()
+    }
+
+  def disable_check(self, rule: str) -> None:
+    """Stop evaluating a rule entirely: no reports, and no pass or fail counts."""
+    self.check_enable[rule] = False
+
+  def warn_check(self, rule: str) -> None:
+    """Keep evaluating and counting a rule, but report it as a warning."""
+    self.check_severity[rule] = CheckSeverity.WARNING
+
+  def off_check(self, rule: str) -> None:
+    """Keep evaluating and counting a rule, but do not report it at all."""
+    self.check_severity[rule] = CheckSeverity.OFF
+
+  def expect_failure(self, rule: str) -> None:
+    """Declare that this run deliberately provokes `rule`, so it must not fail.
+
+    This IS severity OFF, spelled as a separate call because that is what a test
+    means. See bind_chi.expect_failure for why the two are not kept apart.
+    """
+    self.check_severity[rule] = CheckSeverity.OFF
+
+  def not_exercised(self):
+    """Owned rules that were neither passed nor failed, in registry order."""
+    return [r for r in self._owned_rules()
+            if self.check_enable.get(r, True)
+            and not self.pass_count.get(r, 0)
+            and not self.fail_count.get(r, 0)]
+
+  def export_check_csv(self, path: str, run_name: str) -> None:
+    """Append this checker's per-rule tallies to the cross-run aggregation CSV.
+
+    Same format and same reasoning as bind_chi's. Every bind must write, or the
+    aggregation reports on the rules it happens to have rows for and says
+    nothing about the ones it was never given -- which reads as a clean report
+    rather than as a hole in the measurement.
+    """
+    new = not os.path.exists(path)
+    with open(path, "a", encoding="utf-8") as fh:
+      if new:
+        fh.write("run,bind,check,enabled,severity,passes,fails\n")
+      for rule in self._owned_rules():
+        fh.write(
+          f"{run_name},{self.log.name},{rule},"
+          f"{int(self.check_enable.get(rule, True))},"
+          f"{self.check_severity.get(rule, CheckSeverity.ERROR).name},"
+          f"{self.pass_count.get(rule, 0)},{self.fail_count.get(rule, 0)}\n")
 
   # ---------------------------------------------------------------------------
   def _chk(self, rule: str, ok: bool, msg: str, where: str) -> None:
+    # A DISABLED rule is skipped entirely -- neither pass nor fail is counted --
+    # so the vacuity report shows it as not exercised rather than as quietly
+    # holding. A rule at severity OFF is different: it still evaluates and still
+    # counts, and only its report is suppressed.
+    if not self.check_enable.get(rule, True):
+      return
     if ok:
       self.pass_count[rule] = self.pass_count.get(rule, 0) + 1
     else:
       self._err(rule, msg, where)
 
   def _err(self, rule: str, msg: str, where: str) -> None:
+    if not self.check_enable.get(rule, True):
+      return
     self.fail_count[rule] = self.fail_count.get(rule, 0) + 1
+    sev = self.check_severity.get(rule, CheckSeverity.ERROR)
+    if sev is CheckSeverity.OFF:
+      return
+    if sev is CheckSeverity.WARNING:
+      self.log.warning(f"{rule}: {msg}. IHI 0050 {where}.")
+      return
     self.errors += 1
     self.log.error(f"{rule}: {msg}. IHI 0050 {where}.")
 
@@ -65,15 +170,31 @@ class bind_chi_snp:
   def report(self, log=None) -> None:
     log = log or self.log
     names = self.rule_names()
-    if not names:
-      log.info("[VIP_CHI_SNP_CHECK] no SNP protocol checks were evaluated")
-      return
-    log.info("VIP_CHI SNP CHECK SUMMARY")
-    for rule in names:
-      fails = self.fail_count.get(rule, 0)
-      tag = "[FAILING]" if fails else "[exercised]"
-      log.info(f"  {rule:<38s} pass={self.pass_count.get(rule, 0):>7d}  "
-               f"fail={fails:>5d}  {tag}")
+    if names:
+      log.info("VIP_CHI SNP CHECK SUMMARY")
+      for rule in names:
+        fails = self.fail_count.get(rule, 0)
+        sev = self.check_severity.get(rule, CheckSeverity.ERROR)
+        tag = "[FAILING]" if fails else "[exercised]"
+        if not self.check_enable.get(rule, True):
+          tag = "[disabled]"
+        elif sev is not CheckSeverity.ERROR:
+          tag += f"[{sev.name.lower()}]"
+        log.info(f"  {rule:<38s} pass={self.pass_count.get(rule, 0):>7d}  "
+                 f"fail={fails:>5d}  {tag}")
+
+    # The half of the summary a clean run cannot show you any other way, and the
+    # half this checker did not have: its rule list used to be built from the
+    # rules that FIRED, so a rule that never ran could not appear in it at all.
+    # Printed even when empty, and with the count on the same line, so a
+    # regression-wide sweep is a grep rather than a parse.
+    missing = self.not_exercised()
+    log.info(f"VIP_CHI SNP CHECK VACUITY: not_exercised={len(missing)} "
+             f"of={len(self._owned_rules())}")
+    for rule in missing:
+      why = CHECK_IDS_SV_ONLY.get(rule)
+      log.info(f"  NOT EXERCISED  {rule}"
+               + (f"  (SV-only: {why})" if why else ""))
 
   # ---------------------------------------------------------------------------
   @staticmethod
@@ -117,7 +238,12 @@ class bind_chi_snp:
       enabled = self._enabled(cur)
 
       if rst == 0:
-        if enabled and prev_rst == 0:
+        # Gated on _link_ever_active, NOT on the enable gate, and for the same
+        # reason the reset-idle rules in bind_chi are: the gate IS this
+        # interface's activation request, and nothing is driven during reset, so
+        # the link is never active while this rule applies. Under that gate it
+        # could not fire at all.
+        if self._link_ever_active and prev_rst == 0:
           self._chk(
             "CHI_SNP_IDLE_IN_RESET",
             not (cur["txsnpflitv"] or cur["txsnpflitpend"]
@@ -128,6 +254,9 @@ class bind_chi_snp:
         self._lcrd = {"txsnp": 0, "rxsnp": 0}
         prev_rst = rst
         continue
+
+      if self._link_is_active(cur):
+        self._link_ever_active = True
 
       if enabled:
         if cur["txsnpflitv"]:

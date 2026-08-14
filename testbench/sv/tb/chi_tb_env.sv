@@ -180,142 +180,21 @@ class chi_tb_env extends uvm_env;
     end
   endtask
 
-  // ---------------------------------------------------------------------------
-  // Fold the SVA binds' per-check tallies into the UVM verdict, and report which
-  // checks never ran.
-  //
-  // This is what makes a protocol assertion able to FAIL A RUN. The checkers
-  // report through plain $error, which raises no UVM error, sets no exit status,
-  // and is not read by scripts/sv_regression.sh -- so every assertion in the SV
-  // port used to be advisory, printing into a log nothing consumed. Verified
-  // before this landed: a deliberately provoked LASM violation printed its error
-  // twice, exited 0 with UVM_ERROR : 0, and the sweep scored it a PASS.
-  //
-  // A rule at severity OFF or WARNING is counted but NOT raised here: the user
-  // turned it down on purpose, and overriding that from the env would make the
-  // severity control meaningless.
-  // ---------------------------------------------------------------------------
-  // Takes the arrays rather than the interface handle: a virtual vip_chi_if is
-  // typed by ROLE_P, so one signature could not accept both the RN-I and SN-F
-  // handles.
-  protected function void report_check_tallies(
-    input string                   tag,
-    input bit                      enabled    [VIP_CHI_CHK_NUM_E],
-    input vip_chi_check_severity_t severity   [VIP_CHI_CHK_NUM_E],
-    input int unsigned             pass_count [VIP_CHI_CHK_NUM_E],
-    input int unsigned             fail_count [VIP_CHI_CHK_NUM_E]
-  );
-    int unsigned not_exercised;
-
-    not_exercised = 0;
-
-    for (int unsigned id = 0; id < int'(VIP_CHI_CHK_NUM_E); id++) begin
-      if (!enabled[id]) begin
-        continue;
-      end
-
-      if ((fail_count[id] > 0) &&
-          (severity[id] == VIP_CHI_CHK_SEV_ERROR_E)) begin
-        `uvm_error("VIP_CHI_CHECK", $sformatf(
-          "%s: %s failed %0d time(s)",
-          tag, vip_chi_check_name(vip_chi_check_id_t'(id)), fail_count[id]))
-      end
-
-      if ((pass_count[id] == 0) && (fail_count[id] == 0)) begin
-        not_exercised++;
-        // ONE LINE PER RULE, not one line carrying a list. The report server
-        // wraps at a fixed column, so a list runs off the end and everything
-        // past the wrap is lost to a grep -- which is exactly what happened to
-        // the first cut of this report: it printed six names and dropped the
-        // rest, and a regression-wide sweep built on it returned nonsense.
-        `uvm_info("VIP_CHI_CHECK", $sformatf(
-          "VIP_CHI CHECK NOT EXERCISED: bind=%s rule=%s",
-          tag, vip_chi_check_name(vip_chi_check_id_t'(id))), UVM_LOW)
-      end
-    end
-
-    // Short, so it cannot wrap: a wrapped field name splits from its value and
-    // the sweep that reads it misses.
-    `uvm_info("VIP_CHI_CHECK", $sformatf(
-      "VIP_CHI CHECK VACUITY: bind=%s not_exercised=%0d of=%0d",
-      tag, not_exercised, int'(VIP_CHI_CHK_NUM_E)), UVM_LOW)
-
-  endfunction
-
-  // Append this run's per-rule tallies to a CSV for cross-run aggregation.
-  //
-  // A regression answers "which check does NOTHING anywhere" only by unioning
-  // every run, and no single run can tell you. Appending rather than rewriting
-  // is what makes that union work, and each row carries the testcase name so a
-  // rule exercised by exactly one test can be traced back to it -- the question
-  // you actually ask once a check turns out to be near-vacuous.
-  protected function void export_check_csv(
-    input string                   tag,
-    input bit                      enabled    [VIP_CHI_CHK_NUM_E],
-    input vip_chi_check_severity_t severity   [VIP_CHI_CHK_NUM_E],
-    input int unsigned             pass_count [VIP_CHI_CHK_NUM_E],
-    input int unsigned             fail_count [VIP_CHI_CHK_NUM_E]
-  );
-    string path;
-    string run_name;
-    int    fd;
-
-    if (!$value$plusargs("vip_chi_check_csv=%s", path)) begin
-      return;
-    end
-
-    run_name = "unknown";
-    void'($value$plusargs("UVM_TESTNAME=%s", run_name));
-
-    // Append, and write the header only when the file is new -- the aggregation
-    // script reads one file produced by a whole sweep.
-    fd = $fopen(path, "r");
-    if (fd == 0) begin
-      fd = $fopen(path, "w");
-      if (fd == 0) begin
-        `uvm_warning("VIP_CHI_CHECK", $sformatf(
-          "could not open %s for the check-tally export", path))
-        return;
-      end
-      $fdisplay(fd, "run,bind,check,enabled,severity,passes,fails");
-    end
-    else begin
-      $fclose(fd);
-      fd = $fopen(path, "a");
-      if (fd == 0) begin
-        `uvm_warning("VIP_CHI_CHECK", $sformatf(
-          "could not append to %s for the check-tally export", path))
-        return;
-      end
-    end
-
-    for (int unsigned id = 0; id < int'(VIP_CHI_CHK_NUM_E); id++) begin
-      if (vip_chi_check_is_snp(vip_chi_check_id_t'(id))) begin
-        continue;
-      end
-      $fdisplay(fd, "%s,%s,%s,%0d,%s,%0d,%0d",
-        run_name, tag, vip_chi_check_name(vip_chi_check_id_t'(id)),
-        enabled[id], severity[id].name(), pass_count[id], fail_count[id]);
-    end
-
-    $fclose(fd);
-  endfunction
-
   function void report_phase(input uvm_phase phase);
 
     super.report_phase(phase);
 
-    this.export_check_csv("rni_sva",
+    chi_check_export_csv("rni_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.rni_agent.vif.check_enabled, this.rni_agent.vif.check_severity,
       this.rni_agent.vif.check_pass_count, this.rni_agent.vif.check_fail_count);
-    this.export_check_csv("snf_sva",
+    chi_check_export_csv("snf_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.snf_agent.vif.check_enabled, this.snf_agent.vif.check_severity,
       this.snf_agent.vif.check_pass_count, this.snf_agent.vif.check_fail_count);
 
-    this.report_check_tallies("rni_sva",
+    chi_check_report_tallies("rni_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.rni_agent.vif.check_enabled, this.rni_agent.vif.check_severity,
       this.rni_agent.vif.check_pass_count, this.rni_agent.vif.check_fail_count);
-    this.report_check_tallies("snf_sva",
+    chi_check_report_tallies("snf_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.snf_agent.vif.check_enabled, this.snf_agent.vif.check_severity,
       this.snf_agent.vif.check_pass_count, this.snf_agent.vif.check_fail_count);
   endfunction

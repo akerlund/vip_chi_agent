@@ -183,57 +183,56 @@ class chi_coherent_tb_env #(
   // binding. Takes the arrays rather than an interface handle because a virtual
   // vip_chi_if is typed by ROLE_P and these binds sit on RN-F and HN-F.
   // ---------------------------------------------------------------------------
-  protected function void report_check_tallies(
-    input string                   tag,
-    input bit                      enabled    [VIP_CHI_CHK_NUM_E],
-    input vip_chi_check_severity_t severity   [VIP_CHI_CHK_NUM_E],
-    input int unsigned             pass_count [VIP_CHI_CHK_NUM_E],
-    input int unsigned             fail_count [VIP_CHI_CHK_NUM_E]
-  );
-    int unsigned not_exercised;
-
-    not_exercised = 0;
-
-    for (int unsigned id = 0; id < int'(VIP_CHI_CHK_NUM_E); id++) begin
-      if (!enabled[id]) begin
-        continue;
-      end
-
-      if ((fail_count[id] > 0) && (severity[id] == VIP_CHI_CHK_SEV_ERROR_E)) begin
-        `uvm_error("VIP_CHI_CHECK", $sformatf(
-          "%s: %s failed %0d time(s)",
-          tag, vip_chi_check_name(vip_chi_check_id_t'(id)), fail_count[id]))
-      end
-
-      if ((pass_count[id] == 0) && (fail_count[id] == 0)) begin
-        not_exercised++;
-        // One line per rule: the report server wraps at a fixed column, so a
-        // line carrying a list loses everything past the wrap.
-        `uvm_info("VIP_CHI_CHECK", $sformatf(
-          "VIP_CHI CHECK NOT EXERCISED: bind=%s rule=%s",
-          tag, vip_chi_check_name(vip_chi_check_id_t'(id))), UVM_LOW)
-      end
-    end
-
-    `uvm_info("VIP_CHI_CHECK", $sformatf(
-      "VIP_CHI CHECK VACUITY: bind=%s not_exercised=%0d of=%0d",
-      tag, not_exercised, int'(VIP_CHI_CHK_NUM_E)), UVM_LOW)
-  endfunction
-
   function void report_phase(input uvm_phase phase);
 
     super.report_phase(phase);
 
-    this.report_check_tallies("coh_rnf0_sva",
+    chi_check_export_csv("coh_rnf0_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
       this.hrnf0_agent.vif.check_pass_count, this.hrnf0_agent.vif.check_fail_count);
-    this.report_check_tallies("coh_rnf1_sva",
+    chi_check_export_csv("coh_rnf1_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
       this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
 
-    // The SNP binds sit on the HN-F's RN-facing ports.
+    chi_check_report_tallies("coh_rnf0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
+      this.hrnf0_agent.vif.check_pass_count, this.hrnf0_agent.vif.check_fail_count);
+    chi_check_report_tallies("coh_rnf1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
+      this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
+
+    // The RN-F endpoints carry BOTH binds: coh_rnf<i>_sva judges the main range
+    // on that interface and coh_rnf<i>_snp_sva the SNP range, and both write
+    // their tallies into the SAME arrays, because the tallies live on the
+    // interface. Exporting only the main scope from here therefore threw away
+    // every SNP row the RN-F side produced -- and the RN-F is the end that
+    // GRANTS snoop credits, so CHI_SNP_LCRDV_REQUIRES_LINK had no rows anywhere.
+    chi_check_export_csv("coh_rnf0_snp_sva", CHI_CHECK_SCOPE_SNP_E,
+      this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
+      this.hrnf0_agent.vif.check_pass_count, this.hrnf0_agent.vif.check_fail_count);
+    chi_check_export_csv("coh_rnf1_snp_sva", CHI_CHECK_SCOPE_SNP_E,
+      this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
+      this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
+
+    chi_check_report_tallies("coh_rnf0_snp_sva", CHI_CHECK_SCOPE_SNP_E,
+      this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
+      this.hrnf0_agent.vif.check_pass_count, this.hrnf0_agent.vif.check_fail_count);
+    chi_check_report_tallies("coh_rnf1_snp_sva", CHI_CHECK_SCOPE_SNP_E,
+      this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
+      this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
+
+    // The HN-F-side SNP binds sit on its RN-facing ports. These are the seven rules
+    // the CSV export never carried, so the aggregation had no rows for them at
+    // all and reported on the rest as though that were the whole registry.
     foreach (this.hnf_agent.rn_vif[i]) begin
-      this.report_check_tallies($sformatf("coh_hnf%0d_snp_sva", i),
+      chi_check_export_csv($sformatf("coh_hnf%0d_snp_sva", i),
+        CHI_CHECK_SCOPE_SNP_E,
+        this.hnf_agent.rn_vif[i].check_enabled,
+        this.hnf_agent.rn_vif[i].check_severity,
+        this.hnf_agent.rn_vif[i].check_pass_count,
+        this.hnf_agent.rn_vif[i].check_fail_count);
+      chi_check_report_tallies($sformatf("coh_hnf%0d_snp_sva", i),
+        CHI_CHECK_SCOPE_SNP_E,
         this.hnf_agent.rn_vif[i].check_enabled,
         this.hnf_agent.rn_vif[i].check_severity,
         this.hnf_agent.rn_vif[i].check_pass_count,

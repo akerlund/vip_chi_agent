@@ -133,6 +133,10 @@ class vip_chi_driver_hnf #(
 
   protected bit rn_link_up [N_RNF_PORTS];
 
+  // One-shot latch per RN port for cfg.flitpend_without_valid: the control fires
+  // once per link so the count a test asserts on is unambiguous.
+  protected bit rn_flitpend_negctl_done [N_RNF_PORTS];
+
   // -------------------------------------------------------------------------
   // Downstream SN-facing side (requester polarity, RN-I role), present only when
   // N_SN_PORTS>0 and activated only when cfg.hnf_downstream_en. Mirrors the HN-I
@@ -238,6 +242,7 @@ class vip_chi_driver_hnf #(
       this.rn_rsp_lcrdv_pending[i] = 0;
       this.rn_dat_lcrdv_pending[i] = 0;
       this.rn_link_up[i]           = 1'b0;
+      this.rn_flitpend_negctl_done[i] = 1'b0;
     end
 
     // Downstream SN-facing send managers + grant queues (real ports only).
@@ -537,6 +542,37 @@ class vip_chi_driver_hnf #(
     this.rn_rsp_lcrdv_pending[p] += this.cfg.initial_rsp_credits;
     this.rn_dat_lcrdv_pending[p] += this.cfg.initial_dat_credits;
     this.rn_link_up[p] = 1'b1;
+    this.drive_snp_flitpend_negctl(p);
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Negative control (cfg.flitpend_without_valid): raise SNP FLITPEND for one
+  // cycle with no snoop behind it.
+  //
+  // The SNP twin of the REQ/RSP pulse in the requester driver, and it exists for
+  // the same reason: CHI_SNP_PEND_REQUIRES_VALID had never once been evaluated
+  // anywhere, because nothing raises SNP FLITPEND -- the home pairs it with the
+  // snoop it belongs to. A rule that has never run is indistinguishable from one
+  // that does not work.
+  //
+  // Emitted here, once per link, with the link up and before any snoop, so the
+  // rule has exactly one lone FLITPEND to report and nothing else on the wire
+  // can be confused for it.
+  // ---------------------------------------------------------------------------
+  protected task drive_snp_flitpend_negctl(input int p);
+
+    if (!this.cfg.flitpend_without_valid || this.rn_flitpend_negctl_done[p]) begin
+      return;
+    end
+    this.rn_flitpend_negctl_done[p] = 1'b1;
+
+    @(this.vif_rn[p].g_drv.hnf_cb);
+    this.drive_rn_idle_sideband(p);
+    this.vif_rn[p].g_drv.hnf_cb.txsnpflitpend <= 1'b1;
+
+    @(this.vif_rn[p].g_drv.hnf_cb);
+    this.drive_rn_idle_sideband(p);
+    this.vif_rn[p].g_drv.hnf_cb.txsnpflitpend <= 1'b0;
   endtask
 
   // ---------------------------------------------------------------------------

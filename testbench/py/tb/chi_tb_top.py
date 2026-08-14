@@ -369,6 +369,13 @@ async def tc_chi_coh_d_negctl(dut) -> None:
   await _run_d_coherent(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_coh_d_snp_flitpend", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_snp_flitpend(dut) -> None:
+  """Run this public testcase through the CHI-D coherent topology."""
+  test_name = "tc_chi_coh_d_snp_flitpend"
+  await _run_d_coherent(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_coh_d_read_after_writeback", timeout_time=20, timeout_unit="ms")
 async def tc_chi_coh_d_read_after_writeback(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""

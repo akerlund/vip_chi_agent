@@ -105,6 +105,9 @@ class vip_chi_driver_hnf(uvm_component):
     self.rn_rsp_lcrdv_pending = [0] * n_rn
     self.rn_dat_lcrdv_pending = [0] * n_rn
     self.rn_link_up = [False] * n_rn
+    # One-shot latch per RN port for cfg.flitpend_without_valid: the control
+    # fires once per link so the count a test asserts on is unambiguous.
+    self.rn_flitpend_negctl_done = [False] * n_rn
 
     self.sn_rsp_lcrdv_pending = [0] * n_sn
     self.sn_dat_lcrdv_pending = [0] * n_sn
@@ -310,6 +313,30 @@ class vip_chi_driver_hnf(uvm_component):
     self.rn_rsp_lcrdv_pending[p] += self.cfg.initial_rsp_credits
     self.rn_dat_lcrdv_pending[p] += self.cfg.initial_dat_credits
     self.rn_link_up[p] = True
+    await self.drive_snp_flitpend_negctl(p)
+
+  async def drive_snp_flitpend_negctl(self, p):
+    """Raise SNP FLITPEND for one cycle with no snoop behind it.
+
+    The SNP twin of the REQ/RSP pulse in the requester driver, and it exists for
+    the same reason: CHI_SNP_PEND_REQUIRES_VALID had never once been evaluated
+    anywhere, because nothing raises SNP FLITPEND -- the home pairs it with the
+    snoop it belongs to. A rule that has never run is indistinguishable from one
+    that does not work.
+
+    Emitted here, once per link, with the link up and before any snoop, so the
+    rule has exactly one lone FLITPEND to report and nothing else on the wire can
+    be confused for it.
+    """
+    if not self.cfg.flitpend_without_valid or self.rn_flitpend_negctl_done[p]:
+      return
+    self.rn_flitpend_negctl_done[p] = True
+
+    rn = self.rn_buses[p]
+    await rn.rising()
+    rn.drive(txsnpflitpend=1)
+    await rn.rising()
+    rn.drive(txsnpflitpend=0)
 
   async def capture_req(self, p):
     rn = self.rn_buses[p]

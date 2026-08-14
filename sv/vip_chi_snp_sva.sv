@@ -105,6 +105,17 @@ module vip_chi_snp_sva #(
   int unsigned txsnp_lcrd_count;
   int unsigned rxsnp_lcrd_count;
 
+  // Sticky "this interface's link has come up at least once". Gates the
+  // reset-idle rule below, for the reason given there; deliberately survives
+  // reset, which is exactly what makes it usable as that gate.
+  bit link_ever_active;
+
+  always_ff @(posedge vif.clk) begin
+    if ((vif.txlinkactivereq === 1'b1) || (vif.rxlinkactivereq === 1'b1)) begin
+      link_ever_active <= 1'b1;
+    end
+  end
+
   always_ff @(posedge vif.clk or negedge vif.rst_n) begin
     if (!checks_enable || !vif.rst_n) begin
       txsnp_lcrd_count <= 0;
@@ -221,10 +232,21 @@ module vip_chi_snp_sva #(
       vif.txsnpflitv |-> !$isunknown(vif.txsnpflit);
   endproperty
 
+  // Gated on link_ever_active, NOT on checks_enable, and for the same reason the
+  // four reset-idle rules in vip_chi_sva are: checks_enable IS this interface's
+  // activation request, and nothing is driven during reset, so the link is never
+  // active while this rule applies. Under that gate it could not fire at all.
+  //
+  // The terms test `!== 1'b1` rather than `!signal` for the same reason too.
+  // Each role drives one side of the SNP channel and not the other -- an HN-F
+  // sources snoops and never drives txsnplcrdv, an RN-F grants SNP credits and
+  // never drives the snoop flit signals -- so those nets sit at X, and `!x` is
+  // x. The rule's content is that nothing is ASSERTED during reset.
   property p_snp_idle_during_reset;
-    @(posedge vif.clk) disable iff (!checks_enable)
+    @(posedge vif.clk) disable iff (!link_ever_active)
       (!vif.rst_n && $past(!vif.rst_n, 1, 1'b1)) |->
-        (!vif.txsnpflitv && !vif.txsnpflitpend && !vif.txsnplcrdv);
+        ((vif.txsnpflitv !== 1'b1) && (vif.txsnpflitpend !== 1'b1) &&
+         (vif.txsnplcrdv !== 1'b1));
   endproperty
 
   assert property (p_snp_flit_requires_link)

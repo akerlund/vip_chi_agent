@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+import os
+
 import cocotb
 from cocotb.triggers import FallingEdge
 
@@ -196,8 +198,17 @@ class chi_coherent_tb_env(uvm_env):
     # can run before the components below have finished folding in their state.
     # report_phase is bottom-up and is where the port puts end-of-test asserts.
     checkers = self.rnf_sva + self.snp_sva
+    # The CSV export, which this env never did. The omission was invisible in
+    # exactly the way the mechanism exists to prevent: the aggregation reported
+    # on the rules it had rows for and said nothing about the SNP rules it had
+    # never been given, so a report covering the non-coherent binds alone read as
+    # a report on all of them.
+    csv_path = os.environ.get("VIP_CHI_CHECK_CSV", "")
+    run_name = os.environ.get("VIP_CHI_TESTNAME", "") or "unknown"
     for checker in checkers:
       checker.report(self.logger)
+      if csv_path:
+        checker.export_check_csv(csv_path, run_name)
     total = sum(checker.errors for checker in checkers)
     assert total == 0, (
       f"CHI protocol checkers reported {total} violation(s): "
