@@ -70,6 +70,10 @@ A0_CFG = ChiCfg(issue=Issue.D, node_id_width=7, addr_width=44, data_bytes=32)
 
 async def _reset_and_publish(dut, test_name: str, entries: list[tuple[str, ChiBus]]) -> None:
   """Drive reset, publish buses, and start one pyUVM testcase."""
+  # Published for the check-tally CSV export: the env needs the TESTCASE name to
+  # label its rows, and every run would otherwise carry the same label, which
+  # defeats the point of aggregating them.
+  os.environ["VIP_CHI_TESTNAME"] = test_name
   importlib.import_module(test_name)
   cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
   for _, bus in entries:

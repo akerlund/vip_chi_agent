@@ -58,18 +58,38 @@ interface vip_chi_if #(
   logic txsactive;
   logic rxsactive;
 
-  // Illegal link-activation transitions counted by the vip_chi_sva bind on this
-  // interface, if one is bound; 0 otherwise.
+  // Per-check pass/fail tallies from the vip_chi_sva and vip_chi_snp_sva binds
+  // on this interface, indexed by vip_chi_check_id_t. All zero if nothing is
+  // bound.
   //
-  // It lives HERE rather than in the checker because a SystemVerilog package may
-  // not contain a hierarchical reference, and the testcases are compiled into
-  // one. A test can already reach this interface through its agent's virtual
-  // handle, so publishing the count on the interface is what makes it readable
-  // at all -- a value that changes every cycle cannot be handed over through the
-  // config DB, which carries a snapshot.
+  // They live HERE rather than in the checkers for two reasons. A SystemVerilog
+  // package may not contain a hierarchical reference and the testcases compile
+  // into one, so a test could not otherwise read them; and a value that changes
+  // every cycle cannot be handed over through the config DB, which carries a
+  // snapshot. A test reaches this interface through its agent's virtual handle.
   //
-  // Exactly one vip_chi_sva binds to any interface, so this has a single driver.
-  int unsigned lasm_illegal_count;
+  // This is also what lets an SVA failure FAIL A RUN. The checkers report
+  // through plain $error, which does not raise a UVM error, does not set the
+  // exit status, and is not read by the regression script -- so before these
+  // counters existed, every protocol assertion in the SV port was advisory:
+  // it printed into a log nothing consumed. The env reads these at report_phase
+  // and raises the uvm_error. Keeping the counting here rather than calling
+  // uvm_report_error from the checker preserves the property that vip_chi_sva
+  // and vip_chi_if are UVM-free and bindable in a non-UVM bench.
+  //
+  // The two binds own disjoint check IDs (the SNP checker owns only the
+  // CHI_SNP_* range), so their writes never collide.
+  int unsigned check_pass_count [VIP_CHI_CHK_NUM_E];
+  int unsigned check_fail_count [VIP_CHI_CHK_NUM_E];
+
+  // Per-check enable and severity, initialised by whichever checker owns each
+  // ID. Published here for the same reason as the counters: a package may hold
+  // no hierarchical reference, so this is the only handle a testcase has on an
+  // individual check. A negative-control test turns its own rule down to
+  // VIP_CHI_CHK_SEV_OFF_E -- counted, not reported -- which is what replaced the
+  // one-off suppression port the LASM control originally needed.
+  bit                      check_enabled  [VIP_CHI_CHK_NUM_E];
+  vip_chi_check_severity_t check_severity [VIP_CHI_CHK_NUM_E];
 
   // ---------------------------------------------------------------------------
   // Request channel.

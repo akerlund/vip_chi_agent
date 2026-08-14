@@ -298,6 +298,120 @@ package vip_chi_types_pkg;
     endcase
   endfunction
 
+  // ---------------------------------------------------------------------------
+  // Protocol-check identity.
+  //
+  // One entry per RULE, not per assertion site: where a rule is asserted twice
+  // because the requester and completer sides need different antecedents (the
+  // completion, atomic-return and ordered-read-receipt rules), both sites carry
+  // the same ID. That is what makes a disable meaningful -- a user standing a
+  // rule down means the rule, not one role's half of it.
+  //
+  // The order is stable across releases and new entries go at the END, before
+  // VIP_CHI_CHK_NUM_E: the IDs are used in plusargs and in regression exports,
+  // so renumbering would silently repoint a `+vip_chi_disable_check=` written
+  // against an older build.
+  //
+  // The names match the Python checker's rule strings exactly, with the
+  // VIP_CHI_CHK_ prefix and _E suffix stripped and CHI_ prepended -- see
+  // vip_chi_check_name(). Keeping one derivation rather than a second lookup
+  // table is what stops the two ports drifting into different spellings of the
+  // same rule.
+  // ---------------------------------------------------------------------------
+  typedef enum int {
+    // Channel structural rules, one per REQ/RSP/DAT channel.
+    VIP_CHI_CHK_REQ_FLITV_REQUIRES_LINK_E = 0,
+    VIP_CHI_CHK_RSP_FLITV_REQUIRES_LINK_E,
+    VIP_CHI_CHK_DAT_FLITV_REQUIRES_LINK_E,
+    VIP_CHI_CHK_REQ_LCRDV_REQUIRES_LINK_E,
+    VIP_CHI_CHK_RSP_LCRDV_REQUIRES_LINK_E,
+    VIP_CHI_CHK_DAT_LCRDV_REQUIRES_LINK_E,
+    VIP_CHI_CHK_REQ_PEND_REQUIRES_VALID_E,
+    VIP_CHI_CHK_RSP_PEND_REQUIRES_VALID_E,
+    VIP_CHI_CHK_DAT_PEND_REQUIRES_VALID_E,
+    VIP_CHI_CHK_REQ_IDLE_IN_RESET_E,
+    VIP_CHI_CHK_RSP_IDLE_IN_RESET_E,
+    VIP_CHI_CHK_DAT_IDLE_IN_RESET_E,
+    // X/Z rules. SV-only by design: Verilator is 2-state, so the Python port
+    // cannot hold X and a mirror there could never fire.
+    VIP_CHI_CHK_REQ_KNOWN_WHEN_VALID_E,
+    VIP_CHI_CHK_RSP_KNOWN_WHEN_VALID_E,
+    VIP_CHI_CHK_DAT_KNOWN_WHEN_VALID_E,
+    // Link layer.
+    VIP_CHI_CHK_LINK_SIDEBAND_IDLE_IN_RESET_E,
+    VIP_CHI_CHK_LINK_RESTARTS_AFTER_RESET_E,
+    VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E,
+    VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E,
+    VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E,
+    VIP_CHI_CHK_LCRD_OVERFLOW_E,
+    VIP_CHI_CHK_LCRD_UNDERFLOW_E,
+    VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E,
+    VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E,
+    // Transaction layer.
+    VIP_CHI_CHK_COMPLETION_FOLLOWS_REQ_E,
+    VIP_CHI_CHK_ATOMIC_RETURN_USES_DAT_COMPLETION_E,
+    VIP_CHI_CHK_ORDERED_READ_RECEIPT_BEFORE_DAT_E,
+    VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E,
+    VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E,
+    VIP_CHI_CHK_WRITE_DAT_BEFORE_DBID_E,
+    VIP_CHI_CHK_WRITE_DAT_TXNID_MATCHES_DBID_E,
+    VIP_CHI_CHK_COMPACK_BEFORE_COMPLETION_E,
+    VIP_CHI_CHK_COMPACK_WITHOUT_EXPCOMPACK_E,
+    // DAT burst shape, tracked separately per direction.
+    VIP_CHI_CHK_TX_DAT_FIRST_BEAT_DATAID_ZERO_E,
+    VIP_CHI_CHK_RX_DAT_FIRST_BEAT_DATAID_ZERO_E,
+    VIP_CHI_CHK_TX_DAT_DATAID_SEQUENTIAL_E,
+    VIP_CHI_CHK_RX_DAT_DATAID_SEQUENTIAL_E,
+    VIP_CHI_CHK_TX_DAT_TXNID_STABLE_E,
+    VIP_CHI_CHK_RX_DAT_TXNID_STABLE_E,
+    VIP_CHI_CHK_TX_WRITE_DAT_BEAT_COUNT_E,
+    VIP_CHI_CHK_RX_WRITE_DAT_BEAT_COUNT_E,
+    VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E,
+    VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E,
+    VIP_CHI_CHK_TX_READ_COMPLETION_DAT_BEAT_COUNT_E,
+    VIP_CHI_CHK_RX_READ_COMPLETION_DAT_BEAT_COUNT_E,
+    // SNP channel (vip_chi_snp_sva).
+    VIP_CHI_CHK_SNP_FLITV_REQUIRES_LINK_E,
+    VIP_CHI_CHK_SNP_LCRDV_REQUIRES_LINK_E,
+    VIP_CHI_CHK_SNP_PEND_REQUIRES_VALID_E,
+    VIP_CHI_CHK_SNP_KNOWN_WHEN_VALID_E,
+    VIP_CHI_CHK_SNP_IDLE_IN_RESET_E,
+    VIP_CHI_CHK_SNP_LCRD_OVERFLOW_E,
+    VIP_CHI_CHK_SNP_LCRD_UNDERFLOW_E,
+    // Must stay last: the array bound and the loop terminator.
+    VIP_CHI_CHK_NUM_E
+  } vip_chi_check_id_t;
+
+  // Per-check severity. OFF still EVALUATES the rule and still counts its passes
+  // and failures -- it only suppresses the report. That is deliberate: a check
+  // turned off during bring-up should still show up in the end-of-test table as
+  // failing, or "off" becomes indistinguishable from "fixed".
+  typedef enum logic [1 : 0] {
+    VIP_CHI_CHK_SEV_ERROR_E   = 2'd0,
+    VIP_CHI_CHK_SEV_WARNING_E = 2'd1,
+    VIP_CHI_CHK_SEV_OFF_E     = 2'd2
+  } vip_chi_check_severity_t;
+
+  // TRUE for the rules owned by vip_chi_snp_sva rather than vip_chi_sva. The two
+  // binds share an interface, so each initialises and reports on only its own
+  // range -- otherwise whichever elaborated second would clear the other's
+  // plusarg settings, and the vacuity report would list the other's rules as
+  // never exercised on every non-coherent run.
+  function automatic bit vip_chi_check_is_snp(input vip_chi_check_id_t id);
+    return (id >= VIP_CHI_CHK_SNP_FLITV_REQUIRES_LINK_E) &&
+           (id <= VIP_CHI_CHK_SNP_LCRD_UNDERFLOW_E);
+  endfunction
+
+  // The rule's canonical name, shared with the Python checker verbatim.
+  // Derived from the enum name rather than looked up in a parallel table, so a
+  // new check cannot be added with a name that disagrees between the two ports.
+  function automatic string vip_chi_check_name(input vip_chi_check_id_t id);
+    string s;
+    s = id.name();
+    // Strip the "VIP_CHI_CHK_" prefix (12 chars) and the "_E" suffix (2).
+    return {"CHI_", s.substr(12, s.len() - 3)};
+  endfunction
+
   typedef enum logic [2 : 0] {
     VIP_CHI_RESP_STATE_I_E           = 3'b000,
     VIP_CHI_RESP_STATE_SC_E          = 3'b001,

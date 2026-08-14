@@ -59,10 +59,15 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from cocotb.triggers import RisingEdge
 
 from vip_chi_types_pkg import (
+  CHECK_IDS,
+  CHECK_IDS_MAIN,
+  CHECK_IDS_SV_ONLY,
+  CheckSeverity,
   DatOpcode,
   LasmState,
   ReqOpcode,
@@ -275,9 +280,7 @@ class bind_chi:
     # only how many times something did.
     self.fail_count: dict[str, int] = {}
     self.pass_count: dict[str, int] = {}
-    # Rules a negative-control test has declared it deliberately breaks. See
-    # expect_failure(); empty for every ordinary run.
-    self.expected_failures: set[str] = set()
+    self.init_check_control()
     # None means "gate on this interface's own link activity", mirroring the
     # inline checks_enable expression on each SV bind: an interface whose agent
     # never activates its link raises no spurious violations. A bool forces the
@@ -316,11 +319,7 @@ class bind_chi:
     # LASM coverage accumulates over the whole run and is deliberately NOT
     # cleared by _reset_state: a link that was torn down and brought back up
     # covered those edges, and forgetting them at the reset would understate
-    # what the run exercised.
-    self._lasm_state_seen = {st: 0 for st in LasmState}
-    self._lasm_edge_seen = {
-      (st, nxt): 0 for st, nxt in _LASM_LEGAL_EDGES_C
-    }
+    # what the run exercised. Seeded by init_check_control below.
 
     self._reset_state()
 
@@ -335,7 +334,15 @@ class bind_chi:
     enclosing `if`, not folded in here, or the pass would be counted on traffic
     the rule never applied to and the rule would look exercised in a run that
     never reached it.
+
+    A DISABLED rule is skipped entirely -- neither pass nor fail is counted --
+    so the vacuity report shows it as not exercised rather than as quietly
+    holding. A rule at severity OFF is different: it still evaluates and still
+    counts, and only its report is suppressed. Conflating the two would make
+    "I turned this down" read the same as "this never ran".
     """
+    if not self.check_enable.get(rule, True):
+      return
     if ok:
       self.pass_count[rule] = self.pass_count.get(rule, 0) + 1
     else:
@@ -343,17 +350,140 @@ class bind_chi:
 
   def _err(self, rule: str, msg: str, where: str) -> None:
     self.fail_count[rule] = self.fail_count.get(rule, 0) + 1
-    if rule in self.expected_failures:
-      # Demoted, not hidden: this is the pyUVM analog of the SV report catcher
-      # that a negative-control test installs. The failure still lands in
-      # fail_count, so the summary shows the rule fired and the test can assert
-      # on how many times -- what it does not do is count toward the errors the
-      # env fails the test on. Only a rule a test has explicitly named gets this,
-      # so an unexpected failure of any other rule still fails the run.
+    severity = self.check_severity.get(rule, CheckSeverity.ERROR)
+    if severity is CheckSeverity.OFF:
+      # Counted, not reported, and not a run failure. This is what a negative
+      # control uses to prove its rule fires: the tally still moves, so the test
+      # can assert on it, but the deliberate violation does not read as a bug.
+      # Logged at info so the run still SHOWS what happened -- silence here would
+      # make a provoked failure and a suppressed real one look identical.
       self.log.info(f"EXPECTED {rule}: {msg}. IHI 0050 {where}.")
+      return
+    if severity is CheckSeverity.WARNING:
+      # Demoted by the USER, so it must not fail the run -- but it is still a
+      # violation and still visible, unlike OFF.
+      self.log.warning(f"{rule}: {msg}. IHI 0050 {where}.")
       return
     self.errors += 1
     self.log.error(f"{rule}: {msg}. IHI 0050 {where}.")
+
+  # ---------------------------------------------------------------------------
+  # Per-check control
+  # ---------------------------------------------------------------------------
+  def init_check_control(self) -> None:
+    """Seed the per-check enable and severity maps, then apply the environment.
+
+    A separate method rather than inline in __init__ because tc_chi_sva_smoke
+    builds a checker through __new__ to drive the check functions directly
+    without a bus. Every field the registry needs therefore has to be reachable
+    from one call the hand-built path can make too -- otherwise each new field
+    added here silently breaks that test with an AttributeError, which is
+    exactly what happened twice while this was being written.
+
+    Seeded from the whole canonical registry rather than filled in as rules
+    fire, so a rule can be disabled before it has ever been evaluated -- and so
+    the vacuity report has the full universe to compare against.
+    """
+    self.check_enable: dict[str, bool] = {r: True for r in self._owned_rules()}
+    self.check_severity: dict[str, CheckSeverity] = {
+      r: CheckSeverity.ERROR for r in self._owned_rules()
+    }
+    self._lasm_state_seen = {st: 0 for st in LasmState}
+    self._lasm_edge_seen = {edge: 0 for edge in _LASM_LEGAL_EDGES_C}
+    self._apply_check_plusargs()
+
+  @staticmethod
+  def _owned_rules():
+    """The rules this checker is responsible for reporting on.
+
+    Split from the full registry so each checker's vacuity report lists only its
+    own rules: bind_chi has nothing to say about whether the SNP channel was
+    exercised, and printing the other's rules as "not exercised" would be a
+    false alarm on every non-coherent run.
+
+    The X/Z rules are excluded for the same reason rather than reported as
+    never exercised: Verilator is 2-state, so this port cannot own them at all,
+    and listing them would put four permanent entries in a report whose value
+    depends on the reader treating every entry as worth chasing.
+    """
+    return tuple(r for r in CHECK_IDS_MAIN if r not in CHECK_IDS_SV_ONLY)
+
+  def _apply_check_plusargs(self) -> None:
+    """Honour VIP_CHI_DISABLE_CHECK / VIP_CHI_WARN_CHECK from the environment.
+
+    The SV port reads plusargs; cocotb has no plusarg equivalent that reaches a
+    plain coroutine, so the environment is the analog. Same names, same
+    comma-separated value, so a run script can set one variable and drive both
+    flows.
+
+    An unknown name is a hard error rather than a shrug: the entire value of
+    naming checks is that you can address one, and a silently-ignored typo means
+    the user believes a check is off when it is still firing -- or worse,
+    believes it is on when they meant to disable it.
+    """
+    for var, apply in (
+      ("VIP_CHI_DISABLE_CHECK", self.disable_check),
+      ("VIP_CHI_WARN_CHECK", self.warn_check),
+    ):
+      raw = os.environ.get(var, "")
+      for name in (n.strip() for n in raw.split(",") if n.strip()):
+        if name not in CHECK_IDS:
+          raise ValueError(
+            f"{var} names an unknown check '{name}'; "
+            f"see vip_chi_types_pkg.CHECK_IDS for the {len(CHECK_IDS)} valid names")
+        if name in self.check_enable:
+          apply(name)
+
+  def disable_check(self, rule: str) -> None:
+    """Stop evaluating a rule entirely: no reports, and no pass or fail counts."""
+    self.check_enable[rule] = False
+
+  def warn_check(self, rule: str) -> None:
+    """Keep evaluating and counting a rule, but report it as a warning."""
+    self.check_severity[rule] = CheckSeverity.WARNING
+
+  def off_check(self, rule: str) -> None:
+    """Keep evaluating and counting a rule, but do not report it at all."""
+    self.check_severity[rule] = CheckSeverity.OFF
+
+  def export_check_csv(self, path: str, run_name: str) -> None:
+    """Append this checker's per-rule tallies to a CSV for cross-run aggregation.
+
+    A regression answers "which check does NOTHING anywhere" only by unioning
+    every run, and no single run can tell you. Scraping the logs is not an
+    option: run.py --all prints a status table, not the per-test output, so the
+    summary lines exist only inside individual runs. Hence a machine-readable
+    file the runs append to and a script reads.
+
+    Appending rather than rewriting is what makes the union work: each test adds
+    its rows and the aggregation is a group-by. Rows carry the run name so a
+    rule exercised by exactly one testcase can be traced back to it -- which is
+    the question you actually ask when a check turns out to be near-vacuous.
+    """
+    new = not os.path.exists(path)
+    with open(path, "a", encoding="utf-8") as fh:
+      if new:
+        fh.write("run,bind,check,enabled,severity,passes,fails\n")
+      for rule in self._owned_rules():
+        fh.write(
+          f"{run_name},{self.log.name},{rule},"
+          f"{int(self.check_enable.get(rule, True))},"
+          f"{self.check_severity.get(rule, CheckSeverity.ERROR).name},"
+          f"{self.pass_count.get(rule, 0)},{self.fail_count.get(rule, 0)}\n")
+
+  def not_exercised(self):
+    """This checker's rules that were neither passed nor failed, in registry order.
+
+    A clean regression only means something if the checks actually ran. A rule
+    with zero passes AND zero fails did not run, and is indistinguishable from a
+    rule that was deleted -- which is the failure mode this exists to surface.
+    Disabled rules are excluded: they did not run BY REQUEST, and reporting them
+    would train the reader to ignore the list.
+    """
+    return [r for r in self._owned_rules()
+            if self.check_enable.get(r, True)
+            and not self.pass_count.get(r, 0)
+            and not self.fail_count.get(r, 0)]
 
   def expect_failure(self, rule: str) -> None:
     """Declare that this run deliberately provokes `rule`, so it must not fail.
@@ -361,8 +491,14 @@ class bind_chi:
     A negative control has to be able to say WHICH rule it is breaking. Waiving
     the whole checker instead would let a second, unintended violation ride along
     unnoticed inside the test whose entire purpose is to prove one rule fires.
+
+    This IS severity OFF, and is spelled as a separate call only because that is
+    what a test means. Keeping a parallel expected-failures set alongside the
+    severity map was one concept too many: the CSV export recorded such a run as
+    a genuine ERROR-severity failure, so the regression aggregation reported the
+    negative control as a bug.
     """
-    self.expected_failures.add(rule)
+    self.check_severity[rule] = CheckSeverity.OFF
 
   def rule_names(self):
     return sorted(set(self.pass_count) | set(self.fail_count))
@@ -377,9 +513,29 @@ class bind_chi:
     log.info("VIP_CHI CHECK SUMMARY")
     for rule in names:
       fails = self.fail_count.get(rule, 0)
+      sev = self.check_severity.get(rule, CheckSeverity.ERROR)
       tag = "[FAILING]" if fails else "[exercised]"
+      if not self.check_enable.get(rule, True):
+        tag = "[disabled]"
+      elif sev is not CheckSeverity.ERROR:
+        tag += f"[{sev.name.lower()}]"
       log.info(f"  {rule:<38s} pass={self.pass_count.get(rule, 0):>7d}  "
                f"fail={fails:>5d}  {tag}")
+
+    # The half of the summary that a clean run cannot show you any other way.
+    # Every rule this checker owns that was neither passed nor failed did not
+    # run, and a rule that never runs is indistinguishable from one that was
+    # deleted. Printed even when empty, and with the count on the same line, so
+    # a regression-wide sweep is a grep rather than a parse -- and so an empty
+    # list reads as "checked, none" rather than as a section that failed to
+    # print.
+    missing = self.not_exercised()
+    log.info(f"VIP_CHI CHECK VACUITY: not_exercised={len(missing)} "
+             f"of={len(self._owned_rules())}")
+    for rule in missing:
+      why = CHECK_IDS_SV_ONLY.get(rule)
+      log.info(f"  NOT EXERCISED  {rule}"
+               + (f"  (SV-only: {why})" if why else ""))
 
     # One line, so a regression-wide sweep for an edge this run never walked is
     # a grep rather than a parse. Kept short for the same reason the check

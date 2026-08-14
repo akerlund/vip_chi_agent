@@ -48,10 +48,15 @@ CORE="akerlund::vip_chi_agent_example:0"
 RUNDIR="$ROOT/build/akerlund__vip_chi_agent_example_0/default-vcs"
 SIMV="./akerlund__vip_chi_agent_example_0"
 OUT_DIR="${OUT_DIR:-$ROOT/build/sv_regression}"
+# Per-check tally export. A single run cannot say which check does nothing
+# anywhere -- only the union over the sweep can -- so each run appends its rows
+# and scripts/check_vacuity.py reads the lot.
+CHECK_CSV="${CHECK_CSV:-$OUT_DIR/check_tallies.csv}"
 
 mkdir -p "$OUT_DIR"
 SUMMARY="$OUT_DIR/summary.txt"
 : > "$SUMMARY"
+rm -f "$CHECK_CSV"
 
 {
   echo "started $(date -Is)"
@@ -71,7 +76,8 @@ cd "$RUNDIR" || exit 1
 pass=0
 fail=0
 for t in $(ls "$ROOT/testbench/sv/tc"/tc_*.sv | sed 's|.*/||; s|\.sv$||'); do
-  "$SIMV" +UVM_TESTNAME="$t" -l "vcs_${t}.log" > /dev/null 2>&1
+  "$SIMV" +UVM_TESTNAME="$t" +vip_chi_check_csv="$CHECK_CSV" \
+    -l "vcs_${t}.log" > /dev/null 2>&1
   # A clean run is zero UVM_ERROR and zero UVM_FATAL. Grepping the report
   # summary rather than the exit code is deliberate: the simulator exits 0 on a
   # UVM_ERROR, so the exit code alone would call a failing test a pass.
@@ -88,5 +94,12 @@ done
   echo "SV_TOTAL pass=$pass fail=$fail"
   echo "finished $(date -Is)"
 } >> "$SUMMARY"
+
+# Report which checks the whole sweep never exercised. Advisory here -- a green
+# sweep with a dead check is still a real result to look at, and failing the
+# regression on it would hide the pass/fail verdict behind a separate concern.
+if [ -f "$CHECK_CSV" ]; then
+  python3 "$ROOT/scripts/check_vacuity.py" "$CHECK_CSV" >> "$SUMMARY" 2>&1 || true
+fi
 
 exit $(( fail > 0 ))

@@ -1,5 +1,6 @@
 // Negative control for the link-activation state machine.
 //
+//
 // The LASM may only hold, or advance one step around
 // STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP. Nothing checked that until the
 // state existed: the link gating rules asked only "is the link RUN", which
@@ -18,12 +19,13 @@
 //   * the real activation that follows must not be, and the run must still
 //     carry ordinary traffic to completion.
 //
-// tb_cfg.lasm_illegal_expected suppresses the $error while leaving
-// lasm_illegal_count intact. An SVA $error cannot be demoted by a
-// uvm_report_catcher the way a UVM report can, so without that the only way to
+// The rule is turned down to VIP_CHI_CHK_SEV_OFF_E rather than disabled. OFF still
+// EVALUATES and still COUNTS -- it only suppresses the report -- which is
+// exactly what a negative control needs: an SVA $error cannot be demoted by a
+// uvm_report_catcher the way a UVM report can, so without it the only way to
 // prove the rule fires would be to print an error indistinguishable from a real
-// one. Standing the check down entirely -- what tc_chi_dataid_duplicate does to
-// the DataID rules -- is not an option here: observing that it fired IS the test.
+// one. Disabling instead would stop the counting too, and there would be
+// nothing left to assert on.
 
 class tc_chi_lasm_illegal_transition extends chi_base_test;
 
@@ -53,16 +55,6 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
   endfunction
 
   // ---------------------------------------------------------------------------
-  // Suppress the report, keep the count.
-  // ---------------------------------------------------------------------------
-  protected virtual function void configure_tb_cfg();
-
-    super.configure_tb_cfg();
-
-    super.tb_cfg.lasm_illegal_expected = 1'b1;
-  endfunction
-
-  // ---------------------------------------------------------------------------
   // Run Phase
   // ---------------------------------------------------------------------------
   task run_phase(input uvm_phase phase);
@@ -71,6 +63,14 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
     int unsigned snf_fails;
 
     phase.raise_objection(this);
+
+    // Suppress the report, keep the count. Done here rather than through a
+    // dedicated port: any test can address any check this way, which is what
+    // replaced the one-off suppression the first cut of this test needed.
+    super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
 
     // Ordinary traffic after the aborted bring-up: the link must have come up
     // properly on the second attempt, or this would hang rather than pass.
@@ -90,8 +90,8 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
     // may hold no hierarchical reference and this test compiles into one -- and
     // a value that changes every cycle cannot come through the config DB, which
     // carries a snapshot.
-    rni_fails = super.tb_env.rni_agent.vif.lasm_illegal_count;
-    snf_fails = super.tb_env.snf_agent.vif.lasm_illegal_count;
+    rni_fails = super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E];
+    snf_fails = super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E];
 
     // Both ends observe the same handshake, so both must have seen the aborted
     // bring-up. One end reporting alone would mean the state is being derived

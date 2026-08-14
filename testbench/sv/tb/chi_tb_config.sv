@@ -20,13 +20,6 @@ class chi_tb_config extends uvm_object;
   // it as soon as the window closes. Raising it models a node that keeps the
   // sideband up speculatively, and widens the bound the checkers allow.
   int txsactive_extend_max_cycles;
-  // Stand the SVA link-activation transition ERROR down while still counting it:
-  // set by the negative-control test that deliberately aborts a bring-up. An SVA
-  // $error cannot be demoted by a report catcher the way a UVM report can, so a
-  // test that must PROVE the rule fired needs the report suppressed and the
-  // count left intact -- otherwise proving the check works means printing an
-  // error that looks exactly like a real one.
-  bit lasm_illegal_expected;
 
   `uvm_object_utils_begin(chi_tb_config)
     `uvm_field_int(run_e_wide_integrated, UVM_DEFAULT)
@@ -37,7 +30,6 @@ class chi_tb_config extends uvm_object;
     `uvm_field_int(perf_enable, UVM_DEFAULT)
     `uvm_field_int(dat_reorder_allowed, UVM_DEFAULT)
     `uvm_field_int(txsactive_extend_max_cycles, UVM_DEFAULT)
-    `uvm_field_int(lasm_illegal_expected, UVM_DEFAULT)
   `uvm_object_utils_end
 
   function new(input string name = "chi_tb_config");
@@ -54,7 +46,6 @@ class chi_tb_config extends uvm_object;
     this.perf_enable            = 1'b1;
     this.dat_reorder_allowed    = 1'b0;
     this.txsactive_extend_max_cycles = 0;
-    this.lasm_illegal_expected  = 1'b0;
   endfunction
 
   function void request_reset_pulse(input int cycles = 3);

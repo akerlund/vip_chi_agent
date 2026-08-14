@@ -168,6 +168,111 @@ def lasm_legal_step(cur: LasmState, nxt: LasmState) -> bool:
   return nxt == cur or _LASM_NEXT_C.get(cur) == nxt
 
 
+class CheckSeverity(IntEnum):
+  """Per-check severity.
+
+  OFF still EVALUATES the rule and still counts its passes and failures -- it
+  only suppresses the report. A check turned off during bring-up must still show
+  up in the end-of-test table as failing, or "off" becomes indistinguishable
+  from "fixed".
+  """
+  ERROR = 0
+  WARNING = 1
+  OFF = 2
+
+
+# Every protocol rule both checkers know about, in the same order as
+# vip_chi_check_id_t in the SV types package.
+#
+# This is the CANONICAL list, not a list of rules that happened to fire. That
+# distinction is the whole point: a summary built only from rules that were
+# evaluated cannot report the ones that never were, and a rule that never
+# evaluates is indistinguishable from a rule that does not exist.
+#
+# One entry per RULE, not per check site: where SV asserts a rule twice because
+# the requester and completer sides need different antecedents, both sites carry
+# the same name. New entries go at the END -- the names appear in plusargs and
+# in regression exports, so reordering would silently repoint a
+# `--vip-chi-disable-check` written against an older build.
+CHECK_IDS = (
+  # Channel structural rules, one per REQ/RSP/DAT channel.
+  "CHI_REQ_FLITV_REQUIRES_LINK",
+  "CHI_RSP_FLITV_REQUIRES_LINK",
+  "CHI_DAT_FLITV_REQUIRES_LINK",
+  "CHI_REQ_LCRDV_REQUIRES_LINK",
+  "CHI_RSP_LCRDV_REQUIRES_LINK",
+  "CHI_DAT_LCRDV_REQUIRES_LINK",
+  "CHI_REQ_PEND_REQUIRES_VALID",
+  "CHI_RSP_PEND_REQUIRES_VALID",
+  "CHI_DAT_PEND_REQUIRES_VALID",
+  "CHI_REQ_IDLE_IN_RESET",
+  "CHI_RSP_IDLE_IN_RESET",
+  "CHI_DAT_IDLE_IN_RESET",
+  # X/Z rules. SV-only by design: Verilator is 2-state, so a net cannot hold X
+  # and a mirror here could never fire. Listed so the two registries line up and
+  # so the summary can say WHY they are absent rather than leaving a hole.
+  "CHI_REQ_KNOWN_WHEN_VALID",
+  "CHI_RSP_KNOWN_WHEN_VALID",
+  "CHI_DAT_KNOWN_WHEN_VALID",
+  # Link layer.
+  "CHI_LINK_SIDEBAND_IDLE_IN_RESET",
+  "CHI_LINK_RESTARTS_AFTER_RESET",
+  "CHI_LINK_DEACTIVATE_WHEN_IDLE",
+  "CHI_LASM_LEGAL_TRANSITION",
+  "CHI_LCRD_QUIESCENT_IN_STOP",
+  "CHI_LCRD_OVERFLOW",
+  "CHI_LCRD_UNDERFLOW",
+  "CHI_TXSACTIVE_COVERS_OUTSTANDING",
+  "CHI_TXSACTIVE_DEASSERT_BOUNDED",
+  # Transaction layer.
+  "CHI_COMPLETION_FOLLOWS_REQ",
+  "CHI_ATOMIC_RETURN_USES_DAT_COMPLETION",
+  "CHI_ORDERED_READ_RECEIPT_BEFORE_DAT",
+  "CHI_TXNID_REUSE_REQUESTER",
+  "CHI_TXNID_REUSE_COMPLETER",
+  "CHI_WRITE_DAT_BEFORE_DBID",
+  "CHI_WRITE_DAT_TXNID_MATCHES_DBID",
+  "CHI_COMPACK_BEFORE_COMPLETION",
+  "CHI_COMPACK_WITHOUT_EXPCOMPACK",
+  # DAT burst shape, tracked separately per direction.
+  "CHI_TX_DAT_FIRST_BEAT_DATAID_ZERO",
+  "CHI_RX_DAT_FIRST_BEAT_DATAID_ZERO",
+  "CHI_TX_DAT_DATAID_SEQUENTIAL",
+  "CHI_RX_DAT_DATAID_SEQUENTIAL",
+  "CHI_TX_DAT_TXNID_STABLE",
+  "CHI_RX_DAT_TXNID_STABLE",
+  "CHI_TX_WRITE_DAT_BEAT_COUNT",
+  "CHI_RX_WRITE_DAT_BEAT_COUNT",
+  "CHI_TX_READ_COMPLETION_DAT_OPCODE",
+  "CHI_RX_READ_COMPLETION_DAT_OPCODE",
+  "CHI_TX_READ_COMPLETION_DAT_BEAT_COUNT",
+  "CHI_RX_READ_COMPLETION_DAT_BEAT_COUNT",
+  # SNP channel (bind_chi_snp).
+  "CHI_SNP_FLITV_REQUIRES_LINK",
+  "CHI_SNP_LCRDV_REQUIRES_LINK",
+  "CHI_SNP_PEND_REQUIRES_VALID",
+  "CHI_SNP_KNOWN_WHEN_VALID",
+  "CHI_SNP_IDLE_IN_RESET",
+  "CHI_SNP_LCRD_OVERFLOW",
+  "CHI_SNP_LCRD_UNDERFLOW",
+)
+
+# Rules the Python port deliberately does not implement, with the reason. Kept
+# beside the registry so the vacuity report can distinguish "never exercised"
+# (a gap worth chasing) from "cannot exist here" (a recorded decision).
+CHECK_IDS_SV_ONLY = {
+  "CHI_REQ_KNOWN_WHEN_VALID": "Verilator is 2-state; a net cannot hold X/Z",
+  "CHI_RSP_KNOWN_WHEN_VALID": "Verilator is 2-state; a net cannot hold X/Z",
+  "CHI_DAT_KNOWN_WHEN_VALID": "Verilator is 2-state; a net cannot hold X/Z",
+  "CHI_SNP_KNOWN_WHEN_VALID": "Verilator is 2-state; a net cannot hold X/Z",
+}
+
+# Rules owned by the SNP checker rather than the main one, so each report can
+# say which of its own rules went unexercised without listing the other's.
+CHECK_IDS_SNP = tuple(n for n in CHECK_IDS if n.startswith("CHI_SNP_"))
+CHECK_IDS_MAIN = tuple(n for n in CHECK_IDS if not n.startswith("CHI_SNP_"))
+
+
 class Resp(IntEnum):
   """Cache-state Resp field (RSP/DAT). Reserved encodings kept for fidelity."""
   I = 0b000

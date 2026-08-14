@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+import os
+
 import cocotb
 from cocotb.triggers import FallingEdge
 
@@ -157,8 +159,16 @@ class chi_tb_env(uvm_env):
     # pyUVM runs check_phase TOP-DOWN, unlike UVM, so an assertion placed there
     # can run before the components below have finished folding in their state.
     # report_phase is bottom-up and is where the port puts end-of-test asserts.
+    # The TESTCASE name, not the env's: the aggregation's whole value is being
+    # able to say which test exercised a rule, and every run would otherwise
+    # carry the same label.
+    csv_path = os.environ.get("VIP_CHI_CHECK_CSV", "")
+    run_name = os.environ.get("VIP_CHI_TESTNAME", "") or "unknown"
+
     for checker in (self.rni_sva, self.snf_sva):
       checker.report(self.logger)
+      if csv_path:
+        checker.export_check_csv(csv_path, run_name)
     total = self.rni_sva.errors + self.snf_sva.errors
     assert total == 0, (
       f"CHI protocol checkers reported {total} violation(s): "

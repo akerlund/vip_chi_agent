@@ -83,17 +83,19 @@ module vip_chi_snp_sva #(
     nxt = cur;
     if (grant) begin
       if (cur == cap) begin
-        $error("vip_chi_snp_sva: %s SNP L-credit grant overflowed the tracked count", chan);
+        chk_miss(VIP_CHI_CHK_SNP_LCRD_OVERFLOW_E, $sformatf("%s SNP L-credit grant overflowed the tracked count", chan));
       end
       else begin
+        chk_hit(VIP_CHI_CHK_SNP_LCRD_OVERFLOW_E);
         nxt = nxt + 1;
       end
     end
     if (consume) begin
       if (nxt == 0) begin
-        $error("vip_chi_snp_sva: %s SNP L-credit consumed with no credit available (underflow)", chan);
+        chk_miss(VIP_CHI_CHK_SNP_LCRD_UNDERFLOW_E, $sformatf("%s SNP L-credit consumed with no credit available (underflow)", chan));
       end
       else begin
+        chk_hit(VIP_CHI_CHK_SNP_LCRD_UNDERFLOW_E);
         nxt = nxt - 1;
       end
     end
@@ -117,6 +119,85 @@ module vip_chi_snp_sva #(
       rxsnp_lcrd_count <= lcrd_next(rxsnp_lcrd_count, vif.txsnplcrdv, vif.rxsnpflitv, SNP_SEND_CAP_C, "rxsnp");
     end
   end
+
+  // Per-check identity, enable, severity and statistics. Mirrors vip_chi_sva --
+  // see the long comment there. This bind owns ONLY the CHI_SNP_* range, so it
+  // initialises only those IDs: the main checker shares this interface and
+  // whichever elaborated second would otherwise clear the other's settings.
+  function automatic void apply_check_plusarg(input string arg, input bit as_warning);
+    string list;
+    string name;
+    int    start_pos;
+    bit    matched;
+
+    if (!$value$plusargs(arg, list)) begin
+      return;
+    end
+
+    start_pos = 0;
+    for (int i = 0; i <= list.len(); i++) begin
+      if ((i == list.len()) || (list[i] == ",")) begin
+        name = list.substr(start_pos, i - 1);
+        start_pos = i + 1;
+        if (name.len() == 0) begin
+          continue;
+        end
+        matched = 1'b0;
+        for (int unsigned id = 0; id < int'(VIP_CHI_CHK_NUM_E); id++) begin
+          if (vip_chi_check_is_snp(vip_chi_check_id_t'(id)) &&
+              (vip_chi_check_name(vip_chi_check_id_t'(id)) == name)) begin
+            matched = 1'b1;
+            if (as_warning) begin
+              vif.check_severity[id] = VIP_CHI_CHK_SEV_WARNING_E;
+            end
+            else begin
+              vif.check_enabled[id] = 1'b0;
+            end
+          end
+        end
+        // Unmatched names are NOT fatal here: the main checker owns most of the
+        // registry and validates the same plusarg, so a name outside the SNP
+        // range is that bind's business, not an error.
+      end
+    end
+  endfunction
+
+  initial begin
+    for (int unsigned id = 0; id < int'(VIP_CHI_CHK_NUM_E); id++) begin
+      if (vip_chi_check_is_snp(vip_chi_check_id_t'(id))) begin
+        vif.check_severity[id]   = VIP_CHI_CHK_SEV_ERROR_E;
+        vif.check_enabled[id]    = 1'b1;
+        vif.check_pass_count[id] = 0;
+        vif.check_fail_count[id] = 0;
+      end
+    end
+    apply_check_plusarg("vip_chi_disable_check=%s", 1'b0);
+    apply_check_plusarg("vip_chi_warn_check=%s", 1'b1);
+  end
+
+  function automatic void chk_hit(input vip_chi_check_id_t id);
+    if (!vif.check_enabled[id]) begin
+      return;
+    end
+    vif.check_pass_count[id] = vif.check_pass_count[id] + 1;
+  endfunction
+
+  function automatic void chk_miss(input vip_chi_check_id_t id, input string msg);
+    if (!vif.check_enabled[id]) begin
+      return;
+    end
+    vif.check_fail_count[id] = vif.check_fail_count[id] + 1;
+    case (vif.check_severity[id])
+      VIP_CHI_CHK_SEV_OFF_E: begin
+      end
+      VIP_CHI_CHK_SEV_WARNING_E: begin
+        $warning("vip_chi_snp_sva: [%s] %s", vip_chi_check_name(id), msg);
+      end
+      default: begin
+        $error("vip_chi_snp_sva: [%s] %s", vip_chi_check_name(id), msg);
+      end
+    endcase
+  endfunction
 
   // Structural properties (tx side: the SNP source drives txsnp*/receives credit
   // returns; on an RN-F interface these are idle so the checks are vacuous).
@@ -147,19 +228,29 @@ module vip_chi_snp_sva #(
   endproperty
 
   assert property (p_snp_flit_requires_link)
-    else $error("vip_chi_snp_sva: txsnpflitv asserted before link RUN");
+    chk_hit(VIP_CHI_CHK_SNP_FLITV_REQUIRES_LINK_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_FLITV_REQUIRES_LINK_E, $sformatf("txsnpflitv asserted before link RUN"));
 
   assert property (p_snp_lcrdv_requires_link)
-    else $error("vip_chi_snp_sva: txsnplcrdv asserted before link activation");
+    chk_hit(VIP_CHI_CHK_SNP_LCRDV_REQUIRES_LINK_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_LCRDV_REQUIRES_LINK_E, $sformatf("txsnplcrdv asserted before link activation"));
 
   assert property (p_snp_pend_requires_valid)
-    else $error("vip_chi_snp_sva: txsnpflitpend asserted without txsnpflitv");
+    chk_hit(VIP_CHI_CHK_SNP_PEND_REQUIRES_VALID_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_PEND_REQUIRES_VALID_E, $sformatf("txsnpflitpend asserted without txsnpflitv"));
 
   assert property (p_snp_known_when_valid)
-    else $error("vip_chi_snp_sva: txsnpflit has X/Z while txsnpflitv asserted");
+    chk_hit(VIP_CHI_CHK_SNP_KNOWN_WHEN_VALID_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_KNOWN_WHEN_VALID_E, $sformatf("txsnpflit has X/Z while txsnpflitv asserted"));
 
   assert property (p_snp_idle_during_reset)
-    else $error("vip_chi_snp_sva: SNP outputs not idle during reset");
+    chk_hit(VIP_CHI_CHK_SNP_IDLE_IN_RESET_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_IDLE_IN_RESET_E, $sformatf("SNP outputs not idle during reset"));
 
 endmodule
 

@@ -51,15 +51,7 @@ module vip_chi_sva #(
     // rather than a parameter, like dat_reorder_allowed above and for the same
     // reason: a testcase sets the knob at run time, and elaboration is over by
     // then.
-    input int  txsactive_extend_max_cycles,
-    // Suppress the link-activation transition $error while still COUNTING it,
-    // for the negative-control test that deliberately aborts a bring-up. An SVA
-    // $error cannot be demoted by a uvm_report_catcher the way a UVM report can,
-    // so a test that must prove the rule fired would otherwise have to print an
-    // error indistinguishable from a real one. Standing the check down entirely
-    // -- what a reordering test does to the DataID rules -- is not an option
-    // here: the whole point is to observe that it fired.
-    input bit  lasm_illegal_expected
+    input int  txsactive_extend_max_cycles
   );
 
   typedef vip_chi_types #(CFG_P)::txn_id_t     txn_id_t;
@@ -255,17 +247,19 @@ module vip_chi_sva #(
     nxt = cur;
     if (grant) begin
       if (cur == cap) begin
-        $error("vip_chi_sva: %s L-credit grant overflowed the tracked count", chan);
+        chk_miss(VIP_CHI_CHK_LCRD_OVERFLOW_E, $sformatf("%s L-credit grant overflowed the tracked count", chan));
       end
       else begin
+        chk_hit(VIP_CHI_CHK_LCRD_OVERFLOW_E);
         nxt = nxt + 1;
       end
     end
     if (consume) begin
       if (nxt == 0) begin
-        $error("vip_chi_sva: %s L-credit consumed with no credit available (underflow)", chan);
+        chk_miss(VIP_CHI_CHK_LCRD_UNDERFLOW_E, $sformatf("%s L-credit consumed with no credit available (underflow)", chan));
       end
       else begin
+        chk_hit(VIP_CHI_CHK_LCRD_UNDERFLOW_E);
         nxt = nxt - 1;
       end
     end
@@ -571,7 +565,10 @@ module vip_chi_sva #(
           txn_idx = txn_id_to_index(txn_id_t'(vif.txreqflit.txnid));
           if (req_has_modeled_completion(req_opcode)) begin
             if (req_inflight_by_txn[txn_idx]) begin
-              $error("vip_chi_sva: requester reused a TxnID while the earlier request was still in flight");
+              chk_miss(VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E, $sformatf("requester reused a TxnID while the earlier request was still in flight"));
+            end
+            else begin
+              chk_hit(VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E);
             end
             if (!req_inflight_by_txn[txn_idx]) begin
               req_outstanding_delta++;
@@ -669,11 +666,17 @@ module vip_chi_sva #(
 
         if (vif.txdatflitv && is_write_dat_opcode(dat_opcode_t'(vif.txdatflit.opcode))) begin
           if (!write_grant_seen_by_dbid[txn_id_to_index(txn_id_t'(vif.txdatflit.dbid))]) begin
-            $error("vip_chi_sva: write DAT was sent before a DBID-bearing grant response");
+            chk_miss(VIP_CHI_CHK_WRITE_DAT_BEFORE_DBID_E, $sformatf("write DAT was sent before a DBID-bearing grant response"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_WRITE_DAT_BEFORE_DBID_E);
           end
 
           if (txn_id_t'(vif.txdatflit.txnid) != txn_id_t'(vif.txdatflit.dbid)) begin
-            $error("vip_chi_sva: write DAT txnid did not match DBID on the wire");
+            chk_miss(VIP_CHI_CHK_WRITE_DAT_TXNID_MATCHES_DBID_E, $sformatf("write DAT txnid did not match DBID on the wire"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_WRITE_DAT_TXNID_MATCHES_DBID_E);
           end
 
           if (!vif.txdatflitpend) begin
@@ -684,11 +687,17 @@ module vip_chi_sva #(
         if (vif.txrspflitv &&
             (rsp_opcode_t'(vif.txrspflit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_COMP_ACK_C))) begin
           if (!write_completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))]) begin
-            $error("vip_chi_sva: CompAck was sent before a write completion response");
+            chk_miss(VIP_CHI_CHK_COMPACK_BEFORE_COMPLETION_E, $sformatf("CompAck was sent before a write completion response"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_COMPACK_BEFORE_COMPLETION_E);
           end
 
           if (!req_exp_comp_ack_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))]) begin
-            $error("vip_chi_sva: CompAck was sent for a request without ExpCompAck");
+            chk_miss(VIP_CHI_CHK_COMPACK_WITHOUT_EXPCOMPACK_E, $sformatf("CompAck was sent for a request without ExpCompAck"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_COMPACK_WITHOUT_EXPCOMPACK_E);
           end
 
           req_exp_comp_ack_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
@@ -706,7 +715,10 @@ module vip_chi_sva #(
           txn_idx = txn_id_to_index(txn_id_t'(vif.rxreqflit.txnid));
           if (req_has_modeled_completion(req_opcode)) begin
             if (req_inflight_by_txn[txn_idx]) begin
-              $error("vip_chi_sva: completer observed a reused request TxnID while the earlier request was still in flight");
+              chk_miss(VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E, $sformatf("completer observed a reused request TxnID while the earlier request was still in flight"));
+            end
+            else begin
+              chk_hit(VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E);
             end
             if (!req_inflight_by_txn[txn_idx]) begin
               req_outstanding_delta++;
@@ -764,7 +776,10 @@ module vip_chi_sva #(
           txdat_burst_opcode <= dat_opcode_t'(vif.txdatflit.opcode);
           if (!dat_reorder_allowed &&
               (data_id_t'(vif.txdatflit.dataid) != data_id_t'('0))) begin
-            $error("vip_chi_sva: first TX DAT beat did not start at dataid 0");
+            chk_miss(VIP_CHI_CHK_TX_DAT_FIRST_BEAT_DATAID_ZERO_E, $sformatf("first TX DAT beat did not start at dataid 0"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_TX_DAT_FIRST_BEAT_DATAID_ZERO_E);
           end
 
           if (vif.txdatflitpend) begin
@@ -780,7 +795,10 @@ module vip_chi_sva #(
               dbid_idx = txn_id_to_index(txn_id_t'(vif.txdatflit.dbid));
               if (expected_write_valid_by_dbid[dbid_idx] &&
                   (expected_write_beats_by_dbid[dbid_idx] != 1)) begin
-                $error("vip_chi_sva: TX write DAT burst beat count did not match the granted request size");
+                chk_miss(VIP_CHI_CHK_TX_WRITE_DAT_BEAT_COUNT_E, $sformatf("TX write DAT burst beat count did not match the granted request size"));
+              end
+              else begin
+                chk_hit(VIP_CHI_CHK_TX_WRITE_DAT_BEAT_COUNT_E);
               end
               expected_write_valid_by_dbid[dbid_idx] <= 1'b0;
             end
@@ -792,10 +810,16 @@ module vip_chi_sva #(
               txn_idx = txn_id_to_index(txn_id_t'(vif.txdatflit.txnid));
               if (expected_completion_valid_by_txn[txn_idx]) begin
                 if (expected_completion_opcode_by_txn[txn_idx] != dat_opcode_t'(vif.txdatflit.opcode)) begin
-                  $error("vip_chi_sva: TX read completion DAT opcode did not match the request type");
+                  chk_miss(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E, $sformatf("TX read completion DAT opcode did not match the request type"));
+                end
+                else begin
+                  chk_hit(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E);
                 end
                 if (expected_completion_beats_by_txn[txn_idx] != 1) begin
-                  $error("vip_chi_sva: TX read completion DAT burst beat count did not match the request size");
+                  chk_miss(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_BEAT_COUNT_E, $sformatf("TX read completion DAT burst beat count did not match the request size"));
+                end
+                else begin
+                  chk_hit(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_BEAT_COUNT_E);
                 end
                 expected_completion_valid_by_txn[txn_idx] <= 1'b0;
                 if (dat_completion_req_valid_by_txn[txn_idx]) begin
@@ -811,12 +835,18 @@ module vip_chi_sva #(
         end
         else begin
           if (txn_id_t'(vif.txdatflit.txnid) != txdat_burst_txn_id) begin
-            $error("vip_chi_sva: TX DAT burst changed txnid before txdatflitpend dropped");
+            chk_miss(VIP_CHI_CHK_TX_DAT_TXNID_STABLE_E, $sformatf("TX DAT burst changed txnid before txdatflitpend dropped"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_TX_DAT_TXNID_STABLE_E);
           end
 
           if (!dat_reorder_allowed &&
               (data_id_t'(vif.txdatflit.dataid) != txdat_expected_data_id)) begin
-            $error("vip_chi_sva: TX DAT burst dataid was not sequential");
+            chk_miss(VIP_CHI_CHK_TX_DAT_DATAID_SEQUENTIAL_E, $sformatf("TX DAT burst dataid was not sequential"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_TX_DAT_DATAID_SEQUENTIAL_E);
           end
 
           txdat_burst_count <= txdat_burst_count + 1;
@@ -831,7 +861,10 @@ module vip_chi_sva #(
               dbid_idx = txn_id_to_index(txn_id_t'(vif.txdatflit.dbid));
               if (expected_write_valid_by_dbid[dbid_idx] &&
                   (expected_write_beats_by_dbid[dbid_idx] != (txdat_burst_count + 1))) begin
-                $error("vip_chi_sva: TX write DAT burst beat count did not match the granted request size");
+                chk_miss(VIP_CHI_CHK_TX_WRITE_DAT_BEAT_COUNT_E, $sformatf("TX write DAT burst beat count did not match the granted request size"));
+              end
+              else begin
+                chk_hit(VIP_CHI_CHK_TX_WRITE_DAT_BEAT_COUNT_E);
               end
               expected_write_valid_by_dbid[dbid_idx] <= 1'b0;
             end
@@ -843,10 +876,16 @@ module vip_chi_sva #(
               txn_idx = txn_id_to_index(txn_id_t'(vif.txdatflit.txnid));
               if (expected_completion_valid_by_txn[txn_idx]) begin
                 if (expected_completion_opcode_by_txn[txn_idx] != txdat_burst_opcode) begin
-                  $error("vip_chi_sva: TX read completion DAT opcode did not match the request type");
+                  chk_miss(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E, $sformatf("TX read completion DAT opcode did not match the request type"));
+                end
+                else begin
+                  chk_hit(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E);
                 end
                 if (expected_completion_beats_by_txn[txn_idx] != (txdat_burst_count + 1)) begin
-                  $error("vip_chi_sva: TX read completion DAT burst beat count did not match the request size");
+                  chk_miss(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_BEAT_COUNT_E, $sformatf("TX read completion DAT burst beat count did not match the request size"));
+                end
+                else begin
+                  chk_hit(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_BEAT_COUNT_E);
                 end
                 expected_completion_valid_by_txn[txn_idx] <= 1'b0;
                 if (dat_completion_req_valid_by_txn[txn_idx]) begin
@@ -873,7 +912,10 @@ module vip_chi_sva #(
           rxdat_burst_opcode <= dat_opcode_t'(vif.rxdatflit.opcode);
           if (!dat_reorder_allowed &&
               (data_id_t'(vif.rxdatflit.dataid) != data_id_t'('0))) begin
-            $error("vip_chi_sva: first RX DAT beat did not start at dataid 0");
+            chk_miss(VIP_CHI_CHK_RX_DAT_FIRST_BEAT_DATAID_ZERO_E, $sformatf("first RX DAT beat did not start at dataid 0"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_RX_DAT_FIRST_BEAT_DATAID_ZERO_E);
           end
 
           if (vif.rxdatflitpend) begin
@@ -889,7 +931,10 @@ module vip_chi_sva #(
               dbid_idx = txn_id_to_index(txn_id_t'(vif.rxdatflit.dbid));
               if (expected_write_valid_by_dbid[dbid_idx] &&
                   (expected_write_beats_by_dbid[dbid_idx] != 1)) begin
-                $error("vip_chi_sva: RX write DAT burst beat count did not match the granted request size");
+                chk_miss(VIP_CHI_CHK_RX_WRITE_DAT_BEAT_COUNT_E, $sformatf("RX write DAT burst beat count did not match the granted request size"));
+              end
+              else begin
+                chk_hit(VIP_CHI_CHK_RX_WRITE_DAT_BEAT_COUNT_E);
               end
               expected_write_valid_by_dbid[dbid_idx] <= 1'b0;
             end
@@ -901,10 +946,16 @@ module vip_chi_sva #(
               txn_idx = txn_id_to_index(txn_id_t'(vif.rxdatflit.txnid));
               if (expected_completion_valid_by_txn[txn_idx]) begin
                 if (expected_completion_opcode_by_txn[txn_idx] != dat_opcode_t'(vif.rxdatflit.opcode)) begin
-                  $error("vip_chi_sva: RX read completion DAT opcode did not match the request type");
+                  chk_miss(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E, $sformatf("RX read completion DAT opcode did not match the request type"));
+                end
+                else begin
+                  chk_hit(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E);
                 end
                 if (expected_completion_beats_by_txn[txn_idx] != 1) begin
-                  $error("vip_chi_sva: RX read completion DAT burst beat count did not match the request size");
+                  chk_miss(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_BEAT_COUNT_E, $sformatf("RX read completion DAT burst beat count did not match the request size"));
+                end
+                else begin
+                  chk_hit(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_BEAT_COUNT_E);
                 end
                 expected_completion_valid_by_txn[txn_idx] <= 1'b0;
                 if (dat_completion_req_valid_by_txn[txn_idx]) begin
@@ -920,12 +971,18 @@ module vip_chi_sva #(
         end
         else begin
           if (txn_id_t'(vif.rxdatflit.txnid) != rxdat_burst_txn_id) begin
-            $error("vip_chi_sva: RX DAT burst changed txnid before rxdatflitpend dropped");
+            chk_miss(VIP_CHI_CHK_RX_DAT_TXNID_STABLE_E, $sformatf("RX DAT burst changed txnid before rxdatflitpend dropped"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_RX_DAT_TXNID_STABLE_E);
           end
 
           if (!dat_reorder_allowed &&
               (data_id_t'(vif.rxdatflit.dataid) != rxdat_expected_data_id)) begin
-            $error("vip_chi_sva: RX DAT burst dataid was not sequential");
+            chk_miss(VIP_CHI_CHK_RX_DAT_DATAID_SEQUENTIAL_E, $sformatf("RX DAT burst dataid was not sequential"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_RX_DAT_DATAID_SEQUENTIAL_E);
           end
 
           rxdat_burst_count <= rxdat_burst_count + 1;
@@ -940,7 +997,10 @@ module vip_chi_sva #(
               dbid_idx = txn_id_to_index(txn_id_t'(vif.rxdatflit.dbid));
               if (expected_write_valid_by_dbid[dbid_idx] &&
                   (expected_write_beats_by_dbid[dbid_idx] != (rxdat_burst_count + 1))) begin
-                $error("vip_chi_sva: RX write DAT burst beat count did not match the granted request size");
+                chk_miss(VIP_CHI_CHK_RX_WRITE_DAT_BEAT_COUNT_E, $sformatf("RX write DAT burst beat count did not match the granted request size"));
+              end
+              else begin
+                chk_hit(VIP_CHI_CHK_RX_WRITE_DAT_BEAT_COUNT_E);
               end
               expected_write_valid_by_dbid[dbid_idx] <= 1'b0;
             end
@@ -952,10 +1012,16 @@ module vip_chi_sva #(
               txn_idx = txn_id_to_index(txn_id_t'(vif.rxdatflit.txnid));
               if (expected_completion_valid_by_txn[txn_idx]) begin
                 if (expected_completion_opcode_by_txn[txn_idx] != rxdat_burst_opcode) begin
-                  $error("vip_chi_sva: RX read completion DAT opcode did not match the request type");
+                  chk_miss(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E, $sformatf("RX read completion DAT opcode did not match the request type"));
+                end
+                else begin
+                  chk_hit(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E);
                 end
                 if (expected_completion_beats_by_txn[txn_idx] != (rxdat_burst_count + 1)) begin
-                  $error("vip_chi_sva: RX read completion DAT burst beat count did not match the request size");
+                  chk_miss(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_BEAT_COUNT_E, $sformatf("RX read completion DAT burst beat count did not match the request size"));
+                end
+                else begin
+                  chk_hit(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_BEAT_COUNT_E);
                 end
                 expected_completion_valid_by_txn[txn_idx] <= 1'b0;
                 if (dat_completion_req_valid_by_txn[txn_idx]) begin
@@ -1006,24 +1072,119 @@ module vip_chi_sva #(
   // deactivation half of the cycle. An interface whose agent is never built
   // holds STOP throughout and only ever sees the legal hold, so it stays silent.
   //
-  // vif.lasm_illegal_count is the observable: it counts every illegal step
-  // whether or not the report was suppressed, so the negative control can assert
-  // the rule fired exactly once and an ordinary run can assert it never did.
-  // That makes this the one check whose non-vacuity a test can read directly
-  // rather than infer from a silent log. It is published on the INTERFACE
-  // because a package may hold no hierarchical reference and the testcases are
-  // compiled into one -- see the declaration in vip_chi_if.
-  always_ff @(posedge vif.clk) begin
-    if (!vif.rst_n) begin
-      vif.lasm_illegal_count <= 0;
+  // ---------------------------------------------------------------------------
+  // Per-check identity, enable, severity and statistics.
+  //
+  // Every rule has a stable vip_chi_check_id_t, a severity, and pass/fail
+  // counters published on the interface. Two things follow that did not hold
+  // before:
+  //
+  //   * an SVA failure can FAIL A RUN. $error does not raise a UVM error, does
+  //     not set the exit status, and is not read by the regression script, so
+  //     every assertion here used to print into a log nothing consumed. The env
+  //     now reads vif.check_fail_count at report_phase and raises the error.
+  //   * a rule that never RAN is distinguishable from one that held. A pass
+  //     count of zero and a fail count of zero means the rule was never
+  //     evaluated, which is what the end-of-test vacuity report surfaces.
+  //
+  // DEVIATION worth naming: the per-check enable is applied in the assertion
+  // ACTION BLOCKS, not by threading a per-check bit through each property's
+  // `disable iff`. A `disable iff` that goes true mid-flight kills in-flight
+  // attempts, so moving the gate there would quietly change the verdicts of
+  // every multi-cycle property here for no gain. checks_enable stays as the
+  // module-wide link-active gate it always was, and a disabled check simply
+  // records nothing: neither pass nor fail, matching the Python port, so the
+  // vacuity report shows it as not exercised rather than as quietly holding.
+  // ---------------------------------------------------------------------------
+
+  // +vip_chi_disable_check=<ID>[,<ID>...] and +vip_chi_warn_check=<ID>[,...].
+  // An unknown name is fatal rather than ignored: the entire value of naming a
+  // check is being able to address it, and a silently-dropped typo leaves the
+  // user believing a check is off when it is still firing.
+  function automatic void apply_check_plusarg(input string arg, input bit as_warning);
+    string   list;
+    string   name;
+    int      start_pos;
+    bit      matched;
+
+    if (!$value$plusargs(arg, list)) begin
+      return;
     end
-    else if (!vip_chi_lasm_legal_step(lasm_state, link_lasm())) begin
-      vif.lasm_illegal_count <= vif.lasm_illegal_count + 1;
+
+    start_pos = 0;
+    for (int i = 0; i <= list.len(); i++) begin
+      if ((i == list.len()) || (list[i] == ",")) begin
+        name = list.substr(start_pos, i - 1);
+        start_pos = i + 1;
+        if (name.len() == 0) begin
+          continue;
+        end
+        matched = 1'b0;
+        for (int unsigned id = 0; id < int'(VIP_CHI_CHK_NUM_E); id++) begin
+          if (vip_chi_check_name(vip_chi_check_id_t'(id)) == name) begin
+            matched = 1'b1;
+            if (as_warning) begin
+              vif.check_severity[id] = VIP_CHI_CHK_SEV_WARNING_E;
+            end
+            else begin
+              vif.check_enabled[id] = 1'b0;
+            end
+          end
+        end
+        if (!matched) begin
+          $fatal(1, "vip_chi_sva: %s names an unknown check '%s'", arg, name);
+        end
+      end
     end
+  endfunction
+
+  initial begin
+    for (int unsigned id = 0; id < int'(VIP_CHI_CHK_NUM_E); id++) begin
+      // Only the IDs this checker owns: vip_chi_snp_sva initialises the SNP
+      // range on the same interface, and whichever elaborated second would
+      // otherwise clear the other's plusarg settings.
+      if (!vip_chi_check_is_snp(vip_chi_check_id_t'(id))) begin
+        vif.check_severity[id]   = VIP_CHI_CHK_SEV_ERROR_E;
+        vif.check_enabled[id]    = 1'b1;
+        vif.check_pass_count[id] = 0;
+        vif.check_fail_count[id] = 0;
+      end
+    end
+    apply_check_plusarg("vip_chi_disable_check=%s", 1'b0);
+    apply_check_plusarg("vip_chi_warn_check=%s", 1'b1);
   end
 
+  // One evaluation that held.
+  function automatic void chk_hit(input vip_chi_check_id_t id);
+    if (!vif.check_enabled[id]) begin
+      return;
+    end
+    vif.check_pass_count[id] = vif.check_pass_count[id] + 1;
+  endfunction
+
+  // One evaluation that did not hold. Counted before the severity is consulted,
+  // so a check turned down to WARNING or OFF still shows in the end-of-test
+  // table as failing -- otherwise "off" reads the same as "fixed".
+  function automatic void chk_miss(input vip_chi_check_id_t id, input string msg);
+    if (!vif.check_enabled[id]) begin
+      return;
+    end
+    vif.check_fail_count[id] = vif.check_fail_count[id] + 1;
+    case (vif.check_severity[id])
+      VIP_CHI_CHK_SEV_OFF_E: begin
+        // Counted, not reported.
+      end
+      VIP_CHI_CHK_SEV_WARNING_E: begin
+        $warning("vip_chi_sva: [%s] %s", vip_chi_check_name(id), msg);
+      end
+      default: begin
+        $error("vip_chi_sva: [%s] %s", vip_chi_check_name(id), msg);
+      end
+    endcase
+  endfunction
+
   property p_lasm_legal_transition;
-    @(posedge vif.clk) disable iff (!vif.rst_n || lasm_illegal_expected)
+    @(posedge vif.clk) disable iff (!vif.rst_n)
       vip_chi_lasm_legal_step(lasm_state, link_lasm());
   endproperty
 
@@ -1315,93 +1476,147 @@ module vip_chi_sva #(
   endproperty
 
   assert property (p_lasm_legal_transition)
-    else $error(
-      "vip_chi_sva: link stepped %s -> %s; the LASM may only hold or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
-      lasm_state.name(), link_lasm().name());
+    chk_hit(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E, $sformatf("link stepped %s -> %s; the LASM may only hold or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
+      lasm_state.name(), link_lasm().name()));
 
   assert property (p_lcrd_quiescent_in_stop)
-    else $error(
-      "vip_chi_sva: L-credits still outstanding with the link in STOP (tx req/rsp/dat=%0d/%0d/%0d rx req/rsp/dat=%0d/%0d/%0d)",
+    chk_hit(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E);
+  else
+    chk_miss(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E, $sformatf("L-credits still outstanding with the link in STOP (tx req/rsp/dat=%0d/%0d/%0d rx req/rsp/dat=%0d/%0d/%0d)",
       txreq_lcrd_count, txrsp_lcrd_count, txdat_lcrd_count,
-      rxreq_lcrd_count, rxrsp_lcrd_count, rxdat_lcrd_count);
+      rxreq_lcrd_count, rxrsp_lcrd_count, rxdat_lcrd_count));
 
   assert property (p_req_requires_link)
-    else $error("vip_chi_sva: txreqflitv asserted before link activation");
+    chk_hit(VIP_CHI_CHK_REQ_FLITV_REQUIRES_LINK_E);
+  else
+    chk_miss(VIP_CHI_CHK_REQ_FLITV_REQUIRES_LINK_E, $sformatf("txreqflitv asserted before link activation"));
 
   assert property (p_rsp_requires_link)
-    else $error("vip_chi_sva: txrspflitv asserted before link activation");
+    chk_hit(VIP_CHI_CHK_RSP_FLITV_REQUIRES_LINK_E);
+  else
+    chk_miss(VIP_CHI_CHK_RSP_FLITV_REQUIRES_LINK_E, $sformatf("txrspflitv asserted before link activation"));
 
   assert property (p_dat_requires_link)
-    else $error("vip_chi_sva: txdatflitv asserted before link activation");
+    chk_hit(VIP_CHI_CHK_DAT_FLITV_REQUIRES_LINK_E);
+  else
+    chk_miss(VIP_CHI_CHK_DAT_FLITV_REQUIRES_LINK_E, $sformatf("txdatflitv asserted before link activation"));
 
   assert property (p_req_lcrdv_requires_link)
-    else $error("vip_chi_sva: txreqlcrdv asserted before link activation");
+    chk_hit(VIP_CHI_CHK_REQ_LCRDV_REQUIRES_LINK_E);
+  else
+    chk_miss(VIP_CHI_CHK_REQ_LCRDV_REQUIRES_LINK_E, $sformatf("txreqlcrdv asserted before link activation"));
 
   assert property (p_rsp_lcrdv_requires_link)
-    else $error("vip_chi_sva: txrsplcrdv asserted before link activation");
+    chk_hit(VIP_CHI_CHK_RSP_LCRDV_REQUIRES_LINK_E);
+  else
+    chk_miss(VIP_CHI_CHK_RSP_LCRDV_REQUIRES_LINK_E, $sformatf("txrsplcrdv asserted before link activation"));
 
   assert property (p_dat_lcrdv_requires_link)
-    else $error("vip_chi_sva: txdatlcrdv asserted before link activation");
+    chk_hit(VIP_CHI_CHK_DAT_LCRDV_REQUIRES_LINK_E);
+  else
+    chk_miss(VIP_CHI_CHK_DAT_LCRDV_REQUIRES_LINK_E, $sformatf("txdatlcrdv asserted before link activation"));
 
   assert property (p_req_pend_requires_valid)
-    else $error("vip_chi_sva: txreqflitpend asserted without txreqflitv");
+    chk_hit(VIP_CHI_CHK_REQ_PEND_REQUIRES_VALID_E);
+  else
+    chk_miss(VIP_CHI_CHK_REQ_PEND_REQUIRES_VALID_E, $sformatf("txreqflitpend asserted without txreqflitv"));
 
   assert property (p_rsp_pend_requires_valid)
-    else $error("vip_chi_sva: txrspflitpend asserted without txrspflitv");
+    chk_hit(VIP_CHI_CHK_RSP_PEND_REQUIRES_VALID_E);
+  else
+    chk_miss(VIP_CHI_CHK_RSP_PEND_REQUIRES_VALID_E, $sformatf("txrspflitpend asserted without txrspflitv"));
 
   assert property (p_dat_pend_requires_valid)
-    else $error("vip_chi_sva: txdatflitpend asserted without txdatflitv");
+    chk_hit(VIP_CHI_CHK_DAT_PEND_REQUIRES_VALID_E);
+  else
+    chk_miss(VIP_CHI_CHK_DAT_PEND_REQUIRES_VALID_E, $sformatf("txdatflitpend asserted without txdatflitv"));
 
   assert property (p_req_known_when_valid)
-    else $error("vip_chi_sva: txreqflit contains X/Z while valid");
+    chk_hit(VIP_CHI_CHK_REQ_KNOWN_WHEN_VALID_E);
+  else
+    chk_miss(VIP_CHI_CHK_REQ_KNOWN_WHEN_VALID_E, $sformatf("txreqflit contains X/Z while valid"));
 
   assert property (p_rsp_known_when_valid)
-    else $error("vip_chi_sva: txrspflit contains X/Z while valid");
+    chk_hit(VIP_CHI_CHK_RSP_KNOWN_WHEN_VALID_E);
+  else
+    chk_miss(VIP_CHI_CHK_RSP_KNOWN_WHEN_VALID_E, $sformatf("txrspflit contains X/Z while valid"));
 
   assert property (p_dat_known_when_valid)
-    else $error("vip_chi_sva: txdatflit contains X/Z while valid");
+    chk_hit(VIP_CHI_CHK_DAT_KNOWN_WHEN_VALID_E);
+  else
+    chk_miss(VIP_CHI_CHK_DAT_KNOWN_WHEN_VALID_E, $sformatf("txdatflit contains X/Z while valid"));
 
   assert property (p_link_sideband_idle_during_reset)
-    else $error("vip_chi_sva: link sideband was not held idle during reset");
+    chk_hit(VIP_CHI_CHK_LINK_SIDEBAND_IDLE_IN_RESET_E);
+  else
+    chk_miss(VIP_CHI_CHK_LINK_SIDEBAND_IDLE_IN_RESET_E, $sformatf("link sideband was not held idle during reset"));
 
   assert property (p_req_idle_during_reset)
-    else $error("vip_chi_sva: REQ channel was not held idle during reset");
+    chk_hit(VIP_CHI_CHK_REQ_IDLE_IN_RESET_E);
+  else
+    chk_miss(VIP_CHI_CHK_REQ_IDLE_IN_RESET_E, $sformatf("REQ channel was not held idle during reset"));
 
   assert property (p_rsp_idle_during_reset)
-    else $error("vip_chi_sva: RSP channel was not held idle during reset");
+    chk_hit(VIP_CHI_CHK_RSP_IDLE_IN_RESET_E);
+  else
+    chk_miss(VIP_CHI_CHK_RSP_IDLE_IN_RESET_E, $sformatf("RSP channel was not held idle during reset"));
 
   assert property (p_dat_idle_during_reset)
-    else $error("vip_chi_sva: DAT channel was not held idle during reset");
+    chk_hit(VIP_CHI_CHK_DAT_IDLE_IN_RESET_E);
+  else
+    chk_miss(VIP_CHI_CHK_DAT_IDLE_IN_RESET_E, $sformatf("DAT channel was not held idle during reset"));
 
   assert property (p_link_restarts_after_reset_release)
-    else $error("vip_chi_sva: link activation did not restart after reset release");
+    chk_hit(VIP_CHI_CHK_LINK_RESTARTS_AFTER_RESET_E);
+  else
+    chk_miss(VIP_CHI_CHK_LINK_RESTARTS_AFTER_RESET_E, $sformatf("link activation did not restart after reset release"));
 
   assert property (p_rni_completion_follows_req)
-    else $error("vip_chi_sva: RN-I request did not observe a matching completion within TIMEOUT_CYCLES_P");
+    chk_hit(VIP_CHI_CHK_COMPLETION_FOLLOWS_REQ_E);
+  else
+    chk_miss(VIP_CHI_CHK_COMPLETION_FOLLOWS_REQ_E, $sformatf("RN-I request did not observe a matching completion within TIMEOUT_CYCLES_P"));
 
   assert property (p_snf_completion_follows_req)
-    else $error("vip_chi_sva: SN-F-observed request did not drive a matching completion within TIMEOUT_CYCLES_P");
+    chk_hit(VIP_CHI_CHK_COMPLETION_FOLLOWS_REQ_E);
+  else
+    chk_miss(VIP_CHI_CHK_COMPLETION_FOLLOWS_REQ_E, $sformatf("SN-F-observed request did not drive a matching completion within TIMEOUT_CYCLES_P"));
 
   assert property (p_rni_atomic_return_uses_dat_completion)
-    else $error("vip_chi_sva: RN-I returning atomic observed a final RSP completion before CompData");
+    chk_hit(VIP_CHI_CHK_ATOMIC_RETURN_USES_DAT_COMPLETION_E);
+  else
+    chk_miss(VIP_CHI_CHK_ATOMIC_RETURN_USES_DAT_COMPLETION_E, $sformatf("RN-I returning atomic observed a final RSP completion before CompData"));
 
   assert property (p_snf_atomic_return_uses_dat_completion)
-    else $error("vip_chi_sva: SN-F returning atomic drove a final RSP completion before CompData");
+    chk_hit(VIP_CHI_CHK_ATOMIC_RETURN_USES_DAT_COMPLETION_E);
+  else
+    chk_miss(VIP_CHI_CHK_ATOMIC_RETURN_USES_DAT_COMPLETION_E, $sformatf("SN-F returning atomic drove a final RSP completion before CompData"));
 
   assert property (p_rni_ordered_read_receipt_before_dat)
-    else $error("vip_chi_sva: RN-I ordered read completion arrived before ReadReceipt");
+    chk_hit(VIP_CHI_CHK_ORDERED_READ_RECEIPT_BEFORE_DAT_E);
+  else
+    chk_miss(VIP_CHI_CHK_ORDERED_READ_RECEIPT_BEFORE_DAT_E, $sformatf("RN-I ordered read completion arrived before ReadReceipt"));
 
   assert property (p_snf_ordered_read_receipt_before_dat)
-    else $error("vip_chi_sva: SN-F ordered read drove DAT completion before ReadReceipt");
+    chk_hit(VIP_CHI_CHK_ORDERED_READ_RECEIPT_BEFORE_DAT_E);
+  else
+    chk_miss(VIP_CHI_CHK_ORDERED_READ_RECEIPT_BEFORE_DAT_E, $sformatf("SN-F ordered read drove DAT completion before ReadReceipt"));
 
   assert property (p_link_deactivate_when_idle)
-    else $error("vip_chi_sva: link entered DEACTIVATE while transmit activity was still present");
+    chk_hit(VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E);
+  else
+    chk_miss(VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E, $sformatf("link entered DEACTIVATE while transmit activity was still present"));
 
   assert property (p_txsactive_covers_outstanding)
-    else $error("vip_chi_sva: TXSACTIVE was low with transactions still outstanding");
+    chk_hit(VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E);
+  else
+    chk_miss(VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E, $sformatf("TXSACTIVE was low with transactions still outstanding"));
 
   assert property (p_txsactive_deassert_bounded)
-    else $error("vip_chi_sva: TXSACTIVE stayed asserted with nothing outstanding and no flit on any channel");
+    chk_hit(VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E);
+  else
+    chk_miss(VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E, $sformatf("TXSACTIVE stayed asserted with nothing outstanding and no flit on any channel"));
 
 endmodule
 

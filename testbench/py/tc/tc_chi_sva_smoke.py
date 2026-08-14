@@ -29,12 +29,8 @@ import logging
 
 from pyuvm import uvm_test
 
-from sva.bind_chi import (
-  bind_chi, _flit_slices, _LASM_LEGAL_EDGES_C, _LINK_ACT_WINDOW_C,
-)
-from vip_chi_types_pkg import (
-  ChiCfg, DatOpcode, LasmState, ReqOpcode, ReqOrder, Role, RspOpcode,
-)
+from sva.bind_chi import bind_chi, _flit_slices, _LINK_ACT_WINDOW_C
+from vip_chi_types_pkg import ChiCfg, DatOpcode, ReqOpcode, ReqOrder, Role, RspOpcode
 
 # The standalone topology's CHI-D datapath: 16 bytes, so a size-6 (64-byte)
 # transfer is a 4-beat burst and a size-4 (16-byte) one is a single beat.
@@ -121,19 +117,17 @@ def _checker(role: Role = Role.RNI) -> bind_chi:
   c.errors = 0
   c.fail_count = {}
   c.pass_count = {}
+  # Everything the check registry needs -- per-check enable, severity, the
+  # expected-failure set and the LASM tallies -- in one call, so a field added
+  # to the registry does not silently break this hand-built path.
+  #
   # Nothing here declares an expected failure: this test induces its violations
-  # one at a time and asserts each fired, so every one of them must reach the
-  # ordinary error path. The attribute still has to exist, because _err consults
-  # it on every report.
-  c.expected_failures = set()
+  # one at a time and asserts each fired, so every one must reach the ordinary
+  # error path.
+  c.init_check_control()
   c._checks_enable = True
   c._lcrd = {}
   c._link_ever_active = False
-  # LASM coverage tallies. Built by the constructor for a real bind and left out
-  # of _reset_state on purpose (coverage accumulates across resets), so a
-  # hand-built checker has to seed them itself.
-  c._lasm_state_seen = {st: 0 for st in LasmState}
-  c._lasm_edge_seen = {edge: 0 for edge in _LASM_LEGAL_EDGES_C}
 
   # The transaction layer needs the configuration the constructor derives from
   # the bus. CHI-D over a 16-byte datapath is the shape the standalone topology

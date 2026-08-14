@@ -545,6 +545,71 @@ Every always-on checker ships with a negative-control test that fails if the
 check is vacuous (e.g.
 [tc_chi_d_scoreboard_negctl](testbench/sv/tc/tc_chi_d_scoreboard_negctl.sv)).
 
+### Per-check identity, enable and statistics
+
+Every protocol rule has a stable identity (`vip_chi_check_id_t` in SV,
+`CHECK_IDS` in Python — the same 52 names, in the same order), a severity, and
+pass/fail counters. Two things follow that did not hold before:
+
+* **An assertion failure fails the run.** The SV checkers report through plain
+  `$error`, which raises no UVM error, sets no exit status, and is not read by
+  `scripts/sv_regression.sh` — so every SV protocol assertion used to print into
+  a log nothing consumed. The tallies are published on `vip_chi_if` and the env
+  folds them into the verdict at `report_phase`. `vip_chi_sva` and `vip_chi_if`
+  stay UVM-free, so they remain bindable in a non-UVM bench.
+* **A rule that never RAN is distinguishable from one that held.** Zero passes
+  and zero fails means the rule was never evaluated, which a clean log otherwise
+  looks exactly like.
+
+Addressing one check:
+
+| | SV | Python |
+|---|---|---|
+| Disable (no reports, no counts) | `+vip_chi_disable_check=CHI_LCRD_UNDERFLOW` | `VIP_CHI_DISABLE_CHECK=CHI_LCRD_UNDERFLOW` |
+| Demote to warning (still counted) | `+vip_chi_warn_check=<ID>[,<ID>]` | `VIP_CHI_WARN_CHECK=<ID>[,<ID>]` |
+| Silence but keep counting | `vif.check_severity[<ID>] = VIP_CHI_CHK_SEV_OFF_E` | `checker.expect_failure("<ID>")` |
+
+An unknown name is an error, not a shrug: the whole value of naming checks is
+being able to address one, and a silently-dropped typo leaves you believing a
+check is off when it is still firing.
+
+`OFF` still **evaluates and counts** — it only suppresses the report — which is
+what a negative control needs to prove its rule fires. Disabling stops the
+counting too, so a disabled rule shows as *not exercised* rather than as quietly
+holding.
+
+### Reading the vacuity report
+
+Each run prints, per bind, one line per rule it never evaluated:
+
+```
+VIP_CHI CHECK VACUITY: bind=rni_sva not_exercised=12 of=52
+VIP_CHI CHECK NOT EXERCISED: bind=rni_sva rule=CHI_REQ_IDLE_IN_RESET
+```
+
+One line per rule, deliberately: the report server wraps at a fixed column, so a
+single line carrying a list loses everything past the wrap — and a sweep built on
+it silently reports on a fraction of the data.
+
+A single run cannot tell you which check does nothing *anywhere*; only the union
+over a regression can. Both flows append per-rule tallies to a CSV, and
+[scripts/check_vacuity.py](scripts/check_vacuity.py) aggregates them:
+
+```bash
+# SV: scripts/sv_regression.sh does this and appends the report to summary.txt
+./simv +UVM_TESTNAME=<tc> +vip_chi_check_csv=tallies.csv
+
+# Python
+VIP_CHI_CHECK_CSV=tallies.csv python3 testbench/py/scripts/run.py --all
+
+python3 scripts/check_vacuity.py tallies.csv
+```
+
+It reports `NEVER` (zero passes and zero fails in every run), `THIN` (exercised
+by one or two runs — alive, but one deleted testcase from becoming `NEVER`),
+`FAILING`, and `PROVOKED` (failures a negative control asked for, which are
+evidence the rule works rather than a bug). It exits non-zero on `NEVER`.
+
 ---
 
 ## Interface
