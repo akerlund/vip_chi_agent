@@ -51,7 +51,15 @@ module vip_chi_sva #(
     // rather than a parameter, like dat_reorder_allowed above and for the same
     // reason: a testcase sets the knob at run time, and elaboration is over by
     // then.
-    input int  txsactive_extend_max_cycles
+    input int  txsactive_extend_max_cycles,
+    // Suppress the link-activation transition $error while still COUNTING it,
+    // for the negative-control test that deliberately aborts a bring-up. An SVA
+    // $error cannot be demoted by a uvm_report_catcher the way a UVM report can,
+    // so a test that must prove the rule fired would otherwise have to print an
+    // error indistinguishable from a real one. Standing the check down entirely
+    // -- what a reordering test does to the DataID rules -- is not an option
+    // here: the whole point is to observe that it fired.
+    input bit  lasm_illegal_expected
   );
 
   typedef vip_chi_types #(CFG_P)::txn_id_t     txn_id_t;
@@ -79,35 +87,117 @@ module vip_chi_sva #(
   // tightens or extends.
   localparam int TXSACTIVE_SETTLE_CYCLES_C = 16;
 
-  // Any link-activate sideband asserted: the link is somewhere between STOP and
-  // STOP (i.e. ACTIVATING / RUN / DEACTIVATING). This is the correct gate for the
-  // L-CREDIT properties: L-credits legitimately flow from ACTIVATE onward, not
-  // just in RUN, so credit returns must be allowed as soon as the link leaves
-  // STOP. Flit sends are gated more tightly by link_is_running() below.
-  function automatic bit link_is_active();
-    return (vif.txlinkactivereq || vif.txlinkactiveack ||
-            vif.rxlinkactivereq || vif.rxlinkactiveack);
-  endfunction
-
-  // TX link is RUN -- the only state in which flits may be sent. This VIP models
-  // link activation ASYMMETRICALLY: a requester (RN-I) raises txlinkactivereq and
-  // waits for the peer's rxlinkactiveack, while a completer (SN-F) never raises
-  // txlinkactivereq -- it only mirrors the peer's request onto txlinkactiveack
-  // (drive_idle_sideband: txlinkactiveack <= rxlinkactivereq). So RUN cannot be
-  // pinned to this node's own req/ack pair. Use the role-agnostic condition
-  // "some request AND some acknowledge on the link":
+  // The Link Activation State Machine of THIS LINK, as seen from this endpoint.
+  //
+  // One state machine per link, not one per direction. chi_link_adapter mirrors
+  // both sideband signals to both endpoints -- the requester-polarity endpoint
+  // drives LINKACTIVEREQ and the completer-polarity one drives LINKACTIVEACK,
+  // and each is copied to the other side -- so a link carries a single
+  // activation handshake that both endpoints observe, not two independently
+  // activated directions. Modelling it as two would leave one of them wired to a
+  // request nobody ever raises (an SN-F never asserts txlinkactivereq; it only
+  // mirrors the peer's request onto txlinkactiveack), permanently in STOP, and
+  // every flit the peer sent across it would look like a violation.
+  //
+  // Which of the two request signals is live depends on this endpoint's
+  // polarity, and polarity is not a function of ROLE_P alone -- an HN-I port
+  // takes either, depending on which side it faces. The OR is exact rather than
+  // a heuristic: at any endpoint the signal of each pair that is not the live
+  // one is identically zero, so req_either is the link's request and ack_either
+  // its acknowledge, whichever end this bind sits on:
   //   RN-I RUN => txlinkactivereq & rxlinkactiveack
   //   SN-F RUN => rxlinkactivereq & txlinkactiveack
-  // both satisfy (req_either && ack_either). This is strictly tighter than
-  // link_is_active() (which only excludes full STOP): a flit sent during one-sided
-  // ACTIVATING (a request with no ack yet) or a DEACTIVATE tail (ack with no
-  // request) now fails, while genuine RUN traffic on either role passes -- and it
-  // is robust to the one-cycle ack-mirror skew that forced the earlier revert (M3),
-  // since flits are only ever launched once the activation handshake has settled.
-  function automatic bit link_is_running();
-    return ((vif.txlinkactivereq || vif.rxlinkactivereq) &&
-            (vif.txlinkactiveack || vif.rxlinkactiveack));
+  // and both reduce to {req_either, ack_either} == RUN.
+  function automatic vip_chi_lasm_state_t link_lasm();
+    return vip_chi_lasm((vif.txlinkactivereq || vif.rxlinkactivereq),
+                        (vif.txlinkactiveack || vif.rxlinkactiveack));
   endfunction
+
+  // Anywhere but STOP (ACTIVATE / RUN / DEACTIVATE). The correct gate for the
+  // L-CREDIT properties: L-credits legitimately flow from ACTIVATE onward, not
+  // just in RUN, so credit returns must be allowed as soon as the link leaves
+  // STOP. That is how the initial pool reaches the peer before the link is RUN
+  // at all. Flit sends are gated more tightly, on RUN itself.
+  //
+  // Kept as a combinational predicate rather than read off the registered state
+  // because two properties need the answer for a cycle other than the current
+  // one. It is exactly (link_lasm() != STOP), and the earlier hand-written
+  // OR-of-four form it replaced was the same expression.
+  function automatic bit link_is_active();
+    return (link_lasm() != VIP_CHI_LASM_STOP_E);
+  endfunction
+
+  // The registered LASM, one cycle behind link_lasm(). Advanced OUTSIDE the
+  // checks_enable gate, deliberately: that gate is this interface's own link
+  // activity, so gating the state machine on it would blind exactly the half of
+  // the cycle where the link comes down -- in DEACTIVATE and STOP the gate is
+  // low, and RUN -> DEACTIVATE -> STOP could never be judged. It also has to
+  // advance across the gap regardless, or the state would be stale the moment
+  // the link came back and the first transition after every deactivation would
+  // be measured from the wrong place.
+  //
+  // lasm_dwell counts cycles held in the current state. Nothing in M2.4 reads it
+  // -- it exists because a state machine that cannot say HOW LONG it has been
+  // stuck can only report a wrong transition, never a missing one.
+  vip_chi_lasm_state_t lasm_state;
+  int unsigned         lasm_dwell;
+
+  always_ff @(posedge vif.clk) begin
+    if (!vif.rst_n) begin
+      // Out of reset the sideband is held idle, which the reset-idle rule
+      // already requires, so STOP is the state the link genuinely restarts in.
+      lasm_state <= VIP_CHI_LASM_STOP_E;
+      lasm_dwell <= 0;
+    end
+    else begin
+      lasm_state <= link_lasm();
+      lasm_dwell <= (link_lasm() == lasm_state) ? (lasm_dwell + 1) : 0;
+    end
+  end
+
+  // LASM coverage lives here rather than in vip_chi_coverage, and the reason is
+  // structural: that component is a pure analysis-port subscriber with no
+  // interface handle at all. Link state is a wire property, so carrying it there
+  // would mean plumbing a virtual interface into a component deliberately built
+  // without one, and routing a per-cycle signal through an analysis port to get
+  // it there. Sampling beside the state machine keeps the two in step by
+  // construction.
+  covergroup cg_lasm;
+    option.per_instance = 1;
+
+    cp_state: coverpoint lasm_state {
+      bins stop       = {VIP_CHI_LASM_STOP_E};
+      bins activate   = {VIP_CHI_LASM_ACTIVATE_E};
+      bins run        = {VIP_CHI_LASM_RUN_E};
+      bins deactivate = {VIP_CHI_LASM_DEACTIVATE_E};
+    }
+
+    // The legal cycle as transition bins. An ILLEGAL step deliberately lands in
+    // no bin -- reporting it is the assertion's job, and giving it a bin would
+    // let a regression "cover" a violation. What this records is which parts of
+    // the cycle the traffic actually walked: a link that comes up and never goes
+    // down covers two of the four edges, and the report is what says so.
+    cp_transition: coverpoint lasm_state {
+      bins bring_up  = (VIP_CHI_LASM_STOP_E       => VIP_CHI_LASM_ACTIVATE_E);
+      bins running   = (VIP_CHI_LASM_ACTIVATE_E   => VIP_CHI_LASM_RUN_E);
+      bins tear_down = (VIP_CHI_LASM_RUN_E        => VIP_CHI_LASM_DEACTIVATE_E);
+      bins stopped   = (VIP_CHI_LASM_DEACTIVATE_E => VIP_CHI_LASM_STOP_E);
+    }
+  endgroup
+
+  cg_lasm cov_lasm;
+
+  initial begin
+    cov_lasm = new();
+  end
+
+  // Sampled only out of reset, so a reset gap breaks the transition chain rather
+  // than manufacturing an edge across it.
+  always_ff @(posedge vif.clk) begin
+    if (vif.rst_n) begin
+      cov_lasm.sample();
+    end
+  end
 
   function automatic bit req_opcode_is_coherent_read(input req_opcode_t opcode);
     return ((opcode == req_opcode_t'(VIP_CHI_REQ_READ_SHARED_C)) ||
@@ -905,19 +995,66 @@ module vip_chi_sva #(
     end
   end
 
+  // The LASM may only hold, or advance one step around
+  // STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP. Every other pair is illegal:
+  // a link that jumps STOP -> RUN skipped the acknowledge that authorises it,
+  // and one that jumps RUN -> STOP dropped request and acknowledge together
+  // instead of retiring the acknowledge after the request.
+  //
+  // Gated on rst_n only, NOT on checks_enable -- see the comment on lasm_state
+  // for why gating a link-state rule on link activity would blind it to the
+  // deactivation half of the cycle. An interface whose agent is never built
+  // holds STOP throughout and only ever sees the legal hold, so it stays silent.
+  //
+  // vif.lasm_illegal_count is the observable: it counts every illegal step
+  // whether or not the report was suppressed, so the negative control can assert
+  // the rule fired exactly once and an ordinary run can assert it never did.
+  // That makes this the one check whose non-vacuity a test can read directly
+  // rather than infer from a silent log. It is published on the INTERFACE
+  // because a package may hold no hierarchical reference and the testcases are
+  // compiled into one -- see the declaration in vip_chi_if.
+  always_ff @(posedge vif.clk) begin
+    if (!vif.rst_n) begin
+      vif.lasm_illegal_count <= 0;
+    end
+    else if (!vip_chi_lasm_legal_step(lasm_state, link_lasm())) begin
+      vif.lasm_illegal_count <= vif.lasm_illegal_count + 1;
+    end
+  end
+
+  property p_lasm_legal_transition;
+    @(posedge vif.clk) disable iff (!vif.rst_n || lasm_illegal_expected)
+      vip_chi_lasm_legal_step(lasm_state, link_lasm());
+  endproperty
+
+  // No L-credit may still be outstanding while the link is in STOP. A sender
+  // must have returned every credit it holds before the link goes down; one left
+  // behind means the shadow and the link disagree about what the peer is
+  // entitled to send, and that disagreement is what the NEXT activation starts
+  // from -- a pool seeded with a stale credit lets the first flit after bring-up
+  // go out unauthorised, which the underflow rule could then never catch because
+  // the count never reaches zero.
+  property p_lcrd_quiescent_in_stop;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      (link_lasm() == VIP_CHI_LASM_STOP_E) |->
+        ((txreq_lcrd_count == 0) && (txrsp_lcrd_count == 0) &&
+         (txdat_lcrd_count == 0) && (rxreq_lcrd_count == 0) &&
+         (rxrsp_lcrd_count == 0) && (rxdat_lcrd_count == 0));
+  endproperty
+
   property p_req_requires_link;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txreqflitv |-> link_is_running();
+      vif.txreqflitv |-> (link_lasm() == VIP_CHI_LASM_RUN_E);
   endproperty
 
   property p_rsp_requires_link;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txrspflitv |-> link_is_running();
+      vif.txrspflitv |-> (link_lasm() == VIP_CHI_LASM_RUN_E);
   endproperty
 
   property p_dat_requires_link;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txdatflitv |-> link_is_running();
+      vif.txdatflitv |-> (link_lasm() == VIP_CHI_LASM_RUN_E);
   endproperty
 
   property p_req_lcrdv_requires_link;
@@ -1176,6 +1313,17 @@ module vip_chi_sva #(
                       (txn_id_t'(vif.txrspflit.txnid) == req_txn_id) &&
                       (rsp_opcode_t'(vif.txrspflit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_READ_RECEIPT_C)));
   endproperty
+
+  assert property (p_lasm_legal_transition)
+    else $error(
+      "vip_chi_sva: link stepped %s -> %s; the LASM may only hold or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
+      lasm_state.name(), link_lasm().name());
+
+  assert property (p_lcrd_quiescent_in_stop)
+    else $error(
+      "vip_chi_sva: L-credits still outstanding with the link in STOP (tx req/rsp/dat=%0d/%0d/%0d rx req/rsp/dat=%0d/%0d/%0d)",
+      txreq_lcrd_count, txrsp_lcrd_count, txdat_lcrd_count,
+      rxreq_lcrd_count, rxrsp_lcrd_count, rxdat_lcrd_count);
 
   assert property (p_req_requires_link)
     else $error("vip_chi_sva: txreqflitv asserted before link activation");

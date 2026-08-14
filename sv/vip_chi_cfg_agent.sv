@@ -168,6 +168,15 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0 keeps the completer strictly first-come-first-served.
   bit snf_reorder_ordered_service = 1'b0;
 
+  // Negative-control knob for the link-activation state machine check: when set,
+  // the RN-I raises txlinkactivereq and withdraws it again before the completer
+  // acknowledges, stepping the LASM out of ACTIVATE without ever reaching RUN.
+  // A requester that has asked for the link must wait for the acknowledge, so
+  // this is a genuine illegal transition rather than an unusual-but-legal
+  // sequence. It fires once per activation; the link then comes up normally.
+  // Default 0 keeps bring-up a clean STOP -> ACTIVATE -> RUN.
+  bit lasm_abort_activation = 1'b0;
+
   vip_mem_config mem_cfg;
 
   bit link_act_delay_enabled = 1'b1;
@@ -533,15 +542,29 @@ class vip_chi_cfg_agent extends uvm_object;
     if (this.hnf_suppress_snoops || this.hnf_corrupt_dirty_merge ||
         this.hnf_force_excl_success || this.hnf_corrupt_fwd_data ||
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
-        this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service) begin
+        this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
+        this.lasm_abort_activation) begin
       if (!silent) begin
         `uvm_warning("VIP_CHI_CFG", $sformatf(
-          "a negative-control knob is set (suppress_snoops=%0b corrupt_dirty_merge=%0b force_excl_success=%0b corrupt_fwd_data=%0b downstream_corrupt_data=%0b downstream_force_decerr=%0b snf_duplicate_dat_beat=%0b snf_reorder_ordered_service=%0b): this deliberately breaks the invariant a checker guards",
+          "a negative-control knob is set (suppress_snoops=%0b corrupt_dirty_merge=%0b force_excl_success=%0b corrupt_fwd_data=%0b downstream_corrupt_data=%0b downstream_force_decerr=%0b snf_duplicate_dat_beat=%0b snf_reorder_ordered_service=%0b lasm_abort_activation=%0b): this deliberately breaks the invariant a checker guards",
           this.hnf_suppress_snoops, this.hnf_corrupt_dirty_merge,
           this.hnf_force_excl_success, this.hnf_corrupt_fwd_data,
           this.hnf_downstream_corrupt_data, this.hnf_downstream_force_decerr,
-          this.snf_duplicate_dat_beat, this.snf_reorder_ordered_service))
+          this.snf_duplicate_dat_beat, this.snf_reorder_ordered_service,
+          this.lasm_abort_activation))
       end
+    end
+
+    // The abort is driven by activate_link, which only the requester roles run;
+    // on a completer the knob would set a flag nothing reads and the negative
+    // control would silently pass with the check never having fired.
+    if (this.lasm_abort_activation &&
+        (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_RNF_E)) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG",
+          "lasm_abort_activation is set on a role that does not originate link activation: only a requester raises txlinkactivereq, so there is no activation to abort")
+      end
+      is_valid = 1'b0;
     end
 
     // The reorder knob only has anything to reorder when the SN-F buffers

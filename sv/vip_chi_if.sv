@@ -58,6 +58,19 @@ interface vip_chi_if #(
   logic txsactive;
   logic rxsactive;
 
+  // Illegal link-activation transitions counted by the vip_chi_sva bind on this
+  // interface, if one is bound; 0 otherwise.
+  //
+  // It lives HERE rather than in the checker because a SystemVerilog package may
+  // not contain a hierarchical reference, and the testcases are compiled into
+  // one. A test can already reach this interface through its agent's virtual
+  // handle, so publishing the count on the interface is what makes it readable
+  // at all -- a value that changes every cycle cannot be handed over through the
+  // config DB, which carries a snapshot.
+  //
+  // Exactly one vip_chi_sva binds to any interface, so this has a single driver.
+  int unsigned lasm_illegal_count;
+
   // ---------------------------------------------------------------------------
   // Request channel.
   // ---------------------------------------------------------------------------

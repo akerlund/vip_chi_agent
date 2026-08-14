@@ -255,6 +255,49 @@ package vip_chi_types_pkg;
     VIP_CHI_ORDER_ENDPOINT_E     = 2'b11
   } vip_chi_req_order_t;
 
+  // Link Activation State Machine, one instance per link DIRECTION. The state is
+  // the {LINKACTIVEREQ, LINKACTIVEACK} pair of that direction, so it is derived
+  // from the wires rather than from which node happens to originate activation
+  // -- which is what makes it usable on a VIP that activates asymmetrically.
+  //
+  // The encoding is the pair itself ({req, ack}), so vip_chi_lasm() is a cast
+  // rather than a lookup and the enum prints as the signals a waveform shows.
+  // Note that the legal cycle STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP is
+  // therefore NOT numerically ordered: DEACTIVATE (req low, ack still high) is
+  // 2'b01 and ACTIVATE (req high, ack not yet) is 2'b10.
+  typedef enum logic [1 : 0] {
+    VIP_CHI_LASM_STOP_E       = 2'b00,
+    VIP_CHI_LASM_DEACTIVATE_E = 2'b01,
+    VIP_CHI_LASM_ACTIVATE_E   = 2'b10,
+    VIP_CHI_LASM_RUN_E        = 2'b11
+  } vip_chi_lasm_state_t;
+
+  // Map one direction's request/acknowledge pair onto its LASM state.
+  function automatic vip_chi_lasm_state_t vip_chi_lasm(input bit req, input bit ack);
+    return vip_chi_lasm_state_t'({req, ack});
+  endfunction
+
+  // TRUE when `nxt` may legally follow `cur`. The LASM advances around a single
+  // cycle and may hold in any state; every other pair is a protocol violation.
+  // Written as an explicit case rather than arithmetic on the encoding because
+  // the encoding is the signal pair, not the cycle position.
+  function automatic bit vip_chi_lasm_legal_step(
+    input vip_chi_lasm_state_t cur,
+    input vip_chi_lasm_state_t nxt
+  );
+    if (cur == nxt) begin
+      return 1'b1;
+    end
+
+    case (cur)
+      VIP_CHI_LASM_STOP_E:       return (nxt == VIP_CHI_LASM_ACTIVATE_E);
+      VIP_CHI_LASM_ACTIVATE_E:   return (nxt == VIP_CHI_LASM_RUN_E);
+      VIP_CHI_LASM_RUN_E:        return (nxt == VIP_CHI_LASM_DEACTIVATE_E);
+      VIP_CHI_LASM_DEACTIVATE_E: return (nxt == VIP_CHI_LASM_STOP_E);
+      default:                   return 1'b0;
+    endcase
+  endfunction
+
   typedef enum logic [2 : 0] {
     VIP_CHI_RESP_STATE_I_E           = 3'b000,
     VIP_CHI_RESP_STATE_SC_E          = 3'b001,

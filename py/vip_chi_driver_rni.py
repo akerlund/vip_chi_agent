@@ -123,6 +123,13 @@ class vip_chi_driver_rni(uvm_driver):
     self.dat_lcrdv_pending = 0
     self.seen_rx_dat_flit = False
 
+    # One-shot latch for cfg.lasm_abort_activation (see activate_link): the
+    # negative control aborts a single bring-up, so the LASM check has exactly
+    # one illegal transition to report. Cleared in handle_reset, so a test that
+    # resets mid-run gets the control again on the next activation rather than
+    # silently losing it.
+    self.lasm_abort_done = False
+
     # Forked-coroutine registry so handle_reset() can tear down the credit loop
     # (cocotb does not cascade-kill start_soon children when the agent kills the
     # top-level driver_start()).
@@ -217,6 +224,7 @@ class vip_chi_driver_rni(uvm_driver):
     self._tx_flit_locked = False
     self.tx_active_count = 0
     self._tx_active_extend = 0
+    self.lasm_abort_done = False
     self.reset_credit_state()
     self.reset_outputs()
 
@@ -421,6 +429,33 @@ class vip_chi_driver_rni(uvm_driver):
     bus = self.bus
     await bus.rising()
     self.drive_idle_sideband()
+
+    # Negative control (cfg.lasm_abort_activation): raise the activation request
+    # and withdraw it again before the completer has acknowledged it, which steps
+    # the LASM out of ACTIVATE without ever reaching RUN. A requester is not
+    # entitled to do that -- once it has asked for the link it must wait for the
+    # acknowledge -- so it is a genuine illegal transition rather than an
+    # unusual-but-legal sequence, which is what makes it a usable control.
+    #
+    # It fires ONCE, before the real activation below, so the check has exactly
+    # one aborted bring-up to report and the count a negative control asserts on
+    # is unambiguous. The link then activates normally, so the rest of the test
+    # is ordinary traffic.
+    if self.cfg.lasm_abort_activation and not self.lasm_abort_done:
+      self.lasm_abort_done = True
+      bus.drive(txlinkactivereq=1)
+      await bus.rising()
+      self.drive_idle_sideband()
+      bus.drive(txlinkactivereq=0)
+      await bus.rising()
+      self.drive_idle_sideband()
+      # Let the completer's mirrored acknowledge retire before asking again, so
+      # the aborted attempt and the real one are two separate bring-ups rather
+      # than one ambiguous glitch.
+      for _ in range(4):
+        await bus.rising()
+        self.drive_idle_sideband()
+
     bus.drive(txlinkactivereq=1)
     while True:
       await bus.rising()

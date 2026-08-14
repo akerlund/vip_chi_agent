@@ -124,6 +124,14 @@ class VipChiCfgAgent:
     # inversion, which is the point -- it isolates the ordering check.
     self.snf_reorder_ordered_service = False
 
+    # Negative control for the link-activation state machine check: the RN-I
+    # raises txlinkactivereq and withdraws it again before the completer
+    # acknowledges, stepping the LASM out of ACTIVATE without ever reaching RUN.
+    # A requester that has asked for the link must wait for the acknowledge, so
+    # this is a genuine illegal transition rather than an unusual-but-legal
+    # sequence. It fires once per activation; the link then comes up normally.
+    self.lasm_abort_activation = False
+
     self.mem_cfg = None       # constructed by the SN-F driver (A2)
 
     self.link_act_delay_enabled = True
@@ -229,6 +237,14 @@ class VipChiCfgAgent:
           "serial SN-F loop never holds two requests at once, so nothing is "
           "reordered")
 
+    # The abort is driven by activate_link, which only the requester roles run;
+    # on a completer the knob would set a flag nothing reads and the negative
+    # control would silently pass with the check never having fired.
+    if self.lasm_abort_activation and self.role not in (Role.RNI, Role.RNF):
+      err("lasm_abort_activation is set on a role that does not originate link "
+          "activation: only a requester raises txlinkactivereq, so there is no "
+          "activation to abort")
+
     # -- Link credits ---------------------------------------------------------
     # The initial grant is advertised on the wire and then accumulates against
     # the local cap; a grant larger than its own cap can never be fully banked.
@@ -291,6 +307,7 @@ class VipChiCfgAgent:
       "hnf_downstream_force_decerr": self.hnf_downstream_force_decerr,
       "snf_duplicate_dat_beat": self.snf_duplicate_dat_beat,
       "snf_reorder_ordered_service": self.snf_reorder_ordered_service,
+      "lasm_abort_activation": self.lasm_abort_activation,
     }
     on = [k for k, v in negctl.items() if v]
     if on:

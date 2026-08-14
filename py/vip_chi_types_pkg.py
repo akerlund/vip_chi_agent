@@ -128,6 +128,46 @@ class ReqOrder(IntEnum):
   ENDPOINT = 3
 
 
+class LasmState(IntEnum):
+  """Link Activation State Machine, one instance per link DIRECTION.
+
+  The state is the {LINKACTIVEREQ, LINKACTIVEACK} pair of that direction, so it
+  is derived from the wires rather than from which node happens to originate
+  activation -- which is what makes it usable on a VIP that activates
+  asymmetrically.
+
+  The encoding is the pair itself ({req, ack}), so lasm() is a cast rather than
+  a lookup and the state prints as the signals a waveform shows. Note that the
+  legal cycle STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP is therefore NOT
+  numerically ordered: DEACTIVATE (req low, ack still high) is 0b01 and ACTIVATE
+  (req high, ack not yet) is 0b10.
+  """
+  STOP = 0b00
+  DEACTIVATE = 0b01
+  ACTIVATE = 0b10
+  RUN = 0b11
+
+
+def lasm(req, ack) -> LasmState:
+  """Map one direction's request/acknowledge pair onto its LASM state."""
+  return LasmState(((1 if req else 0) << 1) | (1 if ack else 0))
+
+
+# The single legal successor of each state. The LASM advances around one cycle
+# and may additionally hold in any state; every other pair is a violation.
+_LASM_NEXT_C = {
+  LasmState.STOP: LasmState.ACTIVATE,
+  LasmState.ACTIVATE: LasmState.RUN,
+  LasmState.RUN: LasmState.DEACTIVATE,
+  LasmState.DEACTIVATE: LasmState.STOP,
+}
+
+
+def lasm_legal_step(cur: LasmState, nxt: LasmState) -> bool:
+  """True when `nxt` may legally follow `cur`."""
+  return nxt == cur or _LASM_NEXT_C.get(cur) == nxt
+
+
 class Resp(IntEnum):
   """Cache-state Resp field (RSP/DAT). Reserved encodings kept for fidelity."""
   I = 0b000

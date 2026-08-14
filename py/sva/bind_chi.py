@@ -64,12 +64,15 @@ from cocotb.triggers import RisingEdge
 
 from vip_chi_types_pkg import (
   DatOpcode,
+  LasmState,
   ReqOpcode,
   ReqOrder,
   Role,
   RspOpcode,
   chi_xfer_dat_beats,
   flit_layout,
+  lasm,
+  lasm_legal_step,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
   req_opcode_is_atomic_returning_data,
@@ -86,6 +89,15 @@ _DAT_SEND_CAP_C = 64
 # SV LINK_ACT_WINDOW_P default. Must comfortably exceed
 # cfg_agent.link_act_delay_max plus the req->ack handshake.
 _LINK_ACT_WINDOW_C = 32
+
+# The four legal LASM edges, in cycle order, mirroring the transition bins of
+# cg_lasm in the SV checker.
+_LASM_LEGAL_EDGES_C = (
+  (LasmState.STOP, LasmState.ACTIVATE),
+  (LasmState.ACTIVATE, LasmState.RUN),
+  (LasmState.RUN, LasmState.DEACTIVATE),
+  (LasmState.DEACTIVATE, LasmState.STOP),
+)
 
 # Channels carrying a flit/credit pair in this checker. SNP lives in
 # bind_chi_snp.py, matching the SV split across two bind modules.
@@ -263,6 +275,9 @@ class bind_chi:
     # only how many times something did.
     self.fail_count: dict[str, int] = {}
     self.pass_count: dict[str, int] = {}
+    # Rules a negative-control test has declared it deliberately breaks. See
+    # expect_failure(); empty for every ordinary run.
+    self.expected_failures: set[str] = set()
     # None means "gate on this interface's own link activity", mirroring the
     # inline checks_enable expression on each SV bind: an interface whose agent
     # never activates its link raises no spurious violations. A bool forces the
@@ -298,6 +313,15 @@ class bind_chi:
     self._data_id_mask = (1 << bus.cfg.data_id_width) - 1
     self._data_bytes = bus.cfg.data_bytes
 
+    # LASM coverage accumulates over the whole run and is deliberately NOT
+    # cleared by _reset_state: a link that was torn down and brought back up
+    # covered those edges, and forgetting them at the reset would understate
+    # what the run exercised.
+    self._lasm_state_seen = {st: 0 for st in LasmState}
+    self._lasm_edge_seen = {
+      (st, nxt): 0 for st, nxt in _LASM_LEGAL_EDGES_C
+    }
+
     self._reset_state()
 
   # ---------------------------------------------------------------------------
@@ -319,8 +343,26 @@ class bind_chi:
 
   def _err(self, rule: str, msg: str, where: str) -> None:
     self.fail_count[rule] = self.fail_count.get(rule, 0) + 1
+    if rule in self.expected_failures:
+      # Demoted, not hidden: this is the pyUVM analog of the SV report catcher
+      # that a negative-control test installs. The failure still lands in
+      # fail_count, so the summary shows the rule fired and the test can assert
+      # on how many times -- what it does not do is count toward the errors the
+      # env fails the test on. Only a rule a test has explicitly named gets this,
+      # so an unexpected failure of any other rule still fails the run.
+      self.log.info(f"EXPECTED {rule}: {msg}. IHI 0050 {where}.")
+      return
     self.errors += 1
     self.log.error(f"{rule}: {msg}. IHI 0050 {where}.")
+
+  def expect_failure(self, rule: str) -> None:
+    """Declare that this run deliberately provokes `rule`, so it must not fail.
+
+    A negative control has to be able to say WHICH rule it is breaking. Waiving
+    the whole checker instead would let a second, unintended violation ride along
+    unnoticed inside the test whose entire purpose is to prove one rule fires.
+    """
+    self.expected_failures.add(rule)
 
   def rule_names(self):
     return sorted(set(self.pass_count) | set(self.fail_count))
@@ -339,12 +381,26 @@ class bind_chi:
       log.info(f"  {rule:<38s} pass={self.pass_count.get(rule, 0):>7d}  "
                f"fail={fails:>5d}  {tag}")
 
+    # One line, so a regression-wide sweep for an edge this run never walked is
+    # a grep rather than a parse. Kept short for the same reason the check
+    # tallies are: the report server wraps long lines, and a wrapped field name
+    # is a field nobody can sweep for.
+    states = " ".join(f"{st.name}={self._lasm_state_seen[st]}" for st in LasmState)
+    edges = " ".join(f"{a.name}->{b.name}={self._lasm_edge_seen[(a, b)]}"
+                     for a, b in _LASM_LEGAL_EDGES_C)
+    log.info(f"VIP_CHI LASM COVERAGE: {states}")
+    log.info(f"VIP_CHI LASM EDGES: {edges}")
+
   # ---------------------------------------------------------------------------
   # State
   # ---------------------------------------------------------------------------
   def _reset_state(self) -> None:
     self._reset_tracking_state()
     self._act_countdown = None
+    # The LASM restarts from STOP out of reset, which the reset-idle rule
+    # already requires the sideband to be holding.
+    self._lasm = LasmState.STOP
+    self._lasm_dwell = 0
 
   def _reset_tracking_state(self) -> None:
     """Everything the SV always_ff clears on `!checks_enable || !rst_n`.
@@ -414,24 +470,44 @@ class bind_chi:
   # ---------------------------------------------------------------------------
   # Link state predicates, mirroring the SV functions of the same names.
   # ---------------------------------------------------------------------------
-  @staticmethod
-  def _link_is_active(s: dict) -> bool:
-    return bool(s["txlinkactivereq"] or s["txlinkactiveack"]
-                or s["rxlinkactivereq"] or s["rxlinkactiveack"])
+  @classmethod
+  def _link_is_active(cls, s: dict) -> bool:
+    """Anywhere but STOP -- i.e. ACTIVATE, RUN or DEACTIVATE.
 
-  @staticmethod
-  def _link_is_running(s: dict) -> bool:
-    """TX link is RUN -- the only state in which flits may be sent.
-
-    Link activation is modelled asymmetrically: a requester raises
-    txlinkactivereq and waits for the peer's rxlinkactiveack, while a completer
-    never raises txlinkactivereq and only mirrors the peer's request onto
-    txlinkactiveack. RUN therefore cannot be pinned to this node's own req/ack
-    pair; "some request AND some acknowledge" holds for both roles. This is
-    strictly tighter than _link_is_active, which only excludes full STOP.
+    Kept as a sample-level predicate rather than read off the tracked state
+    because two callers need the answer for a sample other than the current one.
     """
-    return bool((s["txlinkactivereq"] or s["rxlinkactivereq"])
-                and (s["txlinkactiveack"] or s["rxlinkactiveack"]))
+    return cls._lasm_of(s) is not LasmState.STOP
+
+  @staticmethod
+  def _lasm_of(s: dict) -> LasmState:
+    """The LASM state of this link, as seen from this endpoint.
+
+    ONE state machine per link, not one per direction. The link adapter mirrors
+    both sideband signals to both endpoints -- the requester-polarity endpoint
+    drives LINKACTIVEREQ and the completer-polarity one drives LINKACTIVEACK,
+    and each is copied to the other side -- so a link carries a single
+    activation handshake that both endpoints observe, not two independently
+    activated directions. Modelling it as two would leave one of them wired to a
+    request nobody ever raises, permanently in STOP, and every flit the peer
+    sent across it would look like a violation.
+
+    Which of the two request signals is live depends on this endpoint's
+    polarity, and polarity is not a function of role alone (an HN-I port takes
+    either, depending on which side it faces). The OR is exact rather than a
+    heuristic: at any endpoint the signal of each pair that is not the live one
+    is identically zero, so `req_either` is the link's request and `ack_either`
+    its acknowledge, whichever end this bind sits on.
+
+    This is the same expression the retired link_is_running() and
+    link_is_active() predicates were built from, so both map onto the new state
+    exactly -- running == (state is RUN), active == (state is not STOP) -- and
+    replacing them changes no verdict. What the state adds is the distinction
+    those predicates could not draw: ACTIVATE from DEACTIVATE, and therefore
+    which transitions are legal.
+    """
+    return lasm(s["txlinkactivereq"] or s["rxlinkactivereq"],
+                s["txlinkactiveack"] or s["rxlinkactiveack"])
 
   # ---------------------------------------------------------------------------
   def _sample(self) -> dict:
@@ -505,6 +581,17 @@ class bind_chi:
       if self._link_ever_active:
         self._check_restart_window(cur)
 
+      # Advanced and judged OUTSIDE the enable gate, deliberately. The gate is
+      # this interface's own link activity, so gating the state machine on it
+      # would blind exactly the half of the cycle where the link comes down: in
+      # DEACTIVATE and STOP the gate is low, and RUN -> DEACTIVATE -> STOP could
+      # never be judged. It also has to advance across the gap regardless, or
+      # the state would be stale the moment the link came back and the first
+      # transition after every deactivation would be measured from the wrong
+      # place. An interface whose agent is never built holds both directions in
+      # STOP and only ever sees the legal hold, so it still reports nothing.
+      self._check_lasm(cur)
+
       if enabled:
         self._check_link_gating(cur)
         self._check_pend_requires_valid(cur)
@@ -539,21 +626,88 @@ class bind_chi:
       )
 
   # ---------------------------------------------------------------------------
+  # Link Activation State Machine, one per direction.
+  # ---------------------------------------------------------------------------
+  def _check_lasm(self, s: dict) -> None:
+    """Advance the LASM and judge the step against the legal transition set.
+
+    The state is registered rather than recomputed from a pair of samples so it
+    survives the enable gate and so the dwell counter has somewhere to live.
+    """
+    cur = self._lasm
+    nxt = self._lasm_of(s)
+
+    self._chk(
+      "CHI_LASM_LEGAL_TRANSITION",
+      lasm_legal_step(cur, nxt),
+      f"link stepped {cur.name} -> {nxt.name}; the LASM may only hold or "
+      f"advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
+      "section 13.4",
+    )
+
+    # LASM coverage, kept here rather than in vip_chi_coverage for the same
+    # structural reason the SV covergroup sits in vip_chi_sva: that component
+    # subscribes to analysis ports and has no bus handle, and link state is a
+    # wire property. Only the four LEGAL edges are binned -- an illegal step is
+    # the check's business, and giving it a bin would let a regression "cover" a
+    # violation.
+    self._lasm_state_seen[nxt] += 1
+    if nxt is not cur and lasm_legal_step(cur, nxt):
+      self._lasm_edge_seen[(cur, nxt)] += 1
+
+    self._lasm_dwell = 0 if nxt is not cur else self._lasm_dwell + 1
+    self._lasm = nxt
+
+    self._check_lcrd_quiescent_in_stop(nxt)
+
+  def _check_lcrd_quiescent_in_stop(self, state: LasmState) -> None:
+    """No L-credit may still be outstanding while the link is in STOP.
+
+    A sender must have returned every credit it holds before the link goes down;
+    one left behind means the shadow and the link disagree about what the peer
+    is entitled to send, and that disagreement is what the NEXT activation would
+    start from -- a pool seeded with a stale credit lets the first flit after
+    bring-up go out unauthorised, which the underflow check could then never
+    catch because the count never reaches zero.
+
+    Read before _check_lcrd runs this cycle, so the counts judged are the ones
+    carried INTO STOP rather than any same-cycle return.
+    """
+    if state is not LasmState.STOP:
+      return
+    for pool, held in self._lcrd.items():
+      self._chk(
+        "CHI_LCRD_QUIESCENT_IN_STOP", held == 0,
+        f"{pool} still holds {held} L-credit(s) with the link in STOP",
+        "section 13.6",
+      )
+
+  # ---------------------------------------------------------------------------
   # No flit and no credit before the link is RUN.
   # ---------------------------------------------------------------------------
   def _check_link_gating(self, s: dict) -> None:
-    running = self._link_is_running(s)
+    """Flits need RUN; credits need only that the link has left STOP.
+
+    Both are judged against the tracked LASM rather than against a pair of
+    hand-written predicates. The verdicts are unchanged -- the retired
+    predicates were the same expressions -- but the Python port previously gated
+    credits on RUN where the SV port gated them on ACTIVE, and the state makes
+    which one is right unambiguous: credits legitimately flow from ACTIVATE
+    onward, because that is how the initial pool reaches the peer before the
+    link is RUN at all. The SV behaviour was the correct one.
+    """
+    state = self._lasm
     for ch in _CHANNELS_C:
       if s[f"tx{ch}flitv"]:
         self._chk(
-          f"CHI_{ch.upper()}_FLITV_REQUIRES_LINK", running,
-          f"tx{ch}flitv asserted before link activation",
+          f"CHI_{ch.upper()}_FLITV_REQUIRES_LINK", state is LasmState.RUN,
+          f"tx{ch}flitv asserted with the link in {state.name}, not RUN",
           "section 13.7",
         )
       if s[f"tx{ch}lcrdv"]:
         self._chk(
-          f"CHI_{ch.upper()}_LCRDV_REQUIRES_LINK", running,
-          f"tx{ch}lcrdv asserted before link activation",
+          f"CHI_{ch.upper()}_LCRDV_REQUIRES_LINK", state is not LasmState.STOP,
+          f"tx{ch}lcrdv asserted with the link in STOP",
           "section 13.7",
         )
 

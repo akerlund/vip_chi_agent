@@ -115,6 +115,13 @@ class vip_chi_driver_rni #(
   // effect afterwards so the initial credit advertisement still bootstraps.
   protected bit seen_rx_dat_flit;
 
+  // One-shot latch for cfg.lasm_abort_activation (see activate_link): the
+  // negative control aborts a single bring-up, so the LASM check has exactly one
+  // illegal transition to report. Cleared in handle_reset, so a test that resets
+  // mid-run gets the control again on the next activation rather than silently
+  // losing it.
+  protected bit lasm_abort_done;
+
   // Single mutex arbitrating the txreq/txrsp/txdat flit groups. In RN-I there
   // is exactly one flit-driving
   // thread (seq_loop / mixed_tx_proc), so this key is always immediately
@@ -375,6 +382,7 @@ class vip_chi_driver_rni #(
     this.pcrd_pool.delete();
     this.tx_active_count = 0;
     this.tx_active_extend = 0;
+    this.lasm_abort_done = 1'b0;
     this.reset_credit_state();
     this.reset_outputs();
     // The agent tears down driver_start() with disable-fork on reset, which may
@@ -740,6 +748,35 @@ class vip_chi_driver_rni #(
 
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
+
+    // Negative control (cfg.lasm_abort_activation): raise the activation request
+    // and withdraw it again before the completer has acknowledged it, which
+    // steps the LASM out of ACTIVATE without ever reaching RUN. A requester is
+    // not entitled to do that -- once it has asked for the link it must wait for
+    // the acknowledge -- so it is a genuine illegal transition rather than an
+    // unusual-but-legal sequence, which is what makes it a usable control.
+    //
+    // It fires ONCE, before the real activation below, so the check has exactly
+    // one aborted bring-up to report and the count a negative control asserts on
+    // is unambiguous. The link then activates normally, so the rest of the test
+    // is ordinary traffic.
+    if (this.cfg.lasm_abort_activation && !this.lasm_abort_done) begin
+      this.lasm_abort_done = 1'b1;
+      this.vif_rni.g_drv.rni_cb.txlinkactivereq <= 1'b1;
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
+      this.vif_rni.g_drv.rni_cb.txlinkactivereq <= 1'b0;
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
+      // Let the completer's mirrored acknowledge retire before asking again, so
+      // the aborted attempt and the real one are two separate bring-ups rather
+      // than one ambiguous glitch.
+      repeat (4) begin
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+      end
+    end
+
     this.vif_rni.g_drv.rni_cb.txlinkactivereq <= 1'b1;
 
     do begin

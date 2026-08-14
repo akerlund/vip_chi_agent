@@ -56,18 +56,18 @@ module vip_chi_snp_sva #(
 
   localparam int unsigned SNP_SEND_CAP_C = 64;
 
-  // Any link-activate sideband asserted (ACTIVATING/RUN/DEACTIVATING). Credit
-  // returns are legal from ACTIVATE onward.
-  function automatic bit link_is_active();
-    return (vif.txlinkactivereq || vif.txlinkactiveack ||
-            vif.rxlinkactivereq || vif.rxlinkactiveack);
+  // This link's LASM as seen from this endpoint, matching vip_chi_sva -- one
+  // state machine per link, formed from the live request/acknowledge pair
+  // whichever polarity this bind sits on. See the long comment there.
+  function automatic vip_chi_lasm_state_t link_lasm();
+    return vip_chi_lasm((vif.txlinkactivereq || vif.rxlinkactivereq),
+                        (vif.txlinkactiveack || vif.rxlinkactiveack));
   endfunction
 
-  // Link is RUN (some request AND some ack on either side) -- the only state in
-  // which flits may be sent. Role-agnostic, matching vip_chi_sva.
-  function automatic bit link_is_running();
-    return ((vif.txlinkactivereq || vif.rxlinkactivereq) &&
-            (vif.txlinkactiveack || vif.rxlinkactiveack));
+  // Anywhere but STOP (ACTIVATE/RUN/DEACTIVATE). Credit returns are legal from
+  // ACTIVATE onward.
+  function automatic bit link_is_active();
+    return (link_lasm() != VIP_CHI_LASM_STOP_E);
   endfunction
 
   // Single-NBA credit update: grant (+1, overflow flagged) then consume (-1,
@@ -122,7 +122,7 @@ module vip_chi_snp_sva #(
   // returns; on an RN-F interface these are idle so the checks are vacuous).
   property p_snp_flit_requires_link;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txsnpflitv |-> link_is_running();
+      vif.txsnpflitv |-> (link_lasm() == VIP_CHI_LASM_RUN_E);
   endproperty
 
   property p_snp_lcrdv_requires_link;

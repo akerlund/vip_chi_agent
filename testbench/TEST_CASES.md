@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **136 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **137 pyUVM/cocotb**
+The shared regression currently runs **138 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **139 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -107,6 +107,8 @@ exception of `tc_chi_sva_smoke` described at the top of this file.
 | `tc_chi_latency_bound` | INT | per-transaction latency bounds, both halves. A generous bound (10000 cycles) must stay silent on ordinary traffic; a bound of 1 cycle must flag the same read exactly once, with the monitor's counter and the report agreeing. The bound is tightened rather than the completer slowed, so the test does not assert on a margin that depends on how delays happened to land. |
 | `tc_chi_ordered_stream` | INT | ordered-stream acknowledgement order, positive case. Six pipelined ordered writes then six pipelined ordered reads, both deep enough that the completer holds several at once. The scoreboard must have compared every acknowledgement (12) and found none out of place; the in-order tally is asserted too, so a run where the check never compared anything cannot pass as clean. |
 | `tc_chi_ordered_stream_negctl` | INT | negative control for the same check. `snf_reorder_ordered_service` has the buffered SN-F serve one pair of queued ordered requests back to front; every read still completes correctly, so no other checker can see the fault. The inversion must be flagged exactly once (not cascaded) and the rest of the stream still compared in order. |
+| `tc_chi_ordered_write_no_comp_ack` | INT | ordered writes WITHOUT `ExpCompAck`, a combination no other test covered. `Order` and `ExpCompAck` are independent -- the first asks the completer to acknowledge in receipt order, the second asks for a separate requester-driven acknowledgement -- but every other ordered-write test set both, so the pipeline only ever retired ordered writes on the CompAck path. Six pipelined ordered writes must each hand back a combined `CompDBIDResp` and be acknowledged in order; the completion opcode is asserted, not just the response count, so a run that merely failed to deadlock does not pass as clean. |
+| `tc_chi_lasm_illegal_transition` | INT | negative control for the link-activation state machine. `lasm_abort_activation` has the requester raise `txlinkactivereq` and withdraw it before the completer acknowledges, so the link leaves `ACTIVATE` without reaching `RUN`. Both binds must count the aborted bring-up, the legal activation that follows must not be flagged, and a read must still complete over the recovered link. `tb_cfg.lasm_illegal_expected` suppresses the `$error` while leaving the count intact -- the assertion-control plumbing this file's header notes was missing, now present for this one rule. |
 | `tc_chi_d_split_write_rsp` | INT | `DBIDResp` plus deferred `Comp`, with optional trailing `CompAck` under `ExpCompAck`. |
 | `tc_chi_d_prefetch_tgt` | INT | `PrefetchTgt` treated as a no-completion hint. |
 | `tc_chi_d_atomic` | INT | atomic store/load/swap/compare smoke using the SN-F backing memory for operand capture, RMW, old-data return, and readback. |

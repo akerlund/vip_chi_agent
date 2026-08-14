@@ -28,6 +28,8 @@ import logging
 
 from cocotb.triggers import RisingEdge
 
+from vip_chi_types_pkg import LasmState, lasm
+
 # Mirrors SNP_SEND_CAP_C in the SV checker.
 _SNP_SEND_CAP_C = 64
 
@@ -75,14 +77,19 @@ class bind_chi_snp:
 
   # ---------------------------------------------------------------------------
   @staticmethod
-  def _link_is_active(s: dict) -> bool:
-    return bool(s["txlinkactivereq"] or s["txlinkactiveack"]
-                or s["rxlinkactivereq"] or s["rxlinkactiveack"])
+  def _lasm_of(s: dict) -> LasmState:
+    """This link's LASM as seen from this endpoint, matching bind_chi.
 
-  @staticmethod
-  def _link_is_running(s: dict) -> bool:
-    return bool((s["txlinkactivereq"] or s["rxlinkactivereq"])
-                and (s["txlinkactiveack"] or s["rxlinkactiveack"]))
+    One state machine per link, formed from the live request/acknowledge pair
+    whichever polarity this bind sits on. See the long docstring there.
+    """
+    return lasm(s["txlinkactivereq"] or s["rxlinkactivereq"],
+                s["txlinkactiveack"] or s["rxlinkactiveack"])
+
+  @classmethod
+  def _link_is_active(cls, s: dict) -> bool:
+    """Anywhere but STOP. Credit returns are legal from ACTIVATE onward."""
+    return cls._lasm_of(s) is not LasmState.STOP
 
   def _sample(self) -> dict:
     g = self.bus.get_or
@@ -125,7 +132,8 @@ class bind_chi_snp:
       if enabled:
         if cur["txsnpflitv"]:
           self._chk(
-            "CHI_SNP_FLITV_REQUIRES_LINK", self._link_is_running(cur),
+            "CHI_SNP_FLITV_REQUIRES_LINK",
+            self._lasm_of(cur) is LasmState.RUN,
             "txsnpflitv asserted before link RUN", "section 13.7",
           )
         if cur["txsnplcrdv"]:

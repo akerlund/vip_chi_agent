@@ -45,6 +45,8 @@ package chi_tc_pkg;
   `include "tc_chi_latency_bound.sv"
   `include "tc_chi_ordered_stream.sv"
   `include "tc_chi_ordered_stream_negctl.sv"
+  `include "tc_chi_ordered_write_no_comp_ack.sv"
+  `include "tc_chi_lasm_illegal_transition.sv"
   `include "tc_chi_e_dbid_resp_ord.sv"
   `include "tc_chi_e_persist.sv"
   `include "tc_chi_e_write_zero_readback.sv"

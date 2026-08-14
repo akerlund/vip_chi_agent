@@ -346,6 +346,7 @@ they are listed here rather than left to a grep.
 | `hnf_downstream_force_decerr` | HN-F treats a downstream SN-F fetch as a `DECERR` | the downstream error-propagation path |
 | `snf_duplicate_dat_beat` | SN-F sends the final beat of a read burst carrying `DataID` 0 again, so one beat position is delivered twice and one never at all | the monitor's duplicate-`DataID` and missing-beat checks |
 | `snf_reorder_ordered_service` | buffered SN-F serves one pair of queued ordered requests back to front, so its acknowledgements arrive out of request order while every transaction still completes correctly | the scoreboard's ordered-stream acknowledgement-order check (needs `multi_outstanding`) |
+| `lasm_abort_activation` | requester raises `txlinkactivereq` and withdraws it again before the completer acknowledges, so the link leaves `ACTIVATE` without ever reaching `RUN` | the link-activation state machine's legal-transition check (requester roles only) |
 
 ---
 
@@ -524,6 +525,18 @@ The `_e` monitor republishes the CHI-E-only fields on the same ports.
   SNP-channel assertions: link-before-traffic, L-credit accounting,
   DBID-before-DAT, `Comp`-before-`CompAck`, beat counts, in-flight TxnID
   uniqueness, and completion timeouts.
+- **Link activation state machine** — the SVA tracks a `{LINKACTIVEREQ,
+  LINKACTIVEACK}` state per link (`STOP` / `ACTIVATE` / `RUN` / `DEACTIVATE`)
+  and requires every step to hold or advance one place around
+  `STOP → ACTIVATE → RUN → DEACTIVATE → STOP`. One state machine per *link*,
+  not per direction: the link adapter mirrors both sideband signals to both
+  endpoints, so a link carries a single activation handshake that both ends
+  observe. Flits are gated on `RUN` and L-credits on "not `STOP`" — credits
+  legitimately flow from `ACTIVATE` onward, which is how the initial pool
+  reaches the peer before the link is `RUN` at all. The state also carries the
+  rule that no L-credit may still be outstanding once a link reaches `STOP`.
+  Provoked by `cfg.lasm_abort_activation`; state and legal-edge tallies are
+  reported per bind at end of test.
 - **Perf counters** ([vip_chi_perf_counters.sv](sv/vip_chi_perf_counters.sv)) —
   per-requester latency (min/avg/max, read/write), throughput, retry count, and
   per-channel back-pressure cycles, off a reset-gated cycle counter.
