@@ -347,6 +347,7 @@ they are listed here rather than left to a grep.
 | `snf_duplicate_dat_beat` | SN-F sends the final beat of a read burst carrying `DataID` 0 again, so one beat position is delivered twice and one never at all | the monitor's duplicate-`DataID` and missing-beat checks |
 | `snf_reorder_ordered_service` | buffered SN-F serves one pair of queued ordered requests back to front, so its acknowledgements arrive out of request order while every transaction still completes correctly | the scoreboard's ordered-stream acknowledgement-order check (needs `multi_outstanding`) |
 | `lasm_abort_activation` | requester raises `txlinkactivereq` and withdraws it again before the completer acknowledges, so the link leaves `ACTIVATE` without ever reaching `RUN` | the link-activation state machine's legal-transition check (requester roles only) |
+| `flitpend_without_valid` | requester pulses `txreqflitpend` and `txrspflitpend` for one cycle with no flit behind them | the REQ and RSP FLITPEND rules (requester roles only) |
 | `lasm_stall_activation_cycles` | completer withholds `txlinkactiveack` for N cycles, leaving the link in `ACTIVATE` with nothing in flight to time out | the link **activation** timeout (completer roles only) |
 | `lasm_stall_deactivation_cycles` | completer withholds the *drop* of `txlinkactiveack` for N cycles after the drain has finished, leaving the link in `DEACTIVATE` | the link **deactivation** timeout (completer roles only) |
 

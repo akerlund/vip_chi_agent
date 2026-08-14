@@ -123,6 +123,10 @@ class vip_chi_driver_rni #(
   // losing it.
   protected bit lasm_abort_done;
 
+  // One-shot latch for cfg.flitpend_without_valid, same reasoning as the abort
+  // above: the control fires once so the count a test asserts on is unambiguous.
+  protected bit flitpend_negctl_done;
+
   // Graceful-deactivation state (see deactivate_watch).
   //
   // link_deactivating suppresses NEW receive-credit grants: a receiver may not
@@ -401,6 +405,7 @@ class vip_chi_driver_rni #(
     this.tx_active_count = 0;
     this.tx_active_extend = 0;
     this.lasm_abort_done = 1'b0;
+    this.flitpend_negctl_done = 1'b0;
     // A reset takes the link down by force, which is not the graceful path: the
     // published "done" would otherwise survive as a claim about a drain that
     // never happened.
@@ -837,6 +842,36 @@ class vip_chi_driver_rni #(
     end while (this.vif_rni.rst_n && !this.vif_rni.g_drv.rni_cb.rxlinkactiveack);
 
     this.schedule_initial_credit_grants();
+    this.drive_flitpend_negctl();
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Negative control (cfg.flitpend_without_valid): raise FLITPEND on REQ and RSP
+  // for one cycle with no flit behind it.
+  //
+  // Emitted here, once, with the link up and before any traffic, so the two
+  // rules have exactly one lone FLITPEND to report and nothing else on the wire
+  // can be confused for it. Both channels in the same cycle because the rules
+  // are per channel and one pulse should exercise each exactly once.
+  // ---------------------------------------------------------------------------
+  protected task drive_flitpend_negctl();
+
+    if (!this.cfg.flitpend_without_valid || this.flitpend_negctl_done) begin
+      return;
+    end
+    this.flitpend_negctl_done = 1'b1;
+
+    this.acquire_tx_flit();
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+    this.vif_rni.g_drv.rni_cb.txreqflitpend <= 1'b1;
+    this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b1;
+
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+    this.vif_rni.g_drv.rni_cb.txreqflitpend <= 1'b0;
+    this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b0;
+    this.release_tx_flit();
   endtask
 
   // ---------------------------------------------------------------------------

@@ -1367,28 +1367,61 @@ module vip_chi_sva #(
       vif.txdatflitv |-> !$isunknown(vif.txdatflit);
   endproperty
 
+  // The four reset-idle rules are gated on link_ever_active, NOT on
+  // checks_enable, and the sideband one below shows why in the sharpest form
+  // this codebase has produced:
+  //
+  //   checks_enable IS (txlinkactivereq || rxlinkactivereq).
+  //   p_link_sideband_idle_during_reset REQUIRES !txlinkactivereq in reset.
+  //
+  // So the rule's own requirement is what switched the rule off. A driver that
+  // satisfied it held the sideband idle, which made checks_enable low, which
+  // killed every attempt -- and the only design the gate would ever have let
+  // through is one that violated the rule by raising the request during reset,
+  // which is the one case the rule then had no chance to report. The three
+  // channel rules had the same gate for the same reason: nothing is driven
+  // during reset, so the link is never active while they apply.
+  //
+  // link_ever_active carries the intended meaning. It latches the first time
+  // this interface's link comes up and survives reset, so an interface whose
+  // agent is never built stays unarmed, while one that has carried traffic must
+  // hold its outputs idle through every later reset.
+  //
+  // The terms test `!== 1'b1` rather than `!signal`, and that is not defensive
+  // style -- it is what the rule means. Each role's clocking block deliberately
+  // carries only the signals that role DRIVES: an RN-I sources requests and so
+  // never drives txreqlcrdv, an SN-F grants REQ credits and so never drives the
+  // REQ flit signals. Those nets sit at X for the whole run, and `!x` is x, so
+  // the plain form reported every one of them the moment the gate above was
+  // fixed -- four reports per reset on a link doing nothing wrong. The rule's
+  // content is that nothing is ASSERTED during reset; a net this node does not
+  // drive at all is a different question, and not this rule's.
   property p_link_sideband_idle_during_reset;
-    @(posedge vif.clk) disable iff (!checks_enable)
+    @(posedge vif.clk) disable iff (!link_ever_active)
       (!vif.rst_n && $past(!vif.rst_n, 1, 1'b1)) |->
-        (!vif.txlinkactivereq && !vif.txlinkactiveack && !vif.txsactive);
+        ((vif.txlinkactivereq !== 1'b1) && (vif.txlinkactiveack !== 1'b1) &&
+         (vif.txsactive !== 1'b1));
   endproperty
 
   property p_req_idle_during_reset;
-    @(posedge vif.clk) disable iff (!checks_enable)
+    @(posedge vif.clk) disable iff (!link_ever_active)
       (!vif.rst_n && $past(!vif.rst_n, 1, 1'b1)) |->
-        (!vif.txreqflitv && !vif.txreqflitpend && !vif.txreqlcrdv);
+        ((vif.txreqflitv !== 1'b1) && (vif.txreqflitpend !== 1'b1) &&
+         (vif.txreqlcrdv !== 1'b1));
   endproperty
 
   property p_rsp_idle_during_reset;
-    @(posedge vif.clk) disable iff (!checks_enable)
+    @(posedge vif.clk) disable iff (!link_ever_active)
       (!vif.rst_n && $past(!vif.rst_n, 1, 1'b1)) |->
-        (!vif.txrspflitv && !vif.txrspflitpend && !vif.txrsplcrdv);
+        ((vif.txrspflitv !== 1'b1) && (vif.txrspflitpend !== 1'b1) &&
+         (vif.txrsplcrdv !== 1'b1));
   endproperty
 
   property p_dat_idle_during_reset;
-    @(posedge vif.clk) disable iff (!checks_enable)
+    @(posedge vif.clk) disable iff (!link_ever_active)
       (!vif.rst_n && $past(!vif.rst_n, 1, 1'b1)) |->
-        (!vif.txdatflitv && !vif.txdatflitpend && !vif.txdatlcrdv);
+        ((vif.txdatflitv !== 1'b1) && (vif.txdatflitpend !== 1'b1) &&
+         (vif.txdatlcrdv !== 1'b1));
   endproperty
 
   // NOT gated on checks_enable, unlike every other property here, and the

@@ -177,6 +177,22 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0 keeps bring-up a clean STOP -> ACTIVATE -> RUN.
   bit lasm_abort_activation = 1'b0;
 
+  // Negative-control knob for the FLITPEND rules: when set, the requester pulses
+  // txreqflitpend and txrspflitpend for one cycle with no flit behind them,
+  // once, after the link is up.
+  //
+  // What this polices is a VIP EMISSION CONVENTION, not a CHI mandate, and the
+  // distinction matters. CHI's FLITPEND is a one-cycle-ahead hint that a flit
+  // MIGHT follow, and a transmitter is permitted to assert it and then not send
+  // -- discouraged, but legal. This VIP instead emits FLITPEND alongside the
+  // flit it belongs to (the DAT driver raises it on every beat but the last, to
+  // mean "more beats coming"), so a lone FLITPEND here means a driver has lost
+  // track of its own burst. Same standing as the DataID-ordering rules, which
+  // hold this VIP's in-order emission convention rather than a CHI requirement.
+  //
+  // Default 0 keeps every flit's FLITPEND paired with its FLITV.
+  bit flitpend_without_valid = 1'b0;
+
   // ---------------------------------------------------------------------------
   // Graceful link deactivation.
   //
@@ -580,7 +596,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.hnf_force_excl_success || this.hnf_corrupt_fwd_data ||
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
-        this.lasm_abort_activation) begin
+        this.lasm_abort_activation || this.flitpend_without_valid) begin
       if (!silent) begin
         `uvm_warning("VIP_CHI_CFG", $sformatf(
           "a negative-control knob is set (suppress_snoops=%0b corrupt_dirty_merge=%0b force_excl_success=%0b corrupt_fwd_data=%0b downstream_corrupt_data=%0b downstream_force_decerr=%0b snf_duplicate_dat_beat=%0b snf_reorder_ordered_service=%0b lasm_abort_activation=%0b): this deliberately breaks the invariant a checker guards",
@@ -606,6 +622,15 @@ class vip_chi_cfg_agent extends uvm_object;
 
     // Same reasoning as the abort above, and the same failure if it is ignored:
     // deactivation is driven by whoever raised the request in the first place.
+    if (this.flitpend_without_valid &&
+        (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_RNF_E)) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG",
+          "flitpend_without_valid is set on a role whose driver does not run the pulse: it is emitted by the requester after link activation, so on any other role it would set a flag nothing reads")
+      end
+      is_valid = 1'b0;
+    end
+
     if (this.link_deactivate_request &&
         (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_RNF_E)) begin
       if (!silent) begin

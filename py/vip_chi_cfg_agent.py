@@ -132,6 +132,21 @@ class VipChiCfgAgent:
     # sequence. It fires once per activation; the link then comes up normally.
     self.lasm_abort_activation = False
 
+    # Negative control for the FLITPEND rules: the requester pulses
+    # txreqflitpend and txrspflitpend for one cycle with no flit behind them,
+    # once, after the link is up.
+    #
+    # What this polices is a VIP EMISSION CONVENTION, not a CHI mandate, and the
+    # distinction matters. CHI's FLITPEND is a one-cycle-ahead hint that a flit
+    # MIGHT follow, and a transmitter is permitted to assert it and then not
+    # send -- discouraged, but legal. This VIP instead emits FLITPEND alongside
+    # the flit it belongs to (the DAT driver raises it on every beat but the
+    # last, to mean "more beats coming"), so a lone FLITPEND here means a driver
+    # has lost track of its own burst. Same standing as the DataID-ordering
+    # rules, which hold this VIP's in-order emission convention rather than a
+    # CHI requirement.
+    self.flitpend_without_valid = False
+
     # -- Graceful link deactivation -------------------------------------------
     # Raised by a test, not by the driver: there is no such thing as an idle
     # moment a driver can detect for itself. Its sequence loop blocks on the
@@ -280,6 +295,11 @@ class VipChiCfgAgent:
           "activation: only a requester raises txlinkactivereq, so there is no "
           "activation to abort")
 
+    if self.flitpend_without_valid and self.role not in (Role.RNI, Role.RNF):
+      err("flitpend_without_valid is set on a role whose driver does not run "
+          "the pulse: it is emitted by the requester after link activation, so "
+          "on any other role it would set a flag nothing reads")
+
     # Same reasoning as the abort above, and the same failure if it is ignored:
     # deactivation is driven by whoever raised the request in the first place.
     if self.link_deactivate_request and self.role not in (Role.RNI, Role.RNF):
@@ -359,6 +379,7 @@ class VipChiCfgAgent:
       "snf_duplicate_dat_beat": self.snf_duplicate_dat_beat,
       "snf_reorder_ordered_service": self.snf_reorder_ordered_service,
       "lasm_abort_activation": self.lasm_abort_activation,
+      "flitpend_without_valid": self.flitpend_without_valid,
     }
     on = [k for k, v in negctl.items() if v]
     if on:

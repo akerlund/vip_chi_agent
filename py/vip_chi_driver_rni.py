@@ -130,6 +130,11 @@ class vip_chi_driver_rni(uvm_driver):
     # silently losing it.
     self.lasm_abort_done = False
 
+    # One-shot latch for cfg.flitpend_without_valid, same reasoning as the abort
+    # above: the control fires once so the count a test asserts on is
+    # unambiguous.
+    self.flitpend_negctl_done = False
+
     # Forked-coroutine registry so handle_reset() can tear down the credit loop
     # (cocotb does not cascade-kill start_soon children when the agent kills the
     # top-level driver_start()).
@@ -238,6 +243,7 @@ class vip_chi_driver_rni(uvm_driver):
     self.tx_active_count = 0
     self._tx_active_extend = 0
     self.lasm_abort_done = False
+    self.flitpend_negctl_done = False
     # A reset takes the link down by force, which is not the graceful path: the
     # published "done" would otherwise survive as a claim about a drain that
     # never happened.
@@ -502,6 +508,31 @@ class vip_chi_driver_rni(uvm_driver):
       if bus.in_reset() or bus.get("rxlinkactiveack"):
         break
     self.schedule_initial_credit_grants()
+    await self.drive_flitpend_negctl()
+
+  # --------------------------------------------------------------------------
+  async def drive_flitpend_negctl(self):
+    """Raise FLITPEND on REQ and RSP for one cycle with no flit behind it.
+
+    Emitted here, once, with the link up and before any traffic, so the two
+    rules have exactly one lone FLITPEND to report and nothing else on the wire
+    can be confused for it. Both channels in the same cycle because the rules are
+    per channel and one pulse should exercise each exactly once.
+    """
+    if not self.cfg.flitpend_without_valid or self.flitpend_negctl_done:
+      return
+    self.flitpend_negctl_done = True
+
+    bus = self.bus
+    await self.acquire_tx_flit()
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(txreqflitpend=1, txrspflitpend=1)
+
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(txreqflitpend=0, txrspflitpend=0)
+    self.release_tx_flit()
 
   # --------------------------------------------------------------------------
   async def deactivate_watch(self):

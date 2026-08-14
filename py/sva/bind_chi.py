@@ -736,7 +736,16 @@ class bind_chi:
       if rst == 0:
         # Held in reset. The SV form is (!rst_n && $past(!rst_n)), i.e. from the
         # second reset cycle onward, so the edge itself is not judged.
-        if enabled and prev_rst == 0:
+        #
+        # Gated on _link_ever_active, NOT on the enable gate, and the sideband
+        # rule inside shows why in the sharpest form this port has produced:
+        # the gate IS (txlinkactivereq or rxlinkactivereq), and the rule
+        # REQUIRES txlinkactivereq low in reset. The rule's own requirement was
+        # what switched the rule off -- a driver that satisfied it held the
+        # sideband idle, which made the gate low, which skipped the check. The
+        # only design the gate would ever have let through is one that violated
+        # the rule, which is the one case it then had no chance to report.
+        if self._link_ever_active and prev_rst == 0:
           self._check_reset_idle(cur)
         self._reset_state()
         prev, prev_rst = cur, rst
