@@ -10,10 +10,11 @@
 # pyUVM port of vip_chi_scoreboard.sv.
 #
 # Standalone, always-on protocol scoreboard for the DUT-less VIP-on-VIP example.
-# Three checkers share one requester-frame transaction table:
+# Four checkers share one requester-frame transaction table:
 #   A - lifecycle / completion contract (per requester transaction)
 #   B - cross-agent request fidelity (REQ observed at requester == at completer)
 #   C - independent, predictable-only data integrity (write -> read)
+#   E - ordered-stream acknowledgement order (per requester ordered stream)
 #
 # It subscribes in parallel to the same monitor analysis ports the observation
 # FIFOs use, so the per-test FIFO draining is untouched. Errors are reported via
@@ -71,6 +72,12 @@ class vip_chi_sb_ctx:
     self.ordered = False
     self.exp_comp_ack = False
     self.allow_retry = False
+    # Checker E position. order_val is the REQ Order field verbatim; ord_key names
+    # the stream FIFO this transaction was enrolled in, so it can be withdrawn
+    # again without searching every stream.
+    self.order_val = 0
+    self.ord_key = ""
+    self.ord_enrolled = False
     self.sep_read = False
     self.return_nid = 0
     self.return_txn_id = 0
@@ -140,8 +147,9 @@ class vip_chi_scoreboard(uvm_component):
     self.mask_dw = 0
 
     # Gating knobs (set by env from tb_cfg in connect_phase).
-    self.enable = True             # master on/off (A + B + C)
+    self.enable = True             # master on/off (A + B + C + E)
     self.check_data = True         # Checker C on/off (A + B still run)
+    self.check_order = True        # Checker E on/off (A + B + C still run)
 
     # Checker B HN-I routing prediction policy.
     self.route_check = False
@@ -180,6 +188,11 @@ class vip_chi_scoreboard(uvm_component):
     self.hni_route_pred = {}
     self.hni_route_obs = {}
 
+    # Checker E: one expected-acknowledgement FIFO per ordered stream. The key is
+    # "stream_srcid_order" and the list holds TxnIDs in the order the requester
+    # issued them; index 0 is what the completer owes an acknowledgement for next.
+    self.ord_fifo = {}
+
     # Reporting counters.
     self.n_incomplete = 0
     self.n_orphan = 0
@@ -189,6 +202,8 @@ class vip_chi_scoreboard(uvm_component):
     self.n_reads_skipped = 0
     self.n_relay_mismatch = 0
     self.n_route_mismatch = 0
+    self.n_order_violation = 0
+    self.n_order_checked = 0
 
   # ==========================================================================
   def build_phase(self):
@@ -260,6 +275,7 @@ class vip_chi_scoreboard(uvm_component):
     opc = int(item.opcode)
 
     ctx.ordered = (int(item.order) != int(ReqOrder.NONE))
+    ctx.order_val = int(item.order)
     ctx.exp_comp_ack = bool(int(item.exp_comp_ack))
     ctx.allow_retry = bool(int(item.allow_retry))
 
@@ -303,6 +319,88 @@ class vip_chi_scoreboard(uvm_component):
       ctx.kind = SB_OTHER      # e.g. PcrdReturn - no completion tracked
 
   # ==========================================================================
+  # Checker E - ordered-stream acknowledgement order.
+  #
+  # A request carrying a non-zero Order field joins an ordered stream: the
+  # requests one source issues with the same Order value are a sequence the
+  # completer has taken on an ordering obligation for, and it must acknowledge
+  # them in the order it received them. This VIP's requesters pipeline ordered
+  # requests rather than stalling on each acknowledgement (see
+  # observed_peak_outstanding in the ordered multi-outstanding tests), so the
+  # obligation sits entirely on the completer side, which is what is checked.
+  #
+  # The observable is the FIRST inbound response of any kind for a transaction --
+  # the ReadReceipt of an ordered read, the DBIDResp / CompDBIDResp of an ordered
+  # write. That is the flit in which the completer commits to a position in the
+  # stream, so that is what is compared; the data burst that follows may overlap
+  # its neighbours freely and says nothing about ordering.
+  #
+  # Streams are keyed per requester stream AND per Order value, so two sources,
+  # or one source mixing Request_Order with Request_Accepted traffic, do not
+  # constrain each other.
+  # ==========================================================================
+  @staticmethod
+  def _ord_stream_key(stream, src_id, order_val):
+    return "%d_%x_%x" % (stream, int(src_id), int(order_val))
+
+  def _ord_enroll(self, ctx):
+    """Take the tail position in this transaction's stream. Requests that never
+    draw a completion (prefetch, PCrdReturn) are left out: nothing would ever
+    acknowledge them, so enrolling one would wedge the stream behind it."""
+    if not self.check_order or not ctx.ordered or ctx.ord_enrolled:
+      return
+    if ctx.kind in (SB_PREFETCH, SB_OTHER):
+      return
+    ctx.ord_key = self._ord_stream_key(ctx.stream, ctx.requester_node, ctx.order_val)
+    ctx.ord_enrolled = True
+    self.ord_fifo.setdefault(ctx.ord_key, []).append(ctx.txn_id)
+
+  def _ord_withdraw(self, ctx):
+    """A RetryAck withdraws the request from its stream: it was not accepted, so
+    the completer owes it nothing, and the re-issue takes a fresh position at the
+    tail rather than holding one it never got."""
+    if not ctx.ord_enrolled:
+      return
+    ctx.ord_enrolled = False
+    q = self.ord_fifo.get(ctx.ord_key)
+    if q is None or ctx.txn_id not in q:
+      return
+    q.remove(ctx.txn_id)
+    if not q:
+      del self.ord_fifo[ctx.ord_key]
+
+  def _ord_observe(self, ctx):
+    """The completer has acknowledged this transaction: it must be the one at the
+    head of its stream."""
+    if not ctx.ord_enrolled:
+      return
+    ctx.ord_enrolled = False
+    q = self.ord_fifo.get(ctx.ord_key)
+    if not q:
+      return
+
+    expected = q[0]
+    if expected == ctx.txn_id:
+      # Count the in-order acknowledgement as well as the violation: a check that
+      # only ever tallies failures reads, in a passing log, exactly like a check
+      # that never ran.
+      self.n_order_checked += 1
+      q.pop(0)
+    else:
+      self.n_order_violation += 1
+      self.logger.error(
+        "Ordered stream out of order: stream=%d src=0x%x order=0x%x expected "
+        "txn=0x%x to be acknowledged first, observed txn=0x%x" % (
+          ctx.stream, ctx.requester_node, ctx.order_val, expected, ctx.txn_id))
+      # Drop the transaction that jumped the queue from wherever it sits, so one
+      # inversion costs one error instead of cascading down the rest of the stream.
+      if ctx.txn_id in q:
+        q.remove(ctx.txn_id)
+
+    if not q:
+      self.ord_fifo.pop(ctx.ord_key, None)
+
+  # ==========================================================================
   # Checker A/C - requester REQ.
   # ==========================================================================
   def _handle_req(self, stream, item):
@@ -329,6 +427,7 @@ class vip_chi_scoreboard(uvm_component):
           self._set_contract(ctx, item)
           ctx.addr = int(item.addr)
           ctx.size = int(item.size)
+          self._ord_enroll(ctx)
           return
         self.n_reuse += 1
         self.logger.error(
@@ -345,6 +444,7 @@ class vip_chi_scoreboard(uvm_component):
     ctx.opcode = int(item.opcode)
     self._set_contract(ctx, item)
     self.open_ctx[key] = ctx
+    self._ord_enroll(ctx)
 
     # Separated read: the DataSepResp leg returns on ReturnNID/ReturnTxnID.
     if int(item.opcode) == int(ReqOpcode.READ_NO_SNP_SEP):
@@ -417,6 +517,9 @@ class vip_chi_scoreboard(uvm_component):
       ctx.comp_err = int(item.rsp_resp_err)
     elif opc == int(RspOpcode.RETRY_ACK):
       ctx.retry_seen = True
+      # Not an acknowledgement -- the request was refused, so it leaves its
+      # ordered stream and rejoins at the tail when it is re-issued.
+      self._ord_withdraw(ctx)
     else:
       # Unmodeled completion opcode: warn rather than fail (a genuinely wrong
       # completion still surfaces as an incomplete at check_phase).
@@ -424,6 +527,11 @@ class vip_chi_scoreboard(uvm_component):
       self.logger.warning(
         "Unmodeled completion RSP opcode 0x%x for kind=%d stream=%d txn=0x%x" % (
           opc, ctx.kind, stream, int(item.txn_id)))
+
+    # Checker E: the first inbound response is the completer committing to this
+    # transaction's position in its ordered stream. A no-op after that, and a
+    # no-op for the RetryAck the branch above already withdrew.
+    self._ord_observe(ctx)
 
     self._maybe_commit_write(ctx)
     self._resolve_atomic(ctx, None)   # store atomic completes on its Comp RSP
@@ -465,6 +573,11 @@ class vip_chi_scoreboard(uvm_component):
           stream, int(item.tgt_id), int(item.txn_id), int(item.dat_opcode)))
       return
     ctx.read_data_seen = True
+
+    # Checker E: normally the ReadReceipt got here first and this is a no-op; it
+    # is the acknowledgement only for an ordered transaction whose completer
+    # answers on DAT alone.
+    self._ord_observe(ctx)
 
     if self.check_data and ctx.kind == SB_READ:
       self._compare_read(ctx, item)
@@ -763,6 +876,7 @@ class vip_chi_scoreboard(uvm_component):
     self.hni_cmp_cnt.clear()
     self.hni_route_pred.clear()
     self.hni_route_obs.clear()
+    self.ord_fifo.clear()
 
   # ==========================================================================
   # Checker B multiset compare between requester and completer views.
@@ -819,7 +933,24 @@ class vip_chi_scoreboard(uvm_component):
         self.n_data_mismatch, self.n_relay_mismatch, self.n_route_mismatch,
         self.n_reads_skipped))
 
+    # Checker E on its own line, deliberately: appended to the summary above it
+    # fell past the report server's wrap column, which split the field name from
+    # its value and made the tally impossible to grep for across a regression --
+    # exactly the sweep an ordered-stream check needs to prove it is not vacuous.
+    self.logger.info(
+      "ordered-stream summary: order_violation=%d order_in_order=%d" % (
+        self.n_order_violation, self.n_order_checked))
+
+  # Checker E accessors: the violation count for a negative control, and the
+  # in-order tally so a positive test can require that the check actually ran.
+  def get_order_violation_count(self):
+    return self.n_order_violation
+
+  def get_order_checked_count(self):
+    return self.n_order_checked
+
   # Total hard-error count (excludes the advisory reads_skipped / wrong_opcode).
   def total_errors(self):
     return (self.n_incomplete + self.n_orphan + self.n_reuse
-            + self.n_data_mismatch + self.n_relay_mismatch + self.n_route_mismatch)
+            + self.n_data_mismatch + self.n_relay_mismatch + self.n_route_mismatch
+            + self.n_order_violation)

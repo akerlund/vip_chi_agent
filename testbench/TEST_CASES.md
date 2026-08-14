@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **130 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **131 pyUVM/cocotb**
+The shared regression currently runs **136 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **137 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -103,6 +103,10 @@ exception of `tc_chi_sva_smoke` described at the top of this file.
 | `tc_chi_d_ordered_write` | INT | `CompDBIDResp` followed by `CompAck` for ordered writes. |
 | `tc_chi_d_ordered_read` | INT | ordered `ReadNoSnp` returns `ReadReceipt` before `CompData`. |
 | `tc_chi_txsactive_window` | INT | `TXSACTIVE` is held across the whole outstanding window rather than pulsed per flit. Four pipelined reads, both link ends sampled every cycle: each vantage must show at least one cycle asserted with no flit moving (which a per-flit pulse cannot produce), must never drop between its first assertion and the last flit, and must drop once the traffic drains. |
+| `tc_chi_item_timestamps` | INT | per-transaction timestamps on the observed item. Asserts the milestones are populated, are monotonic (a request cannot be granted before it was issued, nor a burst end before it began), that `data_burst_time()` agrees with the beats it derives from, and that `latency()` equals what the perf counters measured for the same read — two paths to one interval, so disagreement localizes the bug to one of them. |
+| `tc_chi_latency_bound` | INT | per-transaction latency bounds, both halves. A generous bound (10000 cycles) must stay silent on ordinary traffic; a bound of 1 cycle must flag the same read exactly once, with the monitor's counter and the report agreeing. The bound is tightened rather than the completer slowed, so the test does not assert on a margin that depends on how delays happened to land. |
+| `tc_chi_ordered_stream` | INT | ordered-stream acknowledgement order, positive case. Six pipelined ordered writes then six pipelined ordered reads, both deep enough that the completer holds several at once. The scoreboard must have compared every acknowledgement (12) and found none out of place; the in-order tally is asserted too, so a run where the check never compared anything cannot pass as clean. |
+| `tc_chi_ordered_stream_negctl` | INT | negative control for the same check. `snf_reorder_ordered_service` has the buffered SN-F serve one pair of queued ordered requests back to front; every read still completes correctly, so no other checker can see the fault. The inversion must be flagged exactly once (not cascaded) and the rest of the stream still compared in order. |
 | `tc_chi_d_split_write_rsp` | INT | `DBIDResp` plus deferred `Comp`, with optional trailing `CompAck` under `ExpCompAck`. |
 | `tc_chi_d_prefetch_tgt` | INT | `PrefetchTgt` treated as a no-completion hint. |
 | `tc_chi_d_atomic` | INT | atomic store/load/swap/compare smoke using the SN-F backing memory for operand capture, RMW, old-data return, and readback. |
@@ -198,6 +202,7 @@ forwarding (`SnpRespData` + PassDirty), and eviction (`WriteBackFull` /
 | `tc_chi_coh_d_read_then_unique` | COH | RN-F0 `ReadShared`→`SC`, then RN-F1 `ReadUnique` to the same line makes the HN-F snoop RN-F0 (`SnpUnique`); RN-F0 drops to `I`, RN-F1 is granted `UC`, directory tracks the transfer. |
 | `tc_chi_coh_d_shared_read` | COH | RN-F0 `ReadUnique`→`UC`, then RN-F1 `ReadShared` makes the HN-F snoop RN-F0 (`SnpShared`) to downgrade it; RN-F0 becomes `SC`, RN-F1 is granted `SC`. |
 | `tc_chi_coh_d_negctl` | COH | **negative control for Checker D**: with `cfg.hnf_suppress_snoops` the HN-F grants Unique without invalidating other holders, so two RN-F `ReadUnique`s to one line leave two Unique owners. The test fails unless Checker D flags the violation (`multi_owner` > 0); the induced error is caught and demoted so it does not count against the regression. |
+| `tc_chi_coh_d_line_hazard` | COH | the same-cache-line hazard rule, both halves. Two coherent reads to one line issued strictly one at a time must NOT be flagged (the rule must key on overlap, not on address reuse); two overlapping same-line observations must be flagged exactly once; and a re-issue on the same TxnID must not be, since obeying the retry protocol is not a hazard. The overlapping pair is published into the checker's REQ port rather than driven, because this VIP's RN-F issue path is serial and its multi-outstanding pipeline refuses coherent opcodes — there is no requester configuration that produces the fault. |
 | `tc_chi_coh_d_dirty_forward` | COH | dirty snoop forwarding: RN-F0 acquires a line Unique and dirties it (modelled local store), then RN-F1 `ReadShared` forces a downgrading snoop; RN-F0 answers with `SnpRespData` (PassDirty), the home merges the modified beats into memory, and RN-F1's `CompData` carries the dirtied data (asserted == RN-F0's original beats XOR the store pattern, not stale memory). |
 | `tc_chi_coh_d_writeback_evict` | COH | both eviction paths: RN-F0 `WriteBackFull` (DBID grant → `CopyBackWrData` → memory commit) and RN-F1 `Evict` (RSP-only `Comp`). Both directory ports and both RN-F cache states return to Invalid. |
 | `tc_chi_coh_d_read_after_writeback` | COH | writeback data integrity: RN-F0 writes a fresh payload back, then RN-F1 `ReadShared` returns exactly the written-back data (and it differs from the original image — a no-op writeback would fail). |

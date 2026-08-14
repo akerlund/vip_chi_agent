@@ -34,6 +34,7 @@ class chi_tb_config:
     # Standalone scoreboard gating (a test may disable it in configure_tb_cfg()).
     self.scoreboard_enable = True
     self.scoreboard_check_data = True
+    self.scoreboard_check_order = True
     # Standalone perf-counter gating (always-on, opt-out per test).
     self.perf_enable = True
     # Stand the protocol checkers' DataID-ordering rules down. Only a test whose

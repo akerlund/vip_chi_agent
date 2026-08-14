@@ -160,6 +160,31 @@ class vip_chi_item #(
   raw_snp_t            raw_snp      = '0;
 
   // ---------------------------------------------------------------------------
+  // Transaction timestamps (stamped by the monitor).
+  //
+  // Cycle counts on the observing agent's reset-gated free-running counter,
+  // NOT $time: that keeps every latency a timescale-independent integer, so a
+  // bound written in one bench means the same thing in another. 0 means the
+  // milestone was never reached, which is why cycle 0 is never handed out (the
+  // counter's first observable value is 1).
+  // ---------------------------------------------------------------------------
+  int unsigned        t_req_issued   = 0;
+  int unsigned        t_retry_ack    = 0;
+  int unsigned        t_pcrd_grant   = 0;
+  int unsigned        t_req_reissued = 0;
+  int unsigned        t_dbid         = 0;
+  int unsigned        t_first_dat    = 0;
+  int unsigned        t_last_dat     = 0;
+  int unsigned        t_comp         = 0;
+  int unsigned        t_compack      = 0;
+  // Retries this ONE transaction suffered. The perf counters keep a global
+  // tally; that cannot say whether ten retries were one pathological
+  // transaction or ten unlucky ones.
+  int unsigned        retry_count    = 0;
+  // Per-beat arrival cycles, only when cfg.collect_beat_timestamps is set.
+  int unsigned        t_dat_beats    [];
+
+  // ---------------------------------------------------------------------------
   // Per-item randomization knobs. These are not protocol fields; they steer
   // how the item randomizes and how helper code builds payload content.
   // ---------------------------------------------------------------------------
@@ -485,6 +510,47 @@ class vip_chi_item #(
   // ---------------------------------------------------------------------------
   function void set_ns(input logic value);
     this.ns = value;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Timestamp accessors. Each returns 0 when the interval it measures was never
+  // observed, which is the same convention the fields themselves use: a caller
+  // asking for the latency of a transaction that never completed gets 0, not a
+  // number computed against a milestone that never happened.
+  // ---------------------------------------------------------------------------
+  // Cycles from the request going out to its completion. Measured from the
+  // RE-ISSUE when the transaction was retried: the completer was entitled to
+  // refuse the first attempt, so timing from the original REQ would charge it
+  // for a delay the protocol allows.
+  function int unsigned latency();
+    int unsigned start_c;
+    int unsigned end_c;
+    start_c = (this.t_req_reissued != 0) ? this.t_req_reissued : this.t_req_issued;
+    end_c   = (this.t_comp != 0) ? this.t_comp : this.t_last_dat;
+    if ((start_c == 0) || (end_c == 0) || (end_c < start_c)) begin
+      return 0;
+    end
+    return end_c - start_c;
+  endfunction
+
+  // Cycles from the request to its DBID grant (a write's buffer allocation).
+  function int unsigned dbid_latency();
+    int unsigned start_c;
+    start_c = (this.t_req_reissued != 0) ? this.t_req_reissued : this.t_req_issued;
+    if ((start_c == 0) || (this.t_dbid == 0) || (this.t_dbid < start_c)) begin
+      return 0;
+    end
+    return this.t_dbid - start_c;
+  endfunction
+
+  // Cycles spanned by the data burst itself, first beat to last. Zero for a
+  // single-beat transfer -- one beat spans no interval -- which is the honest
+  // answer rather than an off-by-one 1.
+  function int unsigned data_burst_time();
+    if ((this.t_first_dat == 0) || (this.t_last_dat == 0)) begin
+      return 0;
+    end
+    return this.t_last_dat - this.t_first_dat;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -904,6 +970,25 @@ class vip_chi_item #(
     this.raw_rsp                 = rhs_item.raw_rsp;
     this.raw_dat                 = rhs_item.raw_dat;
     this.raw_snp                 = rhs_item.raw_snp;
+    // Timestamps travel with the item but are deliberately absent from
+    // do_compare(): two observations of the same transaction on two links are
+    // the same transaction even though they were seen at different cycles, and
+    // a scoreboard comparing a predicted item to an observed one must not fail
+    // on when it happened.
+    this.t_req_issued            = rhs_item.t_req_issued;
+    this.t_retry_ack             = rhs_item.t_retry_ack;
+    this.t_pcrd_grant            = rhs_item.t_pcrd_grant;
+    this.t_req_reissued          = rhs_item.t_req_reissued;
+    this.t_dbid                  = rhs_item.t_dbid;
+    this.t_first_dat             = rhs_item.t_first_dat;
+    this.t_last_dat              = rhs_item.t_last_dat;
+    this.t_comp                  = rhs_item.t_comp;
+    this.t_compack               = rhs_item.t_compack;
+    this.retry_count             = rhs_item.retry_count;
+    this.t_dat_beats             = new[rhs_item.t_dat_beats.size()];
+    foreach (rhs_item.t_dat_beats[i]) begin
+      this.t_dat_beats[i] = rhs_item.t_dat_beats[i];
+    end
     this.cfg                     = rhs_item.cfg;
     this.min_addr                = rhs_item.min_addr;
     this.max_addr                = rhs_item.max_addr;

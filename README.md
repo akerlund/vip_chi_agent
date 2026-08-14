@@ -307,6 +307,8 @@ otherwise.
 | Completer policy | `split_write_rsp`, `ordered_dbid_resp`, `decerr_ranges[]`, `derr_ranges[]`, `mem_cfg` |
 | Completer DAT order | `snf_reverse_dat_beats` (0) — SN-F returns read beats in descending `DataID`. CHI places a beat by its `DataID`, not by its position in the burst, so this is a legal ordering a monitor must reassemble correctly. |
 | Sideband | `txsactive_extend_max_cycles` (0) — cycles the driver may keep `TXSACTIVE` asserted past the close of its outstanding window. `TXSACTIVE` says the node MAY have snoopable transactions outstanding, so holding it longer is always legal; 0 is the tightest legal behaviour. The matching `tb_cfg` field of the same name widens the bound the **checkers** allow, so a test exercising a speculative extension sets both — one drives, the other judges. |
+| Latency bounds | `max_read_xact_latency` / `max_write_xact_latency` / `max_snp_xact_latency` (all 0 = unbounded) — per-transaction budgets in cycles on the monitor's reset-gated counter, checked at each transaction's completion milestone. 0 preserves behaviour: a bench that never stated a latency budget does not acquire one. The report names the transaction, its opcode, the bound and the measured value |
+| Timestamps | `collect_beat_timestamps` (0) — also record the arrival cycle of every DAT beat in `item.t_dat_beats`. The transaction-level milestones (`t_req_issued`, `t_dbid`, `t_first_dat`, `t_last_dat`, `t_comp`, …) are always stamped and cost nothing per beat; this adds the per-beat detail, which costs an append on every beat of every transfer |
 | Retry | `force_retry_count` |
 | Timeouts | `compack_timeout_cycles` (10000) — SN-F gives up waiting for a `CompAck` after this many cycles |
 | Negative testing | `allow_raw_override` (1) — master gate for the item's `raw_*` flit-injection view |
@@ -316,6 +318,7 @@ otherwise.
 | Coherent — HN-F policy | `coh_read_shared_state` (`SC`) / `coh_read_unique_state` (`UC`) — cache state granted per coherent-read class; `hnf_snoop_latency` (0) — cycles the HN-F waits before issuing a snoop; `exclusives_enabled` (1) — master enable for LL/SC monitor modeling; `hnf_enable_snoop_fwd` (0) — opt-in DCT (forwarding snoops) |
 | Coherent — RN-F cache | `rnf_cache_max_lines` (0 = unbounded) — cache capacity in lines; beyond it a clean victim is silently evicted |
 | Coherent — two-level memory | `hnf_downstream_en` (0), `hnf_downstream_snf_id` (0) — when set, the HN-F issues downstream `ReadNoSnp`/`WriteNoSnpFull` to a real SN-F instead of terminating against its own `vip_mem` |
+| Coherent — hazard rule | `hazard_check_enable` (1) — the coherency checker reports a requester that has two requests outstanding to one cache line at a time. Scoped per node: two *different* requesters contending for a line is ordinary traffic, not a hazard. Clear it for a requester model that deliberately overlaps same-line requests |
 | Negative controls | see the table below |
 
 The static width/issue envelope is the `vip_chi_cfg_t CFG_P` type parameter
@@ -342,6 +345,7 @@ they are listed here rather than left to a grep.
 | `hnf_downstream_corrupt_data` | HN-F XOR-inverts data relayed from a downstream SN-F fetch | the end-to-end (two-level memory) integrity check |
 | `hnf_downstream_force_decerr` | HN-F treats a downstream SN-F fetch as a `DECERR` | the downstream error-propagation path |
 | `snf_duplicate_dat_beat` | SN-F sends the final beat of a read burst carrying `DataID` 0 again, so one beat position is delivered twice and one never at all | the monitor's duplicate-`DataID` and missing-beat checks |
+| `snf_reorder_ordered_service` | buffered SN-F serves one pair of queued ordered requests back to front, so its acknowledgements arrive out of request order while every transaction still completes correctly | the scoreboard's ordered-stream acknowledgement-order check (needs `multi_outstanding`) |
 
 ---
 
@@ -499,9 +503,22 @@ The `_e` monitor republishes the CHI-E-only fields on the same ports.
 - **Scoreboard** ([vip_chi_scoreboard.sv](sv/vip_chi_scoreboard.sv)) — Checker-C:
   predicts read data from wire-observed writes (predictable-only) and resolves
   atomic RMW results, flagging opcode/data/route mismatches and orphans.
+  Checker-E rides the same transaction table: requests carrying a non-zero
+  `Order` field form one stream per (requester, `Order` value), and the
+  completer must acknowledge them in the order it received them. The
+  acknowledgement is the first inbound response — the `ReadReceipt` of an
+  ordered read, the `DBIDResp`/`CompDBIDResp` of an ordered write — since that
+  is the flit committing a position; the data burst after it may overlap freely.
+  Gated by `tb_cfg.scoreboard_check_order` (default on).
 - **Coherency checker** ([vip_chi_coherency_checker.sv](sv/vip_chi_coherency_checker.sv))
   — Checker-D: a self-derived per-line ownership shadow (never the HN-F
-  directory) whose core invariant is *never two Unique owners of one line*.
+  directory) whose core invariant is *never two Unique owners of one line*. It
+  also carries the same-line hazard rule: one requester must not have two
+  requests outstanding to a single cache line, since the completer resolves them
+  in whatever order it likes and nothing on the link could then say which result
+  belongs to which. A line is claimed at the REQ and released at the completion
+  response; the rule is per node, so two different requesters contending for a
+  line is ordinary traffic. Gated by `cfg.hazard_check_enable` (default on).
 - **SVA** ([vip_chi_sva.sv](sv/vip_chi_sva.sv),
   [vip_chi_snp_sva.sv](sv/vip_chi_snp_sva.sv)) — bindable link/protocol and
   SNP-channel assertions: link-before-traffic, L-credit accounting,

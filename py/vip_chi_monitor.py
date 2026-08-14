@@ -61,6 +61,27 @@ _DBID_GRANT_OPCODES = {
   int(RspOpcode.DBID_RESP_ORD),
 }
 
+# RSP opcodes that complete a transaction, for the t_comp milestone. DBIDResp
+# alone is a buffer grant, not a completion, and has its own milestone.
+_COMPLETION_RSP_OPCODES = {
+  int(RspOpcode.COMP), int(RspOpcode.COMP_DBID_RESP),
+  int(RspOpcode.COMP_PERSIST),
+}
+
+# Snoop-completing opcodes, per channel. A snoop answers with SnpResp on RSP or
+# a SnpRespData family burst on DAT; either closes the snoop's latency window.
+_SNP_RESP_RSP_OPCODES = {
+  int(RspOpcode.SNP_RESP), int(RspOpcode.SNP_RESP_FWDED),
+}
+_SNP_RESP_DAT_OPCODES = {
+  int(DatOpcode.SNP_RESP_DATA), int(DatOpcode.SNP_RESP_DATA_PTL),
+  int(DatOpcode.SNP_RESP_DATA_FWDED),
+}
+
+# Bookkeeping kept in a transaction record but not published on the item: it
+# tells the monitor which bound applies, and is not a milestone.
+_TXN_REC_PRIVATE = frozenset({"is_write"})
+
 _PEER = {
   Role.RNI: Role.SNF, Role.SNF: Role.RNI,
   Role.RNF: Role.HNF, Role.HNF: Role.RNF,
@@ -201,6 +222,9 @@ class vip_chi_monitor(uvm_monitor):
     # so the negative-control testcase asserts on this counter. Deliberately not
     # cleared by _reset_state(): it is a whole-run tally, not per-transfer state.
     self.n_dataid_violation = 0
+    # Latency-bound violations. A whole-run tally like n_dataid_violation, and
+    # like it deliberately NOT cleared by _reset_state().
+    self.n_latency_violation = 0
     # cg_sactive and its last-sampled tuple. Sampled only on change: the bins
     # are three bits wide, so a per-cycle sample would add cost without adding
     # information.
@@ -221,11 +245,29 @@ class vip_chi_monitor(uvm_monitor):
     self.rd_beats_by_txnid = {}
     self.wr_beats_by_txnid = {}
     self.wr_beats_by_dbid = {}
+    # Reset-gated free-running cycle counter and the per-transaction milestone
+    # records stamped from it (txn_id -> {field: cycle}). Counting cycles rather
+    # than reading $time is what keeps every latency a timescale-independent
+    # integer. It restarts at reset, along with the records, because a latency
+    # spanning a reset is not a latency -- the transaction was abandoned.
+    self.cycle_count = 0
+    self.txn_times = {}
+    self.snp_times = {}
 
   def set_bus(self, bus: ChiBus, cfg: ChiCfg, role: Role) -> None:
     self.bus = bus
     self.cfg = cfg
     self.role = role
+
+  # Per-beat arrival cycles cost a list append on every beat of every transfer,
+  # which is not worth paying in a long run for a detail most tests never read.
+  # Set by the agent from its cfg; default off.
+  collect_beat_timestamps = False
+
+  # Latency bounds, 0 = unbounded. Set by the agent from its cfg.
+  max_read_xact_latency = 0
+  max_write_xact_latency = 0
+  max_snp_xact_latency = 0
 
   def handle_reset(self):
     self._reset_state()
@@ -243,8 +285,55 @@ class vip_chi_monitor(uvm_monitor):
     self.cg_sactive.sample(tup[0], tup[1], tup[2])
 
   # ==========================================================================
-  # Publish helpers (stateful correlation lives here, not in the builders).
+  # Transaction timestamps.
+  #
+  # Milestones arrive on different channels and are published as different
+  # items -- the REQ on one, its Comp on another -- so a record per TxnID
+  # accumulates them and every published item carries the whole set known so
+  # far. That is what lets a sequence call latency() on the response it gets
+  # back, instead of having to correlate two items itself.
   # ==========================================================================
+  def _txn_rec(self, txn_id):
+    return self.txn_times.setdefault(int(txn_id), {})
+
+  def _stamp(self, item, txn_id):
+    """Copy the accumulated milestones for this TxnID onto a published item."""
+    rec = self.txn_times.get(int(txn_id))
+    if not rec:
+      return
+    for field, cycle in rec.items():
+      if field in _TXN_REC_PRIVATE:
+        continue
+      setattr(item, field, cycle)
+
+  # ==========================================================================
+  # Latency bounds. Checked once, at the transaction's completion milestone,
+  # against the item's own timestamps -- so the number reported is the same one
+  # a test can read back off the item, not a separately-derived figure that
+  # could disagree with it.
+  # ==========================================================================
+  def _check_latency_bound(self, item, txn_id, is_write, is_snoop=False):
+    if is_snoop:
+      bound = self.max_snp_xact_latency
+      kind = "snoop"
+    elif is_write:
+      bound = self.max_write_xact_latency
+      kind = "write"
+    else:
+      bound = self.max_read_xact_latency
+      kind = "read"
+    if bound <= 0:
+      return
+    measured = item.latency()
+    if measured <= bound:
+      return
+    self.n_latency_violation += 1
+    opcode = int(item.snp_opcode) if is_snoop else int(item.opcode)
+    self.logger.error(
+      f"[{self.get_name()}] {kind} transaction txn_id 0x{int(txn_id):x} "
+      f"(opcode=0x{opcode:x}) took {measured} cycles, exceeding the "
+      f"configured bound of {bound}")
+
   def _publish_req(self, flit_int, observed_role):
     it = req_item_from_flit(self.cfg, flit_int, observed_role)
     op = int(it.opcode)
@@ -256,18 +345,77 @@ class vip_chi_monitor(uvm_monitor):
       beats = it.get_payload_beat_count()
       if beats > 0:
         self.wr_beats_by_txnid[int(it.txn_id)] = beats
+
+    # A REQ on a TxnID that already saw a RetryAck is the re-issue, not a new
+    # transaction: it keeps the original record so retry_count accumulates and
+    # latency() can measure from the re-issue the completer is answerable for.
+    rec = self._txn_rec(it.txn_id)
+    if rec.get("t_retry_ack"):
+      rec["t_req_reissued"] = self.cycle_count
+    else:
+      rec.clear()
+      rec["t_req_issued"] = self.cycle_count
+    # Which bound will apply at completion. Recorded here because the request
+    # opcode is the only place the direction is stated, and the completion
+    # arrives on a different channel carrying a different item.
+    rec["is_write"] = int(it.direction) == int(Dir.WRITE)
+    self._stamp(it, it.txn_id)
     self.req_port.write(it)
 
   def _publish_rsp(self, flit_int, observed_role):
     it = rsp_item_from_flit(self.cfg, flit_int, observed_role)
-    if int(it.rsp_opcode) in _DBID_GRANT_OPCODES:
+    opc = int(it.rsp_opcode)
+    if opc in _DBID_GRANT_OPCODES:
       txn = int(it.txn_id)
       if txn in self.wr_beats_by_txnid:
         self.wr_beats_by_dbid[int(it.dbid)] = self.wr_beats_by_txnid.pop(txn)
+
+    rec = self._txn_rec(it.txn_id)
+    if opc in _DBID_GRANT_OPCODES:
+      rec.setdefault("t_dbid", self.cycle_count)
+    if opc in _COMPLETION_RSP_OPCODES:
+      rec.setdefault("t_comp", self.cycle_count)
+    if opc == int(RspOpcode.COMP_ACK):
+      rec.setdefault("t_compack", self.cycle_count)
+    if opc == int(RspOpcode.RETRY_ACK):
+      rec["t_retry_ack"] = self.cycle_count
+      rec["retry_count"] = rec.get("retry_count", 0) + 1
+    if opc == int(RspOpcode.PCRD_GRANT):
+      # CHI makes PCrdGrant credit-typed rather than TxnID-correlated, so this
+      # is only as good as the completer's choice of TxnID on the grant. It is
+      # recorded for visibility, never used by a bound.
+      rec.setdefault("t_pcrd_grant", self.cycle_count)
+    self._stamp(it, it.txn_id)
+
+    # A transaction whose completion is an RSP (a write, a data-less acquire, a
+    # persist) is bounded here. A read completes on DAT and is bounded there.
+    if opc in _COMPLETION_RSP_OPCODES:
+      self._check_latency_bound(it, it.txn_id, rec.get("is_write", True))
+    if opc in _SNP_RESP_RSP_OPCODES:
+      self._close_snoop(it, it.txn_id)
+
     self.rsp_port.write(it)
 
   def _publish_snp(self, flit_int, observed_role):
-    self.snp_port.write(snp_item_from_flit(self.cfg, flit_int, observed_role))
+    it = snp_item_from_flit(self.cfg, flit_int, observed_role)
+    # Snoop records are kept apart from request records: a snoop's TxnID is
+    # allocated by the home, a request's by the requester, and on a coherent
+    # link both are visible on the same monitor. Sharing one map would let two
+    # unrelated transactions that happen to pick the same number overwrite each
+    # other's milestones.
+    self.snp_times[int(it.txn_id)] = {"t_req_issued": self.cycle_count}
+    it.t_req_issued = self.cycle_count
+    self.snp_port.write(it)
+
+  # A snoop completes on its SnpResp (RSP) or SnpRespData (DAT). Both carry the
+  # snoop's TxnID, so the bound is evaluated wherever the response lands.
+  def _close_snoop(self, item, txn_id):
+    rec = self.snp_times.pop(int(txn_id), None)
+    if rec is None:
+      return
+    item.t_req_issued = rec["t_req_issued"]
+    item.t_comp = self.cycle_count
+    self._check_latency_bound(item, txn_id, False, is_snoop=True)
 
   def _publish_dat(self, flit_int, flit_pending, observed_role):
     f = unpack(self.cfg, "dat", flit_int)
@@ -306,6 +454,13 @@ class vip_chi_monitor(uvm_monitor):
       self.dat_beats_by_key[key] = 0
       if expected > 0:
         self.dat_beat_seen_by_key[key] = [False] * expected
+      # First beat of this transfer. Recorded against the DAT TxnID, which for
+      # write data is the granted DBID rather than the request's own TxnID --
+      # the same correlation the beat-count bookkeeping above uses.
+      self._txn_rec(dat_txn).setdefault("t_first_dat", self.cycle_count)
+
+    if self.collect_beat_timestamps:
+      it.t_dat_beats.append(self.cycle_count)
 
     # Place by DataID when the beat count is known; the running receive counter
     # stays the index only where no count is available to bound DataID against.
@@ -382,6 +537,16 @@ class vip_chi_monitor(uvm_monitor):
             f"[{self.get_name()}] DAT transfer for txn_id 0x{dat_txn:x} closed "
             f"with no beat carrying DataID {i} (of {expected})")
 
+    self._txn_rec(dat_txn)["t_last_dat"] = self.cycle_count
+    self._stamp(it, dat_txn)
+
+    # Read data IS the completion; write data is not (its Comp bounds it on the
+    # RSP side), so only the read direction is bounded here.
+    if not is_write_data:
+      self._check_latency_bound(it, dat_txn, False)
+    if int(it.dat_opcode) in _SNP_RESP_DAT_OPCODES:
+      self._close_snoop(it, dat_txn)
+
     self.dat_port.write(it)
     del self.dat_item_by_key[key]
     del self.dat_beats_by_key[key]
@@ -400,6 +565,10 @@ class vip_chi_monitor(uvm_monitor):
       await bus.read_only()
       if bus.in_reset():
         continue
+
+      # Advance BEFORE stamping, so the first observable cycle is 1 and 0 stays
+      # available as "milestone not reached".
+      self.cycle_count += 1
 
       self._sample_sactive()
 

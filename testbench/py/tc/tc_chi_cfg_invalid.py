@@ -65,6 +65,9 @@ class tc_chi_cfg_invalid(chi_base_test):
     c = self.fresh(); c.multi_outstanding_mixed = True
     self.expect_invalid(c, "multi_outstanding_mixed without multi_outstanding")
 
+    c = self.fresh(); c.snf_reorder_ordered_service = True
+    self.expect_invalid(c, "snf_reorder_ordered_service without multi_outstanding")
+
     c = self.fresh(); c.initial_req_credits = 65
     self.expect_invalid(c, "initial REQ credits above the send-credit cap")
 
@@ -117,6 +120,11 @@ class tc_chi_cfg_invalid(chi_base_test):
     c.multi_outstanding = True
     c.multi_outstanding_mixed = True
     self.expect_valid(c, "the mixed overlap loop with its master enable")
+
+    c = self.fresh()
+    c.multi_outstanding = True
+    c.snf_reorder_ordered_service = True
+    self.expect_valid(c, "the ordered-service reorder knob with its master enable")
 
     c = self.fresh()
     c.add_decerr_range(0x1000, 0x2000)

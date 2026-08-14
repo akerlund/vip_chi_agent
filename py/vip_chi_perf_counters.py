@@ -73,7 +73,6 @@ class vip_chi_perf_counters(uvm_component):
     self.bp_rsp_cycles = 0
     self.bp_dat_cycles = 0
     # Per-transaction issue bookkeeping (indexed by requester TxnID).
-    self.start_cycle_by_txn = {}
     self.start_valid_by_txn = {}
     self.is_write_by_txn = {}
     self.done_by_txn = {}
@@ -116,13 +115,23 @@ class vip_chi_perf_counters(uvm_component):
     self.completions_in_window += 1
 
   # Retire a transaction (first completion milestone wins).
-  def _complete_txn(self, txn_id):
+  #
+  # The latency comes off the ITEM, not from a private start-cycle shadow kept
+  # here. The monitor already stamped every milestone, and two independent
+  # measurements of one interval can only drift apart -- when they do, the
+  # aggregate quietly disagrees with what a test reads off the transaction and
+  # there is nothing in the report to say which is right. tc_chi_item_timestamps
+  # asserts the two agree, so this keeps them the same number by construction.
+  #
+  # Retry semantics are unchanged: item.latency() measures from the re-issue,
+  # which is what the start-cycle shadow did too (write_req_perf re-stamped on
+  # every REQ observation, including the re-issued one).
+  def _complete_txn(self, txn_id, item):
     t = int(txn_id)
     if not self.start_valid_by_txn.get(t, False) or self.done_by_txn.get(t, False):
       return
     self.done_by_txn[t] = True
-    self._record_latency(self.is_write_by_txn.get(t, False),
-                         self.cycle_count - self.start_cycle_by_txn.get(t, 0))
+    self._record_latency(self.is_write_by_txn.get(t, False), item.latency())
 
   # ==========================================================================
   # Analysis callbacks: stamp REQ issue, retire on the completion milestone.
@@ -131,7 +140,6 @@ class vip_chi_perf_counters(uvm_component):
     if not self.enable or int(item.role) != int(Role.RNI):
       return
     t = int(item.txn_id)
-    self.start_cycle_by_txn[t] = self.cycle_count
     self.start_valid_by_txn[t] = True
     self.is_write_by_txn[t] = self._req_is_write(item.opcode)
     self.done_by_txn[t] = False
@@ -144,14 +152,14 @@ class vip_chi_perf_counters(uvm_component):
       return
     # Write completion milestone: first Comp / CompDBIDResp from the completer.
     if int(item.role) == int(Role.SNF) and int(item.rsp_opcode) in _WRITE_COMPLETION_RSP:
-      self._complete_txn(item.txn_id)
+      self._complete_txn(item.txn_id, item)
 
   def write_dat_perf(self, item):
     if not self.enable:
       return
     # Read completion milestone: CompData / DataSepResp from the completer.
     if int(item.role) == int(Role.SNF) and int(item.dat_opcode) in _READ_COMPLETION_DAT:
-      self._complete_txn(item.txn_id)
+      self._complete_txn(item.txn_id, item)
 
   # ==========================================================================
   # Deterministic cycle base + throughput windows + back-pressure sampling.

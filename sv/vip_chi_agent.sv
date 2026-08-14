@@ -111,6 +111,10 @@ class vip_chi_agent #(
     this.monitor     = this.create_monitor();
     this.monitor.vif = this.vif;
     this.monitor.cfg = this.cfg;
+    this.monitor.collect_beat_timestamps = this.cfg.collect_beat_timestamps;
+    this.monitor.max_read_xact_latency   = this.cfg.max_read_xact_latency;
+    this.monitor.max_write_xact_latency  = this.cfg.max_write_xact_latency;
+    this.monitor.max_snp_xact_latency    = this.cfg.max_snp_xact_latency;
 
     if (this.cfg.is_active == UVM_ACTIVE) begin
       if (ROLE_P == VIP_CHI_ROLE_RNI_E) begin

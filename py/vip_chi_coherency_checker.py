@@ -61,6 +61,12 @@ _SNP_TO_SHARED = {
   int(SnpOpcode.SHARED_FWD), int(SnpOpcode.CLEAN_FWD),
   int(SnpOpcode.NOT_SHARED_DIRTY_FWD),
 }
+# RSP opcodes that end a requester's claim on a cache line. See obs_rsp.
+_HAZARD_RELEASE_RSP_OPS = {
+  int(RspOpcode.COMP), int(RspOpcode.COMP_DBID_RESP),
+  int(RspOpcode.COMP_PERSIST), int(RspOpcode.RETRY_ACK),
+}
+
 _SNP_TO_INVALID = {
   int(SnpOpcode.UNIQUE), int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.MAKE_INVALID),
   int(SnpOpcode.UNIQUE_FWD),
@@ -96,6 +102,10 @@ class vip_chi_coherency_checker(uvm_component):
     super().__init__(name, parent)
     self.cfg = None
     self.enable = True
+    # Same-line hazard rule (see hazard_claim). Set by the env from the
+    # requester agent's cfg; set_cfg() carries the bus envelope, not the agent
+    # cfg, so this cannot read the knob off self.cfg.
+    self.hazard_check_enable = True
     # Analysis exports (built in build_phase).
     for m in ("snf_req_cc", "snf_dat_cc",
               "rnf0_req_cc", "rnf0_rsp_cc", "rnf0_dat_cc", "rnf0_snp_cc",
@@ -124,6 +134,13 @@ class vip_chi_coherency_checker(uvm_component):
     # Exclusive (LL/SC) monitor shadow (per node: line -> bool / clear-cause).
     self.excl_ll_valid = [{} for _ in range(N_NODES)]
     self.excl_clear_cause = [{} for _ in range(N_NODES)]
+    # Same-line hazard shadow, per node. hazard_by_line maps a cache line to the
+    # TxnID currently outstanding on it, hazard_by_txn the reverse, so a REQ can
+    # be tested in O(1) and a completion can retire its line without a scan.
+    self.hazard_by_line = [{} for _ in range(N_NODES)]
+    self.hazard_by_txn = [{} for _ in range(N_NODES)]
+    self.n_line_hazard = 0
+    self.n_line_clear = 0
     self.n_multi_owner = 0
     self.n_completions = 0
     self.n_snoops = 0
@@ -236,6 +253,56 @@ class vip_chi_coherency_checker(uvm_component):
           f"0x{_I(item.data[i]):x} != authoritative 0x{exp[i]:x}")
         return
 
+  # ==========================================================================
+  # Same-line hazard shadow.
+  #
+  # The invariant: a requester must not have two requests outstanding to the
+  # same cache line at once. The completer resolves a line's transactions in
+  # the order it chooses and its snoops carry no requester-side sequence, so a
+  # requester that overlaps two requests on one line has no way to say which
+  # result belongs to which -- and neither has anything watching the link.
+  #
+  # Scoped per NODE on purpose. Two different requesters holding the same line
+  # outstanding is not a hazard, it is the ordinary contention every coherent
+  # test in this bench creates deliberately; the home exists to arbitrate it.
+  #
+  # A line is claimed at the REQ and released at the completion response. The
+  # release is the response rather than the last data beat because the response
+  # is what every request kind has -- reads, writes, CMOs and the data-less
+  # acquires alike -- and a shadow that only understood the kinds with a data
+  # phase would leak entries and then blame the next request to that line.
+  # ==========================================================================
+  def hazard_claim(self, node, line, txn_id, opcode):
+    if not self.hazard_check_enable:
+      return
+    prior = self.hazard_by_line[node].get(line)
+    if prior is not None and prior != txn_id:
+      self.n_line_hazard += 1
+      self.logger.error(
+        f"COHERENCY VIOLATION: node {node} issued txn 0x{txn_id:x} "
+        f"(opcode=0x{_I(opcode):x}) to line 0x{line:x} while its own txn "
+        f"0x{prior:x} to that line was still outstanding")
+      return
+    if prior is not None:
+      # Same TxnID on the same line: a RetryAck'd request being re-issued, not a
+      # second request. Re-claiming it would report the requester for obeying the
+      # retry protocol.
+      return
+    self.hazard_by_line[node][line] = txn_id
+    self.hazard_by_txn[node][txn_id] = line
+
+  def hazard_release(self, node, txn_id):
+    if not self.hazard_check_enable:
+      return
+    line = self.hazard_by_txn[node].pop(txn_id, None)
+    if line is None:
+      return
+    if self.hazard_by_line[node].get(line) == txn_id:
+      del self.hazard_by_line[node][line]
+    # Count the clean open/close pair: without it a log cannot distinguish a run
+    # in which the rule held from one in which it never evaluated.
+    self.n_line_clear += 1
+
   def clear_excl_all(self, line):
     for k in range(N_NODES):
       if self.excl_ll_valid[k].get(line):
@@ -258,6 +325,10 @@ class vip_chi_coherency_checker(uvm_component):
       return
     line = self.line_of(item.addr)
     wop = _I(item.opcode)
+    # Every request kind claims the line, including the ones the ownership
+    # shadow below does not model: the hazard rule is about a requester
+    # overlapping itself, which does not depend on what the request does.
+    self.hazard_claim(node, line, _I(item.txn_id), wop)
     is_read, _uniq = self.is_coherent_read(item)
     if is_read:
       tid = _I(item.txn_id)
@@ -287,6 +358,10 @@ class vip_chi_coherency_checker(uvm_component):
       return
     op = _I(item.dat_opcode)
     tid = _I(item.txn_id)
+
+    # A read's CompData is its completion, so it releases the line.
+    if op == int(DatOpcode.COMP_DATA):
+      self.hazard_release(node, tid)
 
     if op == int(DatOpcode.COPY_BACK_WR_DATA):
       if tid in self.open_wb_line[node]:
@@ -343,6 +418,14 @@ class vip_chi_coherency_checker(uvm_component):
     if not self.enable:
       return
     tid = _I(item.txn_id)
+
+    # Release the line on a genuine completion. DBIDResp and ReadReceipt are
+    # deliberately NOT in this set: they grant a buffer and confirm ordering
+    # respectively, and the transaction is still live after either. A RetryAck is
+    # in it because the completer refused the request outright -- it holds no
+    # line, and the re-issue claims one again.
+    if _I(item.rsp_opcode) in _HAZARD_RELEASE_RSP_OPS:
+      self.hazard_release(node, tid)
     # MakeUnique completion (RSP-only Comp): mark the requester Unique owner and
     # run the single-writer check.
     if tid in self.open_mu_line[node]:
@@ -413,6 +496,15 @@ class vip_chi_coherency_checker(uvm_component):
   def get_bad_make_unique_count(self):
     return self.n_bad_make_unique
 
+  def get_line_hazard_count(self):
+    return self.n_line_hazard
+
+  # Clean claim/release pairs. A test asserts on this to show the hazard rule
+  # actually evaluated, rather than reading a zero violation count from a run
+  # where no request ever claimed a line.
+  def get_line_clear_count(self):
+    return self.n_line_clear
+
   def get_cache_transition_coverage(self):
     # Functional coverage of the (from-state x snoop-opcode -> to-state) cache
     # transition, reported the way SV covergroup.get_coverage() averages a group's
@@ -426,7 +518,8 @@ class vip_chi_coherency_checker(uvm_component):
 
   def total_violations(self):
     return (self.n_multi_owner + self.n_coherent_data_mismatch +
-            self.n_excl_violation + self.n_bad_make_unique)
+            self.n_excl_violation + self.n_bad_make_unique +
+            self.n_line_hazard)
 
   def handle_reset(self):
     self._init_shadow()
@@ -438,3 +531,9 @@ class vip_chi_coherency_checker(uvm_component):
       f"data_mismatches={self.n_coherent_data_mismatch} "
       f"excl_violations={self.n_excl_violation} "
       f"bad_make_unique={self.n_bad_make_unique}")
+    # Its own line, short enough never to be wrapped by a report server: the
+    # tally has to stay greppable across a whole regression for the check to be
+    # provably non-vacuous.
+    self.logger.info(
+      f"COHERENCY HAZARD SUMMARY: line_hazards={self.n_line_hazard} "
+      f"line_claims_cleared={self.n_line_clear}")

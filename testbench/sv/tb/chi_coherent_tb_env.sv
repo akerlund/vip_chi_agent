@@ -128,6 +128,8 @@ class chi_coherent_tb_env #(
     this.hrnf1_agent.dat_port.connect(this.coh_checker.rnf1_dat_cc);
     this.hrnf1_agent.snp_port.connect(this.coh_checker.rnf1_snp_cc);
 
+    this.coh_checker.hazard_check_enable = this.hrnf0_agent.cfg.hazard_check_enable;
+
     // Coherent functional coverage: both RN-F requester streams feed the shared
     // coverage collector (flit-level coherent groups). The state-dependent
     // cache-transition / directory-occupancy groups live on coh_checker's shadow.

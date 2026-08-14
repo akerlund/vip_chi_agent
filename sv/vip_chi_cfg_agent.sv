@@ -138,6 +138,36 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0 keeps every burst well formed.
   bit snf_duplicate_dat_beat = 1'b0;
 
+  // Per-transaction latency bounds, in cycles on the monitor's reset-gated
+  // counter. 0 = unbounded, which is the default and preserves behaviour: a
+  // bench that has never stated a latency budget should not acquire one. A
+  // non-zero bound is checked at the completion milestone of each transaction,
+  // so a test that cares about latency can FAIL on it rather than read it out of
+  // a report after the fact.
+  int unsigned max_read_xact_latency  = 0;
+  int unsigned max_write_xact_latency = 0;
+  int unsigned max_snp_xact_latency   = 0;
+
+  // Record the arrival cycle of every DAT beat on the item (t_dat_beats). Off by
+  // default: it costs an array grow per beat of every transfer, which is not
+  // worth paying in a long run for a detail most tests never read. The
+  // transaction-level milestones are always stamped and cost nothing per beat.
+  bit collect_beat_timestamps = 1'b0;
+
+  // Same-line hazard rule: a requester must not have two requests outstanding to
+  // one cache line at a time. On by default. A bench whose requester model
+  // deliberately overlaps same-line requests turns it off rather than papering
+  // over the reports.
+  bit hazard_check_enable = 1'b1;
+
+  // Negative-control knob for the scoreboard's ordered-stream check: when set,
+  // the buffered SN-F serves the SECOND of two queued ordered requests before the
+  // first, so its acknowledgements come back in the wrong order while every
+  // transaction still completes correctly on its own. Nothing else in the VIP can
+  // see the inversion, which is the point -- it isolates the ordering check.
+  // Default 0 keeps the completer strictly first-come-first-served.
+  bit snf_reorder_ordered_service = 1'b0;
+
   vip_mem_config mem_cfg;
 
   bit link_act_delay_enabled = 1'b1;
@@ -503,15 +533,26 @@ class vip_chi_cfg_agent extends uvm_object;
     if (this.hnf_suppress_snoops || this.hnf_corrupt_dirty_merge ||
         this.hnf_force_excl_success || this.hnf_corrupt_fwd_data ||
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
-        this.snf_duplicate_dat_beat) begin
+        this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service) begin
       if (!silent) begin
         `uvm_warning("VIP_CHI_CFG", $sformatf(
-          "a negative-control knob is set (suppress_snoops=%0b corrupt_dirty_merge=%0b force_excl_success=%0b corrupt_fwd_data=%0b downstream_corrupt_data=%0b downstream_force_decerr=%0b snf_duplicate_dat_beat=%0b): this deliberately breaks the invariant a checker guards",
+          "a negative-control knob is set (suppress_snoops=%0b corrupt_dirty_merge=%0b force_excl_success=%0b corrupt_fwd_data=%0b downstream_corrupt_data=%0b downstream_force_decerr=%0b snf_duplicate_dat_beat=%0b snf_reorder_ordered_service=%0b): this deliberately breaks the invariant a checker guards",
           this.hnf_suppress_snoops, this.hnf_corrupt_dirty_merge,
           this.hnf_force_excl_success, this.hnf_corrupt_fwd_data,
           this.hnf_downstream_corrupt_data, this.hnf_downstream_force_decerr,
-          this.snf_duplicate_dat_beat))
+          this.snf_duplicate_dat_beat, this.snf_reorder_ordered_service))
       end
+    end
+
+    // The reorder knob only has anything to reorder when the SN-F buffers
+    // requests; on the serial loop each REQ is serviced to completion before the
+    // next is even sampled, so the negative control would silently do nothing.
+    if (this.snf_reorder_ordered_service && !this.multi_outstanding) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG",
+          "snf_reorder_ordered_service is set without multi_outstanding: the serial SN-F loop never holds two requests at once, so nothing is reordered")
+      end
+      is_valid = 1'b0;
     end
 
     if (this.hnf_downstream_en && this.hnf_suppress_snoops) begin

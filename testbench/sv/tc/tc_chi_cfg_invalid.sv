@@ -59,6 +59,9 @@ class tc_chi_cfg_invalid extends chi_base_test;
     c = this.fresh(); c.multi_outstanding_mixed = 1'b1;
     this.expect_invalid(c, "multi_outstanding_mixed without multi_outstanding");
 
+    c = this.fresh(); c.snf_reorder_ordered_service = 1'b1;
+    this.expect_invalid(c, "snf_reorder_ordered_service without multi_outstanding");
+
     c = this.fresh(); c.initial_req_credits = 65;
     this.expect_invalid(c, "initial REQ credits above the send-credit cap");
 
@@ -121,6 +124,11 @@ class tc_chi_cfg_invalid extends chi_base_test;
     c.multi_outstanding       = 1'b1;
     c.multi_outstanding_mixed = 1'b1;
     this.expect_valid(c, "the mixed overlap loop with its master enable");
+
+    c = this.fresh();
+    c.multi_outstanding             = 1'b1;
+    c.snf_reorder_ordered_service   = 1'b1;
+    this.expect_valid(c, "the ordered-service reorder knob with its master enable");
 
     c = this.fresh();
     c.decerr_ranges = new[1];

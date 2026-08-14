@@ -152,6 +152,7 @@ class chi_coherent_tb_env(uvm_env):
     self.hrnf1_agent.dat_port.connect(self.coh_checker.rnf1_dat_cc)
     self.hrnf1_agent.snp_port.connect(self.coh_checker.rnf1_snp_cc)
     self.coh_checker.set_cfg(self.hrnf0_agent.vif.cfg)
+    self.coh_checker.hazard_check_enable = self.hrnf0_agent.cfg.hazard_check_enable
 
     # Coherent functional coverage: both RN-F requester streams.
     for ag in (self.hrnf0_agent, self.hrnf1_agent):

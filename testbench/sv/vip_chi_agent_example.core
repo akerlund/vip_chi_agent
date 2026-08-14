@@ -44,6 +44,10 @@ filesets:
       - tc/tc_chi_d_ordered_write.sv:                       {is_include_file: true}
       - tc/tc_chi_d_ordered_read.sv:                        {is_include_file: true}
       - tc/tc_chi_txsactive_window.sv:                     {is_include_file: true}
+      - tc/tc_chi_item_timestamps.sv:                      {is_include_file: true}
+      - tc/tc_chi_latency_bound.sv:                        {is_include_file: true}
+      - tc/tc_chi_ordered_stream.sv:                       {is_include_file: true}
+      - tc/tc_chi_ordered_stream_negctl.sv:                {is_include_file: true}
       - tc/tc_chi_e_dbid_resp_ord.sv:                       {is_include_file: true}
       - tc/tc_chi_e_persist.sv:                             {is_include_file: true}
       - tc/tc_chi_e_write_zero_readback.sv:                 {is_include_file: true}
@@ -108,6 +112,9 @@ filesets:
       - tc/chi_coh_stress_base_test.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_d_stress.sv:                          {is_include_file: true}
       - tc/tc_chi_coh_e_stress.sv:                          {is_include_file: true}
+      - tc/chi_coh_line_hazard_base_test.sv:            {is_include_file: true}
+      - tc/tc_chi_coh_d_line_hazard.sv:                     {is_include_file: true}
+      - tc/tc_chi_coh_e_line_hazard.sv:                     {is_include_file: true}
       - tc/chi_coh_snp_backpressure_base_test.sv:       {is_include_file: true}
       - tc/tc_chi_coh_d_snp_backpressure.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_snp_backpressure.sv:                {is_include_file: true}
@@ -182,6 +189,8 @@ filesets:
       - tc/tc_chi_opcode_pool_safe.sv:                      {is_include_file: true}
       - tb/chi_dataid_negctl_catcher.sv:                {is_include_file: true}
       - tb/chi_pcrd_leak_negctl_catcher.sv:             {is_include_file: true}
+      - tb/chi_order_negctl_catcher.sv:                 {is_include_file: true}
+      - tb/chi_latency_negctl_catcher.sv:               {is_include_file: true}
       - tc/tc_chi_a0_smoke.sv:                              {is_include_file: true}
       - tc/tc_chi_cfg_invalid.sv:                           {is_include_file: true}
       - tc/tc_chi_dataid_out_of_order.sv:                   {is_include_file: true}

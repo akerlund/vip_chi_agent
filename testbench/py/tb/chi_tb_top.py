@@ -442,6 +442,13 @@ async def tc_chi_coh_d_stress(dut) -> None:
   await _run_d_coherent(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_coh_d_line_hazard", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_line_hazard(dut) -> None:
+  """Run this public testcase through the CHI-D coherent topology."""
+  test_name = "tc_chi_coh_d_line_hazard"
+  await _run_d_coherent(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_coh_d_transition_sweep", timeout_time=20, timeout_unit="ms")
 async def tc_chi_coh_d_transition_sweep(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
@@ -677,6 +684,13 @@ async def tc_chi_coh_e_snp_backpressure(dut) -> None:
 async def tc_chi_coh_e_stress(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_stress"
+  await _run_e_coherent(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_coh_e_line_hazard", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_line_hazard(dut) -> None:
+  """Run this public testcase through the CHI-E coherent topology."""
+  test_name = "tc_chi_coh_e_line_hazard"
   await _run_e_coherent(dut, test_name)
 
 
@@ -985,6 +999,34 @@ async def tc_chi_d_ordered_read(dut) -> None:
 async def tc_chi_txsactive_window(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_txsactive_window"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_latency_bound", timeout_time=20, timeout_unit="ms")
+async def tc_chi_latency_bound(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_latency_bound"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_item_timestamps", timeout_time=20, timeout_unit="ms")
+async def tc_chi_item_timestamps(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_item_timestamps"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_ordered_stream", timeout_time=20, timeout_unit="ms")
+async def tc_chi_ordered_stream(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_ordered_stream"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_ordered_stream_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_ordered_stream_negctl(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_ordered_stream_negctl"
   await _run_d_link(dut, test_name)
 
 

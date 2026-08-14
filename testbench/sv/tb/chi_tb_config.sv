@@ -7,6 +7,7 @@ class chi_tb_config extends uvm_object;
   // Standalone scoreboard gating (a test may disable it in configure_tb_cfg()).
   bit scoreboard_enable;
   bit scoreboard_check_data;
+  bit scoreboard_check_order;
   // Standalone perf-counter gating (always-on instrumentation, opt-out per test).
   bit perf_enable;
   // Stand the SVA DataID-ordering checks down: set by a test whose completer
@@ -25,6 +26,7 @@ class chi_tb_config extends uvm_object;
     `uvm_field_int(reset_pulse_cycles, UVM_DEFAULT)
     `uvm_field_int(scoreboard_enable, UVM_DEFAULT)
     `uvm_field_int(scoreboard_check_data, UVM_DEFAULT)
+    `uvm_field_int(scoreboard_check_order, UVM_DEFAULT)
     `uvm_field_int(perf_enable, UVM_DEFAULT)
     `uvm_field_int(dat_reorder_allowed, UVM_DEFAULT)
     `uvm_field_int(txsactive_extend_max_cycles, UVM_DEFAULT)
@@ -40,6 +42,7 @@ class chi_tb_config extends uvm_object;
     this.reset_pulse_cycles     = 0;
     this.scoreboard_enable      = 1'b1;
     this.scoreboard_check_data  = 1'b1;
+    this.scoreboard_check_order = 1'b1;
     this.perf_enable            = 1'b1;
     this.dat_reorder_allowed    = 1'b0;
     this.txsactive_extend_max_cycles = 0;

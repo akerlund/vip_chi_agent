@@ -85,7 +85,6 @@ class vip_chi_perf_counters #(
   protected int unsigned retry_count;
 
   // Per-transaction issue bookkeeping (indexed by requester TxnID).
-  protected int unsigned start_cycle_by_txn [TXN_ID_COUNT_C];
   protected bit          start_valid_by_txn [TXN_ID_COUNT_C];
   protected bit          is_write_by_txn    [TXN_ID_COUNT_C];
   protected bit          done_by_txn        [TXN_ID_COUNT_C];
@@ -140,7 +139,6 @@ class vip_chi_perf_counters #(
     this.bp_dat_cycles               = 0;
 
     for (txn_idx = 0; txn_idx < TXN_ID_COUNT_C; txn_idx++) begin
-      this.start_cycle_by_txn[txn_idx] = 0;
       this.start_valid_by_txn[txn_idx] = 1'b0;
       this.is_write_by_txn[txn_idx]    = 1'b0;
       this.done_by_txn[txn_idx]        = 1'b0;
@@ -217,15 +215,25 @@ class vip_chi_perf_counters #(
   endfunction
 
   // Retire a transaction (first completion milestone wins).
-  protected function void complete_txn(input txn_id_t txn_id);
+  //
+  // The latency comes off the ITEM, not from a private start-cycle shadow kept
+  // here. The monitor already stamped every milestone, and two independent
+  // measurements of one interval can only drift apart -- when they do, the
+  // aggregate quietly disagrees with what a test reads off the transaction and
+  // there is nothing in the report to say which is right. tc_chi_item_timestamps
+  // asserts the two agree, so this keeps them the same number by construction.
+  //
+  // Retry semantics are unchanged: item.latency() measures from the re-issue,
+  // which is what the start-cycle shadow did too (write_req_perf re-stamped on
+  // every REQ observation, including the re-issued one).
+  protected function void complete_txn(input txn_id_t txn_id, input item_t item);
     int unsigned txn_idx = this.txn_to_index(txn_id);
 
     if (!this.start_valid_by_txn[txn_idx] || this.done_by_txn[txn_idx]) begin
       return;
     end
     this.done_by_txn[txn_idx] = 1'b1;
-    this.record_latency(this.is_write_by_txn[txn_idx],
-                        this.cycle_count - this.start_cycle_by_txn[txn_idx]);
+    this.record_latency(this.is_write_by_txn[txn_idx], item.latency());
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -238,7 +246,6 @@ class vip_chi_perf_counters #(
       return;
     end
     txn_idx = this.txn_to_index(item.txn_id);
-    this.start_cycle_by_txn[txn_idx] = this.cycle_count;
     this.start_valid_by_txn[txn_idx] = 1'b1;
     this.is_write_by_txn[txn_idx]    = this.req_is_write(item.opcode);
     this.done_by_txn[txn_idx]        = 1'b0;
@@ -256,7 +263,7 @@ class vip_chi_perf_counters #(
     if ((item.role == VIP_CHI_ROLE_SNF_E) &&
         ((item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_E)) ||
          (item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_E)))) begin
-      this.complete_txn(item.txn_id);
+      this.complete_txn(item.txn_id, item);
     end
   endfunction
 
@@ -268,7 +275,7 @@ class vip_chi_perf_counters #(
     if ((item.role == VIP_CHI_ROLE_SNF_E) &&
         ((item.dat_opcode == dat_opcode_t'(VIP_CHI_DAT_COMP_DATA_E)) ||
          (item.dat_opcode == dat_opcode_t'(VIP_CHI_DAT_DATA_SEP_RESP_E)))) begin
-      this.complete_txn(item.txn_id);
+      this.complete_txn(item.txn_id, item);
     end
   endfunction
 

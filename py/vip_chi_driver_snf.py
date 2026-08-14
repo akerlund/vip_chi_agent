@@ -73,6 +73,10 @@ class vip_chi_driver_snf(uvm_driver):
     # multi-outstanding path so a pipelined REQ arriving mid-response is queued
     # rather than dropped.
     self.captured_reqs = []
+    # One-shot latch for cfg.snf_reorder_ordered_service (see req_response_loop):
+    # the negative control inverts a single pair, so the ordered-stream check has
+    # exactly one violation to report.
+    self.ordered_swap_done = False
 
     self._driver_tasks = []
     self.agent_owned = False
@@ -191,6 +195,7 @@ class vip_chi_driver_snf(uvm_driver):
     self._kill_driver_tasks()
     self.retries_issued = 0
     self.captured_reqs = []
+    self.ordered_swap_done = False
     self.tx_active_count = 0
     self._tx_active_extend = 0
     self.reset_credit_state()
@@ -400,7 +405,21 @@ class vip_chi_driver_snf(uvm_driver):
     bus = self.bus
     while True:
       if self.captured_reqs:
-        req = self.captured_reqs.pop(0)
+        # Negative control (cfg.snf_reorder_ordered_service): serve the second of
+        # two queued ordered requests first. Every transaction still completes
+        # correctly on its own -- only the order the completer acknowledges them
+        # in is wrong, which is exactly the fault the ordered-stream check exists
+        # to catch and the only fault it should catch. It fires ONCE, so the check
+        # has exactly one inversion to report and the count a negative control
+        # asserts on is unambiguous.
+        if (self.cfg.snf_reorder_ordered_service and not self.ordered_swap_done
+            and len(self.captured_reqs) >= 2
+            and self.req_has_ordering(self.captured_reqs[0])
+            and self.req_has_ordering(self.captured_reqs[1])):
+          self.ordered_swap_done = True
+          req = self.captured_reqs.pop(1)
+        else:
+          req = self.captured_reqs.pop(0)
         try:
           await self.dispatch_auto_response(req)
         finally:

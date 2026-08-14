@@ -170,6 +170,10 @@ class vip_chi_agent(uvm_agent):
 
     # The monitor samples the same bus as the agent; give it the role + cfg.
     self.monitor.set_bus(self.vif, self.vif.cfg, self.role)
+    self.monitor.collect_beat_timestamps = self.cfg.collect_beat_timestamps
+    self.monitor.max_read_xact_latency = self.cfg.max_read_xact_latency
+    self.monitor.max_write_xact_latency = self.cfg.max_write_xact_latency
+    self.monitor.max_snp_xact_latency = self.cfg.max_snp_xact_latency
 
   # ==========================================================================
   # Single rst_n watcher (SV fork/disable-fork -> cocotb tasks + kill).

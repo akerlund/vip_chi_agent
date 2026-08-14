@@ -41,6 +41,7 @@ import vip_chi_types_pkg::*;
 //   A - lifecycle / completion contract (per requester transaction)
 //   B - cross-agent request fidelity (REQ observed at requester == at completer)
 //   C - independent, predictable-only data integrity (write->read)
+//   E - ordered-stream acknowledgement order (per requester ordered stream)
 //
 // It connects in parallel to the same monitor analysis ports the observation
 // FIFOs and coverage already use, so the per-test FIFO draining is untouched.
@@ -95,6 +96,13 @@ class vip_chi_sb_ctx #(
   bit                 ordered;
   bit                 exp_comp_ack;
   bit                 allow_retry;
+
+  // Checker E position. order_val is the REQ Order field verbatim; ord_key names
+  // the stream FIFO this transaction was enrolled in, so it can be withdrawn
+  // again without searching every stream.
+  bit [1:0]           order_val;
+  string              ord_key;
+  bit                 ord_enrolled;
 
   // Separated read (ReadNoSnpSep): the DataSepResp data leg returns on
   // ReturnNID/ReturnTxnID rather than the original requester TxnID, so the ctx
@@ -204,8 +212,9 @@ class vip_chi_scoreboard #(
   localparam int DATA_BYTES_C = CFG_P.DATA_BYTES_P;
 
   // Gating knobs, set by the env from tb_cfg in connect_phase.
-  bit enable     = 1'b1;   // master on/off (A + B + C)
-  bit check_data = 1'b1;   // Checker C on/off (A + B still run)
+  bit enable      = 1'b1;  // master on/off (A + B + C + E)
+  bit check_data  = 1'b1;  // Checker C on/off (A + B still run)
+  bit check_order = 1'b1;  // Checker E on/off (A + B + C still run)
 
   // Checker B HN-I routing prediction: the env hands over the exact routing
   // policy the HN-I driver uses (port count, stride LSB, optional SAM) so the
@@ -254,9 +263,15 @@ class vip_chi_scoreboard #(
   protected int   hni_route_pred [string]; // predicted target port per hrni REQ
   protected int   hni_route_obs  [string]; // observed arrival port per hsnf REQ
 
+  // Checker E: one expected-acknowledgement FIFO per ordered stream. The key is
+  // "stream_srcid_order" and the queue holds TxnIDs in the order the requester
+  // issued them; the head is what the completer owes an acknowledgement for next.
+  protected txn_id_t ord_fifo [string][$];
+
   // Reporting counters.
   protected int n_incomplete, n_orphan, n_wrong_opcode, n_reuse;
   protected int n_data_mismatch, n_reads_skipped, n_relay_mismatch, n_route_mismatch;
+  protected int n_order_violation, n_order_checked;
 
   // ---------------------------------------------------------------------------
   // Constructor.
@@ -360,6 +375,7 @@ class vip_chi_scoreboard #(
     req_opcode_t opc = item.opcode;
 
     ctx.ordered      = (item.order != VIP_CHI_ORDER_NONE_E);
+    ctx.order_val    = item.order;
     ctx.exp_comp_ack = item.exp_comp_ack;
     ctx.allow_retry  = item.allow_retry;
 
@@ -421,6 +437,120 @@ class vip_chi_scoreboard #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Checker E - ordered-stream acknowledgement order.
+  //
+  // A request carrying a non-zero Order field joins an ordered stream: the
+  // requests one source issues with the same Order value are a sequence the
+  // completer has taken on an ordering obligation for, and it must acknowledge
+  // them in the order it received them. This VIP's requesters pipeline ordered
+  // requests rather than stalling on each acknowledgement (see
+  // observed_peak_outstanding in the ordered multi-outstanding tests), so the
+  // obligation sits entirely on the completer side, which is what is checked.
+  //
+  // The observable is the FIRST inbound response of any kind for a transaction --
+  // the ReadReceipt of an ordered read, the DBIDResp / CompDBIDResp of an ordered
+  // write. That is the flit in which the completer commits to a position in the
+  // stream, so that is what is compared; the data burst that follows may overlap
+  // its neighbours freely and says nothing about ordering.
+  //
+  // Streams are keyed per requester stream AND per Order value, so two sources,
+  // or one source mixing Request_Order with Request_Accepted traffic, do not
+  // constrain each other.
+  // ---------------------------------------------------------------------------
+  protected function string ord_stream_key(input vip_chi_sb_stream_e stream,
+                                           input node_id_t           src_id,
+                                           input bit [1:0]           order_val);
+    return $sformatf("%0d_%0h_%0h", stream, src_id, order_val);
+  endfunction
+
+  // Position of a TxnID in a stream FIFO, or -1. Linear, but an ordered stream is
+  // only ever as deep as the requester's outstanding budget.
+  protected function int ord_find(input string key, input txn_id_t txn_id);
+    if (!this.ord_fifo.exists(key)) begin
+      return -1;
+    end
+    for (int i = 0; i < this.ord_fifo[key].size(); i++) begin
+      if (this.ord_fifo[key][i] == txn_id) begin
+        return i;
+      end
+    end
+    return -1;
+  endfunction
+
+  // Take the tail position in this transaction's stream. Requests that never draw
+  // a completion (prefetch, PCrdReturn) are left out: nothing would ever
+  // acknowledge them, so enrolling one would wedge the stream behind it.
+  protected function void ord_enroll(input ctx_t ctx);
+    if (!this.check_order || !ctx.ordered || ctx.ord_enrolled) begin
+      return;
+    end
+    if ((ctx.kind == VIP_CHI_SB_PREFETCH) || (ctx.kind == VIP_CHI_SB_OTHER)) begin
+      return;
+    end
+    ctx.ord_key      = this.ord_stream_key(ctx.stream, ctx.requester_node, ctx.order_val);
+    ctx.ord_enrolled = 1'b1;
+    this.ord_fifo[ctx.ord_key].push_back(ctx.txn_id);
+  endfunction
+
+  // A RetryAck withdraws the request from its stream: it was not accepted, so the
+  // completer owes it nothing, and the re-issue takes a fresh position at the tail
+  // rather than holding one it never got.
+  protected function void ord_withdraw(input ctx_t ctx);
+    int idx;
+    if (!ctx.ord_enrolled) begin
+      return;
+    end
+    ctx.ord_enrolled = 1'b0;
+    idx = this.ord_find(ctx.ord_key, ctx.txn_id);
+    if (idx >= 0) begin
+      this.ord_fifo[ctx.ord_key].delete(idx);
+      if (this.ord_fifo[ctx.ord_key].size() == 0) begin
+        this.ord_fifo.delete(ctx.ord_key);
+      end
+    end
+  endfunction
+
+  // The completer has acknowledged this transaction: it must be the one at the
+  // head of its stream.
+  protected function void ord_observe(input ctx_t ctx);
+    int      idx;
+    txn_id_t expected;
+
+    if (!ctx.ord_enrolled) begin
+      return;
+    end
+    ctx.ord_enrolled = 1'b0;
+    if (!this.ord_fifo.exists(ctx.ord_key) || (this.ord_fifo[ctx.ord_key].size() == 0)) begin
+      return;
+    end
+
+    expected = this.ord_fifo[ctx.ord_key][0];
+    if (expected == ctx.txn_id) begin
+      // Count the in-order acknowledgement as well as the violation: a check that
+      // only ever tallies failures reads, in a passing log, exactly like a check
+      // that never ran.
+      this.n_order_checked++;
+      void'(this.ord_fifo[ctx.ord_key].pop_front());
+    end
+    else begin
+      this.n_order_violation++;
+      `uvm_error(get_name(), $sformatf(
+        "Ordered stream out of order: stream=%0d src=0x%0h order=0x%0h expected txn=0x%0h to be acknowledged first, observed txn=0x%0h",
+        ctx.stream, ctx.requester_node, ctx.order_val, expected, ctx.txn_id))
+      // Drop the transaction that jumped the queue from wherever it sits, so one
+      // inversion costs one error instead of cascading down the rest of the stream.
+      idx = this.ord_find(ctx.ord_key, ctx.txn_id);
+      if (idx >= 0) begin
+        this.ord_fifo[ctx.ord_key].delete(idx);
+      end
+    end
+
+    if (this.ord_fifo.exists(ctx.ord_key) && (this.ord_fifo[ctx.ord_key].size() == 0)) begin
+      this.ord_fifo.delete(ctx.ord_key);
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Checker A/C - requester REQ.
   // ---------------------------------------------------------------------------
   protected function void handle_req(input vip_chi_sb_stream_e stream, input item_t item);
@@ -454,6 +584,7 @@ class vip_chi_scoreboard #(
           this.set_contract(ctx, item);
           ctx.addr = item.addr;
           ctx.size = item.size;
+          this.ord_enroll(ctx);
           return;
         end
         this.n_reuse++;
@@ -473,6 +604,7 @@ class vip_chi_scoreboard #(
     ctx.opcode         = item.opcode;
     this.set_contract(ctx, item);
     this.open_ctx[key] = ctx;
+    this.ord_enroll(ctx);
 
     // Separated read: the DataSepResp leg returns on ReturnNID/ReturnTxnID, not
     // the original TxnID, so index the ctx by the completion key that data leg
@@ -574,6 +706,9 @@ class vip_chi_scoreboard #(
       end
       rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C): begin
         ctx.retry_seen = 1'b1;
+        // Not an acknowledgement -- the request was refused, so it leaves its
+        // ordered stream and rejoins at the tail when it is re-issued.
+        this.ord_withdraw(ctx);
       end
       default: begin
         // Unmodeled completion opcode: warn rather than fail. A genuinely wrong
@@ -586,6 +721,11 @@ class vip_chi_scoreboard #(
           opc, ctx.kind, stream, item.txn_id));
       end
     endcase
+
+    // Checker E: the first inbound response is the completer committing to this
+    // transaction's position in its ordered stream. A no-op after that, and a
+    // no-op for the RetryAck the branch above already withdrew.
+    this.ord_observe(ctx);
 
     this.maybe_commit_write(ctx);
     this.resolve_atomic(ctx, null);  // store atomic completes on its Comp RSP
@@ -644,6 +784,11 @@ class vip_chi_scoreboard #(
       return;
     end
     ctx.read_data_seen = 1'b1;
+
+    // Checker E: normally the ReadReceipt got here first and this is a no-op; it
+    // is the acknowledgement only for an ordered transaction whose completer
+    // answers on DAT alone.
+    this.ord_observe(ctx);
 
     // Checker C: plain reads compare against wire-observed writes; a returning
     // atomic's CompData is its completion, so resolve the RMW here (compare the
@@ -1030,6 +1175,7 @@ class vip_chi_scoreboard #(
     this.hni_cmp_cnt.delete();
     this.hni_route_pred.delete();
     this.hni_route_obs.delete();
+    this.ord_fifo.delete();
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -1060,6 +1206,13 @@ class vip_chi_scoreboard #(
       end
     end
   endfunction
+
+  // ---------------------------------------------------------------------------
+  // Checker E accessors: the violation count for a negative control, and the
+  // in-order tally so a positive test can require that the check actually ran.
+  // ---------------------------------------------------------------------------
+  function int get_order_violation_count(); return this.n_order_violation; endfunction
+  function int get_order_checked_count();   return this.n_order_checked;   endfunction
 
   // ---------------------------------------------------------------------------
   // Final checks: incomplete transactions + request fidelity.
@@ -1100,6 +1253,14 @@ class vip_chi_scoreboard #(
       this.n_incomplete, this.n_orphan, this.n_wrong_opcode, this.n_reuse,
       this.n_data_mismatch, this.n_relay_mismatch, this.n_route_mismatch,
       this.n_reads_skipped), UVM_LOW);
+
+    // Checker E on its own line, deliberately: appended to the summary above it
+    // fell past the report server's wrap column, which split the field name from
+    // its value and made the tally impossible to grep for across a regression --
+    // exactly the sweep an ordered-stream check needs to prove it is not vacuous.
+    `uvm_info(get_name(), $sformatf(
+      "ordered-stream summary: order_violation=%0d order_in_order=%0d",
+      this.n_order_violation, this.n_order_checked), UVM_LOW);
   endfunction
 
 endclass

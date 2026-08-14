@@ -76,6 +76,10 @@ class vip_chi_driver_snf #(
   // multi-outstanding path so a request that arrives while the responder is
   // still driving an earlier burst is queued instead of silently dropped.
   protected req_flit_t                                         captured_reqs [$];
+  // One-shot latch for cfg.snf_reorder_ordered_service (see req_response_loop):
+  // the negative control inverts a single pair, so the ordered-stream check has
+  // exactly one violation to report.
+  protected bit                                                ordered_swap_done;
   // Count of RetryAck responses emitted so far. While this is below
   // cfg.force_retry_count, an inbound retryable REQ is bounced with a
   // RetryAck + PCrdGrant instead of being serviced (opt-in; default 0 = off).
@@ -368,6 +372,7 @@ class vip_chi_driver_snf #(
   // ---------------------------------------------------------------------------
   function void handle_reset();
     this.retries_issued = 0;
+    this.ordered_swap_done = 1'b0;
     this.tx_active_count = 0;
     this.tx_active_extend = 0;
     this.reset_credit_state();
@@ -587,7 +592,24 @@ class vip_chi_driver_snf #(
 
     forever begin
       if (this.captured_reqs.size() != 0) begin
-        req = this.captured_reqs.pop_front();
+        // Negative control (cfg.snf_reorder_ordered_service): serve the second of
+        // two queued ordered requests first. Every transaction still completes
+        // correctly on its own -- only the order the completer acknowledges them
+        // in is wrong, which is exactly the fault the ordered-stream check exists
+        // to catch and the only fault it should catch. It fires ONCE, so the
+        // check has exactly one inversion to report and the count a negative
+        // control asserts on is unambiguous.
+        if (this.cfg.snf_reorder_ordered_service && !this.ordered_swap_done &&
+            (this.captured_reqs.size() >= 2) &&
+            this.req_has_ordering(this.captured_reqs[0]) &&
+            this.req_has_ordering(this.captured_reqs[1])) begin
+          this.ordered_swap_done = 1'b1;
+          req = this.captured_reqs[1];
+          this.captured_reqs.delete(1);
+        end
+        else begin
+          req = this.captured_reqs.pop_front();
+        end
         this.dispatch_auto_response(req);
         this.tx_activity_end();
       end

@@ -145,6 +145,17 @@ class vip_chi_coherency_checker #(
   } excl_clear_cause_e;
   protected excl_clear_cause_e excl_clear_cause [N_NODES_C][longint];
 
+  // Same-line hazard shadow, per node. hazard_by_line maps a cache line to the
+  // TxnID currently outstanding on it, hazard_by_txn the reverse, so a REQ can
+  // be tested in O(1) and a completion can retire its line without a scan.
+  protected longint hazard_by_line [N_NODES_C][longint];
+  protected longint hazard_by_txn  [N_NODES_C][longint];
+  // Same-line hazard rule on/off. Set by the env from the requester agent's cfg
+  // (see chi_coherent_tb_env); the checker holds no agent cfg of its own.
+  bit hazard_check_enable = 1'b1;
+
+  protected int n_line_hazard;
+  protected int n_line_clear;
   protected int n_multi_owner;
   protected int n_completions;
   protected int n_snoops;
@@ -330,8 +341,12 @@ class vip_chi_coherency_checker #(
       this.open_mu_line[n].delete();
       this.excl_ll_valid[n].delete();
       this.excl_clear_cause[n].delete();
+      this.hazard_by_line[n].delete();
+      this.hazard_by_txn[n].delete();
       this.pending_snp_valid[n] = 1'b0;
     end
+    this.n_line_hazard = 0;
+    this.n_line_clear  = 0;
     this.line_state.delete();
     this.line_data.delete();
     this.dn_rd_line.delete();
@@ -515,6 +530,81 @@ class vip_chi_coherency_checker #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Same-line hazard shadow.
+  //
+  // The invariant: a requester must not have two requests outstanding to the
+  // same cache line at once. The completer resolves a line's transactions in the
+  // order it chooses and its snoops carry no requester-side sequence, so a
+  // requester that overlaps two requests on one line has no way to say which
+  // result belongs to which -- and neither has anything watching the link.
+  //
+  // Scoped per NODE on purpose. Two different requesters holding the same line
+  // outstanding is not a hazard, it is the ordinary contention every coherent
+  // test in this bench creates deliberately; the home exists to arbitrate it.
+  //
+  // A line is claimed at the REQ and released at the completion response. The
+  // release is the response rather than the last data beat because the response
+  // is what every request kind has -- reads, writes, CMOs and the data-less
+  // acquires alike -- and a shadow that only understood the kinds with a data
+  // phase would leak entries and then blame the next request to that line.
+  // ---------------------------------------------------------------------------
+  protected function void hazard_claim(input int     node,
+                                       input longint line,
+                                       input longint txn_id,
+                                       input longint opcode);
+    longint prior;
+    if (!this.hazard_check_enable) begin
+      return;
+    end
+    if (this.hazard_by_line[node].exists(line)) begin
+      prior = this.hazard_by_line[node][line];
+      if (prior != txn_id) begin
+        this.n_line_hazard++;
+        `uvm_error("VIP_CHI_COH", $sformatf(
+          "COHERENCY VIOLATION: node %0d issued txn 0x%0h (opcode=0x%0h) to line 0x%0h while its own txn 0x%0h to that line was still outstanding",
+          node, txn_id, opcode, line, prior))
+      end
+      // Same TxnID on the same line: a RetryAck'd request being re-issued, not a
+      // second request. Re-claiming it would report the requester for obeying
+      // the retry protocol.
+      return;
+    end
+    this.hazard_by_line[node][line]  = txn_id;
+    this.hazard_by_txn[node][txn_id] = line;
+  endfunction
+
+  protected function void hazard_release(input int node, input longint txn_id);
+    longint line;
+    if (!this.hazard_check_enable) begin
+      return;
+    end
+    if (!this.hazard_by_txn[node].exists(txn_id)) begin
+      return;
+    end
+    line = this.hazard_by_txn[node][txn_id];
+    this.hazard_by_txn[node].delete(txn_id);
+    if (this.hazard_by_line[node].exists(line) &&
+        (this.hazard_by_line[node][line] == txn_id)) begin
+      this.hazard_by_line[node].delete(line);
+    end
+    // Count the clean open/close pair: without it a log cannot distinguish a run
+    // in which the rule held from one in which it never evaluated.
+    this.n_line_clear++;
+  endfunction
+
+  // TRUE for the RSP opcodes that end a requester's claim on a cache line.
+  // DBIDResp and ReadReceipt are deliberately excluded: they grant a buffer and
+  // confirm ordering respectively, and the transaction is still live after
+  // either. RetryAck is included because the completer refused the request
+  // outright -- it holds no line, and the re-issue claims one again.
+  protected function bit hazard_release_rsp(input item_t::rsp_opcode_t opc);
+    return (opc == item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) ||
+           (opc == item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)) ||
+           (opc == item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C)) ||
+           (opc == item_t::rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C));
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Exclusive-monitor shadow maintenance: clear reservations broken by a store.
   // clear_excl_all breaks every node's reservation on a line (a store/invalidate
   // that changes the line for everyone); clear_excl_others keeps the initiating
@@ -554,6 +644,10 @@ class vip_chi_coherency_checker #(
     end
     line = this.line_of(longint'(item.addr));
     wop  = vip_chi_req_opcode_t'(item.opcode);
+    // Every request kind claims the line, including the ones the ownership
+    // shadow below does not model: the hazard rule is about a requester
+    // overlapping itself, which does not depend on what the request does.
+    this.hazard_claim(node, line, longint'(item.txn_id), longint'(wop));
     if (this.is_coherent_read(item, uniq)) begin
       this.open_rd_line[node][longint'(item.txn_id)] = line;
       this.open_rd_uniq[node][longint'(item.txn_id)] = uniq;
@@ -609,6 +703,11 @@ class vip_chi_coherency_checker #(
       return;
     end
     op = vip_chi_dat_opcode_t'(item.dat_opcode);
+
+    // A read's CompData is its completion, so it releases the line.
+    if (op == VIP_CHI_DAT_COMP_DATA_E) begin
+      this.hazard_release(node, longint'(item.txn_id));
+    end
 
     // Authoritative writes to the home establish the expected line data.
     if (op == VIP_CHI_DAT_COPY_BACK_WR_DATA_E) begin
@@ -720,6 +819,10 @@ class vip_chi_coherency_checker #(
     bit     success;
     if (!this.enable) begin
       return;
+    end
+    // Release the line on a genuine completion (see hazard_release_rsp).
+    if (this.hazard_release_rsp(item.rsp_opcode)) begin
+      this.hazard_release(node, longint'(item.txn_id));
     end
     // MakeUnique completion (RSP-only Comp): mark the requester the Unique owner
     // and run the single-writer check -- the ownership shadow is otherwise updated
@@ -835,6 +938,11 @@ class vip_chi_coherency_checker #(
   function int get_coherent_data_mismatch_count(); return this.n_coherent_data_mismatch; endfunction
   function int get_excl_violation_count(); return this.n_excl_violation; endfunction
   function int get_bad_make_unique_count(); return this.n_bad_make_unique; endfunction
+  function int get_line_hazard_count(); return this.n_line_hazard; endfunction
+  // Clean claim/release pairs. A test asserts on this to show the hazard rule
+  // actually evaluated, rather than reading a zero violation count from a run
+  // where no request ever claimed a line.
+  function int get_line_clear_count(); return this.n_line_clear; endfunction
 
   // Functional coverage of the (from-state x snoop-opcode -> to-state) cache
   // transition covergroup, sampled on every observed snoop. Lets a constrained-
@@ -850,6 +958,12 @@ class vip_chi_coherency_checker #(
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY CHECKER SUMMARY: completions=%0d snoops=%0d multi_owner_violations=%0d data_mismatches=%0d excl_violations=%0d bad_make_unique=%0d",
       this.n_completions, this.n_snoops, this.n_multi_owner, this.n_coherent_data_mismatch, this.n_excl_violation, this.n_bad_make_unique), UVM_LOW)
+    // Its own line, short enough never to be wrapped by the report server: the
+    // tally has to stay greppable across a whole regression for the check to be
+    // provably non-vacuous.
+    `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY HAZARD SUMMARY: line_hazards=%0d line_claims_cleared=%0d",
+      this.n_line_hazard, this.n_line_clear), UVM_LOW)
   endfunction
 
 endclass

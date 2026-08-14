@@ -135,9 +135,10 @@ class chi_tb_env extends uvm_env;
       chi_tb_config tb_cfg;
 
       if (uvm_config_db #(chi_tb_config)::get(null, "*", "tb_cfg", tb_cfg)) begin
-        this.scoreboard.enable     = tb_cfg.scoreboard_enable;
-        this.scoreboard.check_data = tb_cfg.scoreboard_check_data;
-        this.perf.enable           = tb_cfg.perf_enable;
+        this.scoreboard.enable      = tb_cfg.scoreboard_enable;
+        this.scoreboard.check_data  = tb_cfg.scoreboard_check_data;
+        this.scoreboard.check_order = tb_cfg.scoreboard_check_order;
+        this.perf.enable            = tb_cfg.perf_enable;
       end
     end
 

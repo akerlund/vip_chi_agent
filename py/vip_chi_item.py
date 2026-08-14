@@ -167,6 +167,28 @@ class vip_chi_item(uvm_sequence_item):
     self.raw_dat = 0
     self.raw_snp = 0
 
+    # ---- transaction timestamps (stamped by the monitor) ------------------
+    # Cycle counts on the observing agent's reset-gated free-running counter,
+    # NOT $time: that keeps every latency a timescale-independent integer, so a
+    # bound written in one bench means the same thing in another. 0 means the
+    # milestone was never reached, which is why cycle 0 is never handed out
+    # (the counter's first observable value is 1).
+    self.t_req_issued = 0
+    self.t_retry_ack = 0
+    self.t_pcrd_grant = 0
+    self.t_req_reissued = 0
+    self.t_dbid = 0
+    self.t_first_dat = 0
+    self.t_last_dat = 0
+    self.t_comp = 0
+    self.t_compack = 0
+    # Retries this ONE transaction suffered. The perf counters keep a global
+    # tally; that cannot say whether ten retries were one pathological
+    # transaction or ten unlucky ones.
+    self.retry_count = 0
+    # Per-beat arrival cycles, only when cfg.collect_beat_timestamps is set.
+    self.t_dat_beats = []
+
     # ---- payload arrays (built in post_randomize / by sequences) ----------
     self.data = []
     self.be = []
@@ -566,9 +588,20 @@ class vip_chi_item(uvm_sequence_item):
   _ARRAYS = ("data", "be", "tag", "tu", "data_id", "cc_id", "dat_resp",
              "dat_resp_err")
 
+  # Copied with the item but deliberately NOT compared: two observations of the
+  # same transaction on two links are the same transaction even though they were
+  # seen at different cycles, and a scoreboard comparing a predicted item to an
+  # observed one must not fail on when it happened.
+  _TIMESTAMPS = ("t_req_issued", "t_retry_ack", "t_pcrd_grant", "t_req_reissued",
+                 "t_dbid", "t_first_dat", "t_last_dat", "t_comp", "t_compack",
+                 "retry_count")
+
   def do_copy(self, rhs: "vip_chi_item") -> None:
     for f in self._SCALARS:
       setattr(self, f, int(getattr(rhs, f)))
+    for f in self._TIMESTAMPS:
+      setattr(self, f, int(getattr(rhs, f)))
+    self.t_dat_beats = list(rhs.t_dat_beats)
     for f in ("is_snoop", "ret_to_src", "do_not_data_pull", "raw_override",
               "raw_flitpend"):
       setattr(self, f, bool(getattr(rhs, f)))
@@ -586,6 +619,42 @@ class vip_chi_item(uvm_sequence_item):
       if list(getattr(self, f)) != list(getattr(rhs, f)):
         return False
     return True
+
+  # ==========================================================================
+  # Timestamp accessors. Each returns 0 when the interval it measures was never
+  # observed, which is the same convention the fields themselves use: a caller
+  # asking for the latency of a transaction that never completed gets 0, not a
+  # number computed against a milestone that never happened.
+  # ==========================================================================
+  def latency(self) -> int:
+    """Cycles from the request going out to its completion.
+
+    Measured from the RE-ISSUE when the transaction was retried: the completer
+    was entitled to refuse the first attempt, so timing from the original REQ
+    charges it for a delay the protocol allows.
+    """
+    start = self.t_req_reissued or self.t_req_issued
+    end = self.t_comp or self.t_last_dat
+    if not start or not end or end < start:
+      return 0
+    return end - start
+
+  def dbid_latency(self) -> int:
+    """Cycles from the request to its DBID grant (a write's buffer allocation)."""
+    start = self.t_req_reissued or self.t_req_issued
+    if not start or not self.t_dbid or self.t_dbid < start:
+      return 0
+    return self.t_dbid - start
+
+  def data_burst_time(self) -> int:
+    """Cycles spanned by the data burst itself, first beat to last.
+
+    Zero for a single-beat transfer -- one beat spans no interval -- which is
+    the honest answer rather than an off-by-one 1.
+    """
+    if not self.t_first_dat or not self.t_last_dat:
+      return 0
+    return self.t_last_dat - self.t_first_dat
 
   def convert2string(self) -> str:
     return (f"{self.name} dir={int(self.direction)} role={int(self.role)} "

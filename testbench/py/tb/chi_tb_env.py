@@ -129,6 +129,7 @@ class chi_tb_env(uvm_env):
       self.perf.enable = tb_cfg.perf_enable
       self.scoreboard.enable = tb_cfg.scoreboard_enable
       self.scoreboard.check_data = tb_cfg.scoreboard_check_data
+      self.scoreboard.check_order = tb_cfg.scoreboard_check_order
       # The checkers re-read tb_cfg every cycle rather than latching it here,
       # so a test may raise dat_reorder_allowed any time before its traffic.
       self.rni_sva.tb_cfg = tb_cfg

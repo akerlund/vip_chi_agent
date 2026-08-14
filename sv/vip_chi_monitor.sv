@@ -103,6 +103,57 @@ class vip_chi_monitor #(
   protected int    wr_beats_by_txnid[txn_id_t];  // write/operand out, keyed by REQ TxnID (staging)
   protected int    wr_beats_by_dbid[txn_id_t];   // write/operand out, keyed by granted DBID
 
+  // ---------------------------------------------------------------------------
+  // Transaction timestamps.
+  //
+  // Milestones arrive on different channels and are published as different
+  // items -- the REQ on one, its Comp on another -- so a record per TxnID
+  // accumulates them and every published item carries the whole set known so
+  // far. That is what lets a consumer of the analysis stream call latency() on
+  // the completion it receives, instead of having to correlate two items.
+  //
+  // Cycles come from a reset-gated free-running counter, NOT $time: that keeps
+  // every latency a timescale-independent integer. The counter advances before
+  // any stamping, so the first observable cycle is 1 and 0 stays available as
+  // "milestone not reached".
+  // ---------------------------------------------------------------------------
+  typedef struct {
+    int unsigned t_req_issued;
+    int unsigned t_retry_ack;
+    int unsigned t_pcrd_grant;
+    int unsigned t_req_reissued;
+    int unsigned t_dbid;
+    int unsigned t_first_dat;
+    int unsigned t_last_dat;
+    int unsigned t_comp;
+    int unsigned t_compack;
+    int unsigned retry_count;
+    bit          is_write;   // which bound applies; not a milestone
+  } txn_times_t;
+
+  protected int unsigned cycle_count;
+  protected txn_times_t  txn_times [txn_id_t];
+  // Snoop records are kept apart from request records: a snoop's TxnID is
+  // allocated by the home, a request's by the requester, and on a coherent link
+  // both are visible on the same monitor. Sharing one map would let two
+  // unrelated transactions that happen to pick the same number overwrite each
+  // other's milestones.
+  protected txn_times_t  snp_times [txn_id_t];
+
+  // Per-beat arrival cycles cost an array grow on every beat of every transfer,
+  // which is not worth paying in a long run for a detail most tests never read.
+  // Set by the agent from its cfg; default off.
+  bit          collect_beat_timestamps = 1'b0;
+
+  // Latency bounds, 0 = unbounded. Set by the agent from its cfg.
+  int unsigned max_read_xact_latency  = 0;
+  int unsigned max_write_xact_latency = 0;
+  int unsigned max_snp_xact_latency   = 0;
+
+  // Whole-run tally, deliberately NOT cleared by handle_reset() -- like the
+  // DataID violation counter it reports on the run, not on the current epoch.
+  int unsigned n_latency_violation;
+
   `uvm_component_param_utils(vip_chi_monitor #(CFG_P, FLIT_TYPES_T, ROLE_P))
 
   // ---------------------------------------------------------------------------
@@ -164,6 +215,83 @@ class vip_chi_monitor #(
     cx_tx_rx:      cross cp_txsactive, cp_rxsactive;
   endgroup
 
+  // ---------------------------------------------------------------------------
+  // Timestamp helpers.
+  // ---------------------------------------------------------------------------
+  // Copy the accumulated milestones for this TxnID onto a published item. The
+  // is_write flag is monitor bookkeeping and deliberately not published.
+  protected function void stamp_item(input item_t item, input txn_id_t txn_id);
+    txn_times_t rec;
+    if (!this.txn_times.exists(txn_id)) begin
+      return;
+    end
+    rec                 = this.txn_times[txn_id];
+    item.t_req_issued   = rec.t_req_issued;
+    item.t_retry_ack    = rec.t_retry_ack;
+    item.t_pcrd_grant   = rec.t_pcrd_grant;
+    item.t_req_reissued = rec.t_req_reissued;
+    item.t_dbid         = rec.t_dbid;
+    item.t_first_dat    = rec.t_first_dat;
+    item.t_last_dat     = rec.t_last_dat;
+    item.t_comp         = rec.t_comp;
+    item.t_compack      = rec.t_compack;
+    item.retry_count    = rec.retry_count;
+  endfunction
+
+  // Latency bound, checked once at the transaction's completion milestone
+  // against the item's OWN timestamps -- so the number reported is the same one
+  // a test reads back off the item, not a separately-derived figure that could
+  // disagree with it.
+  protected function void check_latency_bound(input item_t   item,
+                                              input txn_id_t txn_id,
+                                              input bit      is_write,
+                                              input bit      is_snoop = 1'b0);
+    int unsigned bound;
+    int unsigned measured;
+    string       kind;
+
+    if (is_snoop) begin
+      bound = this.max_snp_xact_latency;
+      kind  = "snoop";
+    end
+    else if (is_write) begin
+      bound = this.max_write_xact_latency;
+      kind  = "write";
+    end
+    else begin
+      bound = this.max_read_xact_latency;
+      kind  = "read";
+    end
+
+    if (bound == 0) begin
+      return;
+    end
+    measured = item.latency();
+    if (measured <= bound) begin
+      return;
+    end
+
+    this.n_latency_violation++;
+    `uvm_error(get_name(), $sformatf(
+      "[%s] %s transaction txn_id 0x%0h (opcode=0x%0h) took %0d cycles, exceeding the configured bound of %0d",
+      get_name(), kind, txn_id, is_snoop ? item.snp_opcode : item.opcode,
+      measured, bound))
+  endfunction
+
+  // A snoop completes on its SnpResp (RSP) or SnpRespData (DAT). Both carry the
+  // snoop's TxnID, so the bound is evaluated wherever the response lands.
+  protected function void close_snoop(input item_t item, input txn_id_t txn_id);
+    txn_times_t rec;
+    if (!this.snp_times.exists(txn_id)) begin
+      return;
+    end
+    rec = this.snp_times[txn_id];
+    this.snp_times.delete(txn_id);
+    item.t_req_issued = rec.t_req_issued;
+    item.t_comp       = this.cycle_count;
+    this.check_latency_bound(item, txn_id, 1'b0, 1'b1);
+  endfunction
+
   // Sampled only when the covered tuple changes: the bins are three bits wide,
   // so a per-cycle sample would add cost without adding information.
   protected function void sample_sactive();
@@ -205,6 +333,10 @@ class vip_chi_monitor #(
       if (!this.vif.rst_n) begin
         continue;
       end
+
+      // Advance BEFORE stamping, so the first observable cycle is 1 and 0 stays
+      // available as "milestone not reached".
+      this.cycle_count++;
 
       this.sample_sactive();
 
@@ -261,6 +393,12 @@ class vip_chi_monitor #(
     this.rd_beats_by_txnid.delete();
     this.wr_beats_by_txnid.delete();
     this.wr_beats_by_dbid.delete();
+    // The cycle base restarts with the link, along with the milestone records:
+    // a latency spanning a reset is not a latency, the transaction was
+    // abandoned. n_latency_violation is a whole-run tally and survives.
+    this.cycle_count = 0;
+    this.txn_times.delete();
+    this.snp_times.delete();
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -407,6 +545,28 @@ class vip_chi_monitor #(
       end
     end
 
+    // A REQ on a TxnID that already saw a RetryAck is the re-issue, not a new
+    // transaction: it keeps the original record so retry_count accumulates and
+    // latency() can measure from the re-issue the completer is answerable for.
+    begin
+      txn_times_t rec;
+      rec = this.txn_times.exists(item.txn_id) ? this.txn_times[item.txn_id]
+                                               : txn_times_t'{default: 0};
+      if (rec.t_retry_ack != 0) begin
+        rec.t_req_reissued = this.cycle_count;
+      end
+      else begin
+        rec = txn_times_t'{default: 0};
+        rec.t_req_issued = this.cycle_count;
+      end
+      // Which bound will apply at completion. Recorded here because the request
+      // opcode is the only place the direction is stated, and the completion
+      // arrives on a different channel carrying a different item.
+      rec.is_write = (item.direction == VIP_CHI_DIR_WRITE_E);
+      this.txn_times[item.txn_id] = rec;
+    end
+    this.stamp_item(item, item.txn_id);
+
     this.req_port.write(item);
   endfunction
 
@@ -469,6 +629,56 @@ class vip_chi_monitor #(
         this.wr_beats_by_txnid.exists(item.txn_id)) begin
       this.wr_beats_by_dbid[item.dbid] = this.wr_beats_by_txnid[item.txn_id];
       this.wr_beats_by_txnid.delete(item.txn_id);
+    end
+
+    begin
+      txn_times_t rec;
+      bit         is_completion;
+      rec = this.txn_times.exists(item.txn_id) ? this.txn_times[item.txn_id]
+                                               : txn_times_t'{default: 0};
+      is_completion =
+        (item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) ||
+        (item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)) ||
+        (item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C));
+
+      if (((item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)) ||
+           (item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_C))      ||
+           (item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_ORD_C))) &&
+          (rec.t_dbid == 0)) begin
+        rec.t_dbid = this.cycle_count;
+      end
+      if (is_completion && (rec.t_comp == 0)) begin
+        rec.t_comp = this.cycle_count;
+      end
+      if ((item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_ACK_C)) &&
+          (rec.t_compack == 0)) begin
+        rec.t_compack = this.cycle_count;
+      end
+      if (item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C)) begin
+        rec.t_retry_ack = this.cycle_count;
+        rec.retry_count++;
+      end
+      // CHI makes PCrdGrant credit-typed rather than TxnID-correlated, so this
+      // is only as good as the completer's choice of TxnID on the grant. It is
+      // recorded for visibility, never used by a bound.
+      if ((item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C)) &&
+          (rec.t_pcrd_grant == 0)) begin
+        rec.t_pcrd_grant = this.cycle_count;
+      end
+      this.txn_times[item.txn_id] = rec;
+      this.stamp_item(item, item.txn_id);
+
+      // A transaction whose completion is an RSP (a write, a data-less acquire,
+      // a persist) is bounded here. A read completes on DAT and is bounded there.
+      if (is_completion) begin
+        this.check_latency_bound(item, item.txn_id, rec.is_write);
+      end
+    end
+
+    // A snoop answers with SnpResp on RSP; that closes its latency window.
+    if ((item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_SNP_RESP_C)) ||
+        (item.rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_SNP_RESP_FWDED_C))) begin
+      this.close_snoop(item, item.txn_id);
     end
 
     this.rsp_port.write(item);
@@ -548,9 +758,26 @@ class vip_chi_monitor #(
         beat_seen = new[expected_beats];
         this.dat_beat_seen_by_key[key] = beat_seen;
       end
+      // First beat of this transfer. Recorded against the DAT TxnID, which for
+      // write data is the granted DBID rather than the request's own TxnID --
+      // the same correlation the beat-count bookkeeping above uses.
+      begin
+        txn_times_t rec;
+        rec = this.txn_times.exists(dat_txn_id) ? this.txn_times[dat_txn_id]
+                                                : txn_times_t'{default: 0};
+        if (rec.t_first_dat == 0) begin
+          rec.t_first_dat = this.cycle_count;
+        end
+        this.txn_times[dat_txn_id] = rec;
+      end
     end
 
     item = this.dat_item_by_key[key];
+
+    if (this.collect_beat_timestamps) begin
+      item.t_dat_beats = new[item.t_dat_beats.size() + 1](item.t_dat_beats);
+      item.t_dat_beats[item.t_dat_beats.size() - 1] = this.cycle_count;
+    end
 
     // Place by DataID when the beat count is known; the running receive counter
     // stays the index only where no count is available to bound DataID against.
@@ -660,6 +887,29 @@ class vip_chi_monitor #(
       end
     end
 
+    begin
+      txn_times_t rec;
+      rec = this.txn_times.exists(dat_txn_id) ? this.txn_times[dat_txn_id]
+                                              : txn_times_t'{default: 0};
+      rec.t_last_dat = this.cycle_count;
+      this.txn_times[dat_txn_id] = rec;
+      this.stamp_item(item, dat_txn_id);
+
+      // Read data IS the completion; write data is not (its Comp bounds it on
+      // the RSP side), so only the read direction is bounded here.
+      if (!is_write_data) begin
+        this.check_latency_bound(item, dat_txn_id, 1'b0);
+      end
+    end
+
+    // A snoop may answer with a SnpRespData family burst; that closes its
+    // latency window just as a SnpResp on RSP would.
+    if ((item.dat_opcode == dat_opcode_t'(VIP_CHI_DAT_SNP_RESP_DATA_C)) ||
+        (item.dat_opcode == dat_opcode_t'(VIP_CHI_DAT_SNP_RESP_DATA_PTL_C)) ||
+        (item.dat_opcode == dat_opcode_t'(VIP_CHI_DAT_SNP_RESP_DATA_FWDED_C))) begin
+      this.close_snoop(item, dat_txn_id);
+    end
+
     this.dat_port.write(item);
     this.dat_item_by_key.delete(key);
     this.dat_received_beats_by_key.delete(key);
@@ -698,6 +948,15 @@ class vip_chi_monitor #(
     item.do_not_data_pull = flit.donotdatapull;
     item.tracetag         = flit.tracetag;
     item.qos              = flit.qos;
+
+    begin
+      txn_times_t rec;
+      rec = txn_times_t'{default: 0};
+      rec.t_req_issued = this.cycle_count;
+      this.snp_times[item.txn_id] = rec;
+      item.t_req_issued = this.cycle_count;
+    end
+
     this.snp_port.write(item);
   endfunction
 

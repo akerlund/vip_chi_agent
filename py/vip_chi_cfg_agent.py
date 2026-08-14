@@ -95,6 +95,35 @@ class VipChiCfgAgent:
     # position, so one position arrives twice and one never arrives.
     self.snf_duplicate_dat_beat = False
 
+    # Per-transaction latency bounds, in cycles on the monitor's reset-gated
+    # counter. 0 = unbounded, which is the default and preserves behaviour: a
+    # bench that has never stated a latency budget should not acquire one. A
+    # non-zero bound is checked at the completion milestone of each transaction,
+    # so a test that cares about latency can FAIL on it rather than read it out
+    # of a report after the fact.
+    self.max_read_xact_latency = 0
+    self.max_write_xact_latency = 0
+    self.max_snp_xact_latency = 0
+
+    # Record the arrival cycle of every DAT beat on the item (t_dat_beats).
+    # Off by default: it costs an append per beat of every transfer, which is
+    # not worth paying in a long run for a detail most tests never read. The
+    # transaction-level milestones are always stamped and cost nothing per beat.
+    self.collect_beat_timestamps = False
+
+    # Same-line hazard rule: a requester must not have two requests outstanding
+    # to one cache line at a time. On by default. A bench whose requester model
+    # deliberately overlaps same-line requests turns it off rather than papering
+    # over the reports.
+    self.hazard_check_enable = True
+
+    # Negative control for the scoreboard's ordered-stream check: the buffered
+    # SN-F serves the SECOND of two queued ordered requests before the first, so
+    # its acknowledgements come back in the wrong order while every transaction
+    # still completes correctly on its own. Nothing else in the VIP can see the
+    # inversion, which is the point -- it isolates the ordering check.
+    self.snf_reorder_ordered_service = False
+
     self.mem_cfg = None       # constructed by the SN-F driver (A2)
 
     self.link_act_delay_enabled = True
@@ -192,6 +221,14 @@ class VipChiCfgAgent:
       err("multi_outstanding_mixed is set without multi_outstanding: the mixed "
           "overlap loop never engages")
 
+    # The reorder knob only has anything to reorder when the SN-F buffers
+    # requests; on the serial loop each REQ is serviced to completion before the
+    # next is even sampled, so the negative control would silently do nothing.
+    if self.snf_reorder_ordered_service and not self.multi_outstanding:
+      err("snf_reorder_ordered_service is set without multi_outstanding: the "
+          "serial SN-F loop never holds two requests at once, so nothing is "
+          "reordered")
+
     # -- Link credits ---------------------------------------------------------
     # The initial grant is advertised on the wire and then accumulates against
     # the local cap; a grant larger than its own cap can never be fully banked.
@@ -253,6 +290,7 @@ class VipChiCfgAgent:
       "hnf_downstream_corrupt_data": self.hnf_downstream_corrupt_data,
       "hnf_downstream_force_decerr": self.hnf_downstream_force_decerr,
       "snf_duplicate_dat_beat": self.snf_duplicate_dat_beat,
+      "snf_reorder_ordered_service": self.snf_reorder_ordered_service,
     }
     on = [k for k, v in negctl.items() if v]
     if on:
