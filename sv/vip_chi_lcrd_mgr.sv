@@ -80,6 +80,12 @@ class vip_chi_lcrd_mgr extends uvm_object;
   // (e.g. the RN-I mixed pipeline gating a fresh REQ so it can instead drive an
   // already-granted write's data when the completer is credit-starved).
   // ---------------------------------------------------------------------------
+  // The count itself, for a caller that has to REPORT it rather than act on it
+  // (the deactivation drain says how many credits were still banked).
+  function int unsigned available();
+    return this.available_credits;
+  endfunction
+
   function bit has_credit();
     return (this.available_credits != 0);
   endfunction

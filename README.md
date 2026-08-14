@@ -347,6 +347,8 @@ they are listed here rather than left to a grep.
 | `snf_duplicate_dat_beat` | SN-F sends the final beat of a read burst carrying `DataID` 0 again, so one beat position is delivered twice and one never at all | the monitor's duplicate-`DataID` and missing-beat checks |
 | `snf_reorder_ordered_service` | buffered SN-F serves one pair of queued ordered requests back to front, so its acknowledgements arrive out of request order while every transaction still completes correctly | the scoreboard's ordered-stream acknowledgement-order check (needs `multi_outstanding`) |
 | `lasm_abort_activation` | requester raises `txlinkactivereq` and withdraws it again before the completer acknowledges, so the link leaves `ACTIVATE` without ever reaching `RUN` | the link-activation state machine's legal-transition check (requester roles only) |
+| `lasm_stall_activation_cycles` | completer withholds `txlinkactiveack` for N cycles, leaving the link in `ACTIVATE` with nothing in flight to time out | the link **activation** timeout (completer roles only) |
+| `lasm_stall_deactivation_cycles` | completer withholds the *drop* of `txlinkactiveack` for N cycles after the drain has finished, leaving the link in `DEACTIVATE` | the link **deactivation** timeout (completer roles only) |
 
 ---
 
@@ -537,6 +539,30 @@ The `_e` monitor republishes the CHI-E-only fields on the same ports.
   rule that no L-credit may still be outstanding once a link reaches `STOP`.
   Provoked by `cfg.lasm_abort_activation`; state and legal-edge tallies are
   reported per bind at end of test.
+- **Graceful link deactivation** — `cfg.link_deactivate_request` walks the
+  tear-down half of that cycle, which reset alone can never reach. The requester
+  waits for its traffic to retire, stops advertising receive credits, drops
+  `LINKACTIVEREQ`, and returns every L-credit it still holds as `LCrdReturn`
+  flits (opcode 0 on every channel); the completer does the same and only then
+  drops its acknowledge, so the link reaches `STOP` genuinely empty. Lowering the
+  request brings it back up. `cfg.link_deactivate_done` is the driver's published
+  "down and drained" flag — poll that rather than the sideband, which falls as
+  soon as the handshake completes and says nothing about the drain.
+
+  `DEACTIVATE` is the one state in which a sender may still transmit, and only
+  L-credit returns: the flit-gating rules admit opcode 0 there and nothing else.
+- **Link activation/deactivation timeouts** —
+  `tb_cfg.link_activation_timeout_cycles` and
+  `tb_cfg.link_deactivation_timeout_cycles` (0 = disabled, the default) bound how
+  long the LASM may dwell in `ACTIVATE` or `DEACTIVATE`. They cover the one
+  failure no other rule can see, because every cycle of it is legal: holding is
+  always a legal LASM step, no flit goes out to violate a channel rule, and the
+  transaction-completion timeout has nothing in flight to measure — a link stuck
+  coming up has not yet carried a transaction, and one stuck going down has
+  already retired them all. Each reports once, on the crossing. They live on the
+  *testbench* config rather than the per-agent config because a stuck link is a
+  property of the link, and the checker that judges it is bound to an interface
+  rather than to one endpoint's driver.
 - **Perf counters** ([vip_chi_perf_counters.sv](sv/vip_chi_perf_counters.sv)) —
   per-requester latency (min/avg/max, read/write), throughput, retry count, and
   per-channel back-pressure cycles, off a reset-gated cycle counter.
@@ -548,7 +574,7 @@ check is vacuous (e.g.
 ### Per-check identity, enable and statistics
 
 Every protocol rule has a stable identity (`vip_chi_check_id_t` in SV,
-`CHECK_IDS` in Python — the same 52 names, in the same order), a severity, and
+`CHECK_IDS` in Python — the same 54 names, in the same order), a severity, and
 pass/fail counters. Two things follow that did not hold before:
 
 * **An assertion failure fails the run.** The SV checkers report through plain

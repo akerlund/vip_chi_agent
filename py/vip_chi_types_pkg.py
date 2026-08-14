@@ -129,12 +129,14 @@ class ReqOrder(IntEnum):
 
 
 class LasmState(IntEnum):
-  """Link Activation State Machine, one instance per link DIRECTION.
+  """Link Activation State Machine.
 
-  The state is the {LINKACTIVEREQ, LINKACTIVEACK} pair of that direction, so it
-  is derived from the wires rather than from which node happens to originate
-  activation -- which is what makes it usable on a VIP that activates
-  asymmetrically.
+  The state is a {LINKACTIVEREQ, LINKACTIVEACK} pair, so it is derived from the
+  wires rather than from which node happens to originate activation -- which is
+  what makes it usable on a VIP that activates asymmetrically. One instance per
+  LINK here, not one per direction: this VIP's link adapter mirrors both sideband
+  signals to both endpoints, so a link carries a single handshake that both ends
+  observe. See bind_chi._lasm_of for why modelling it per direction is wrong.
 
   The encoding is the pair itself ({req, ack}), so lasm() is a cast rather than
   a lookup and the state prints as the signals a waveform shows. Note that the
@@ -255,6 +257,12 @@ CHECK_IDS = (
   "CHI_SNP_IDLE_IN_RESET",
   "CHI_SNP_LCRD_OVERFLOW",
   "CHI_SNP_LCRD_UNDERFLOW",
+  # Link layer, appended. These belong with the link rules above and are down
+  # here only because the order is append-only; putting them where they read best
+  # would renumber the SNP block. They sit AFTER it deliberately, so the SNP
+  # range test still answers false for them and bind_chi keeps ownership.
+  "CHI_LASM_ACTIVATION_TIMEOUT",
+  "CHI_LASM_DEACTIVATION_TIMEOUT",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -293,6 +301,9 @@ class RespErr(IntEnum):
 
 
 class ReqOpcode(IntEnum):
+  # Hands one L-credit back to the receiver that granted it. Opcode 0 on
+  # every channel; carries no transaction. See VIP_CHI_*_LCRD_RETURN_C.
+  LCRD_RETURN = 0x00
   READ_NO_SNP = 0x04
   PCRD_RETURN = 0x05
   READ_NO_SNP_SEP = 0x11
@@ -339,6 +350,9 @@ class ReqOpcode(IntEnum):
 
 
 class RspOpcode(IntEnum):
+  # Hands one L-credit back to the receiver that granted it. Opcode 0 on
+  # every channel; carries no transaction. See VIP_CHI_*_LCRD_RETURN_C.
+  LCRD_RETURN = 0x00
   COMP_ACK = 0x02
   RETRY_ACK = 0x03
   COMP = 0x04
@@ -355,6 +369,9 @@ class RspOpcode(IntEnum):
 
 
 class DatOpcode(IntEnum):
+  # Hands one L-credit back to the receiver that granted it. Opcode 0 on
+  # every channel; carries no transaction. See VIP_CHI_*_LCRD_RETURN_C.
+  LCRD_RETURN = 0x00
   SNP_RESP_DATA = 0x1
   COPY_BACK_WR_DATA = 0x2
   NON_COPY_BACK_WR_DATA = 0x3

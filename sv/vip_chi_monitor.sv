@@ -45,6 +45,7 @@ class vip_chi_monitor #(
   typedef vip_chi_types #(CFG_P)::req_opcode_t req_opcode_t;
   typedef vip_chi_types #(CFG_P)::rsp_opcode_t rsp_opcode_t;
   typedef vip_chi_types #(CFG_P)::dat_opcode_t dat_opcode_t;
+  typedef vip_chi_types #(CFG_P)::snp_opcode_t snp_opcode_t;
   typedef vip_chi_types #(CFG_P)::data_t       data_t;
   typedef vip_chi_types #(CFG_P)::be_t         be_t;
   typedef vip_chi_types #(CFG_P)::data_id_t    data_id_t;
@@ -340,42 +341,70 @@ class vip_chi_monitor #(
 
       this.sample_sactive();
 
-      if (this.vif.monitor_cb.txreqflitv) begin
+      // An L-credit return (opcode 0 on every channel) is a link-layer flit, not
+      // a transaction: it hands one credit back and names no address, no TxnID
+      // and no data. Publishing one would invent a transaction the scoreboard
+      // then waits forever to complete, so the filter belongs HERE rather than in
+      // each publish_* -- one place where a flit becomes an item, one place where
+      // the link layer is separated from the protocol layer.
+      if (this.vif.monitor_cb.txreqflitv && !this.req_is_lcrd_return(this.vif.monitor_cb.txreqflit)) begin
         this.publish_req(this.vif.monitor_cb.txreqflit, ROLE_P);
       end
 
-      if (this.vif.monitor_cb.rxreqflitv) begin
+      if (this.vif.monitor_cb.rxreqflitv && !this.req_is_lcrd_return(this.vif.monitor_cb.rxreqflit)) begin
         this.publish_req(this.vif.monitor_cb.rxreqflit, this.peer_role());
       end
 
-      if (this.vif.monitor_cb.txrspflitv) begin
+      if (this.vif.monitor_cb.txrspflitv && !this.rsp_is_lcrd_return(this.vif.monitor_cb.txrspflit)) begin
         this.publish_rsp(this.vif.monitor_cb.txrspflit, ROLE_P);
       end
 
-      if (this.vif.monitor_cb.rxrspflitv) begin
+      if (this.vif.monitor_cb.rxrspflitv && !this.rsp_is_lcrd_return(this.vif.monitor_cb.rxrspflit)) begin
         this.publish_rsp(this.vif.monitor_cb.rxrspflit, this.peer_role());
       end
 
-      if (this.vif.monitor_cb.txdatflitv) begin
+      if (this.vif.monitor_cb.txdatflitv && !this.dat_is_lcrd_return(this.vif.monitor_cb.txdatflit)) begin
         this.publish_dat(this.vif.monitor_cb.txdatflit, this.vif.monitor_cb.txdatflitpend, ROLE_P);
       end
 
-      if (this.vif.monitor_cb.rxdatflitv) begin
+      if (this.vif.monitor_cb.rxdatflitv && !this.dat_is_lcrd_return(this.vif.monitor_cb.rxdatflit)) begin
         this.publish_dat(this.vif.monitor_cb.rxdatflit, this.vif.monitor_cb.rxdatflitpend, this.peer_role());
       end
 
       // Snoop channel (Tier C). A home node (HN-F) sources snoops on its TX; a
       // fully-coherent requester (RN-F) receives them on its RX. Both are idle
       // on non-coherent links, so this never fires there.
-      if (this.vif.monitor_cb.txsnpflitv) begin
+      if (this.vif.monitor_cb.txsnpflitv && !this.snp_is_lcrd_return(this.vif.monitor_cb.txsnpflit)) begin
         this.publish_snp(this.vif.monitor_cb.txsnpflit, ROLE_P);
       end
 
-      if (this.vif.monitor_cb.rxsnpflitv) begin
+      if (this.vif.monitor_cb.rxsnpflitv && !this.snp_is_lcrd_return(this.vif.monitor_cb.rxsnpflit)) begin
         this.publish_snp(this.vif.monitor_cb.rxsnpflit, this.peer_role());
       end
     end
   endtask
+
+  // ---------------------------------------------------------------------------
+  // One predicate per channel rather than a single opcode == 0 test, because the
+  // opcode field is a different type and a different width on each, and comparing
+  // a 4-bit DAT opcode against an untyped zero is how the wrong field ends up
+  // compared once someone widens one of them.
+  // ---------------------------------------------------------------------------
+  protected function bit req_is_lcrd_return(input req_flit_t flit);
+    return (req_opcode_t'(flit.opcode) == req_opcode_t'(VIP_CHI_REQ_LCRD_RETURN_C));
+  endfunction
+
+  protected function bit rsp_is_lcrd_return(input rsp_flit_t flit);
+    return (rsp_opcode_t'(flit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_LCRD_RETURN_C));
+  endfunction
+
+  protected function bit dat_is_lcrd_return(input dat_flit_t flit);
+    return (dat_opcode_t'(flit.opcode) == dat_opcode_t'(VIP_CHI_DAT_LCRD_RETURN_C));
+  endfunction
+
+  protected function bit snp_is_lcrd_return(input snp_flit_t flit);
+    return (snp_opcode_t'(flit.opcode) == snp_opcode_t'(VIP_CHI_SNP_LCRD_RETURN_C));
+  endfunction
 
   // ---------------------------------------------------------------------------
   // The parent agent owns the reset watcher and calls monitor_start().

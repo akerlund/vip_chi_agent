@@ -157,6 +157,25 @@ class vip_chi_driver_snf(uvm_driver):
     self.req_lcrdv_pending = 0
     self.rsp_lcrdv_pending = 0
     self.dat_lcrdv_pending = 0
+    # Credits advertised to the peer and not yet spent -- the half of quiescence
+    # a sender cannot see from its own send pools. See _link_drained().
+    self.req_lcrd_granted = 0
+    self.rsp_lcrd_granted = 0
+    self.dat_lcrd_granted = 0
+    # Set while the peer has withdrawn its activation request and this node is
+    # handing its credits back. Suppresses NEW grants: a receiver may not issue
+    # L-credits once the link is coming down, and a drain racing a credit loop
+    # that keeps refilling the pool would never converge.
+    self.link_deactivating = False
+    # Countdowns for the two negative controls: one holds ACTIVATE by withholding
+    # the acknowledge, the other holds DEACTIVATE past its drain by withholding
+    # the drop.
+    self.activate_stall_remaining = int(self.cfg.lasm_stall_activation_cycles)
+    self.deactivate_stall_remaining = 0
+    # Shadow of the acknowledge last driven, so the bring-up wait and the
+    # deactivation tracker read one value rather than re-deriving it. Mirrors the
+    # SV port, where a clocking-block output cannot be sampled at all.
+    self.ack_driven = False
 
   def schedule_initial_credit_grants(self):
     self.req_lcrdv_pending += self.cfg.initial_req_credits
@@ -178,6 +197,7 @@ class vip_chi_driver_snf(uvm_driver):
   def reset_outputs(self):
     bus = self.bus
     bus.drive(txlinkactivereq=0, txlinkactiveack=0, txsactive=0)
+    self.ack_driven = False
     bus.drive(txreqlcrdv=0)
     bus.drive(txrspflitpend=0, txrspflitv=0, txrsplcrdv=0)
     bus.drive_flit("rsp", {})
@@ -202,7 +222,53 @@ class vip_chi_driver_snf(uvm_driver):
     self.reset_outputs()
 
   def drive_idle_sideband(self):
-    self.bus.drive(txlinkactiveack=self.bus.get("rxlinkactivereq"))
+    """The acknowledge follows the peer's request -- except while coming down.
+
+    A receiver may only drop LINKACTIVEACK once every L-credit it advertised has
+    come back. Mirroring the request one cycle later would put the link in STOP
+    with credits still banked at both ends, which is precisely the state
+    CHI_LCRD_QUIESCENT_IN_STOP exists to report: the two ends would disagree
+    about what the peer may send after the next bring-up, and the first flit
+    across the reactivated link would go out unauthorised.
+
+    So DEACTIVATE is held -- ack high, request low -- for exactly as long as the
+    drain takes. cfg.lasm_stall_deactivation_cycles then holds it longer still,
+    which is the negative control for the deactivation timeout; and
+    cfg.lasm_stall_activation_cycles withholds the acknowledge in the other
+    direction, which is the control for the activation timeout.
+    """
+    if self.bus.get("rxlinkactivereq"):
+      self.ack_driven = self.activate_stall_remaining == 0
+    else:
+      self.ack_driven = not self._link_drained()
+    self.bus.drive(txlinkactiveack=1 if self.ack_driven else 0)
+
+  def _rx_req_is_lcrd_return(self, req):
+    """An inbound L-credit return is a link-layer flit, not a request.
+
+    It consumes the credit it hands back and nothing else, so the response loops
+    must not open a TXSACTIVE window for it, queue it, or try to answer it -- a
+    completer that treated one as a transaction would sit claiming an
+    outstanding response to a request that was never made, which is exactly what
+    CHI_LINK_DEACTIVATE_WHEN_IDLE then reports against it.
+
+    Nor is the credit re-granted: the peer is handing it back, so advertising it
+    again would refill the pool the tear-down is emptying. The credit-loop
+    accounting (req_lcrd_granted) already retires it.
+    """
+    return int(req.get("opcode", -1)) == 0
+
+  def _link_drained(self):
+    """Both halves of quiescence at this endpoint.
+
+    Nothing this node still holds, and nothing it advertised that the peer still
+    holds.
+    """
+    if self.deactivate_stall_remaining:
+      return False
+    return not (self.req_lcrd_granted or self.rsp_lcrd_granted
+                or self.dat_lcrd_granted
+                or self.rsp_lcrd.available or self.dat_lcrd.available)
 
   # ==========================================================================
   # Backing-store row bookkeeping (served data falls back to a deterministic
@@ -272,6 +338,7 @@ class vip_chi_driver_snf(uvm_driver):
   # ==========================================================================
   async def driver_start(self):
     self._spawn(self.credit_loop())
+    self._spawn(self.deactivate_drain())
     await self.activate_link()
     # Manual completion injection runs alongside the wire-observing auto-responder
     # (SV polls try_next_item inside the serial loop; pyUVM has no non-blocking
@@ -311,17 +378,34 @@ class vip_chi_driver_snf(uvm_driver):
     bus = self.bus
     while True:
       await bus.rising()
+      self.track_deactivation()
       self.drive_idle_sideband()
       self.tx_activity_tick()
-      bus.drive(txreqlcrdv=1 if self.req_lcrdv_pending else 0)
-      bus.drive(txrsplcrdv=1 if self.rsp_lcrdv_pending else 0)
-      bus.drive(txdatlcrdv=1 if self.dat_lcrdv_pending else 0)
-      if self.req_lcrdv_pending:
+      grant = not self.link_deactivating
+      bus.drive(txreqlcrdv=1 if (self.req_lcrdv_pending and grant) else 0)
+      bus.drive(txrsplcrdv=1 if (self.rsp_lcrdv_pending and grant) else 0)
+      bus.drive(txdatlcrdv=1 if (self.dat_lcrdv_pending and grant) else 0)
+      if self.req_lcrdv_pending and grant:
         self.req_lcrdv_pending -= 1
-      if self.rsp_lcrdv_pending:
+        self.req_lcrd_granted += 1
+      if self.rsp_lcrdv_pending and grant:
         self.rsp_lcrdv_pending -= 1
-      if self.dat_lcrdv_pending:
+        self.rsp_lcrd_granted += 1
+      if self.dat_lcrdv_pending and grant:
         self.dat_lcrdv_pending -= 1
+        self.dat_lcrd_granted += 1
+
+      # Every inbound flit spends one of the credits advertised above, INCLUDING
+      # an L-credit return: the return is itself a flit and consumes the credit
+      # it hands back. That is what lets the drain converge with no separate
+      # accounting for the two kinds.
+      if bus.get("rxreqflitv") and self.req_lcrd_granted:
+        self.req_lcrd_granted -= 1
+      if bus.get("rxrspflitv") and self.rsp_lcrd_granted:
+        self.rsp_lcrd_granted -= 1
+      if bus.get("rxdatflitv") and self.dat_lcrd_granted:
+        self.dat_lcrd_granted -= 1
+
       if bus.get("rxrsplcrdv"):
         self.rsp_lcrd.return_credit()
       if bus.get("rxdatlcrdv"):
@@ -344,7 +428,93 @@ class vip_chi_driver_snf(uvm_driver):
       self.drive_idle_sideband()
       if bus.in_reset() or bus.get("rxlinkactivereq"):
         break
+    # The acknowledge may be withheld here by cfg.lasm_stall_activation_cycles;
+    # see drive_idle_sideband, which is where the suppression lives because the
+    # credit loop drives the same signal every cycle and would otherwise raise it
+    # straight back.
+    while not (bus.in_reset() or self.ack_driven):
+      await bus.rising()
+      self.drive_idle_sideband()
     self.schedule_initial_credit_grants()
+
+  # --------------------------------------------------------------------------
+  def track_deactivation(self):
+    """Follow the peer's activation request into and back out of deactivation.
+
+    The completer has no deactivation request of its own to make -- it reacts.
+    Everything it must do is a consequence of the request going away: stop
+    granting, hand back what it holds, and only then let the acknowledge fall.
+    """
+    req = self.bus.get("rxlinkactivereq")
+    if not req and self.ack_driven:
+      if not self.link_deactivating:
+        self.link_deactivating = True
+        self.deactivate_stall_remaining = int(
+          self.cfg.lasm_stall_deactivation_cycles)
+        # Queued-but-unsent grants are dropped rather than carried across the
+        # gap: they were promises about a link that no longer exists, and
+        # re-activation advertises a fresh budget.
+        self.req_lcrdv_pending = 0
+        self.rsp_lcrdv_pending = 0
+        self.dat_lcrdv_pending = 0
+      if self.deactivate_stall_remaining:
+        self.deactivate_stall_remaining -= 1
+    elif req:
+      if self.link_deactivating:
+        self.link_deactivating = False
+        self.deactivate_stall_remaining = 0
+        self.schedule_initial_credit_grants()
+      # The activation stall re-arms on each fresh request and counts down while
+      # the request is up, so it delays every bring-up rather than only the
+      # first -- a test that deactivates and reactivates stalls both times.
+      if self.activate_stall_remaining:
+        self.activate_stall_remaining -= 1
+    else:
+      # Request low and acknowledge already low: the link is at rest in STOP.
+      # Re-arm the stall for the next bring-up.
+      self.activate_stall_remaining = int(self.cfg.lasm_stall_activation_cycles)
+
+  # --------------------------------------------------------------------------
+  async def deactivate_drain(self):
+    """Hand back every send-side L-credit this node holds, once asked to.
+
+    A separate task rather than a step in the credit loop, because a credit
+    return is a FLIT and the SN-F drives flits from exactly one place. The guards
+    below are what keep it that way:
+
+      * the link must be in DEACTIVATE, which the requester only enters after
+        every one of its transactions has retired, so the response loop has
+        nothing left to send; and
+      * tx_active_count must be zero, which closes the one-cycle tail where the
+        requester has seen its last completion but this node is still driving its
+        final flit.
+    """
+    bus = self.bus
+    while True:
+      while not (self.link_deactivating and not self.tx_active_count
+                 and (self.rsp_lcrd.available or self.dat_lcrd.available)):
+        await bus.rising()
+        self.drive_idle_sideband()
+
+      for channel, lcrd in (("rsp", self.rsp_lcrd), ("dat", self.dat_lcrd)):
+        while lcrd.try_acquire_credit():
+          await self.drive_lcrd_return(channel)
+
+  async def drive_lcrd_return(self, channel):
+    """One L-credit return flit.
+
+    All fields zero: the opcode is the whole message, and a return names no
+    address, no TxnID and no data.
+    """
+    bus = self.bus
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(**{f"tx{channel}flitpend": 0, f"tx{channel}flitv": 1})
+    bus.drive_flit(channel, {"opcode": 0})
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(**{f"tx{channel}flitv": 0})
+    bus.drive_flit(channel, {})
 
   # ==========================================================================
   # Main serial responder loop (auto-responder path).
@@ -366,6 +536,8 @@ class vip_chi_driver_snf(uvm_driver):
         continue
 
       req = bus.sample_flit("req", "rx")
+      if self._rx_req_is_lcrd_return(req):
+        continue
       self.schedule_req_credit_return()
       # The window opens when the request comes off the wire -- from here until
       # the last completion flit this node owes a response, which is exactly
@@ -394,8 +566,11 @@ class vip_chi_driver_snf(uvm_driver):
       await bus.rising()
       self.drive_idle_sideband()
       if bus.get("rxreqflitv"):
+        req = bus.sample_flit("req", "rx")
+        if self._rx_req_is_lcrd_return(req):
+          continue
         self.schedule_req_credit_return()
-        self.captured_reqs.append(bus.sample_flit("req", "rx"))
+        self.captured_reqs.append(req)
         # Opened at capture, not at dispatch: a buffered request is already
         # outstanding while it waits its turn in the queue, and the sideband
         # has to say so.

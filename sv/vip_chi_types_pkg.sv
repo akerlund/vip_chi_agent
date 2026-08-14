@@ -154,6 +154,25 @@ package vip_chi_types_pkg;
   localparam logic [VIP_CHI_MAX_DAT_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_DAT_SNP_RESP_DATA_PTL_C   = 4'h5;
   localparam logic [VIP_CHI_MAX_DAT_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_DAT_SNP_RESP_DATA_FWDED_C = 4'h6;
 
+  // L-credit return. Opcode 0 on EVERY channel, which is why it is one block
+  // rather than four entries scattered among the transaction opcodes: a flit
+  // whose opcode is zero carries no transaction at all, it hands one L-credit
+  // back to the receiver that granted it. That is how a sender empties its
+  // credit pool before the link goes down, and without it a graceful
+  // deactivation is impossible -- the credits it still held would be stranded,
+  // which is exactly what VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E reports.
+  //
+  // The return itself CONSUMES the credit it returns (it is a flit like any
+  // other, sent under an available credit), so N returns empty a pool of N and
+  // the shadow counters need no special case. What does need a special case is
+  // everything that treats a flit as a transaction: the monitor must not
+  // publish one, and the flit-requires-RUN rules must admit one in DEACTIVATE,
+  // which is the only state in which a sender is still permitted to transmit.
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_LCRD_RETURN_C = 7'h00;
+  localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_LCRD_RETURN_C = 5'h00;
+  localparam logic [VIP_CHI_MAX_DAT_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_DAT_LCRD_RETURN_C = 4'h00;
+  localparam logic [VIP_CHI_MAX_SNP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_SNP_LCRD_RETURN_C = 5'h00;
+
   // Snoop-request (SNP channel) opcodes (Tier C). 5-bit SnpOpcode field.
   localparam logic [VIP_CHI_MAX_SNP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_SNP_SHARED_C        = 5'h01;
   localparam logic [VIP_CHI_MAX_SNP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_SNP_CLEAN_C         = 5'h02;
@@ -255,10 +274,13 @@ package vip_chi_types_pkg;
     VIP_CHI_ORDER_ENDPOINT_E     = 2'b11
   } vip_chi_req_order_t;
 
-  // Link Activation State Machine, one instance per link DIRECTION. The state is
-  // the {LINKACTIVEREQ, LINKACTIVEACK} pair of that direction, so it is derived
-  // from the wires rather than from which node happens to originate activation
-  // -- which is what makes it usable on a VIP that activates asymmetrically.
+  // Link Activation State Machine. The state is a {LINKACTIVEREQ, LINKACTIVEACK}
+  // pair, so it is derived from the wires rather than from which node happens to
+  // originate activation -- which is what makes it usable on a VIP that
+  // activates asymmetrically. One instance per LINK here, not one per direction:
+  // this VIP's link adapter mirrors both sideband signals to both endpoints, so
+  // a link carries a single handshake that both ends observe. See the comment on
+  // link_lasm() in vip_chi_sva for why modelling it per direction is wrong.
   //
   // The encoding is the pair itself ({req, ack}), so vip_chi_lasm() is a cast
   // rather than a lookup and the enum prints as the signals a waveform shows.
@@ -378,6 +400,13 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_SNP_IDLE_IN_RESET_E,
     VIP_CHI_CHK_SNP_LCRD_OVERFLOW_E,
     VIP_CHI_CHK_SNP_LCRD_UNDERFLOW_E,
+    // Link layer, appended. These belong with the link rules above and are down
+    // here only because the order is append-only; putting them where they read
+    // best would renumber the SNP block. They sit AFTER it deliberately, so
+    // vip_chi_check_is_snp -- a range test, not a list -- still answers false for
+    // them and vip_chi_sva keeps ownership.
+    VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E,
+    VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;

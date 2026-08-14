@@ -47,6 +47,18 @@ class chi_tb_config:
     # keeps the sideband up speculatively, and widens the bound the
     # checkers allow.
     self.txsactive_extend_max_cycles = 0
+    # Cycles the link activation state machine may dwell in ACTIVATE /
+    # DEACTIVATE before the checkers call the link stuck. 0 (the default)
+    # disables the two timeouts, which is what keeps every existing test
+    # unchanged: they cover a failure the transaction-completion timeout
+    # structurally cannot see, since a link stuck coming up has no transaction in
+    # flight to time.
+    #
+    # On the testbench config rather than the per-agent config because a stuck
+    # link is a property of the LINK, and the checker that judges it is bound to
+    # an interface, not to any one endpoint's driver.
+    self.link_activation_timeout_cycles = 0
+    self.link_deactivation_timeout_cycles = 0
 
   def request_reset_pulse(self, cycles=3):
     self.reset_pulse_cycles = max(1, int(cycles))

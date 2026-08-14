@@ -51,7 +51,18 @@ module vip_chi_sva #(
     // rather than a parameter, like dat_reorder_allowed above and for the same
     // reason: a testcase sets the knob at run time, and elaboration is over by
     // then.
-    input int  txsactive_extend_max_cycles
+    input int  txsactive_extend_max_cycles,
+    // Cycles the LASM may dwell in ACTIVATE / DEACTIVATE before the link counts
+    // as stuck. 0 = disabled, which is the default. Inputs rather than
+    // parameters for the same reason as the two above: a testcase sets them at
+    // run time and elaboration is over by then.
+    //
+    // These cover what the transaction-completion timeout cannot. A link stuck
+    // coming up has no transaction in flight to time out, so without them the
+    // run simply hangs -- and it hangs in the one place where no protocol rule
+    // is being violated on any cycle, only the absence of progress.
+    input int  link_activation_timeout_cycles,
+    input int  link_deactivation_timeout_cycles
   );
 
   typedef vip_chi_types #(CFG_P)::txn_id_t     txn_id_t;
@@ -119,6 +130,38 @@ module vip_chi_sva #(
     return (link_lasm() != VIP_CHI_LASM_STOP_E);
   endfunction
 
+  // May a flit go out in the current link state?
+  //
+  // RUN is the ordinary answer. DEACTIVATE is the exception, and it exists for
+  // exactly one kind of flit: a sender that has been asked to bring the link
+  // down must first hand back every L-credit it holds, and the only way to hand
+  // one back is to send a flit under it. Refusing all traffic in DEACTIVATE
+  // would therefore make a clean tear-down impossible -- the credits would be
+  // stranded and VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E would fire on a link that
+  // did everything right.
+  //
+  // Anything OTHER than an L-credit return is still a violation there, which is
+  // what keeps the exception narrow: it admits the one flit the tear-down needs
+  // and nothing else.
+  function automatic bit flit_send_allowed(input bit is_lcrd_return);
+    if (link_lasm() == VIP_CHI_LASM_RUN_E) begin
+      return 1'b1;
+    end
+    return (link_lasm() == VIP_CHI_LASM_DEACTIVATE_E) && is_lcrd_return;
+  endfunction
+
+  function automatic bit tx_req_is_lcrd_return();
+    return (req_opcode_t'(vif.txreqflit.opcode) == req_opcode_t'(VIP_CHI_REQ_LCRD_RETURN_C));
+  endfunction
+
+  function automatic bit tx_rsp_is_lcrd_return();
+    return (rsp_opcode_t'(vif.txrspflit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_LCRD_RETURN_C));
+  endfunction
+
+  function automatic bit tx_dat_is_lcrd_return();
+    return (dat_opcode_t'(vif.txdatflit.opcode) == dat_opcode_t'(VIP_CHI_DAT_LCRD_RETURN_C));
+  endfunction
+
   // The registered LASM, one cycle behind link_lasm(). Advanced OUTSIDE the
   // checks_enable gate, deliberately: that gate is this interface's own link
   // activity, so gating the state machine on it would blind exactly the half of
@@ -128,9 +171,10 @@ module vip_chi_sva #(
   // the link came back and the first transition after every deactivation would
   // be measured from the wrong place.
   //
-  // lasm_dwell counts cycles held in the current state. Nothing in M2.4 reads it
-  // -- it exists because a state machine that cannot say HOW LONG it has been
-  // stuck can only report a wrong transition, never a missing one.
+  // lasm_dwell counts cycles held in the current state, which is what the two
+  // link timeouts below measure. A state machine that cannot say HOW LONG it has
+  // been somewhere can only report a wrong transition, never a missing one --
+  // and a link that never leaves ACTIVATE is precisely a missing one.
   vip_chi_lasm_state_t lasm_state;
   int unsigned         lasm_dwell;
 
@@ -498,6 +542,47 @@ module vip_chi_sva #(
   bit dat_completion_req_valid_by_txn[TXN_ID_COUNT_C];
   txn_id_t dat_completion_req_txn_by_txn[TXN_ID_COUNT_C];
 
+  // The L-credit shadow, gated on RESET ONLY -- deliberately, and unlike every
+  // other piece of tracked state here.
+  //
+  // Under the usual checks_enable gate these counters were cleared the moment
+  // the link left RUN, which made p_lcrd_quiescent_in_stop unable to fail: the
+  // gate zeroed the counts on the way into DEACTIVATE, so by the time the link
+  // reached STOP the rule was asking whether zero equalled zero. The one rule
+  // whose entire job is to catch credits stranded by a tear-down was blind to
+  // every tear-down.
+  //
+  // Surviving the gap is also what makes the counts MEAN anything across it: a
+  // credit granted before a link went down is exactly the credit that must not
+  // still be banked after it, and a counter that forgets at the boundary cannot
+  // say so. Only a reset clears them, because a reset is the one event that
+  // genuinely discards both ends' state.
+  always_ff @(posedge vif.clk or negedge vif.rst_n) begin
+    if (!vif.rst_n) begin
+      txreq_lcrd_count <= 0;
+      txrsp_lcrd_count <= 0;
+      txdat_lcrd_count <= 0;
+      rxreq_lcrd_count <= 0;
+      rxrsp_lcrd_count <= 0;
+      rxdat_lcrd_count <= 0;
+    end
+    else begin
+      // Each pool is credited by the LCRDV that authorizes the flit it counts,
+      // which travels opposite to that flit on the same channel (see the link
+      // adapter's cross-wire). A tx<chan> send is granted by the inbound
+      // rx<chan>lcrdv; a rx<chan> receive is granted by this node's own outbound
+      // tx<chan>lcrdv (which it emitted earlier for the peer). Pairing them this
+      // way makes each counter an exact shadow of the peer/local lcrd_mgr, so the
+      // M4 underflow check in lcrd_next() only ever fires on a real violation.
+      txreq_lcrd_count <= lcrd_next(txreq_lcrd_count, vif.rxreqlcrdv, vif.txreqflitv, REQ_SEND_CAP_C, "txreq");
+      txrsp_lcrd_count <= lcrd_next(txrsp_lcrd_count, vif.rxrsplcrdv, vif.txrspflitv, RSP_SEND_CAP_C, "txrsp");
+      txdat_lcrd_count <= lcrd_next(txdat_lcrd_count, vif.rxdatlcrdv, vif.txdatflitv, DAT_SEND_CAP_C, "txdat");
+      rxreq_lcrd_count <= lcrd_next(rxreq_lcrd_count, vif.txreqlcrdv, vif.rxreqflitv, REQ_SEND_CAP_C, "rxreq");
+      rxrsp_lcrd_count <= lcrd_next(rxrsp_lcrd_count, vif.txrsplcrdv, vif.rxrspflitv, RSP_SEND_CAP_C, "rxrsp");
+      rxdat_lcrd_count <= lcrd_next(rxdat_lcrd_count, vif.txdatlcrdv, vif.rxdatflitv, DAT_SEND_CAP_C, "rxdat");
+    end
+  end
+
   always_ff @(posedge vif.clk or negedge vif.rst_n) begin
     if (!checks_enable || !vif.rst_n) begin
       for (int txn_i = 0; txn_i < TXN_ID_COUNT_C; txn_i++) begin
@@ -530,29 +615,9 @@ module vip_chi_sva #(
       rxdat_expected_data_id <= '0;
       rxdat_burst_count     <= 0;
       rxdat_burst_opcode    <= dat_opcode_t'(VIP_CHI_DAT_COMP_DATA_C);
-      txreq_lcrd_count      <= 0;
-      txrsp_lcrd_count      <= 0;
-      txdat_lcrd_count      <= 0;
-      rxreq_lcrd_count      <= 0;
-      rxrsp_lcrd_count      <= 0;
-      rxdat_lcrd_count      <= 0;
     end
     else begin
       req_outstanding_delta = 0;
-
-      // Each pool is credited by the LCRDV that authorizes the flit it counts,
-      // which travels opposite to that flit on the same channel (see the link
-      // adapter's cross-wire). A tx<chan> send is granted by the inbound
-      // rx<chan>lcrdv; a rx<chan> receive is granted by this node's own outbound
-      // tx<chan>lcrdv (which it emitted earlier for the peer). Pairing them this
-      // way makes each counter an exact shadow of the peer/local lcrd_mgr, so the
-      // M4 underflow check in lcrd_next() only ever fires on a real violation.
-      txreq_lcrd_count <= lcrd_next(txreq_lcrd_count, vif.rxreqlcrdv, vif.txreqflitv, REQ_SEND_CAP_C, "txreq");
-      txrsp_lcrd_count <= lcrd_next(txrsp_lcrd_count, vif.rxrsplcrdv, vif.txrspflitv, RSP_SEND_CAP_C, "txrsp");
-      txdat_lcrd_count <= lcrd_next(txdat_lcrd_count, vif.rxdatlcrdv, vif.txdatflitv, DAT_SEND_CAP_C, "txdat");
-      rxreq_lcrd_count <= lcrd_next(rxreq_lcrd_count, vif.txreqlcrdv, vif.rxreqflitv, REQ_SEND_CAP_C, "rxreq");
-      rxrsp_lcrd_count <= lcrd_next(rxrsp_lcrd_count, vif.txrsplcrdv, vif.rxrspflitv, RSP_SEND_CAP_C, "rxrsp");
-      rxdat_lcrd_count <= lcrd_next(rxdat_lcrd_count, vif.txdatlcrdv, vif.rxdatflitv, DAT_SEND_CAP_C, "rxdat");
 
       if (ROLE_IS_REQUESTER_C) begin
         if (vif.txreqflitv) begin
@@ -1188,6 +1253,32 @@ module vip_chi_sva #(
       vip_chi_lasm_legal_step(lasm_state, link_lasm());
   endproperty
 
+  // A link that never leaves ACTIVATE or DEACTIVATE is stuck, and stuck is the
+  // one failure mode no other rule here can see: every cycle of it is legal.
+  // The transition rule is satisfied (holding is always a legal step), no flit
+  // goes out to violate a channel rule, and the transaction-completion timeout
+  // has nothing in flight to measure -- the run simply hangs, and hangs without
+  // naming anything.
+  //
+  // Measured on the dwell counter rather than as a bounded SVA window, so the
+  // bound can be a run-time knob rather than an elaboration-time constant, and
+  // so the report can state HOW LONG the link has been there.
+  //
+  // Fired on the crossing, not on every cycle beyond it: a stuck link would
+  // otherwise report once per cycle for the rest of the run, which buries the
+  // first (and only useful) report under thousands of copies.
+  property p_lasm_activation_timeout;
+    @(posedge vif.clk) disable iff (!vif.rst_n || (link_activation_timeout_cycles <= 0))
+      !((link_lasm() == VIP_CHI_LASM_ACTIVATE_E) &&
+        (lasm_dwell == unsigned'(link_activation_timeout_cycles)));
+  endproperty
+
+  property p_lasm_deactivation_timeout;
+    @(posedge vif.clk) disable iff (!vif.rst_n || (link_deactivation_timeout_cycles <= 0))
+      !((link_lasm() == VIP_CHI_LASM_DEACTIVATE_E) &&
+        (lasm_dwell == unsigned'(link_deactivation_timeout_cycles)));
+  endproperty
+
   // No L-credit may still be outstanding while the link is in STOP. A sender
   // must have returned every credit it holds before the link goes down; one left
   // behind means the shadow and the link disagree about what the peer is
@@ -1203,19 +1294,32 @@ module vip_chi_sva #(
          (rxrsp_lcrd_count == 0) && (rxdat_lcrd_count == 0));
   endproperty
 
+  // Gated on link_ever_active rather than checks_enable, and the three rules
+  // below are the reason the distinction matters.
+  //
+  // checks_enable is this interface's ACTIVATION REQUEST, so it is low in both
+  // DEACTIVATE and STOP -- exactly the two states in which "a flit must not go
+  // out" has any content. Under that gate the rules could only ever judge a
+  // link that was already up, which is the half of the question that never
+  // fails, and the tear-down flits would have gone completely unwatched.
+  //
+  // link_ever_active carries the intended meaning instead, the same way
+  // p_link_restarts_after_reset_release uses it: an interface whose agent is
+  // never built stays unarmed and cannot false-fail on an idle link, while one
+  // that has carried traffic is judged for the whole life of the link.
   property p_req_requires_link;
-    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txreqflitv |-> (link_lasm() == VIP_CHI_LASM_RUN_E);
+    @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
+      vif.txreqflitv |-> flit_send_allowed(tx_req_is_lcrd_return());
   endproperty
 
   property p_rsp_requires_link;
-    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txrspflitv |-> (link_lasm() == VIP_CHI_LASM_RUN_E);
+    @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
+      vif.txrspflitv |-> flit_send_allowed(tx_rsp_is_lcrd_return());
   endproperty
 
   property p_dat_requires_link;
-    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txdatflitv |-> (link_lasm() == VIP_CHI_LASM_RUN_E);
+    @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
+      vif.txdatflitv |-> flit_send_allowed(tx_dat_is_lcrd_return());
   endproperty
 
   property p_req_lcrdv_requires_link;
@@ -1304,9 +1408,38 @@ module vip_chi_sva #(
       $rose(vif.rst_n) |=> ##[0:LINK_ACT_WINDOW_P] link_is_active();
   endproperty
 
+  // TXSACTIVE may only be asserted while the link is RUN.
+  //
+  // This rule was VACUOUS BY CONSTRUCTION until the graceful-deactivation path
+  // existed, and in two independent ways worth recording, because both are easy
+  // to reintroduce:
+  //
+  //   1. its gate defeated it. The antecedent needed the link DOWN and
+  //      checks_enable IS this interface's activation request, so on every cycle
+  //      the antecedent could have held, `disable iff` had already killed the
+  //      attempt. The rule read as "if the link is up, the link is down".
+  //   2. nothing walked the states it judges. The VIP could only take a link
+  //      down by reset, so DEACTIVATE was never entered at all.
+  //
+  // Both are fixed here: link_ever_active gates it (an interface whose agent is
+  // never built stays unarmed; one that has carried traffic is judged for the
+  // whole life of the link), and the antecedent is widened from STOP alone to
+  // the whole tear-down half, DEACTIVATE and STOP, which is what the rule's name
+  // has always claimed. A node tearing its link down must not still be telling
+  // the receiver it may have snoopable transactions outstanding.
+  //
+  // ACTIVATE is deliberately NOT included, and the distinction is the point.
+  // TXSACTIVE is an early warning, not a report: a node bringing a link up
+  // already knows whether it will have snoopable traffic, and raising the
+  // sideband while it waits for the acknowledge is exactly what the signal is
+  // for -- it gives the receiver time to stop gating its snoop logic before the
+  // first flit arrives. Only the tear-down half carries the claim that nothing
+  // can be outstanding, because the tear-down only begins once everything has
+  // retired.
   property p_link_deactivate_when_idle;
-    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      !link_is_active() |=> !vif.txsactive;
+    @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
+      ((link_lasm() == VIP_CHI_LASM_DEACTIVATE_E) ||
+       (link_lasm() == VIP_CHI_LASM_STOP_E)) |=> !vif.txsactive;
   endproperty
 
   // TXSACTIVE against the outstanding window.
@@ -1481,6 +1614,20 @@ module vip_chi_sva #(
     chk_miss(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E, $sformatf("link stepped %s -> %s; the LASM may only hold or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
       lasm_state.name(), link_lasm().name()));
 
+  assert property (p_lasm_activation_timeout)
+    chk_hit(VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E, $sformatf(
+      "link stuck in ACTIVATE for %0d cycles (tx bring-up unacknowledged, limit %0d)",
+      lasm_dwell, link_activation_timeout_cycles));
+
+  assert property (p_lasm_deactivation_timeout)
+    chk_hit(VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E, $sformatf(
+      "link stuck in DEACTIVATE for %0d cycles (tx tear-down unacknowledged, limit %0d)",
+      lasm_dwell, link_deactivation_timeout_cycles));
+
   assert property (p_lcrd_quiescent_in_stop)
     chk_hit(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E);
   else
@@ -1606,7 +1753,7 @@ module vip_chi_sva #(
   assert property (p_link_deactivate_when_idle)
     chk_hit(VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E);
   else
-    chk_miss(VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E, $sformatf("link entered DEACTIVATE while transmit activity was still present"));
+    chk_miss(VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E, $sformatf("txsactive was asserted with the link in %s; nothing can be outstanding once a tear-down has begun", link_lasm().name()));
 
   assert property (p_txsactive_covers_outstanding)
     chk_hit(VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E);

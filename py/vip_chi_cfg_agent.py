@@ -132,6 +132,41 @@ class VipChiCfgAgent:
     # sequence. It fires once per activation; the link then comes up normally.
     self.lasm_abort_activation = False
 
+    # -- Graceful link deactivation -------------------------------------------
+    # Raised by a test, not by the driver: there is no such thing as an idle
+    # moment a driver can detect for itself. Its sequence loop blocks on the
+    # sequencer forever, so "no traffic right now" is indistinguishable from
+    # "between two sequences", and a driver that tore the link down on that guess
+    # would deactivate in the middle of every test. The test knows when it is
+    # finished; the driver does not.
+    #
+    # The requester then walks the second half of the LASM cycle it otherwise
+    # never touches -- RUN -> DEACTIVATE -> STOP -- returning every L-credit it
+    # holds on the way, because a link that stops with credits still banked
+    # leaves the two ends disagreeing about what the peer may send after the next
+    # bring-up (CHI_LCRD_QUIESCENT_IN_STOP is the rule that says so).
+    #
+    # Lowering it again brings the link back up, so one test can prove the whole
+    # cycle: down cleanly, and up again carrying traffic.
+    self.link_deactivate_request = False
+
+    # Published by the driver, read by the test: set once the link has reached
+    # STOP with every credit returned, cleared when it comes back up. A test
+    # polls this rather than the sideband wires so it waits for the DRAIN to
+    # finish and not merely for the signal to fall.
+    self.link_deactivate_done = False
+
+    # Negative controls for the two LASM timeouts (which live on the TESTBENCH
+    # config, not here -- a stuck link is a property of the link, and the checker
+    # that judges it is bound to an interface rather than to one endpoint's
+    # driver). Both are completer-side, because the completer owns LINKACTIVEACK
+    # and a stuck link is exactly an acknowledge that does not arrive:
+    #   * _activation_   delays the acknowledge to a bring-up request.
+    #   * _deactivation_ delays dropping the acknowledge once the link is drained.
+    # Both count in cycles and default to 0 (no delay).
+    self.lasm_stall_activation_cycles = 0
+    self.lasm_stall_deactivation_cycles = 0
+
     self.mem_cfg = None       # constructed by the SN-F driver (A2)
 
     self.link_act_delay_enabled = True
@@ -244,6 +279,22 @@ class VipChiCfgAgent:
       err("lasm_abort_activation is set on a role that does not originate link "
           "activation: only a requester raises txlinkactivereq, so there is no "
           "activation to abort")
+
+    # Same reasoning as the abort above, and the same failure if it is ignored:
+    # deactivation is driven by whoever raised the request in the first place.
+    if self.link_deactivate_request and self.role not in (Role.RNI, Role.RNF):
+      err("link_deactivate_request is set on a role that does not originate "
+          "link activation: only a requester drives txlinkactivereq, so there "
+          "is no request to withdraw")
+
+    # The mirror image: the stall knobs delay an acknowledge, and only a
+    # completer drives one. On a requester they would set a flag nothing reads.
+    if ((self.lasm_stall_activation_cycles or
+         self.lasm_stall_deactivation_cycles) and
+        self.role not in (Role.SNF, Role.HNF, Role.HNI)):
+      err("a lasm_stall_*_cycles knob is set on a role that does not drive "
+          "txlinkactiveack: only a completer acknowledges, so there is no "
+          "acknowledge to delay")
 
     # -- Link credits ---------------------------------------------------------
     # The initial grant is advertised on the wire and then accumulates against

@@ -185,6 +185,19 @@ class vip_chi_driver_rni(uvm_driver):
     self.dat_lcrd.reset(self.cfg.dat_send_credit_cap, 0)
     self.rsp_lcrdv_pending = 0
     self.dat_lcrdv_pending = 0
+    # Graceful-deactivation state (see deactivate_watch).
+    #
+    # link_deactivating suppresses NEW receive-credit grants: a receiver may not
+    # issue L-credits once the link is coming down, or the drain would be chasing
+    # a pool the credit loop keeps refilling and would never finish.
+    #
+    # rsp/dat_lcrd_granted are the credits this node has advertised and the peer
+    # has not yet spent -- the mirror image of the send-side managers, and the
+    # half of quiescence a sender cannot see from its own pools. The link is only
+    # drained when BOTH halves are empty at both ends.
+    self.link_deactivating = False
+    self.rsp_lcrd_granted = 0
+    self.dat_lcrd_granted = 0
     self.seen_rx_dat_flit = False
 
   def schedule_initial_credit_grants(self):
@@ -225,6 +238,10 @@ class vip_chi_driver_rni(uvm_driver):
     self.tx_active_count = 0
     self._tx_active_extend = 0
     self.lasm_abort_done = False
+    # A reset takes the link down by force, which is not the graceful path: the
+    # published "done" would otherwise survive as a claim about a drain that
+    # never happened.
+    self.cfg.link_deactivate_done = False
     self.reset_credit_state()
     self.reset_outputs()
 
@@ -375,6 +392,11 @@ class vip_chi_driver_rni(uvm_driver):
   # ==========================================================================
   async def driver_start(self):
     self._spawn(self.credit_loop())
+    # Watches cfg.link_deactivate_request. A separate task rather than a step in
+    # the sequence loop, because the loop blocks on the sequencer: a test that
+    # has stopped sending is exactly a test whose driver is parked waiting for
+    # the next item and would never look at the flag.
+    self._spawn(self.deactivate_watch())
     # Coherent-role extension point: RN-F forks its SNP receive-credit loop and
     # snoop responder here. No-op in RN-I.
     self.extra_rx_channels()
@@ -398,15 +420,32 @@ class vip_chi_driver_rni(uvm_driver):
       if bus.get("rxdatflitv"):
         self.seen_rx_dat_flit = True
 
-      dat_hold = self.cfg.hold_dat_credit and self.seen_rx_dat_flit
+      # link_deactivating holds both channels for a different reason than
+      # hold_dat_credit does: a receiver must not issue L-credits once the link
+      # is coming down. Without it the drain could never finish -- every credit
+      # the peer returned would be handed straight back.
+      dat_hold = ((self.cfg.hold_dat_credit and self.seen_rx_dat_flit)
+                  or self.link_deactivating)
+      rsp_grant = bool(self.rsp_lcrdv_pending) and not self.link_deactivating
 
-      bus.drive(txrsplcrdv=1 if self.rsp_lcrdv_pending else 0)
+      bus.drive(txrsplcrdv=1 if rsp_grant else 0)
       bus.drive(txdatlcrdv=1 if (self.dat_lcrdv_pending and not dat_hold) else 0)
 
-      if self.rsp_lcrdv_pending:
+      if rsp_grant:
         self.rsp_lcrdv_pending -= 1
+        self.rsp_lcrd_granted += 1
       if self.dat_lcrdv_pending and not dat_hold:
         self.dat_lcrdv_pending -= 1
+        self.dat_lcrd_granted += 1
+
+      # Every inbound flit spends one of the credits advertised above, INCLUDING
+      # an L-credit return: the return is itself a flit and consumes the credit
+      # it hands back. That is what lets the drain converge with no separate
+      # accounting for the two kinds.
+      if bus.get("rxrspflitv") and self.rsp_lcrd_granted:
+        self.rsp_lcrd_granted -= 1
+      if bus.get("rxdatflitv") and self.dat_lcrd_granted:
+        self.dat_lcrd_granted -= 1
 
       if bus.get("rxreqlcrdv"):
         self.req_lcrd.return_credit()
@@ -463,6 +502,135 @@ class vip_chi_driver_rni(uvm_driver):
       if bus.in_reset() or bus.get("rxlinkactiveack"):
         break
     self.schedule_initial_credit_grants()
+
+  # --------------------------------------------------------------------------
+  async def deactivate_watch(self):
+    """Graceful link deactivation: the second half of the LASM cycle.
+
+    Without this the VIP could only ever take a link down by RESET, so the two
+    tear-down edges (RUN -> DEACTIVATE, DEACTIVATE -> STOP) were checked but
+    never once walked, and every rule that only holds while a link is coming
+    down was untestable by construction.
+
+    The order below is the protocol's, and each step exists because the one
+    before it makes the next legal:
+
+      1. wait for the traffic to retire. A deactivation with a transaction still
+         in flight would strand it -- the completion has nowhere to arrive.
+      2. stop advertising receive credits. A receiver may not issue L-credits
+         once the link is coming down, and a drain racing a credit loop that
+         keeps refilling the pool would never converge.
+      3. drop LINKACTIVEREQ. The link is now in DEACTIVATE, which is the one
+         state in which a sender may still transmit -- and only L-credit
+         returns.
+      4. return every credit still held, on all three channels.
+      5. wait for the peer to do the same, which is what finally drops the
+         acknowledge and puts the link in STOP with both pools empty.
+
+    Lowering the request afterwards brings the link back up, so a single test
+    can prove the whole cycle rather than only its first half.
+    """
+    bus = self.bus
+
+    # Spawned alongside activate_link rather than after it, so wait for the link
+    # to be up before watching for a request to take it down. A test that set the
+    # flag before time 0 would otherwise withdraw a request never raised.
+    while not bus.get("rxlinkactiveack"):
+      await bus.rising()
+
+    while True:
+      # Idle here on every test that never asks, at no cost beyond the poll the
+      # credit loop is already making anyway.
+      while not self.cfg.link_deactivate_request:
+        await bus.rising()
+        self.drive_idle_sideband()
+
+      # 1. Let the traffic retire. _tx_active_extend is waited on as well as the
+      # count: TXSACTIVE says this node MAY have snoopable transactions
+      # outstanding, and taking a link down while still claiming that tells the
+      # receiver to keep watching a link that is about to stop existing.
+      while self.outstanding_ids or self.tx_active_count or self._tx_active_extend:
+        await bus.rising()
+        self.drive_idle_sideband()
+
+      # The count reaching zero only ARMS the drop; tx_activity_tick lowers the
+      # signal on its next call, so give it that cycle before the request falls.
+      await bus.rising()
+      self.drive_idle_sideband()
+
+      # 2 + 3. Stand the grants down, then withdraw the request.
+      self.link_deactivating = True
+      bus.drive(txlinkactivereq=0)
+
+      await bus.rising()
+      self.drive_idle_sideband()
+
+      # 4. Hand back what this node holds.
+      await self.drain_tx_credits()
+
+      # 5. And wait for the peer to hand back what it holds. The completer drops
+      # its acknowledge on the same condition, so this loop ends at STOP.
+      while self.rsp_lcrd_granted or self.dat_lcrd_granted:
+        await bus.rising()
+        self.drive_idle_sideband()
+
+      # Queued-but-unsent grants are dropped rather than carried across the gap:
+      # they were promises about a link that no longer exists, and re-activation
+      # advertises a fresh budget from schedule_initial_credit_grants().
+      self.rsp_lcrdv_pending = 0
+      self.dat_lcrdv_pending = 0
+      self.seen_rx_dat_flit = False
+
+      self.cfg.link_deactivate_done = True
+      self.logger.info(
+        f"[{self.get_name()}] link deactivated: every L-credit returned, "
+        f"link in STOP")
+
+      # Held down until the test asks for the link back.
+      while self.cfg.link_deactivate_request:
+        await bus.rising()
+        self.drive_idle_sideband()
+
+      self.link_deactivating = False
+      self.cfg.link_deactivate_done = False
+      await self.activate_link()
+      self.post_activate_hook()
+      self.logger.info(
+        f"[{self.get_name()}] link reactivated after a graceful deactivation")
+
+  # --------------------------------------------------------------------------
+  async def drain_tx_credits(self):
+    """Return every send-side L-credit this node still holds, one flit each.
+
+    An L-credit return is a flit like any other and is sent UNDER one of the
+    credits it returns, so the loop needs no separate budget: acquiring is what
+    makes the send legal, and the pool empties itself. That symmetry is also why
+    the credit shadow in the checkers needs no special case for it.
+    """
+    for channel, lcrd in (("req", self.req_lcrd),
+                          ("rsp", self.rsp_lcrd),
+                          ("dat", self.dat_lcrd)):
+      while lcrd.try_acquire_credit():
+        await self.drive_lcrd_return(channel)
+
+  async def drive_lcrd_return(self, channel):
+    """One L-credit return flit.
+
+    All fields zero: the opcode is the whole message, and a return names no
+    address, no TxnID and no data.
+    """
+    bus = self.bus
+    await self.acquire_tx_flit()
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(**{f"tx{channel}flitpend": 0, f"tx{channel}flitv": 1})
+    bus.drive_flit(channel, {"opcode": 0})
+
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(**{f"tx{channel}flitv": 0})
+    bus.drive_flit(channel, {})
+    self.release_tx_flit()
 
   # ==========================================================================
   # Request/completion helpers.

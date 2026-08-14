@@ -50,6 +50,7 @@ class vip_chi_driver_rni #(
   typedef vip_chi_types #(CFG_P)::cc_id_t      cc_id_t;
   typedef vip_chi_types #(CFG_P)::req_opcode_t req_opcode_t;
   typedef vip_chi_types #(CFG_P)::rsp_opcode_t rsp_opcode_t;
+  typedef vip_chi_types #(CFG_P)::dat_opcode_t dat_opcode_t;
   typedef item_t::raw_req_t                    raw_req_t;
   typedef item_t::raw_rsp_t                    raw_rsp_t;
   typedef item_t::raw_dat_t                    raw_dat_t;
@@ -121,6 +122,20 @@ class vip_chi_driver_rni #(
   // mid-run gets the control again on the next activation rather than silently
   // losing it.
   protected bit lasm_abort_done;
+
+  // Graceful-deactivation state (see deactivate_watch).
+  //
+  // link_deactivating suppresses NEW receive-credit grants: a receiver may not
+  // issue L-credits once the link is coming down, or the drain would be chasing
+  // a pool the credit loop keeps refilling and would never finish.
+  //
+  // rsp/dat_lcrd_granted are the credits this node has advertised and the peer
+  // has not yet spent -- the mirror image of the send-side managers, and the
+  // half of quiescence a sender cannot see from its own pools. The link is only
+  // drained when BOTH halves are empty at both ends.
+  protected bit          link_deactivating;
+  protected int unsigned rsp_lcrd_granted;
+  protected int unsigned dat_lcrd_granted;
 
   // Single mutex arbitrating the txreq/txrsp/txdat flit groups. In RN-I there
   // is exactly one flit-driving
@@ -260,6 +275,9 @@ class vip_chi_driver_rni #(
     this.dat_lcrd_mgr.reset(this.cfg.dat_send_credit_cap, 0);
     this.rsp_lcrdv_pulses_pending = 0;
     this.dat_lcrdv_pulses_pending = 0;
+    this.rsp_lcrd_granted = 0;
+    this.dat_lcrd_granted = 0;
+    this.link_deactivating = 1'b0;
     this.seen_rx_dat_flit = 1'b0;
   endfunction
 
@@ -383,6 +401,12 @@ class vip_chi_driver_rni #(
     this.tx_active_count = 0;
     this.tx_active_extend = 0;
     this.lasm_abort_done = 1'b0;
+    // A reset takes the link down by force, which is not the graceful path: the
+    // published "done" would otherwise survive as a claim about a drain that
+    // never happened.
+    if (this.cfg != null) begin
+      this.cfg.link_deactivate_done = 1'b0;
+    end
     this.reset_credit_state();
     this.reset_outputs();
     // The agent tears down driver_start() with disable-fork on reset, which may
@@ -463,6 +487,12 @@ class vip_chi_driver_rni #(
       // snoop responder here. Empty in RN-I (returns at once; harmless in join).
       this.extra_rx_channels();
 
+      // Watches cfg.link_deactivate_request. A separate thread rather than a
+      // step in the sequence loop below, because the loop blocks on the
+      // sequencer: a test that has stopped sending is exactly a test whose
+      // driver is parked in get_next_item and would never look at the flag.
+      this.deactivate_watch();
+
       begin
 
         this.activate_link();
@@ -511,17 +541,38 @@ class vip_chi_driver_rni #(
       // DAT credit advertisement; the pending grants accumulate and drain once
       // the flag clears, so no credit is lost. It only applies after the first
       // inbound DAT flit, so the initial credit grant still bootstraps the link.
-      dat_hold = this.cfg.hold_dat_credit && this.seen_rx_dat_flit;
+      //
+      // link_deactivating holds BOTH channels for a different reason: a receiver
+      // must not issue L-credits once the link is coming down. Without it the
+      // drain could never finish -- every credit the peer returned would be
+      // handed straight back.
+      dat_hold = (this.cfg.hold_dat_credit && this.seen_rx_dat_flit) ||
+                 this.link_deactivating;
 
-      this.vif_rni.g_drv.rni_cb.txrsplcrdv <= (this.rsp_lcrdv_pulses_pending != 0);
+      this.vif_rni.g_drv.rni_cb.txrsplcrdv <=
+        (this.rsp_lcrdv_pulses_pending != 0) && !this.link_deactivating;
       this.vif_rni.g_drv.rni_cb.txdatlcrdv <= (this.dat_lcrdv_pulses_pending != 0) && !dat_hold;
 
-      if (this.rsp_lcrdv_pulses_pending != 0) begin
+      if ((this.rsp_lcrdv_pulses_pending != 0) && !this.link_deactivating) begin
         this.rsp_lcrdv_pulses_pending--;
+        this.rsp_lcrd_granted++;
       end
 
       if ((this.dat_lcrdv_pulses_pending != 0) && !dat_hold) begin
         this.dat_lcrdv_pulses_pending--;
+        this.dat_lcrd_granted++;
+      end
+
+      // Every inbound flit spends one of the credits advertised above, INCLUDING
+      // an L-credit return: the return is itself a flit and consumes the credit
+      // it hands back. That is what lets the drain converge with no separate
+      // accounting for the two kinds.
+      if (this.vif_rni.g_drv.rni_cb.rxrspflitv && (this.rsp_lcrd_granted != 0)) begin
+        this.rsp_lcrd_granted--;
+      end
+
+      if (this.vif_rni.g_drv.rni_cb.rxdatflitv && (this.dat_lcrd_granted != 0)) begin
+        this.dat_lcrd_granted--;
       end
 
       if (this.vif_rni.g_drv.rni_cb.rxreqlcrdv) begin
@@ -786,6 +837,204 @@ class vip_chi_driver_rni #(
     end while (this.vif_rni.rst_n && !this.vif_rni.g_drv.rni_cb.rxlinkactiveack);
 
     this.schedule_initial_credit_grants();
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Graceful link deactivation: the second half of the LASM cycle.
+  //
+  // Without this the VIP could only ever take a link down by RESET, so the two
+  // tear-down edges (RUN -> DEACTIVATE, DEACTIVATE -> STOP) were checked but
+  // never once walked, and every rule that only holds while a link is coming
+  // down was untestable by construction.
+  //
+  // The order below is the protocol's, and each step exists because the one
+  // before it makes the next legal:
+  //
+  //   1. wait for the traffic to retire. A deactivation with a transaction still
+  //      in flight would strand it -- the completion has nowhere to arrive.
+  //   2. stop advertising receive credits. A receiver may not issue L-credits
+  //      once the link is coming down, and a drain racing a credit loop that
+  //      keeps refilling the pool would never converge.
+  //   3. drop LINKACTIVEREQ. The link is now in DEACTIVATE, which is the one
+  //      state in which a sender may still transmit -- and only L-credit
+  //      returns.
+  //   4. return every credit still held, on all three channels.
+  //   5. wait for the peer to do the same, which is what finally drops the
+  //      acknowledge and puts the link in STOP with both pools empty.
+  //
+  // Lowering the request afterwards brings the link back up, so a single test
+  // can prove the whole cycle rather than only its first half.
+  // ---------------------------------------------------------------------------
+  protected task deactivate_watch();
+
+    // Forked alongside activate_link rather than after it, so wait for the link
+    // to be up before watching for a request to take it down. A test that set
+    // the flag before time 0 would otherwise withdraw a request never raised.
+    while (!this.vif_rni.g_drv.rni_cb.rxlinkactiveack) begin
+      @(this.vif_rni.g_drv.rni_cb);
+    end
+
+    forever begin
+
+      // Idle here on every test that never asks, at no cost beyond the poll the
+      // credit loop is already making anyway.
+      while (!this.cfg.link_deactivate_request) begin
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+      end
+
+      // 1. Let the traffic retire. tx_active_extend is waited on as well as the
+      // count: TXSACTIVE says this node MAY have snoopable transactions
+      // outstanding, and taking a link down while still claiming that tells the
+      // receiver to keep watching a link that is about to stop existing.
+      while ((this.outstanding_ids.size() != 0) || (this.tx_active_count != 0) ||
+             (this.tx_active_extend != 0)) begin
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+      end
+
+      // The count reaching zero only ARMS the drop; tx_activity_tick lowers the
+      // signal on its next call, so give it that cycle before the request falls.
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
+
+      // 2 + 3. Stand the grants down, then withdraw the request. Both in the
+      // same cycle: the credit loop reads the flag on its next edge, which is
+      // the same edge the lowered request reaches the wire on.
+      this.link_deactivating = 1'b1;
+      this.vif_rni.g_drv.rni_cb.txlinkactivereq <= 1'b0;
+
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
+
+      // 4. Hand back what this node holds.
+      this.drain_tx_credits();
+
+      // 5. And wait for the peer to hand back what it holds. The completer drops
+      // its acknowledge on the same condition, so this loop ends at STOP.
+      while ((this.rsp_lcrd_granted != 0) || (this.dat_lcrd_granted != 0)) begin
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+      end
+
+      // Queued-but-unsent grants are dropped rather than carried across the gap:
+      // they were promises about a link that no longer exists, and re-activation
+      // advertises a fresh budget from schedule_initial_credit_grants().
+      this.rsp_lcrdv_pulses_pending = 0;
+      this.dat_lcrdv_pulses_pending = 0;
+      this.seen_rx_dat_flit         = 1'b0;
+
+      this.cfg.link_deactivate_done = 1'b1;
+
+      `uvm_info(get_name(), $sformatf(
+        "INFO [%s] link deactivated: every L-credit returned, link in STOP",
+        get_name()), UVM_LOW)
+
+      // Held down until the test asks for the link back.
+      while (this.cfg.link_deactivate_request) begin
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+      end
+
+      this.link_deactivating        = 1'b0;
+      this.cfg.link_deactivate_done = 1'b0;
+      this.activate_link();
+      this.post_activate_hook();
+
+      `uvm_info(get_name(), $sformatf(
+        "INFO [%s] link reactivated after a graceful deactivation",
+        get_name()), UVM_LOW)
+    end
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Return every send-side L-credit this node still holds, one flit per credit.
+  //
+  // An L-credit return is a flit like any other and is sent UNDER one of the
+  // credits it returns, so the loop needs no separate budget: acquiring is what
+  // makes the send legal, and the pool empties itself. That symmetry is also why
+  // the credit shadow in the checkers needs no special case for it.
+  // ---------------------------------------------------------------------------
+  protected task drain_tx_credits();
+
+    while (this.req_lcrd_mgr.try_acquire_credit()) begin
+      this.drive_req_lcrd_return();
+    end
+
+    while (this.rsp_lcrd_mgr.try_acquire_credit()) begin
+      this.drive_rsp_lcrd_return();
+    end
+
+    while (this.dat_lcrd_mgr.try_acquire_credit()) begin
+      this.drive_dat_lcrd_return();
+    end
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // One L-credit return flit per channel. All fields zero: the opcode is the
+  // whole message, and a return names no address, no TxnID and no data.
+  // ---------------------------------------------------------------------------
+  protected task drive_req_lcrd_return();
+
+    req_flit_t flit;
+
+    flit        = '0;
+    flit.opcode = req_opcode_t'(VIP_CHI_REQ_LCRD_RETURN_C);
+
+    this.acquire_tx_flit();
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+    this.vif_rni.g_drv.rni_cb.txreqflitpend <= 1'b0;
+    this.vif_rni.g_drv.rni_cb.txreqflit     <= flit;
+    this.vif_rni.g_drv.rni_cb.txreqflitv    <= 1'b1;
+
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+    this.vif_rni.g_drv.rni_cb.txreqflitv <= 1'b0;
+    this.vif_rni.g_drv.rni_cb.txreqflit  <= '0;
+    this.release_tx_flit();
+  endtask
+
+  protected task drive_rsp_lcrd_return();
+
+    rsp_flit_t flit;
+
+    flit        = '0;
+    flit.opcode = rsp_opcode_t'(VIP_CHI_RSP_LCRD_RETURN_C);
+
+    this.acquire_tx_flit();
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+    this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b0;
+    this.vif_rni.g_drv.rni_cb.txrspflit     <= flit;
+    this.vif_rni.g_drv.rni_cb.txrspflitv    <= 1'b1;
+
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+    this.vif_rni.g_drv.rni_cb.txrspflitv <= 1'b0;
+    this.vif_rni.g_drv.rni_cb.txrspflit  <= '0;
+    this.release_tx_flit();
+  endtask
+
+  protected task drive_dat_lcrd_return();
+
+    dat_flit_t flit;
+
+    flit        = '0;
+    flit.opcode = dat_opcode_t'(VIP_CHI_DAT_LCRD_RETURN_C);
+
+    this.acquire_tx_flit();
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+    this.vif_rni.g_drv.rni_cb.txdatflitpend <= 1'b0;
+    this.vif_rni.g_drv.rni_cb.txdatflit     <= flit;
+    this.vif_rni.g_drv.rni_cb.txdatflitv    <= 1'b1;
+
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+    this.vif_rni.g_drv.rni_cb.txdatflitv <= 1'b0;
+    this.vif_rni.g_drv.rni_cb.txdatflit  <= '0;
+    this.release_tx_flit();
   endtask
 
   // ---------------------------------------------------------------------------

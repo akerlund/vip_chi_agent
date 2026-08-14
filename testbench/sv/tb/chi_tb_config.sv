@@ -20,6 +20,13 @@ class chi_tb_config extends uvm_object;
   // it as soon as the window closes. Raising it models a node that keeps the
   // sideband up speculatively, and widens the bound the checkers allow.
   int txsactive_extend_max_cycles;
+  // Cycles the link activation state machine may dwell in ACTIVATE / DEACTIVATE
+  // before the checkers call the link stuck. 0 (the default) disables the two
+  // timeouts, which is what keeps every existing test unchanged: they cover a
+  // failure the transaction-completion timeout structurally cannot see, since a
+  // link stuck coming up has no transaction in flight to time.
+  int link_activation_timeout_cycles;
+  int link_deactivation_timeout_cycles;
 
   `uvm_object_utils_begin(chi_tb_config)
     `uvm_field_int(run_e_wide_integrated, UVM_DEFAULT)
@@ -30,6 +37,8 @@ class chi_tb_config extends uvm_object;
     `uvm_field_int(perf_enable, UVM_DEFAULT)
     `uvm_field_int(dat_reorder_allowed, UVM_DEFAULT)
     `uvm_field_int(txsactive_extend_max_cycles, UVM_DEFAULT)
+    `uvm_field_int(link_activation_timeout_cycles, UVM_DEFAULT)
+    `uvm_field_int(link_deactivation_timeout_cycles, UVM_DEFAULT)
   `uvm_object_utils_end
 
   function new(input string name = "chi_tb_config");
@@ -46,6 +55,8 @@ class chi_tb_config extends uvm_object;
     this.perf_enable            = 1'b1;
     this.dat_reorder_allowed    = 1'b0;
     this.txsactive_extend_max_cycles = 0;
+    this.link_activation_timeout_cycles   = 0;
+    this.link_deactivation_timeout_cycles = 0;
   endfunction
 
   function void request_reset_pulse(input int cycles = 3);

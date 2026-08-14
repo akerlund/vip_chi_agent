@@ -572,22 +572,32 @@ class vip_chi_monitor(uvm_monitor):
 
       self._sample_sactive()
 
-      if bus.get_or("txreqflitv"):
+      # An L-credit return (opcode 0 on every channel) is a link-layer flit, not
+      # a transaction: it hands one credit back and names no address, no TxnID
+      # and no data. Publishing one would invent a transaction the scoreboard
+      # then waits forever to complete, so the filter belongs HERE rather than in
+      # each _publish_* -- one place where a flit becomes an item, one place
+      # where the link layer is separated from the protocol layer.
+      if bus.get_or("txreqflitv") and not self._is_lcrd_return("req", bus.get("txreqflit")):
         self._publish_req(bus.get("txreqflit"), me)
-      if bus.get_or("rxreqflitv"):
+      if bus.get_or("rxreqflitv") and not self._is_lcrd_return("req", bus.get("rxreqflit")):
         self._publish_req(bus.get("rxreqflit"), peer)
 
-      if bus.get_or("txrspflitv"):
+      if bus.get_or("txrspflitv") and not self._is_lcrd_return("rsp", bus.get("txrspflit")):
         self._publish_rsp(bus.get("txrspflit"), me)
-      if bus.get_or("rxrspflitv"):
+      if bus.get_or("rxrspflitv") and not self._is_lcrd_return("rsp", bus.get("rxrspflit")):
         self._publish_rsp(bus.get("rxrspflit"), peer)
 
-      if bus.get_or("txdatflitv"):
+      if bus.get_or("txdatflitv") and not self._is_lcrd_return("dat", bus.get("txdatflit")):
         self._publish_dat(bus.get("txdatflit"), bus.get_or("txdatflitpend"), me)
-      if bus.get_or("rxdatflitv"):
+      if bus.get_or("rxdatflitv") and not self._is_lcrd_return("dat", bus.get("rxdatflit")):
         self._publish_dat(bus.get("rxdatflit"), bus.get_or("rxdatflitpend"), peer)
 
-      if bus.get_or("txsnpflitv"):
+      if bus.get_or("txsnpflitv") and not self._is_lcrd_return("snp", bus.get("txsnpflit")):
         self._publish_snp(bus.get("txsnpflit"), me)
-      if bus.get_or("rxsnpflitv"):
+      if bus.get_or("rxsnpflitv") and not self._is_lcrd_return("snp", bus.get("rxsnpflit")):
         self._publish_snp(bus.get("rxsnpflit"), peer)
+
+  def _is_lcrd_return(self, channel: str, flit_int) -> bool:
+    """True for an L-credit return flit on `channel` (opcode 0 on all four)."""
+    return int(unpack(self.cfg, channel, int(flit_int))["opcode"]) == 0

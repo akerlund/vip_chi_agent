@@ -552,6 +552,26 @@ class bind_chi:
   # ---------------------------------------------------------------------------
   def _reset_state(self) -> None:
     self._reset_tracking_state()
+
+    # The L-credit shadow. One pool per channel per direction, each starting at
+    # 0 and capturing its initial pool automatically, because that pool arrives
+    # as real LCRDV pulses on the wire once the link activates.
+    #
+    # Cleared on RESET ONLY -- deliberately, and unlike the rest of the tracked
+    # state, which _reset_tracking_state also clears whenever the enable gate
+    # goes low. Under that gate these counters were zeroed the moment the link
+    # left RUN, which made CHI_LCRD_QUIESCENT_IN_STOP unable to fail: the gate
+    # emptied the counts on the way into DEACTIVATE, so by the time the link
+    # reached STOP the rule was asking whether zero equalled zero. The one rule
+    # whose entire job is to catch credits stranded by a tear-down was blind to
+    # every tear-down.
+    #
+    # Surviving the gap is also what makes the counts MEAN anything across it: a
+    # credit granted before a link went down is exactly the credit that must not
+    # still be banked after it, and a counter that forgets at the boundary cannot
+    # say so.
+    self._lcrd = {f"{d}{ch}": 0 for d in ("tx", "rx") for ch in _CHANNELS_C}
+
     self._act_countdown = None
     # The LASM restarts from STOP out of reset, which the reset-idle rule
     # already requires the sideband to be holding.
@@ -566,11 +586,6 @@ class bind_chi:
     guaranteed idle and therefore the enable gate is low. Clearing it on the
     disable path would disarm the check on the very cycle it was armed.
     """
-    # The L-credit shadow. One pool per channel per direction, each starting at
-    # 0 on reset and capturing its initial pool automatically, because that
-    # pool arrives as real LCRDV pulses on the wire once the link activates.
-    self._lcrd = {f"{d}{ch}": 0 for d in ("tx", "rx") for ch in _CHANNELS_C}
-
     # Per-TxnID bookkeeping. The SV declares these as arrays sized by the TxnID
     # space and clears them on reset; a dict with a zero default is the same
     # thing without allocating the whole space up front.
@@ -747,13 +762,28 @@ class bind_chi:
       # place. An interface whose agent is never built holds both directions in
       # STOP and only ever sees the legal hold, so it still reports nothing.
       self._check_lasm(cur)
+      self._check_lasm_timeouts()
 
-      if enabled:
+      # Judged on _link_ever_active rather than on the enable gate, and the
+      # reason is the same for all three: the gate is this interface's ACTIVATION
+      # REQUEST, so it is low in both DEACTIVATE and STOP -- exactly the two
+      # states in which "no flit may go out", "no credit may still be held" and
+      # "the sideband must be idle" have any content. Under the gate they could
+      # only ever judge a link that was already up, which is the half of each
+      # question that never fails.
+      #
+      # _link_ever_active carries the intended meaning instead, the same way the
+      # restart-window check uses it: an interface whose agent is never built
+      # stays unarmed and cannot false-fail on an idle link, while one that has
+      # carried traffic is judged for the whole life of the link.
+      if self._link_ever_active:
         self._check_link_gating(cur)
-        self._check_pend_requires_valid(cur)
         self._check_lcrd(cur)
         if prev is not None and prev_rst == 1:
           self._check_deactivate_idle(prev, cur)
+
+      if enabled:
+        self._check_pend_requires_valid(cur)
         self._check_transactions(cur)
       else:
         # The SV always_ff clears its state whenever checks_enable is low, so a
@@ -782,7 +812,7 @@ class bind_chi:
       )
 
   # ---------------------------------------------------------------------------
-  # Link Activation State Machine, one per direction.
+  # Link Activation State Machine, one per link (see _lasm_of).
   # ---------------------------------------------------------------------------
   def _check_lasm(self, s: dict) -> None:
     """Advance the LASM and judge the step against the legal transition set.
@@ -856,7 +886,8 @@ class bind_chi:
     for ch in _CHANNELS_C:
       if s[f"tx{ch}flitv"]:
         self._chk(
-          f"CHI_{ch.upper()}_FLITV_REQUIRES_LINK", state is LasmState.RUN,
+          f"CHI_{ch.upper()}_FLITV_REQUIRES_LINK",
+          self._flit_send_allowed(state, s, ch),
           f"tx{ch}flitv asserted with the link in {state.name}, not RUN",
           "section 13.7",
         )
@@ -866,6 +897,28 @@ class bind_chi:
           f"tx{ch}lcrdv asserted with the link in STOP",
           "section 13.7",
         )
+
+  @staticmethod
+  def _flit_send_allowed(state: LasmState, s: dict, channel: str) -> bool:
+    """May the flit now on `channel` go out in the current link state?
+
+    RUN is the ordinary answer. DEACTIVATE is the exception, and it exists for
+    exactly one kind of flit: a sender asked to bring the link down must first
+    hand back every L-credit it holds, and the only way to hand one back is to
+    send a flit under it. Refusing all traffic in DEACTIVATE would therefore make
+    a clean tear-down impossible -- the credits would be stranded and
+    CHI_LCRD_QUIESCENT_IN_STOP would fire on a link that did everything right.
+
+    Anything OTHER than an L-credit return is still a violation there, which is
+    what keeps the exception narrow: it admits the one flit the tear-down needs
+    and nothing else.
+    """
+    if state is LasmState.RUN:
+      return True
+    if state is not LasmState.DEACTIVATE:
+      return False
+    flit = s.get(f"tx{channel}flit")
+    return flit is not None and int(flit.get("opcode", -1)) == 0
 
   # ---------------------------------------------------------------------------
   # FLITPEND is a look-ahead for a flit that must actually arrive.
@@ -925,12 +978,74 @@ class bind_chi:
   # TXSACTIVE must drop once the link is no longer active.
   # ---------------------------------------------------------------------------
   def _check_deactivate_idle(self, prev: dict, cur: dict) -> None:
-    # SV: !link_is_active() |=> !txsactive -- judged on the FOLLOWING cycle,
-    # so the antecedent comes from the previous sample.
-    if not self._link_is_active(prev):
+    """TXSACTIVE may only be asserted while the link is RUN.
+
+    This rule was VACUOUS BY CONSTRUCTION until the graceful-deactivation path
+    existed, and in two independent ways worth recording, because both are easy
+    to reintroduce:
+
+      1. its gate defeated it. The antecedent needed the link DOWN and the enable
+         gate IS this interface's activation request, so on nearly every cycle
+         the antecedent could have held, the gate had already skipped it.
+      2. nothing walked the states it judges. The VIP could only take a link down
+         by reset, so DEACTIVATE was never entered at all.
+
+    Both are fixed: the caller gates it on _link_ever_active, and the antecedent
+    is widened from STOP alone to the whole tear-down half, DEACTIVATE and STOP,
+    which is what the rule's name has always claimed. A node tearing its link
+    down must not still be telling the receiver it may have snoopable
+    transactions outstanding.
+
+    ACTIVATE is deliberately NOT included, and the distinction is the point.
+    TXSACTIVE is an early warning, not a report: a node bringing a link up
+    already knows whether it will have snoopable traffic, and raising the
+    sideband while it waits for the acknowledge is exactly what the signal is for
+    -- it gives the receiver time to stop gating its snoop logic before the first
+    flit arrives. Only the tear-down half carries the claim that nothing can be
+    outstanding, because the tear-down only begins once everything has retired.
+
+    Judged on the FOLLOWING cycle (SV `|=>`), so the antecedent comes from the
+    previous sample.
+    """
+    state = self._lasm_of(prev)
+    if state in (LasmState.DEACTIVATE, LasmState.STOP):
       self._chk(
         "CHI_LINK_DEACTIVATE_WHEN_IDLE", not cur["txsactive"],
-        "link entered DEACTIVATE while transmit activity was still present",
+        f"txsactive was asserted with the link in {state.name}; nothing can be "
+        f"outstanding once a tear-down has begun",
+        "section 13.4",
+      )
+
+  # ---------------------------------------------------------------------------
+  # A link stuck coming up or going down.
+  # ---------------------------------------------------------------------------
+  def _check_lasm_timeouts(self) -> None:
+    """ACTIVATE and DEACTIVATE are states a link must pass THROUGH, not sit in.
+
+    Stuck is the one failure mode no other rule here can see, because every cycle
+    of it is legal: holding is always a legal LASM step, no flit goes out to
+    violate a channel rule, and the transaction-completion timeout has nothing in
+    flight to measure. The run simply hangs, and hangs without naming anything.
+
+    Measured on the dwell counter rather than as a bounded temporal window, so
+    the bound is a run-time knob and the report can state how long the link has
+    been there. Fired on the CROSSING, not on every cycle beyond it: a stuck link
+    would otherwise report once per cycle for the rest of the run, burying the
+    first (and only useful) report under thousands of copies.
+    """
+    for state, knob, rule, what in (
+      (LasmState.ACTIVATE, "link_activation_timeout_cycles",
+       "CHI_LASM_ACTIVATION_TIMEOUT", "bring-up"),
+      (LasmState.DEACTIVATE, "link_deactivation_timeout_cycles",
+       "CHI_LASM_DEACTIVATION_TIMEOUT", "tear-down"),
+    ):
+      limit = int(getattr(self.tb_cfg, knob, 0) or 0) if self.tb_cfg else 0
+      if limit <= 0 or self._lasm is not state:
+        continue
+      self._chk(
+        rule, self._lasm_dwell != limit,
+        f"link stuck in {state.name} for {self._lasm_dwell} cycles "
+        f"(tx {what} unacknowledged, limit {limit})",
         "section 13.4",
       )
 
