@@ -88,6 +88,12 @@ interface vip_chi_if #(
   // individual check. A negative-control test turns its own rule down to
   // VIP_CHI_CHK_SEV_OFF_E -- counted, not reported -- which is what replaced the
   // one-off suppression port the LASM control originally needed.
+  // check_enabled also doubles as OWNERSHIP, and readers depend on it: only the
+  // checker that owns an ID ever sets its entry true, so an ID left false is
+  // either switched off or belongs to a bind this interface does not carry. An
+  // RN-F interface with no SNP bind therefore reports the CHI_SNP_* rules as
+  // neither exercised nor missing, which is right -- listing them would put
+  // seven permanent entries in every coherent run's vacuity report.
   bit                      check_enabled  [VIP_CHI_CHK_NUM_E];
   vip_chi_check_severity_t check_severity [VIP_CHI_CHK_NUM_E];
 

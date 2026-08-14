@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **138 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **139 pyUVM/cocotb**
+The shared regression currently runs **140 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **141 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -109,6 +109,8 @@ exception of `tc_chi_sva_smoke` described at the top of this file.
 | `tc_chi_ordered_stream_negctl` | INT | negative control for the same check. `snf_reorder_ordered_service` has the buffered SN-F serve one pair of queued ordered requests back to front; every read still completes correctly, so no other checker can see the fault. The inversion must be flagged exactly once (not cascaded) and the rest of the stream still compared in order. |
 | `tc_chi_ordered_write_no_comp_ack` | INT | ordered writes WITHOUT `ExpCompAck`, a combination no other test covered. `Order` and `ExpCompAck` are independent -- the first asks the completer to acknowledge in receipt order, the second asks for a separate requester-driven acknowledgement -- but every other ordered-write test set both, so the pipeline only ever retired ordered writes on the CompAck path. Six pipelined ordered writes must each hand back a combined `CompDBIDResp` and be acknowledged in order; the completion opcode is asserted, not just the response count, so a run that merely failed to deadlock does not pass as clean. |
 | `tc_chi_lasm_illegal_transition` | INT | negative control for the link-activation state machine. `lasm_abort_activation` has the requester raise `txlinkactivereq` and withdraw it before the completer acknowledges, so the link leaves `ACTIVATE` without reaching `RUN`. Both binds must count the aborted bring-up, the legal activation that follows must not be flagged, and a read must still complete over the recovered link. `tb_cfg.lasm_illegal_expected` suppresses the `$error` while leaving the count intact -- the assertion-control plumbing this file's header notes was missing, now present for this one rule. |
+| `tc_chi_check_disable` | INT | negative control for the per-check enable. One rule is disabled by ID before any traffic; on the same write burst it must record NOTHING -- not a pass, not a fail -- while a sibling rule on the transmit side still records passes. The sibling is what proves the disable was targeted rather than taking the whole bind down, which would otherwise be invisible because both rules would read zero. A disabled rule is also excluded from the vacuity report, so "switched off" stays distinguishable from "never ran". |
+| `tc_chi_check_vacuity` | INT | the vacuity report checked against itself. `CHI_COMPACK_WITHOUT_EXPCOMPACK` cannot be evaluated by read-only traffic, so after a read it must read as unexercised while a rule the read does exercise must not; a following write with `ExpCompAck` drives a CompAck and the same rule must move out of that state, having recorded a pass. Asserting the TRANSITION rather than a snapshot is what makes it non-tautological -- a hard-coded answer passes the first half and fails the second. |
 | `tc_chi_d_split_write_rsp` | INT | `DBIDResp` plus deferred `Comp`, with optional trailing `CompAck` under `ExpCompAck`. |
 | `tc_chi_d_prefetch_tgt` | INT | `PrefetchTgt` treated as a no-completion hint. |
 | `tc_chi_d_atomic` | INT | atomic store/load/swap/compare smoke using the SN-F backing memory for operand capture, RMW, old-data return, and readback. |

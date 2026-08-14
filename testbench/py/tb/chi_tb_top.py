@@ -1034,6 +1034,20 @@ async def tc_chi_ordered_stream_negctl(dut) -> None:
   await _run_d_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_check_disable", timeout_time=20, timeout_unit="ms")
+async def tc_chi_check_disable(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_check_disable"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_check_vacuity", timeout_time=20, timeout_unit="ms")
+async def tc_chi_check_vacuity(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_check_vacuity"
+  await _run_d_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_lasm_illegal_transition", timeout_time=20, timeout_unit="ms")
 async def tc_chi_lasm_illegal_transition(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
