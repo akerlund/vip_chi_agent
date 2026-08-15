@@ -104,15 +104,37 @@ class chi_e_tb_env extends uvm_env;
     end
   endtask
   // ---------------------------------------------------------------------------
-  // The scoreboard's rules go into the same per-check export as the SVA binds',
-  // under its own bind name. They were outside the mechanism entirely until now,
-  // which meant a scoreboard check could stop evaluating and no report anywhere
-  // would say so.
+  // Fold every checker on this link into the run's verdict and the export.
+  //
+  // The two vip_chi_sva binds on the CHI-E integrated link (rni_e_sva, snf_e_sva
+  // in chi_tb_top) were counting into the interface arrays with NOTHING reading
+  // them: their failures did not fail a run and their tallies never reached the
+  // regression CSV. The rules themselves still looked covered in the aggregation
+  // because the CHI-D env exports the same rule NAMES -- which is exactly how
+  // this stayed invisible, and exactly the shape of the bug that had the SNP
+  // binds unexported. The Python port has always checked its CHI-E link, because
+  // its E testcases run through the same env as the CHI-D ones; this restores
+  // parity.
   // ---------------------------------------------------------------------------
   function void report_phase(input uvm_phase phase);
 
     super.report_phase(phase);
 
+    chi_check_export_csv("rni_e_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.rni_agent.vif.check_enabled, this.rni_agent.vif.check_severity,
+      this.rni_agent.vif.check_pass_count, this.rni_agent.vif.check_fail_count);
+    chi_check_export_csv("snf_e_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.snf_agent.vif.check_enabled, this.snf_agent.vif.check_severity,
+      this.snf_agent.vif.check_pass_count, this.snf_agent.vif.check_fail_count);
+
+    chi_check_report_tallies("rni_e_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.rni_agent.vif.check_enabled, this.rni_agent.vif.check_severity,
+      this.rni_agent.vif.check_pass_count, this.rni_agent.vif.check_fail_count);
+    chi_check_report_tallies("snf_e_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.snf_agent.vif.check_enabled, this.snf_agent.vif.check_severity,
+      this.snf_agent.vif.check_pass_count, this.snf_agent.vif.check_fail_count);
+
+    // The scoreboard's rules go into the same export, under its own bind name.
     this.scoreboard.report_checks();
     this.scoreboard.export_check_csv();
   endfunction
