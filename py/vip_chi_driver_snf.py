@@ -880,6 +880,17 @@ class vip_chi_driver_snf(uvm_driver):
       if cfg.is_e:
         tg = self.tag_mem.get(self._row_index(req_addr + beat_index * cfg.data_bytes))
         fields["tagop"], fields["tag"], fields["tu"] = tg if tg is not None else (0, 0, 0)
+        # Negative control (cfg.snf_corrupt_tag). Two independent breakages,
+        # because the two reachable rules fail independently:
+        #   the TAG comes back wrong   -- a corrupt tag store.
+        #   the TAGOP comes back wrong -- a completer that invented a TagOp
+        #                                 instead of replaying the stored one.
+        # Both on the same beat, and that is forced by the link rather than
+        # chosen: the only MTE-capable link here is 64 bytes and CHI's maximum
+        # transfer Size is 64 bytes, so every MTE transfer has exactly one beat.
+        if self.cfg.snf_corrupt_tag and tg is not None:
+          fields["tag"] ^= 1
+          fields["tagop"] ^= 1
       await self.wait_for_credit(self.dat_lcrd)
       await bus.rising()
       self.drive_idle_sideband()

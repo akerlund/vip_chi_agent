@@ -146,6 +146,13 @@ class vip_chi_item(uvm_sequence_item):
     # ---- non-rand response / snoop / raw scalars --------------------------
     self.dat_opcode = int(DatOpcode.COMP_DATA)
     self.dat_tagop = 0
+    # TagOp as carried by EACH beat of the transfer. dat_tagop above is a single
+    # field every beat overwrites, so the last beat silently wins and a burst
+    # whose beats disagree is indistinguishable from one that does not. CHI
+    # requires one TagOp for a whole transfer, so the disagreement is the thing
+    # worth catching -- and it cannot be caught after reassembly unless the
+    # per-beat values survive it.
+    self.dat_tagop_beats = []
     self.rsp_opcode = int(RspOpcode.COMP)
     self.rsp_resp = int(Resp.I)
     self.rsp_resp_err = int(RespErr.OKAY)

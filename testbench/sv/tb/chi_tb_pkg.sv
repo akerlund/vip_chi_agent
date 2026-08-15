@@ -80,6 +80,12 @@ package chi_tb_pkg;
   // CHI-E HN-I proxy passthrough address; decodes to SN port 0 under the proxy's
   // default stride sn_port = (addr >> 12) % 2 = (0x..8) % 2 = 0.
   localparam item_e_t::addr_t    E_HNI_WRITE_READ_ADDR_C = item_e_t::addr_t'(52'h0012_3456_8000);
+  // MTE tag-integrity addresses, one per test so the two never predict over each
+  // other's tag image. PACKAGE scope for the reason given below on
+  // E_HNI_WRITE_READ_ADDR_C: a class-scoped localparam of a
+  // parameterized-class-nested type hangs vcs1fe codegen at CHI-E flit width.
+  localparam item_e_t::addr_t    E_TAG_INTEGRITY_ADDR_C = item_e_t::addr_t'(52'h0012_3456_7b00);
+  localparam item_e_t::addr_t    E_TAG_NEGCTL_ADDR_C    = item_e_t::addr_t'(52'h0012_3456_7c00);
   localparam item_e_t::addr_t    E_PERSIST_ADDR_C     = item_e_t::addr_t'(52'h0012_3456_7900);
   localparam item_e_t::addr_t    E_PERSIST_SEP_ADDR_C = item_e_t::addr_t'(52'h0012_3456_7a00);
   localparam item_e_t::addr_t    E_DBID_RESP_ORD_ADDR_C = item_e_t::addr_t'(52'h0012_3456_7d00);

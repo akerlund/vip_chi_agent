@@ -138,6 +138,19 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0 keeps every burst well formed.
   bit snf_duplicate_dat_beat = 1'b0;
 
+  // Negative-control knob for the MTE tag checks: when set, the exact-CHI-E
+  // completer returns the stored tag with its low bit inverted on the FIRST beat
+  // of a read burst, and a different TagOp on the last beat.
+  //
+  // Two rules, two breakages, one knob, because they fail independently: a
+  // completer whose tag store is corrupt returns the wrong tag with a perfectly
+  // consistent TagOp, and one that loses track of the transfer returns the right
+  // tags under a TagOp that changes mid-burst. A control that broke only one
+  // would leave the other unproven.
+  //
+  // Default 0 replays the stored tagging verbatim.
+  bit snf_corrupt_tag = 1'b0;
+
   // Per-transaction latency bounds, in cycles on the monitor's reset-gated
   // counter. 0 = unbounded, which is the default and preserves behaviour: a
   // bench that has never stated a latency budget should not acquire one. A
@@ -608,6 +621,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.hnf_force_excl_success || this.hnf_corrupt_fwd_data ||
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
+        this.snf_corrupt_tag ||
         this.lasm_abort_activation || this.flitpend_without_valid) begin
       if (!silent) begin
         `uvm_warning("VIP_CHI_CFG", $sformatf(

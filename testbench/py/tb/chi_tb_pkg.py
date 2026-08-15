@@ -38,6 +38,10 @@ SNF_NODE_ID_C = 0x031
 
 # ---- CHI-E directed-test constants -----------------------------------------
 E_MTE_ADDR_C = 0x0012_3456_7800
+# MTE tag-integrity addresses, one per test so the two never predict over each
+# other's tag image.
+E_TAG_INTEGRITY_ADDR_C = 0x0012_3456_7B00
+E_TAG_NEGCTL_ADDR_C = 0x0012_3456_7C00
 E_HNI_WRITE_READ_ADDR_C = 0x0012_3456_8000
 E_PERSIST_ADDR_C = 0x0012_3456_7900
 E_PERSIST_SEP_ADDR_C = 0x0012_3456_7A00

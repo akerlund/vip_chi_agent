@@ -542,6 +542,10 @@ class vip_chi_monitor(uvm_monitor):
       it.data_id, it.cc_id = [0] * n, [0] * n
       it.dat_resp, it.dat_resp_err = [0] * n, [0] * n
       it.tag, it.tu = [0] * n, [0] * n
+      # Per-beat TagOp as well as the scalar above: the scalar is overwritten by
+      # every beat, so a transfer whose beats disagree about TagOp would look
+      # identical to one that does not. See vip_chi_item.dat_tagop_beats.
+      it.dat_tagop_beats = [0] * n
       self.dat_item_by_key[key] = it
       self.dat_beats_by_key[key] = 0
       if expected > 0:
@@ -595,6 +599,7 @@ class vip_chi_monitor(uvm_monitor):
       it.dat_resp_err[beat_index] = f["resperr"]
       it.tag[beat_index] = f.get("tag", 0)
       it.tu[beat_index] = f.get("tu", 0)
+      it.dat_tagop_beats[beat_index] = f.get("tagop", 0)
     else:
       it.data.append(f["data"])
       it.be.append(f["be"])
@@ -604,6 +609,7 @@ class vip_chi_monitor(uvm_monitor):
       it.dat_resp_err.append(f["resperr"])
       it.tag.append(f.get("tag", 0))
       it.tu.append(f.get("tu", 0))
+      it.dat_tagop_beats.append(f.get("tagop", 0))
     self.dat_beats_by_key[key] += 1
 
     if expected > 0:

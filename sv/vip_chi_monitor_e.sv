@@ -76,6 +76,12 @@ class vip_chi_monitor_e #(
     item.dat_tagop       = tagop_t'(flit.tagop);
     item.tag[beat_index] = tag_t'(flit.tag);
     item.tu[beat_index]  = tu_t'(flit.tu);
+    // Kept per beat as well as in the scalar above: the scalar is overwritten by
+    // every beat, so a transfer whose beats disagree about TagOp would look
+    // identical to one that does not. See vip_chi_item.dat_tagop_beats.
+    if (beat_index < item.dat_tagop_beats.size()) begin
+      item.dat_tagop_beats[beat_index] = tagop_t'(flit.tagop);
+    end
   endfunction
 
 endclass

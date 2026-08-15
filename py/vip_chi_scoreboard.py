@@ -180,6 +180,29 @@ class vip_chi_scoreboard(uvm_component):
     self.pred_mem = {}             # addr -> byte (0..255)
     self.written = set()           # addr set
 
+    # Checker C, MTE half: the predicted TAG image, alongside pred_mem/written
+    # and committed by the same rule (an observed write that resolved OKAY).
+    # Keyed by BEAT, not by byte, because a tag covers a whole beat's worth of
+    # data in this VIP's model -- the completer stores one tag + tu per beat slot
+    # and replays it. Predicting per byte would claim a granularity the model
+    # does not have.
+    #
+    # What this checks is the store-and-replay path, which is what the VIP
+    # implements: the tag that comes back must be the tag that went in. It
+    # deliberately does NOT model TagOp semantics (Invalid / Transfer / Update /
+    # Match), because the VIP does not either -- the completer replays TagOp
+    # verbatim, and a checker that invented those semantics would be checking
+    # itself.
+    self.pred_tag = {}
+    self.pred_tu = {}
+    self.pred_tagop = {}
+    self.tag_written = set()
+    self.n_tag_checked = 0
+    self.n_tag_mismatch = 0
+    self.n_tagop_replay_mismatch = 0
+    self.n_tagop_beat_mismatch = 0
+    self.n_tag_reads_skipped = 0
+
     # Checker B canonical-key request multisets.
     self.int_req_cnt = {}
     self.int_cmp_cnt = {}
@@ -629,6 +652,7 @@ class vip_chi_scoreboard(uvm_component):
           a = ctx.addr + (i * self.DATA_BYTES_C) + j
           self.pred_mem[a] = (int(dat.data[i]) >> (8 * j)) & 0xFF
           self.written.add(a)
+    self._commit_write_tags(ctx, dat)
     ctx.wr_committed = True
 
   # ==========================================================================
@@ -790,6 +814,86 @@ class vip_chi_scoreboard(uvm_component):
             "Data mismatch stream=%d txn=0x%x addr=0x%x exp=0x%x got=0x%x" % (
               ctx.stream, ctx.txn_id, a, self.pred_mem[a], got))
 
+    self._compare_read_tags(ctx, item)
+
+  # ==========================================================================
+  # Checker C, MTE half - the tag rules.
+  #
+  # The VIP has kept a per-beat tag store and replayed it since the exact-CHI-E
+  # completer was written, and nothing ever checked what came back. A model
+  # nothing checks is the same defect as a check nothing exercises, seen from
+  # the other side: it can be wrong for a whole regression without one test
+  # noticing.
+  # ==========================================================================
+  def _compare_read_tags(self, ctx, item):
+    if not self.check_data:
+      return
+
+    tagops = getattr(item, "dat_tagop_beats", []) or []
+
+    # Rule 1: one TagOp for the whole transfer.
+    #
+    # KNOWN UNREACHABLE IN THIS TESTBENCH, and recorded rather than left to be
+    # discovered. The only MTE-capable link here is the wide CHI-E one at 64
+    # bytes, and CHI's maximum transfer Size is also 64 bytes, so every MTE
+    # transfer on it is exactly ONE beat and this never has two to compare. Kept
+    # because it is correct and costs nothing on a narrower E link, where it is
+    # the only thing that would catch a completer losing track of a burst. Rule 3
+    # below is the reachable half of the same concern.
+    if len(tagops) > 1:
+      first = int(tagops[0])
+      for i, op in enumerate(tagops):
+        if int(op) != first:
+          self.n_tagop_beat_mismatch += 1
+          self.logger.error(
+            "TagOp mismatch across beats stream=%d txn=0x%x beat=%d exp=0x%x "
+            "got=0x%x" % (ctx.stream, ctx.txn_id, i, first, int(op)))
+          break   # one report per transfer, not one per remaining beat
+
+    # Rule 2: the tag that comes back is the tag that went in. Same
+    # predictable-only discipline as the data compare -- a beat whose tag this
+    # scoreboard never observed being written is skipped, because the completer
+    # synthesizes tagging the scoreboard did not originate.
+    for i in range(len(item.tag)):
+      slot = ctx.addr + (i * self.DATA_BYTES_C)
+      if slot not in self.tag_written:
+        self.n_tag_reads_skipped += 1
+        continue
+      self.n_tag_checked += 1
+      if int(item.tag[i]) != self.pred_tag[slot]:
+        self.n_tag_mismatch += 1
+        self.logger.error(
+          "Tag mismatch stream=%d txn=0x%x addr=0x%x exp=0x%x got=0x%x" % (
+            ctx.stream, ctx.txn_id, slot, self.pred_tag[slot], int(item.tag[i])))
+      if i < len(item.tu) and int(item.tu[i]) != self.pred_tu[slot]:
+        self.n_tag_mismatch += 1
+        self.logger.error(
+          "TagUpdate mismatch stream=%d txn=0x%x addr=0x%x exp=0x%x got=0x%x" % (
+            ctx.stream, ctx.txn_id, slot, self.pred_tu[slot], int(item.tu[i])))
+
+      # Rule 3: the TagOp that comes back is the TagOp that went in. The
+      # reachable half of rule 1's concern -- it needs only ONE beat, so unlike
+      # rule 1 it is exercised on this testbench's 64-byte MTE link.
+      if i < len(tagops) and int(tagops[i]) != self.pred_tagop[slot]:
+        self.n_tagop_replay_mismatch += 1
+        self.logger.error(
+          "TagOp replay mismatch stream=%d txn=0x%x addr=0x%x exp=0x%x "
+          "got=0x%x" % (ctx.stream, ctx.txn_id, slot, self.pred_tagop[slot],
+                        int(tagops[i])))
+
+  def _commit_write_tags(self, ctx, item):
+    """Commit an observed write's tagging, under the same rule as the data."""
+    if not self.check_data or item is None:
+      return
+    tagops = getattr(item, "dat_tagop_beats", []) or []
+    for i in range(len(item.tag)):
+      slot = ctx.addr + (i * self.DATA_BYTES_C)
+      self.pred_tag[slot] = int(item.tag[i])
+      self.pred_tu[slot] = int(item.tu[i]) if i < len(item.tu) else 0
+      self.pred_tagop[slot] = (int(tagops[i]) if i < len(tagops)
+                               else int(getattr(item, "dat_tagop", 0)))
+      self.tag_written.add(slot)
+
   # ==========================================================================
   # Retire when the contract is met; drop the DBID/sep-return index entries.
   # ==========================================================================
@@ -932,6 +1036,19 @@ class vip_chi_scoreboard(uvm_component):
         self.n_incomplete, self.n_orphan, self.n_wrong_opcode, self.n_reuse,
         self.n_data_mismatch, self.n_relay_mismatch, self.n_route_mismatch,
         self.n_reads_skipped))
+
+    # The MTE tag half on its OWN line, for the same reason the ordered-stream
+    # summary below is: appended to the line above it falls past the report
+    # server's wrap column, and a wrapped field name is a field nobody can sweep
+    # for. tag_checked is on it deliberately -- zero mismatches out of zero
+    # comparisons is not a pass, and only the checked count can tell them apart.
+    self.logger.info(
+      "scoreboard tag summary: tag_checked=%d tag_mismatch=%d "
+      "tagop_replay_mismatch=%d tagop_beat_mismatch=%d "
+      "(tag_reads_skipped_unpredictable=%d)" % (
+        self.n_tag_checked, self.n_tag_mismatch,
+        self.n_tagop_replay_mismatch, self.n_tagop_beat_mismatch,
+        self.n_tag_reads_skipped))
 
     # Checker E on its own line, deliberately: appended to the summary above it
     # fell past the report server's wrap column, which split the field name from

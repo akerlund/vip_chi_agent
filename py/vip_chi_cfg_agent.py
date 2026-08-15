@@ -95,6 +95,16 @@ class VipChiCfgAgent:
     # position, so one position arrives twice and one never arrives.
     self.snf_duplicate_dat_beat = False
 
+    # Negative control for the MTE tag checks: the exact-CHI-E completer returns
+    # the stored tag with its low bit inverted on the FIRST beat of a read burst,
+    # and a different TagOp on the last beat.
+    #
+    # Two rules, two breakages, one knob, because they fail independently: a
+    # completer whose tag store is corrupt returns the wrong tag under a
+    # perfectly consistent TagOp, and one that loses track of the transfer
+    # returns the right tags under a TagOp that changes mid-burst.
+    self.snf_corrupt_tag = False
+
     # Per-transaction latency bounds, in cycles on the monitor's reset-gated
     # counter. 0 = unbounded, which is the default and preserves behaviour: a
     # bench that has never stated a latency budget should not acquire one. A
@@ -390,6 +400,7 @@ class VipChiCfgAgent:
       "hnf_downstream_corrupt_data": self.hnf_downstream_corrupt_data,
       "hnf_downstream_force_decerr": self.hnf_downstream_force_decerr,
       "snf_duplicate_dat_beat": self.snf_duplicate_dat_beat,
+      "snf_corrupt_tag": self.snf_corrupt_tag,
       "snf_reorder_ordered_service": self.snf_reorder_ordered_service,
       "lasm_abort_activation": self.lasm_abort_activation,
       "flitpend_without_valid": self.flitpend_without_valid,

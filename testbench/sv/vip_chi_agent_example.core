@@ -18,6 +18,7 @@ filesets:
       - tb/chi_tb_pkg.sv:                               {is_include_file: true}
       - tb/chi_write_zero_fatal_catcher.sv:             {is_include_file: true}
       - tb/chi_scoreboard_negctl_catcher.sv:            {is_include_file: true}
+      - tc/chi_tag_negctl_catcher.sv:                   {is_include_file: true}
       - tb/chi_coherency_negctl_catcher.sv:             {is_include_file: true}
       - tc/chi_base_test.sv:                            {is_include_file: true}
       - tc/chi_e_base_test.sv:                          {is_include_file: true}
@@ -32,6 +33,8 @@ filesets:
       - tc/tc_chi_e_dat_smoke.sv:                           {is_include_file: true}
       - tc/tc_chi_e_snf_dat_smoke.sv:                       {is_include_file: true}
       - tc/tc_chi_e_mte.sv:                                 {is_include_file: true}
+      - tc/tc_chi_e_tag_integrity.sv:                       {is_include_file: true}
+      - tc/tc_chi_e_tag_negctl.sv:                          {is_include_file: true}
       - tc/tc_chi_d_read_smoke.sv:                          {is_include_file: true}
       - tc/tc_chi_d_reset.sv:                               {is_include_file: true}
       - tc/tc_chi_d_credit_starvation.sv:                   {is_include_file: true}

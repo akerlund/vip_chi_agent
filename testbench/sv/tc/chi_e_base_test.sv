@@ -98,6 +98,12 @@ class chi_e_base_test extends uvm_test;
   // ---------------------------------------------------------------------------
   // Drain Observation Fifos
   // ---------------------------------------------------------------------------
+  // Idle a number of clocks on the CHI-E link. The env's own interface, so a
+  // test does not have to reach for a hierarchical path.
+  protected task wait_clocks(input int cycles);
+    repeat (cycles) @(posedge this.tb_env.rni_agent.vif.clk);
+  endtask
+
   protected task drain_observation_fifos();
 
     vip_chi_item #(CHI_E_WIDE_CFG_C) item;

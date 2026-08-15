@@ -82,6 +82,9 @@ class vip_chi_sb_ctx #(
   typedef item_t::size_t         size_t;
   typedef item_t::req_opcode_t   req_opcode_t;
   typedef item_t::data_t         data_t;
+  typedef item_t::tag_t          tag_t;
+  typedef item_t::tu_t           tu_t;
+  typedef item_t::tagop_t        tagop_t;
 
   // Identity (the normalized key).
   vip_chi_sb_stream_e stream;
@@ -207,6 +210,9 @@ class vip_chi_scoreboard #(
   typedef item_t::rsp_opcode_t   rsp_opcode_t;
   typedef item_t::dat_opcode_t   dat_opcode_t;
   typedef item_t::data_t         data_t;
+  typedef item_t::tag_t          tag_t;
+  typedef item_t::tu_t           tu_t;
+  typedef item_t::tagop_t        tagop_t;
   typedef vip_chi_sb_ctx #(CFG_P) ctx_t;
 
   localparam int DATA_BYTES_C = CFG_P.DATA_BYTES_P;
@@ -271,6 +277,30 @@ class vip_chi_scoreboard #(
   // Reporting counters.
   protected int n_incomplete, n_orphan, n_wrong_opcode, n_reuse;
   protected int n_data_mismatch, n_reads_skipped, n_relay_mismatch, n_route_mismatch;
+
+  // Checker C, MTE half: the predicted TAG image, alongside pred_mem/written and
+  // committed by the same rule (an observed write that resolved OKAY).
+  //
+  // Keyed by BEAT, not by byte, because a tag covers a whole beat's worth of
+  // data in this VIP's model -- the SN-F stores one tag + tu per beat slot and
+  // replays it. Predicting per byte would claim a granularity the model does not
+  // have.
+  //
+  // What this checks is the store-and-replay path, which is what the VIP
+  // actually implements: the tag that comes back must be the tag that went in.
+  // It deliberately does NOT model TagOp semantics (Invalid / Transfer / Update /
+  // Match), because the VIP does not either -- the completer replays TagOp
+  // verbatim. A checker that invented those semantics would be checking itself.
+  protected tag_t   pred_tag   [addr_t];
+  protected tu_t    pred_tu    [addr_t];
+  protected tagop_t pred_tagop [addr_t];
+  protected bit   tag_written  [addr_t];
+  protected int   n_tag_mismatch, n_tagop_mismatch, n_tag_reads_skipped;
+  protected int   n_tagop_replay_mismatch;
+  // Tags actually COMPARED. Without it a clean run cannot tell a correct tag
+  // path from one the scoreboard never predicted, which is the whole lesson of
+  // the vacuity work: zero mismatches out of zero comparisons is not a pass.
+  protected int   n_tag_checked;
   protected int n_order_violation, n_order_checked;
 
   // ---------------------------------------------------------------------------
@@ -867,6 +897,7 @@ class vip_chi_scoreboard #(
         end
       end
     end
+    this.commit_write_tags(ctx, ctx.wr_dat_item);
     ctx.wr_committed = 1'b1;
   endfunction
 
@@ -1068,6 +1099,109 @@ class vip_chi_scoreboard #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Checker C, MTE half - the two tag rules.
+  //
+  // The VIP has kept a per-beat tag store and replayed it since the exact-CHI-E
+  // completer was written, and nothing ever checked what came back. A model
+  // nothing checks is the same defect as a check nothing exercises, seen from
+  // the other side: it can be wrong for a whole regression without one test
+  // noticing.
+  // ---------------------------------------------------------------------------
+  protected function void compare_read_tags(input ctx_t ctx, input item_t item);
+    addr_t  slot;
+    tagop_t first_op;
+
+    if (!this.check_data) begin
+      return;
+    end
+
+    // Rule 1: one TagOp for the whole transfer. CHI carries TagOp per flit but
+    // requires it identical across the beats of one transfer, and the item's
+    // scalar dat_tagop cannot show a disagreement -- every beat overwrites it,
+    // so the last beat wins. dat_tagop_beats is why this is checkable at all.
+    //
+    // KNOWN UNREACHABLE IN THIS TESTBENCH, and recorded rather than left to be
+    // discovered. The only MTE-capable link here is the wide CHI-E one at 64
+    // bytes, and CHI's maximum transfer Size is also 64 bytes, so every MTE
+    // transfer on it is exactly ONE beat and the loop below never has two to
+    // compare. It is kept because it is correct and costs nothing on a narrower
+    // E link, where it is the only thing that would catch a completer losing
+    // track of a burst -- but it is not exercised here, and this comment is the
+    // substitute for a vacuity report that cannot see scoreboard checks.
+    // Rule 3 below is the reachable half of the same concern.
+    if (item.dat_tagop_beats.size() > 1) begin
+      first_op = item.dat_tagop_beats[0];
+      foreach (item.dat_tagop_beats[i]) begin
+        if (item.dat_tagop_beats[i] != first_op) begin
+          this.n_tagop_mismatch++;
+          `uvm_error(get_name(), $sformatf(
+            "TagOp mismatch across beats stream=%0d txn=0x%0h beat=%0d exp=0x%0h got=0x%0h",
+            ctx.stream, ctx.txn_id, i, first_op, item.dat_tagop_beats[i]));
+          break;   // one report per transfer, not one per remaining beat
+        end
+      end
+    end
+
+    // Rule 2: the tag that comes back is the tag that went in. Same
+    // predictable-only discipline as the data compare above -- a beat whose tag
+    // this scoreboard never observed being written is skipped, because the
+    // completer synthesizes tagging the scoreboard did not originate.
+    foreach (item.tag[i]) begin
+      slot = ctx.addr + addr_t'(i * DATA_BYTES_C);
+      if (!this.tag_written.exists(slot)) begin
+        this.n_tag_reads_skipped++;
+        continue;
+      end
+      this.n_tag_checked++;
+      if (item.tag[i] != this.pred_tag[slot]) begin
+        this.n_tag_mismatch++;
+        `uvm_error(get_name(), $sformatf(
+          "Tag mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
+          ctx.stream, ctx.txn_id, slot, this.pred_tag[slot], item.tag[i]));
+      end
+      if ((item.tu.size() > i) && (item.tu[i] != this.pred_tu[slot])) begin
+        this.n_tag_mismatch++;
+        `uvm_error(get_name(), $sformatf(
+          "TagUpdate mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
+          ctx.stream, ctx.txn_id, slot, this.pred_tu[slot], item.tu[i]));
+      end
+
+      // Rule 3: the TagOp that comes back is the TagOp that went in. The
+      // reachable half of rule 1's concern -- it needs only ONE beat, so unlike
+      // rule 1 it is exercised on this testbench's 64-byte MTE link. A completer
+      // that invented a TagOp instead of replaying the stored one is caught
+      // here; one that changed TagOp mid-burst needs rule 1 and a narrower link.
+      if ((i < item.dat_tagop_beats.size()) &&
+          (item.dat_tagop_beats[i] != this.pred_tagop[slot])) begin
+        this.n_tagop_replay_mismatch++;
+        `uvm_error(get_name(), $sformatf(
+          "TagOp replay mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
+          ctx.stream, ctx.txn_id, slot, this.pred_tagop[slot],
+          item.dat_tagop_beats[i]));
+      end
+    end
+  endfunction
+
+  // Commit an observed write's tagging into the predicted image, under the same
+  // rule as the data commit: only once the completion resolved OKAY.
+  protected function void commit_write_tags(input ctx_t ctx, input item_t item);
+    addr_t slot;
+
+    if (!this.check_data || (item == null)) begin
+      return;
+    end
+
+    foreach (item.tag[i]) begin
+      slot = ctx.addr + addr_t'(i * DATA_BYTES_C);
+      this.pred_tag[slot]    = item.tag[i];
+      this.pred_tu[slot]     = (item.tu.size() > i) ? item.tu[i] : tu_t'(0);
+      this.pred_tagop[slot]  = (i < item.dat_tagop_beats.size())
+                                 ? item.dat_tagop_beats[i] : item.dat_tagop;
+      this.tag_written[slot] = 1'b1;
+    end
+  endfunction
+
   // Checker C - predictable-only read compare (skip bytes never observed
   // written; the SN-F synthesizes a deterministic pattern the scoreboard did
   // not originate and must not predict).
@@ -1098,6 +1232,8 @@ class vip_chi_scoreboard #(
         end
       end
     end
+
+    this.compare_read_tags(ctx, item);
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -1211,6 +1347,11 @@ class vip_chi_scoreboard #(
   // Checker E accessors: the violation count for a negative control, and the
   // in-order tally so a positive test can require that the check actually ran.
   // ---------------------------------------------------------------------------
+  function int get_tag_mismatch_count();      return this.n_tag_mismatch;      endfunction
+  function int get_tagop_mismatch_count();    return this.n_tagop_mismatch;    endfunction
+  function int get_tagop_replay_mismatch_count(); return this.n_tagop_replay_mismatch; endfunction
+  function int get_tag_checked_count();       return this.n_tag_checked;       endfunction
+
   function int get_order_violation_count(); return this.n_order_violation; endfunction
   function int get_order_checked_count();   return this.n_order_checked;   endfunction
 
@@ -1253,6 +1394,15 @@ class vip_chi_scoreboard #(
       this.n_incomplete, this.n_orphan, this.n_wrong_opcode, this.n_reuse,
       this.n_data_mismatch, this.n_relay_mismatch, this.n_route_mismatch,
       this.n_reads_skipped), UVM_LOW);
+
+    // The MTE tag half on its OWN line, for the same reason Checker E below is:
+    // appended to the summary above it falls past the report server's wrap
+    // column, and a wrapped field name is a field nobody can sweep for.
+    `uvm_info(get_name(), $sformatf(
+      "scoreboard tag summary: tag_checked=%0d tag_mismatch=%0d tagop_replay_mismatch=%0d tagop_beat_mismatch=%0d (tag_reads_skipped_unpredictable=%0d)",
+      this.n_tag_checked, this.n_tag_mismatch, this.n_tagop_replay_mismatch,
+      this.n_tagop_mismatch, this.n_tag_reads_skipped),
+      UVM_LOW);
 
     // Checker E on its own line, deliberately: appended to the summary above it
     // fell past the report server's wrap column, which split the field name from

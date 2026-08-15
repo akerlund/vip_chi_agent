@@ -879,6 +879,7 @@ class vip_chi_monitor #(
       item.data         = new[alloc_beats];
       item.be           = new[alloc_beats];
       item.tag          = new[alloc_beats];
+      item.dat_tagop_beats = new[alloc_beats];
       item.tu           = new[alloc_beats];
       item.data_id      = new[alloc_beats];
       item.cc_id        = new[alloc_beats];
@@ -964,6 +965,7 @@ class vip_chi_monitor #(
       item.data         = new[beat_index + 1](item.data);
       item.be           = new[beat_index + 1](item.be);
       item.tag          = new[beat_index + 1](item.tag);
+      item.dat_tagop_beats = new[beat_index + 1](item.dat_tagop_beats);
       item.tu           = new[beat_index + 1](item.tu);
       item.data_id      = new[beat_index + 1](item.data_id);
       item.cc_id        = new[beat_index + 1](item.cc_id);

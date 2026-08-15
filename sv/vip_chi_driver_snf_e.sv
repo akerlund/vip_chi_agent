@@ -153,6 +153,22 @@ class vip_chi_driver_snf_e #(
       flit.tagop = this.auto_tag_store_by_beat[beat_slot].dat_tagop;
       flit.tag   = this.auto_tag_store_by_beat[beat_slot].tag;
       flit.tu    = this.auto_tag_store_by_beat[beat_slot].tu;
+
+      // Negative control (cfg.snf_corrupt_tag). Two independent breakages,
+      // because the two reachable rules fail independently:
+      //   the TAG comes back wrong    -- a corrupt tag store.
+      //   the TAGOP comes back wrong  -- a completer that invented a TagOp
+      //                                  instead of replaying the stored one.
+      //
+      // BOTH breakages land on beat 0, deliberately. The only MTE-capable link
+      // in this testbench is 64 bytes wide and CHI's maximum transfer Size is
+      // also 64 bytes, so every MTE transfer here has exactly ONE beat -- a
+      // control that put its second breakage on a later beat would never fire,
+      // which is what the first cut of this did.
+      if (this.cfg.snf_corrupt_tag) begin
+        flit.tag   = flit.tag   ^ tag_t'(1);
+        flit.tagop = flit.tagop ^ tagop_t'(1);
+      end
     end
   endfunction
 

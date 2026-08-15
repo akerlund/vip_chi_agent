@@ -112,6 +112,16 @@ class vip_chi_item #(
   // completions the monitor/driver will later populate the corresponding data.
   // ---------------------------------------------------------------------------
   tagop_t             dat_tagop    = '0;
+
+  // TagOp as carried by EACH beat of the transfer.
+  //
+  // dat_tagop above is a single field that every beat overwrites, so the last
+  // beat silently wins and a burst whose beats disagree is indistinguishable
+  // from one that does not. CHI requires one TagOp for a whole transfer, so the
+  // disagreement is the thing worth catching -- and it cannot be caught after
+  // reassembly unless the per-beat values survive it. Sized and filled exactly
+  // like tag[] / tu[], which were already per beat for the same reason.
+  tagop_t             dat_tagop_beats [];
   dat_opcode_t        dat_opcode   = dat_opcode_t'(VIP_CHI_DAT_COMP_DATA_C);
   data_t              data         [];
   be_t                be           [];
