@@ -384,6 +384,7 @@ req.randomize() with {
 ```text
 vip_chi_base_seq                     (setter API + generation loop)
 ├── vip_chi_read_seq / vip_chi_write_seq / vip_chi_write_zero_seq
+├── vip_chi_write_cmo_seq            (combined Write + CMO, E-only)
 ├── vip_chi_atomic_seq  (+ store / load / compare variants)
 ├── vip_chi_persist_seq
 ├── vip_chi_pipelined_seq            (caller pre-builds items)
@@ -404,7 +405,8 @@ count and addressing (`set_requests`, `set_initial_addr`, `set_addr_list`,
 `set_size_range`), payload (`set_data_type`, `set_data`, `set_be`,
 `set_counter_value`), identity/attributes (`set_src_id`, `set_tgt_id`,
 `set_qos`, `set_order`, `set_ns`, `set_mem_attr`), flow control (`set_allow_retry`,
-`set_exp_comp_ack`, `set_excl`, `set_pcrd_type`, `set_sep_read`), and CHI-E MTE
+`set_exp_comp_ack`, `set_excl`, `set_pcrd_type`, `set_sep_read`), opcode-pool
+opt-ins (`set_atomic_strict_size`, `set_combined_write_cmo_enable`), and CHI-E MTE
 (`set_tagop`, `set_tag`, `set_tu`). Enable response capture with
 `set_get_response(1)` and collect with `get_responses()`; start with
 `seq.start(<sequencer>)`.

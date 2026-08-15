@@ -45,6 +45,22 @@ from vip_chi_types_pkg import (
   req_opcode_is_atomic, lasm,
 )
 from vip_chi_if import ChiBus
+
+# Combined Write + CMO, and the subset whose CMO half is persistent. Spelled out
+# here rather than imported from the item so the driver's own response
+# expectations are readable in one place.
+_COMBINED_WRITE_CMO_C = {
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
+}
+_COMBINED_CMO_PERSIST_C = {
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
+}
 from vip_chi_lcrd_mgr import VipChiLcrdMgr
 from vip_chi_cfg_agent import VipChiCfgAgent
 
@@ -53,6 +69,14 @@ _WRITE_DATA_OPCODES = {
   int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
   int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL),
   int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL),
+  # The combined Write + CMO forms carry the payload of the write they contain:
+  # the CMO half adds responses, not data.
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
 }
 
 # Atomics that return data (AtomicLoad/Swap/Compare); AtomicStore does not.
@@ -733,6 +757,21 @@ class vip_chi_driver_rni(uvm_driver):
   def req_expects_persist_sep_completion(self, req):
     return _I(req.opcode) == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP)
 
+  def req_is_combined_write_cmo(self, req):
+    """A combined Write + CMO owes the requester a SECOND completion.
+
+    The write half completes exactly like an ordinary write, so without this the
+    driver would retire the transaction on the write's completion alone and
+    leave the CMO's CompCMO -- and, for the persistent forms, its Persist --
+    sitting in the response stream to be mistaken for the NEXT transaction's
+    completion. That is not a hypothetical: it is what happened the first time
+    this ran, and it surfaced as a wrong-opcode assertion on an unrelated write.
+    """
+    return _I(req.opcode) in _COMBINED_WRITE_CMO_C
+
+  def req_expects_combined_persist(self, req):
+    return _I(req.opcode) in _COMBINED_CMO_PERSIST_C
+
   def req_expects_read_completion(self, req):
     return _I(req.opcode) != int(ReqOpcode.PREFETCH_TGT)
 
@@ -785,6 +824,11 @@ class vip_chi_driver_rni(uvm_driver):
             await self.collect_persist_sep_completion(req)
           else:
             await self.collect_write_completion(req)
+
+        # The CMO half's completion, which arrives after the write's because the
+        # completer may only send it once the write data has landed.
+        if self.req_is_combined_write_cmo(req):
+          await self.collect_combined_cmo_completion(req)
 
         if _I(req.exp_comp_ack):
           await self.drive_comp_ack(_I(req.txn_id), req_src_id, req_tgt_id)
@@ -979,6 +1023,27 @@ class vip_chi_driver_rni(uvm_driver):
         f"0x{flit['opcode']:x} was not RespSepData")
     await self.bus.rising()
     self.drive_idle_sideband()
+
+  async def collect_combined_cmo_completion(self, req):
+    """Collect CompCMO, and the Persist the persistent forms add after it."""
+    await self.bus.rising()
+    self.drive_idle_sideband()
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    if flit["opcode"] != int(RspOpcode.COMP_CMO):
+      raise AssertionError(
+        f"[{self.get_name()}] combined Write+CMO completion opcode "
+        f"0x{flit['opcode']:x} was not CompCMO")
+
+    if not self.req_expects_combined_persist(req):
+      return
+
+    await self.bus.rising()
+    self.drive_idle_sideband()
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    if flit["opcode"] != int(RspOpcode.PERSIST):
+      raise AssertionError(
+        f"[{self.get_name()}] combined Write+PCMO persist opcode "
+        f"0x{flit['opcode']:x} was not Persist")
 
   async def collect_persist_sep_completion(self, req):
     flit = await self.wait_for_matching_rsp(_I(req.txn_id))

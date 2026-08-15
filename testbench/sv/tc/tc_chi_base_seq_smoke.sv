@@ -46,6 +46,8 @@ class tc_chi_base_seq_smoke extends uvm_test;
     vip_chi_item                 #(CHI_E_WIDE_CFG_C) preview_item_e_dat;
     vip_chi_write_zero_seq       #(CHI_E_WIDE_CFG_C) write_zero_seq_e;
     vip_chi_write_zero_seq       #(CHI_D_WIDE_CFG_C) write_zero_seq_d;
+    vip_chi_write_cmo_seq        #(CHI_E_WIDE_CFG_C) write_cmo_seq_e;
+    vip_chi_item                 #(CHI_E_WIDE_CFG_C) preview_item_e_cmo;
     chi_write_zero_fatal_catcher                 write_zero_catcher;
     vip_chi_pipelined_seq        #(CHI_D_WIDE_CFG_C) pipelined_seq;
 
@@ -402,6 +404,38 @@ class tc_chi_base_seq_smoke extends uvm_test;
     if (write_zero_seq_e.get_direction() != VIP_CHI_DIR_WRITE_E) begin
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] vip_chi_write_zero_seq reset() did not preserve WRITE direction",
+        tc_name))
+    end
+
+    // The combined Write + CMO forms are opt-in in the item's opcode pool, and
+    // the sequence is what opts in. Previewing is the path where that is easiest
+    // to forget, because it forces the same opcode through the same constraints
+    // without ever starting the sequence: if the preview did not opt in, this
+    // call would fail to randomize rather than return an item.
+    write_cmo_seq_e = new("write_cmo_seq_e");
+    write_cmo_seq_e.set_initial_addr(addr_e_t'('h4c00));
+    write_cmo_seq_e.set_size(3'd6);
+    write_cmo_seq_e.set_partial(1'b1);
+    write_cmo_seq_e.set_cmo(VIP_CHI_CMO_CLEAN_SH_PER_SEP_E);
+    preview_item_e_cmo = write_cmo_seq_e.preview_next_request();
+
+    if (preview_item_e_cmo.opcode !=
+        vip_chi_item #(CHI_E_WIDE_CFG_C)::req_opcode_t'(
+          VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] vip_chi_write_cmo_seq preview chose opcode 0x%0h, not WriteNoSnpPtlCleanShPerSep",
+        tc_name, preview_item_e_cmo.opcode))
+    end
+
+    if (preview_item_e_cmo.direction != VIP_CHI_DIR_WRITE_E) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] vip_chi_write_cmo_seq preview did not pin WRITE direction",
+        tc_name))
+    end
+
+    if (!write_cmo_seq_e.is_persist()) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] vip_chi_write_cmo_seq did not report the persistent CMO as persistent",
         tc_name))
     end
 

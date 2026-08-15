@@ -29,6 +29,7 @@ from vip_chi_base_seq import vip_chi_base_seq
 from vip_chi_read_seq import vip_chi_read_seq
 from vip_chi_write_seq import vip_chi_write_seq
 from vip_chi_write_zero_seq import vip_chi_write_zero_seq
+from vip_chi_write_cmo_seq import vip_chi_write_cmo_seq, CMO_CLEAN_SH_PER_SEP
 from vip_chi_pipelined_seq import vip_chi_pipelined_seq
 from chi_tb_pkg import CHI_D_WIDE_CFG, CHI_E_WIDE_CFG
 
@@ -262,6 +263,40 @@ class tc_chi_base_seq_smoke(uvm_test):
     else:
       raise AssertionError(
         "write_zero_seq accepted CHI-D; WriteNoSnpZero is CHI-E only")
+
+    # ---- combined Write + CMO sequence --------------------------------------
+    # The combined forms are opt-in in the item's opcode pool, and the sequence
+    # is what opts in. Previewing is the path where that is easiest to forget,
+    # because it forces the same opcode through the same constraints without ever
+    # starting the sequence: if the preview did not opt in, this call would raise
+    # a solver failure rather than return an item.
+    write_cmo_e = vip_chi_write_cmo_seq("write_cmo_seq_e", cfg=CHI_E_WIDE_CFG)
+    write_cmo_e.set_initial_addr(0x4C00)
+    write_cmo_e.set_size(6)
+    write_cmo_e.set_partial(True)
+    write_cmo_e.set_cmo(CMO_CLEAN_SH_PER_SEP)
+    preview_e_cmo = write_cmo_e.preview_next_request()
+
+    assert int(preview_e_cmo.opcode) == \
+      int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP), (
+        f"write_cmo_seq preview chose opcode 0x{int(preview_e_cmo.opcode):x}, "
+        f"not WriteNoSnpPtlCleanShPerSep")
+    assert int(preview_e_cmo.direction) == int(Dir.WRITE), \
+      "write_cmo_seq preview did not pin WRITE direction"
+    assert write_cmo_e.is_persist(), \
+      "write_cmo_seq did not report the persistent CMO as persistent"
+
+    # Combined Write + CMO is CHI-E only. The SV twin catches a uvm_fatal here;
+    # this port raises, so the refusal is asserted as an exception.
+    write_cmo_d = vip_chi_write_cmo_seq("write_cmo_seq_d", cfg=CHI_D_WIDE_CFG)
+    write_cmo_d.set_requests(0)
+    try:
+      await write_cmo_d.body()
+    except RuntimeError:
+      pass
+    else:
+      raise AssertionError(
+        "write_cmo_seq accepted CHI-D; combined Write+CMO is CHI-E only")
 
     # ---- pipelined sequence ------------------------------------------------
     pipelined = vip_chi_pipelined_seq("pipelined_seq", cfg=CHI_D_WIDE_CFG)

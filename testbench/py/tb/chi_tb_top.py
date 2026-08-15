@@ -1216,6 +1216,13 @@ async def tc_chi_e_hni_passthrough(dut) -> None:
   await _run_e_hni(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_e_write_cmo", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_write_cmo(dut) -> None:
+  """Run this public testcase through the wide CHI-E link topology."""
+  test_name = "tc_chi_e_write_cmo"
+  await _run_e_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_e_tag_integrity", timeout_time=20, timeout_unit="ms")
 async def tc_chi_e_tag_integrity(dut) -> None:
   """Run this public testcase through the CHI-E topology."""

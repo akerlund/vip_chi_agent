@@ -129,6 +129,8 @@ class vip_chi_base_seq(uvm_sequence):
 
   def set_enforce_addr_alignment(self, value): self.item_cfg.enforce_addr_alignment = bool(value)
   def set_atomic_strict_size(self, enabled): self.item_cfg.atomic_strict_size = bool(enabled)
+  def set_combined_write_cmo_enable(self, enabled):
+    self.item_cfg.combined_write_cmo_enable = bool(enabled)
 
   def set_data_type(self, data_type):
     self.item_cfg.data_type = data_type
@@ -239,6 +241,7 @@ class vip_chi_base_seq(uvm_sequence):
     req.set_data_type(self.item_cfg.data_type)
     req.set_enforce_addr_alignment(self.item_cfg.enforce_addr_alignment)
     req.set_atomic_strict_size(self.item_cfg.atomic_strict_size)
+    req.set_combined_write_cmo_enable(self.item_cfg.combined_write_cmo_enable)
     req.min_addr = self.addr_iter.current()
     req.max_addr = self.addr_iter.current()
     self.counter_iter.configure_item(req)

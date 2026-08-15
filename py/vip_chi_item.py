@@ -51,6 +51,17 @@ _WRITE_OPCODES_D = [_RO.WRITE_NO_SNP_PTL, _RO.WRITE_NO_SNP_FULL,
 _WRITE_OPCODES_E = _WRITE_OPCODES_D + [_RO.WRITE_NO_SNP_ZERO,
                                        _RO.CLEAN_SHARED_PERSIST_SEP]
 
+# Combined Write + CMO (Issue E). Legal to BUILD, but deliberately NOT in the
+# randomization pool above: they are opt-in through cfg.combined_write_cmo_enable
+# so an existing random write test cannot start emitting them and change every
+# waveform. Every one sits in the Opcode[6] = 1 half of Table 13-14 and does not
+# fit CHI-D's 6-bit REQ opcode field at all.
+_COMBINED_WRITE_CMO_OPCODES = [
+  _RO.WRITE_NO_SNP_FULL_CLEAN_SH, _RO.WRITE_NO_SNP_FULL_CLEAN_INV,
+  _RO.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP, _RO.WRITE_NO_SNP_PTL_CLEAN_SH,
+  _RO.WRITE_NO_SNP_PTL_CLEAN_INV, _RO.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP,
+]
+
 # Coherent RN-F legal REQ opcode sets (con_opcode_legal_rnf). MakeReadUnique is
 # 0x41, which needs the 7-bit CHI-E REQ opcode field -- randomizing it under
 # CHI-D would emit a flit that truncates to 0x01 (ReadShared) on the wire, so it
@@ -62,12 +73,19 @@ _RNF_WRITE_OPCODES = [_RO.WRITE_BACK_FULL, _RO.WRITE_CLEAN_FULL, _RO.EVICT,
                       _RO.CLEAN_UNIQUE, _RO.MAKE_UNIQUE, _RO.CLEAN_INVALID,
                       _RO.MAKE_INVALID, _RO.WRITE_UNIQUE_FULL, _RO.WRITE_UNIQUE_PTL]
 
-# Opcodes that carry write/atomic DAT payload (get_payload_beat_count).
+# Opcodes that carry write/atomic DAT payload (get_payload_beat_count). The
+# combined forms carry the same payload as the write they contain -- the CMO half
+# adds responses, not data.
 _WRITE_PAYLOAD_OPCODES = {
   int(_RO.WRITE_NO_SNP_FULL), int(_RO.WRITE_NO_SNP_PTL), int(_RO.WRITE_BACK_FULL),
   int(_RO.WRITE_CLEAN_FULL), int(_RO.WRITE_UNIQUE_FULL), int(_RO.WRITE_UNIQUE_PTL),
+} | {int(o) for o in _COMBINED_WRITE_CMO_OPCODES}
+
+_PARTIAL_WRITE_OPCODES = {
+  int(_RO.WRITE_NO_SNP_PTL), int(_RO.WRITE_UNIQUE_PTL),
+  int(_RO.WRITE_NO_SNP_PTL_CLEAN_SH), int(_RO.WRITE_NO_SNP_PTL_CLEAN_INV),
+  int(_RO.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
 }
-_PARTIAL_WRITE_OPCODES = {int(_RO.WRITE_NO_SNP_PTL), int(_RO.WRITE_UNIQUE_PTL)}
 
 # Opcodes that must never carry ExpCompAck (con_exp_comp_ack_legal).
 _NO_EXP_COMP_ACK_OPCODES = [
@@ -138,6 +156,7 @@ class vip_chi_item(uvm_sequence_item):
     self.s_raw_override = vsc.uint8_t(0)
     self.s_enforce_align = vsc.uint8_t(1)
     self.s_atomic_strict = vsc.uint8_t(0)
+    self.s_combined_cmo = vsc.uint8_t(0)
     self.s_min_size = vsc.uint8_t(0)
     self.s_max_size = vsc.uint8_t(6)
     self.s_min_addr = vsc.uint64_t(0)
@@ -213,6 +232,11 @@ class vip_chi_item(uvm_sequence_item):
     self.max_size = 6
     self.enforce_addr_alignment = True
     self.atomic_strict_size = False
+    # Combined Write + CMO opt-in. Default OFF, and the default is the point:
+    # these six are legal writes, so leaving them in the randomization pool
+    # unconditionally would have every existing random write test start emitting
+    # them and change every waveform in the regression.
+    self.combined_write_cmo_enable = False
     self.data_type = DataType.RANDOM
     self.counter_value = 0
     self.counter_increment = 1
@@ -246,6 +270,9 @@ class vip_chi_item(uvm_sequence_item):
 
   def set_atomic_strict_size(self, value: bool) -> None:
     self.atomic_strict_size = bool(value)
+
+  def set_combined_write_cmo_enable(self, value: bool) -> None:
+    self.combined_write_cmo_enable = bool(value)
 
   def set_counter_value(self, start: int) -> None:
     self.counter_value = int(start) & mask(self._data_w)
@@ -369,6 +396,8 @@ class vip_chi_item(uvm_sequence_item):
       legal |= set(range(0x28, 0x3A))  # atomics
       if v in (int(_RO.WRITE_NO_SNP_ZERO), int(_RO.CLEAN_SHARED_PERSIST_SEP)):
         return self._issue_e
+      if v in {int(o) for o in _COMBINED_WRITE_CMO_OPCODES}:
+        return self._issue_e
       return v in legal
     return False
 
@@ -394,6 +423,7 @@ class vip_chi_item(uvm_sequence_item):
     self.s_raw_override = 1 if self.raw_override else 0
     self.s_enforce_align = 1 if self.enforce_addr_alignment else 0
     self.s_atomic_strict = 1 if self.atomic_strict_size else 0
+    self.s_combined_cmo = 1 if self.combined_write_cmo_enable else 0
     self.s_min_size = int(self.min_size)
     self.s_max_size = int(self.max_size)
     self.s_min_addr = int(self.min_addr)
@@ -462,7 +492,15 @@ class vip_chi_item(uvm_sequence_item):
         with vsc.if_then(self.direction == int(Dir.READ)):
           self.opcode.inside(vsc.rangelist(*[int(o) for o in self._read_set]))
         with vsc.if_then(self.direction == int(Dir.WRITE)):
-          self.opcode.inside(vsc.rangelist(*[int(o) for o in self._write_set]))
+          # The combined Write + CMO forms join the legal set only when asked
+          # for. They are ordinary writes as far as the solver is concerned, so
+          # an unconditional pool entry would put them into every random write
+          # test in the regression.
+          with vsc.if_then(self.s_combined_cmo == 0):
+            self.opcode.inside(vsc.rangelist(*[int(o) for o in self._write_set]))
+          with vsc.else_then:
+            self.opcode.inside(vsc.rangelist(
+              *[int(o) for o in self._write_set + _COMBINED_WRITE_CMO_OPCODES]))
 
   @vsc.constraint
   def con_opcode_legal_rnf(self):

@@ -58,6 +58,20 @@ SB_READ_TAGOP_REPLAYED = "CHI_SB_READ_TAGOP_REPLAYED"
 SB_TAGOP_STABLE_ACROSS_BEATS = "CHI_SB_TAGOP_STABLE_ACROSS_BEATS"
 SB_ORDERED_ACK_IN_ORDER = "CHI_SB_ORDERED_ACK_IN_ORDER"
 
+# Combined Write + CMO, and the subset whose CMO half is persistent.
+_COMBINED_WRITE_CMO_C = {
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
+}
+_COMBINED_CMO_PERSIST_C = {
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
+}
+
 # Rules that stand down with check_data, so the export can say "not exercised BY
 # REQUEST" rather than reporting a knob the user turned off as a hole.
 _SB_DATA_RULES_C = (
@@ -116,6 +130,12 @@ class vip_chi_sb_ctx:
     self.need_receipt = False
     self.need_persist = False
     self.need_compack = False
+    # The CMO half of a combined Write + CMO. A separate milestone from the
+    # write's own completion, because that is what it is on the wire: a
+    # completer that answered a combined request with the write completion alone
+    # would leave the CMO outstanding, and without this the scoreboard would
+    # retire the transaction anyway and never notice.
+    self.need_comp_cmo = False
     # Observed milestones.
     self.grant_seen = False
     self.write_data_sent = False
@@ -124,6 +144,7 @@ class vip_chi_sb_ctx:
     self.receipt_seen = False
     self.persist_seen = False
     self.compack_seen = False
+    self.comp_cmo_seen = False
     self.retry_seen = False
     self.pcrd_seen = False
     self.dbid = 0
@@ -137,7 +158,8 @@ class vip_chi_sb_ctx:
     self.atomic_resolved = False
 
   def contract_met(self):
-    return ((not self.need_grant or self.grant_seen)
+    return ((not self.need_comp_cmo or self.comp_cmo_seen)
+            and (not self.need_grant or self.grant_seen)
             and (not self.need_write_data or self.write_data_sent)
             and (not self.need_read_data or self.read_data_seen)
             and (not self.need_comp or self.comp_seen)
@@ -153,6 +175,7 @@ class vip_chi_sb_ctx:
     self.receipt_seen = False
     self.persist_seen = False
     self.compack_seen = False
+    self.comp_cmo_seen = False
     self.retry_seen = False
     self.pcrd_seen = False
     self.retired = False
@@ -464,6 +487,17 @@ class vip_chi_scoreboard(uvm_component):
       ctx.need_read_data = True
       if ctx.ordered:
         ctx.need_receipt = True
+    elif opc in _COMBINED_WRITE_CMO_C:
+      # A write, plus the CMO half's own completion. The persistent forms owe a
+      # Persist as well, which the spec requires only AFTER the write data --
+      # the ordering rule the whole family turns on.
+      ctx.kind = SB_WRITE
+      ctx.need_grant = True
+      ctx.need_write_data = True
+      ctx.need_comp = True
+      ctx.need_comp_cmo = True
+      ctx.need_persist = opc in _COMBINED_CMO_PERSIST_C
+      ctx.need_compack = ctx.exp_comp_ack
     elif opc in (int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL)):
       ctx.kind = SB_WRITE
       ctx.need_grant = True
@@ -684,6 +718,8 @@ class vip_chi_scoreboard(uvm_component):
     elif opc == int(RspOpcode.RESP_SEP_DATA):
       # Separated read's response leg; retirement is on its DataSepResp.
       ctx.comp_err = int(item.rsp_resp_err)
+    elif opc == int(RspOpcode.COMP_CMO):
+      ctx.comp_cmo_seen = True
     elif opc == int(RspOpcode.PERSIST):
       ctx.persist_seen = True
     elif opc == int(RspOpcode.COMP_PERSIST):

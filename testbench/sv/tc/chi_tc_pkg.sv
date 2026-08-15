@@ -61,6 +61,7 @@ package chi_tc_pkg;
   `include "tc_chi_e_dbid_resp_ord.sv"
   `include "tc_chi_e_persist.sv"
   `include "tc_chi_e_write_zero_readback.sv"
+  `include "tc_chi_e_write_cmo.sv"
   `include "tc_chi_d_split_write_rsp.sv"
   `include "tc_chi_d_write_read_smoke.sv"
   `include "tc_chi_d_multi_outstanding.sv"

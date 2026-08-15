@@ -36,6 +36,16 @@ PERF_WINDOW_CYCLES_C = 1000
 _WRITE_REQ_OPCODES = {
   int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
   int(ReqOpcode.WRITE_NO_SNP_ZERO),
+  # The combined Write + CMO forms are writes that happen to carry a CMO. Left
+  # out, they fell through to the read tally: a run of six of them reported six
+  # reads it never issued and zero writes, which is the one number a perf
+  # summary exists to give.
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
 }
 _WRITE_COMPLETION_RSP = {int(RspOpcode.COMP), int(RspOpcode.COMP_DBID_RESP)}
 _READ_COMPLETION_DAT = {int(DatOpcode.COMP_DATA), int(DatOpcode.DATA_SEP_RESP)}

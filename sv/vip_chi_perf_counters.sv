@@ -169,9 +169,14 @@ class vip_chi_perf_counters #(
   protected function bit req_is_write(input req_opcode_t opcode);
     vip_chi_req_opcode_t wide_op;
     wide_op = vip_chi_req_opcode_t'(opcode);
+    // The combined Write + CMO forms are writes that happen to carry a CMO. Left
+    // out, they fell through to the read tally: a run of six of them reported
+    // six reads it never issued and zero writes, which is the one number a perf
+    // summary exists to give.
     return ((wide_op == VIP_CHI_REQ_WRITE_NO_SNP_FULL_E) ||
             (wide_op == VIP_CHI_REQ_WRITE_NO_SNP_PTL_E)  ||
             (wide_op == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_E) ||
+            vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(wide_op) ||
             vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(wide_op));
   endfunction
 

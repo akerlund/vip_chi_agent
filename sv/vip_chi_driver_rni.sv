@@ -356,9 +356,35 @@ class vip_chi_driver_rni #(
       end
 
       default: begin
+        // A combined Write + CMO carries the write's data burst like any other
+        // write; the CMO half adds responses, not data.
+        if (vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+              vip_chi_req_opcode_t'(req.opcode))) begin
+          return 1'b1;
+        end
         return vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(vip_chi_req_opcode_t'(req.opcode));
       end
     endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // A combined Write + CMO owes the requester a SECOND completion.
+  //
+  // The write half completes exactly like an ordinary write, so without this the
+  // driver would retire the transaction on the write's completion alone and
+  // leave the CMO's CompCMO -- and, for the persistent forms, its Persist --
+  // sitting in the response stream to be mistaken for the NEXT transaction's
+  // completion. That is not hypothetical: it is what happened the first time
+  // this ran, and it surfaced as a wrong-opcode assertion on an unrelated write.
+  // ---------------------------------------------------------------------------
+  protected function bit req_is_combined_write_cmo(input item_t req);
+    return vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+      vip_chi_req_opcode_t'(req.opcode));
+  endfunction
+
+  protected function bit req_expects_combined_persist(input item_t req);
+    return vip_chi_types_pkg::vip_chi_req_opcode_combined_cmo_is_persist(
+      vip_chi_req_opcode_t'(req.opcode));
   endfunction
 
   // --------------------------------------------------------------------------
@@ -734,6 +760,13 @@ class vip_chi_driver_rni #(
 
             this.collect_write_completion(req);
           end
+        end
+
+        // The CMO half's completion, which arrives after the write's because the
+        // completer may only send it once the write data has landed.
+        if (this.req_is_combined_write_cmo(req)) begin
+
+          this.collect_combined_cmo_completion(req);
         end
 
         if (req.exp_comp_ack) begin
@@ -1797,6 +1830,44 @@ class vip_chi_driver_rni #(
 
       `uvm_fatal(get_name(), $sformatf(
       "FATAL [%s] Deferred write completion opcode 0x%0h was not Comp",
+      get_name(), flit.opcode))
+    end
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Collect CompCMO, and the Persist the persistent forms add after it.
+  // ---------------------------------------------------------------------------
+  protected task collect_combined_cmo_completion(inout item_t req);
+
+    rsp_flit_t flit;
+
+    // Step off the write's completion beat first, so this wait cannot reconsume
+    // the flit that already retired the write half.
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+
+    this.wait_for_matching_rsp(req.txn_id, flit);
+
+    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_COMP_CMO_C)) begin
+
+      `uvm_fatal(get_name(), $sformatf(
+      "FATAL [%s] combined Write+CMO completion opcode 0x%0h was not CompCMO",
+      get_name(), flit.opcode))
+    end
+
+    if (!this.req_expects_combined_persist(req)) begin
+      return;
+    end
+
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+
+    this.wait_for_matching_rsp(req.txn_id, flit);
+
+    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
+
+      `uvm_fatal(get_name(), $sformatf(
+      "FATAL [%s] combined Write+PCMO persist opcode 0x%0h was not Persist",
       get_name(), flit.opcode))
     end
   endtask

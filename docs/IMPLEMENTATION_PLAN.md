@@ -1005,6 +1005,7 @@ Shipped: `set_requests`, `set_initial_addr`, `set_addr_list`, `set_addr_stride`,
 |----------|------|--------|-------|
 | `vip_chi_read_seq` / `vip_chi_write_seq` | RN-I | done | direction subclasses; `set_sep_read(TRUE)` ⇒ `ReadNoSnpSep` |
 | `vip_chi_write_zero_seq` | RN-I | done | `WriteNoSnpZero` (E-only; `uvm_fatal` under D) |
+| `vip_chi_write_cmo_seq` | RN-I | done | combined Write + CMO (E-only; `uvm_fatal` under D). `set_partial` + `set_cmo` select one of six; opts the six into the item pool via `set_combined_write_cmo_enable` |
 | `vip_chi_pipelined_seq` | RN-I | done | `set_pipelined_send` launches all requests then drains; pairs with a `cfg.multi_outstanding` driver (single mixed loop, §15 P4); enforces `min(cfg.max_outstanding_*, max_outstanding)` |
 | `vip_chi_atomic_seq` | RN-I | done | `set_atomic_op`, operand via `set_data`; collects return value |
 | `vip_chi_ordered_seq` | RN-I | not shipped | ordered traffic is currently driven via base-seq setters and dedicated tests; no standalone class |

@@ -261,6 +261,15 @@ class vip_chi_base_seq #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Admit the combined Write + CMO opcodes into the randomized write pool.
+  // Default off keeps every existing random write test emitting exactly what it
+  // emitted before.
+  // ---------------------------------------------------------------------------
+  function void set_combined_write_cmo_enable(input bit enabled);
+    this.item_cfg.combined_write_cmo_enable = enabled;
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Select the write payload generation mode.
   // ---------------------------------------------------------------------------
   function void set_data_type(input vip_chi_data_type_t data_type);
@@ -565,6 +574,7 @@ class vip_chi_base_seq #(
     req.set_data_type(this.item_cfg.data_type);
     req.set_enforce_addr_alignment(this.item_cfg.enforce_addr_alignment);
     req.set_atomic_strict_size(this.item_cfg.atomic_strict_size);
+    req.set_combined_write_cmo_enable(this.item_cfg.combined_write_cmo_enable);
     req.min_addr = this.addr_iter.current();
     req.max_addr = this.addr_iter.current();
     req.set_ns(this.ns_val);

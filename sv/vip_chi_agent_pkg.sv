@@ -75,6 +75,7 @@ package vip_chi_agent_pkg;
   `include "seq_lib/vip_chi_excl_store_seq.sv"
   `include "seq_lib/vip_chi_write_seq.sv"
   `include "seq_lib/vip_chi_write_zero_seq.sv"
+  `include "seq_lib/vip_chi_write_cmo_seq.sv"
   `include "seq_lib/vip_chi_atomic_seq.sv"
   `include "seq_lib/vip_chi_persist_seq.sv"
   `include "seq_lib/vip_chi_pipelined_seq.sv"

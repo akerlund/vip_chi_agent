@@ -43,6 +43,11 @@ class vip_chi_cfg_item extends uvm_object;
   int                 max_size               = 6;
   bit                 enforce_addr_alignment = 1'b1;
   bit                 atomic_strict_size     = 1'b0;
+  // Combined Write + CMO opt-in. Default OFF, and the default is the point:
+  // these six are legal writes, so leaving them in the randomization pool
+  // unconditionally would have every existing random write test start emitting
+  // them and change every waveform in the regression.
+  bit                 combined_write_cmo_enable = 1'b0;
   bit                 get_response           = 1'b0;
 
   `uvm_object_utils_begin(vip_chi_cfg_item)
@@ -52,6 +57,7 @@ class vip_chi_cfg_item extends uvm_object;
   `uvm_field_int(max_size,                        UVM_PRINT)
   `uvm_field_int(enforce_addr_alignment,          UVM_PRINT)
   `uvm_field_int(atomic_strict_size,              UVM_PRINT)
+  `uvm_field_int(combined_write_cmo_enable,       UVM_PRINT)
   `uvm_field_int(get_response,                    UVM_PRINT)
   `uvm_object_utils_end
 
@@ -77,6 +83,7 @@ class vip_chi_cfg_item extends uvm_object;
     this.max_size      = 6;
     this.enforce_addr_alignment = 1'b1;
     this.atomic_strict_size     = 1'b0;
+    this.combined_write_cmo_enable = 1'b0;
     this.get_response  = 1'b0;
   endfunction
 endclass

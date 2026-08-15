@@ -95,6 +95,12 @@ package chi_tb_pkg;
   // E_HNI_WRITE_READ_ADDR_C. Cast at use, never type a class constant with a
   // parameterized-class-nested type.
   localparam item_e_t::addr_t    E_WRITE_ZERO_ADDR_C  = item_e_t::addr_t'(52'h0012_3456_9000);
+  // Combined Write + CMO base address. The six forms walk upwards from here in
+  // E_WRITE_CMO_STRIDE_C steps so no two share a line: they are read back
+  // afterwards, and one address for all six would let a later form's data hide
+  // an earlier form's dropped write. PACKAGE scope for the vcs1fe reason above.
+  localparam item_e_t::addr_t    E_WRITE_CMO_ADDR_C   = item_e_t::addr_t'(52'h0012_3456_a000);
+  localparam int unsigned        E_WRITE_CMO_STRIDE_C = 'h1000;
   localparam item_e_t::txn_id_t  E_MTE_WRITE_TXN_ID_C = item_e_t::txn_id_t'(8'h61);
   localparam item_e_t::txn_id_t  E_MTE_READ_TXN_ID_C  = item_e_t::txn_id_t'(8'h62);
   localparam item_e_t::node_id_t E_MTE_RNI_NODE_ID_C  = item_e_t::node_id_t'('h01c);

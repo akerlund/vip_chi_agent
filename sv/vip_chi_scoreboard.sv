@@ -117,10 +117,17 @@ class vip_chi_sb_ctx #(
   // Completion contract: which milestones are REQUIRED to retire.
   bit  need_grant, need_write_data, need_read_data, need_comp;
   bit  need_receipt, need_persist, need_compack;
+  // The CMO half of a combined Write + CMO. A separate milestone from the
+  // write's own completion, because that is what it is on the wire: a completer
+  // that answered a combined request with the write completion alone would leave
+  // the CMO outstanding, and without this the scoreboard would retire the
+  // transaction anyway and never notice.
+  bit  need_comp_cmo;
 
   // Milestones OBSERVED.
   bit  grant_seen, write_data_sent, read_data_seen, comp_seen;
   bit  receipt_seen, persist_seen, compack_seen;
+  bit  comp_cmo_seen;
   bit  retry_seen, pcrd_seen;
 
   txn_id_t            dbid;
@@ -153,7 +160,8 @@ class vip_chi_sb_ctx #(
         && (!need_comp       || comp_seen)
         && (!need_receipt    || receipt_seen)
         && (!need_persist    || persist_seen)
-        && (!need_compack    || compack_seen);
+        && (!need_compack    || compack_seen)
+        && (!need_comp_cmo   || comp_cmo_seen);
   endfunction
 
   // Reset completion state for a legitimate retry re-issue (keep identity).
@@ -165,6 +173,7 @@ class vip_chi_sb_ctx #(
     this.receipt_seen    = 1'b0;
     this.persist_seen    = 1'b0;
     this.compack_seen    = 1'b0;
+    this.comp_cmo_seen   = 1'b0;
     this.retry_seen      = 1'b0;
     this.pcrd_seen       = 1'b0;
     this.retired         = 1'b0;
@@ -554,7 +563,25 @@ class vip_chi_scoreboard #(
 
     ctx.need_grant = 1'b0; ctx.need_write_data = 1'b0; ctx.need_read_data = 1'b0;
     ctx.need_comp  = 1'b0; ctx.need_receipt = 1'b0; ctx.need_persist = 1'b0;
-    ctx.need_compack = 1'b0;
+    ctx.need_compack = 1'b0; ctx.need_comp_cmo = 1'b0;
+
+    // A combined Write + CMO is a write that additionally owes the CMO half's
+    // own completion, and -- for the persistent forms -- a Persist the spec
+    // requires only AFTER the write data. Checked before the case below because
+    // the six are not contiguous in the encoding.
+    if (vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+          vip_chi_req_opcode_t'(opc))) begin
+      ctx.kind            = VIP_CHI_SB_WRITE;
+      ctx.need_grant      = 1'b1;
+      ctx.need_write_data = 1'b1;
+      ctx.need_comp       = 1'b1;
+      ctx.need_comp_cmo   = 1'b1;
+      ctx.need_persist    =
+        vip_chi_types_pkg::vip_chi_req_opcode_combined_cmo_is_persist(
+          vip_chi_req_opcode_t'(opc));
+      ctx.need_compack    = ctx.exp_comp_ack;
+      return;
+    end
 
     if (vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(vip_chi_req_opcode_t'(opc))) begin
       ctx.kind            = VIP_CHI_SB_ATOMIC;
@@ -879,6 +906,9 @@ class vip_chi_scoreboard #(
         // DataSepResp (read_data_seen); recording the response error here keeps
         // this legal opcode from being flagged as unmodeled.
         ctx.comp_err = item.rsp_resp_err;
+      end
+      rsp_opcode_t'(VIP_CHI_RSP_COMP_CMO_C): begin
+        ctx.comp_cmo_seen = 1'b1;
       end
       rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C): begin
         ctx.persist_seen = 1'b1;

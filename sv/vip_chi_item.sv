@@ -203,6 +203,7 @@ class vip_chi_item #(
   addr_t              max_addr     = '1;
   bit                 enforce_addr_alignment = 1'b1;
   bit                 atomic_strict_size = 1'b0;
+  bit                 combined_write_cmo_enable = 1'b0;
   vip_chi_data_type_t data_type    = VIP_CHI_DATA_RANDOM_E;
 
   // ---------------------------------------------------------------------------
@@ -287,6 +288,16 @@ class vip_chi_item #(
   // ---------------------------------------------------------------------------
   function void set_atomic_strict_size(input bit value);
     this.atomic_strict_size = value;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Opt in to the combined Write + CMO opcodes. Default off, and the default is
+  // the point: these six are legal writes, so leaving them in the randomization
+  // pool unconditionally would have every existing random write test start
+  // emitting them and change every waveform in the regression.
+  // ---------------------------------------------------------------------------
+  function void set_combined_write_cmo_enable(input bit value);
+    this.combined_write_cmo_enable = value;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -628,6 +639,15 @@ class vip_chi_item #(
       return (dir == VIP_CHI_DIR_WRITE_E) && (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E);
     end
 
+    // Combined Write + CMO. Writes, and Issue E only -- every one of them sits in
+    // the Opcode[6] = 1 half of the table and does not fit CHI-D's 6-bit REQ
+    // opcode field at all. They are legal to BUILD at either width of intent but
+    // never randomized onto by default; see the opcode pool below.
+    if (vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+          vip_chi_req_opcode_t'(wide))) begin
+      return (dir == VIP_CHI_DIR_WRITE_E) && (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E);
+    end
+
     case (dir)
       VIP_CHI_DIR_READ_E: begin
         case (value)
@@ -714,6 +734,13 @@ class vip_chi_item #(
     end
 
     if (vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(vip_chi_req_opcode_t'(opcode))) begin
+      return vip_chi_types_pkg::chi_xfer_dat_beats(size, DATA_BYTES_C);
+    end
+
+    // A combined Write + CMO carries exactly the payload of the write it
+    // contains: the CMO half adds responses, not data.
+    if (vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+          vip_chi_req_opcode_t'(opcode))) begin
       return vip_chi_types_pkg::chi_xfer_dat_beats(size, DATA_BYTES_C);
     end
 
@@ -841,7 +868,10 @@ class vip_chi_item #(
         this.be[beat] = this.custom_be[beat];
       end
       else if ((this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C)) ||
-               (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C))) begin
+               (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C)) ||
+               (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C)) ||
+               (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C)) ||
+               (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C))) begin
         this.be[beat] = make_random_be();
       end
       else begin
@@ -890,6 +920,10 @@ class vip_chi_item #(
 
     if ((this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C)) ||
         (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C)) ||
+        // A combined WriteNoSnp + CMO is a Non-CopyBack write like the one it
+        // contains, so its data travels as NonCopyBackWrData too.
+        vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+          vip_chi_req_opcode_t'(this.opcode)) ||
         // WriteUnique is a non-allocating coherent write: its data travels as
         // NonCopyBackWrData (the requester is not an owner giving a line back).
         (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_C)) ||
@@ -1004,6 +1038,7 @@ class vip_chi_item #(
     this.max_addr                = rhs_item.max_addr;
     this.enforce_addr_alignment  = rhs_item.enforce_addr_alignment;
     this.atomic_strict_size      = rhs_item.atomic_strict_size;
+    this.combined_write_cmo_enable = rhs_item.combined_write_cmo_enable;
     this.data_type               = rhs_item.data_type;
     this.min_size                = rhs_item.min_size;
     this.max_size                = rhs_item.max_size;
@@ -1142,6 +1177,7 @@ class vip_chi_item #(
         (this.max_addr                 !== rhs_item.max_addr) ||
         (this.enforce_addr_alignment   !== rhs_item.enforce_addr_alignment) ||
         (this.atomic_strict_size       !== rhs_item.atomic_strict_size) ||
+        (this.combined_write_cmo_enable !== rhs_item.combined_write_cmo_enable) ||
         (this.data_type                !== rhs_item.data_type) ||
         (this.min_size                 !== rhs_item.min_size) ||
         (this.max_size                 !== rhs_item.max_size) ||
@@ -1420,7 +1456,21 @@ class vip_chi_item #(
             req_opcode_t'(VIP_CHI_REQ_ATOMIC_COMPARE_C),
             req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C),
             req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C)
-          };
+          } || (combined_write_cmo_enable && opcode inside {
+            // The combined Write + CMO forms join the legal set only when asked
+            // for. They are ordinary writes as far as the solver is concerned,
+            // so an unconditional pool entry would put them into every random
+            // write test in the regression. This has to be a disjunction inside
+            // the one constraint rather than a second `inside`: constraints
+            // conjoin, so a separate constraint would INTERSECT with the set
+            // above and leave nothing legal at all.
+            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C),
+            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C),
+            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C),
+            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C),
+            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C),
+            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C)
+          });
         }
         else {
           opcode inside {

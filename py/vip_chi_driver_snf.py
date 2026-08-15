@@ -43,7 +43,34 @@ from vip_mem import vip_mem
 _I = int
 
 _AUTO_READ = {int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP)}
-_AUTO_WRITE = {int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL)}
+# Combined Write + CMO (Issue E). One request carrying both a write and a cache
+# maintenance operation to the same address, which the completer must apply IN
+# THAT ORDER -- the CMO acts on the state the write leaves behind.
+#
+# The write half is an ordinary WriteNoSnp Full/Ptl, so these take the same auto
+# write path; Full vs Ptl needs no branch because the write commits through the
+# byte enables either way. What the combined form adds is the CMO half of the
+# completion, driven after the data commits.
+_COMBINED_WRITE_CMO = {
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
+}
+
+# The combined forms whose CMO half is PERSISTENT, which is the one that adds an
+# observable response rather than only a CompCMO. A memory node has no cache, so
+# CleanSh and CleanInv complete with no state change; the persist leg is the half
+# a test can actually watch land in the wrong order.
+_COMBINED_CMO_PERSIST = {
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
+}
+
+_AUTO_WRITE = ({int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL)}
+               | _COMBINED_WRITE_CMO)
 _AUTO_WRITE_ZERO = {int(ReqOpcode.WRITE_NO_SNP_ZERO)}
 _AUTO_PERSIST = {int(ReqOpcode.CLEAN_SHARED_PERSIST),
                  int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP)}
@@ -800,8 +827,41 @@ class vip_chi_driver_snf(uvm_driver):
         "resp": int(Resp.I), "resperr": err,
       })
 
+    # The CMO half, and it goes HERE for a reason the spec states outright: the
+    # combined request is one request carrying two operations to the same
+    # address, and the CMO acts on the state the write leaves behind. Driving it
+    # before the data had landed would answer for a cache maintenance that had
+    # not happened yet.
+    if req["opcode"] in _COMBINED_WRITE_CMO:
+      await self.drive_combined_cmo_rsp(req, err)
+
     if req["expcompack"]:
       await self.wait_for_comp_ack(req_txn, req_src, req_tgt)
+
+  async def drive_combined_cmo_rsp(self, req, err):
+    """The CMO half of a combined Write + CMO completion.
+
+    The write half completes as any write does (Comp / CompDBIDResp). The CMO
+    half is a SEPARATE response -- CompCMO -- and a completer that answered a
+    combined request with the write completion alone would leave the CMO
+    permanently outstanding at the requester.
+
+    For the persistent forms the spec additionally requires a Persist response
+    AFTER the write data is received, which is the ordering rule this whole
+    family turns on. Persist and CompCMO may be combined into a single
+    CompPersist when both target the same node; they are kept separate here
+    because two observable events are what a test can check an order between,
+    and the combined encoding would collapse exactly the evidence.
+    """
+    base = {
+      "srcid": req["tgtid"], "tgtid": req["srcid"], "txnid": req["txnid"],
+      "dbid": req["txnid"], "qos": req["qos"], "resp": int(Resp.I),
+      "resperr": err,
+    }
+    await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP_CMO)))
+
+    if req["opcode"] in _COMBINED_CMO_PERSIST:
+      await self.drive_rsp(dict(base, opcode=int(RspOpcode.PERSIST)))
 
   async def drive_auto_write_zero_comp(self, req):
     cfg = self.bus.cfg

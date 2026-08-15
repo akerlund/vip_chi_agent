@@ -389,6 +389,21 @@ class ReqOpcode(IntEnum):
   WRITE_UNIQUE_PTL = 0x18
   WRITE_UNIQUE_FULL = 0x19
   WRITE_BACK_FULL = 0x1B
+  # Combined Write + CMO (Issue E only). One request carrying both a write and a
+  # cache-maintenance operation to the same address, which the completer must
+  # apply IN THAT ORDER -- the CMO acts on the state the write leaves behind, so
+  # a completer that applied them the other way round would be silently wrong on
+  # exactly the case the combined form exists to make efficient.
+  #
+  # Table 13-14 is two-dimensional: rows are Opcode[5:0] and these all sit in the
+  # Opcode[6] = 1 column, which is why they are 0x40 above the row value and why
+  # they cannot fit CHI-D's 6-bit REQ opcode field at all.
+  WRITE_NO_SNP_FULL_CLEAN_SH = 0x50
+  WRITE_NO_SNP_FULL_CLEAN_INV = 0x51
+  WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP = 0x52
+  WRITE_NO_SNP_PTL_CLEAN_SH = 0x60
+  WRITE_NO_SNP_PTL_CLEAN_INV = 0x61
+  WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP = 0x62
 
 
 class RspOpcode(IntEnum):
@@ -406,6 +421,11 @@ class RspOpcode(IntEnum):
   PERSIST = 0x0C
   COMP_PERSIST = 0x0D
   DBID_RESP_ORD = 0x0E
+  # The CMO half of a Combined Write's completion (Issue E only). The write half
+  # completes with Comp / CompDBIDResp as any write does; the CMO half is a
+  # SEPARATE response, and a completer that answered a combined request with the
+  # write completion alone would leave the CMO permanently outstanding.
+  COMP_CMO = 0x14
   SNP_RESP = 0x01
   SNP_RESP_FWDED = 0x09
 

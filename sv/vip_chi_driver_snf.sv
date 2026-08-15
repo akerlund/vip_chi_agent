@@ -948,6 +948,48 @@ class vip_chi_driver_snf #(
         return 1'b1;
       end
       default: begin
+        // The combined Write+CMO forms take the same write path: the write half
+        // is an ordinary WriteNoSnp Full/Ptl, and Full vs Ptl needs no branch
+        // here because the write commits through the byte enables either way.
+        // What the combined form adds is the CMO half of the completion, driven
+        // after the data commits -- see drive_combined_cmo_rsp.
+        return this.req_opcode_is_combined_write_cmo(opcode);
+      end
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Identify a combined Write + CMO request (Issue E).
+  // ---------------------------------------------------------------------------
+  protected function bit req_opcode_is_combined_write_cmo(input req_opcode_t opcode);
+    case (opcode)
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C): begin
+        return 1'b1;
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // TRUE when the combined form's CMO half is a PERSISTENT CMO, which is the one
+  // that adds an observable response rather than only a CompCMO. A memory node
+  // has no cache, so CleanSh and CleanInv complete with no state change; the
+  // persist leg is the half a test can actually watch land in the wrong order.
+  // ---------------------------------------------------------------------------
+  protected function bit req_opcode_combined_cmo_is_persist(input req_opcode_t opcode);
+    case (opcode)
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C): begin
+        return 1'b1;
+      end
+      default: begin
         return 1'b0;
       end
     endcase
@@ -1525,9 +1567,69 @@ class vip_chi_driver_snf #(
       this.drive_rsp(deferred_comp_rsp);
     end
 
+    // The CMO half, and it goes HERE for a reason the spec states outright: the
+    // combined request is one request carrying two operations to the same
+    // address, and the CMO acts on the state the write leaves behind. Driving it
+    // before the data had landed would answer for a cache maintenance that had
+    // not happened yet.
+    if (this.req_opcode_is_combined_write_cmo(req_opcode_t'(req.opcode))) begin
+      this.drive_combined_cmo_rsp(req, rsp.rsp_resp_err);
+    end
+
     if (req.expcompack) begin
       this.wait_for_comp_ack(req_txn_id, req_src_id, req_tgt_id);
     end
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // The CMO half of a combined Write + CMO completion.
+  //
+  // The write half completes as any write does (Comp / CompDBIDResp). The CMO
+  // half is a SEPARATE response -- CompCMO -- and a completer that answered a
+  // combined request with the write completion alone would leave the CMO
+  // permanently outstanding at the requester.
+  //
+  // For the persistent forms the spec additionally requires a Persist response
+  // AFTER the write data is received, which is the ordering rule this whole
+  // family turns on. Persist and CompCMO may be combined into a single
+  // CompPersist when both target the same node; they are kept separate here
+  // because two observable events are what a test can check an order between,
+  // and the combined encoding would collapse exactly the evidence.
+  // ---------------------------------------------------------------------------
+  protected task drive_combined_cmo_rsp(
+    input req_flit_t                req,
+    input vip_chi_resp_err_t        resp_err
+  );
+    item_t cmo_rsp;
+    item_t persist_rsp;
+
+    cmo_rsp              = new("combined_cmo_rsp");
+    cmo_rsp.role         = VIP_CHI_ROLE_SNF_E;
+    cmo_rsp.src_id       = node_id_t'(req.tgtid);
+    cmo_rsp.tgt_id       = node_id_t'(req.srcid);
+    cmo_rsp.txn_id       = txn_id_t'(req.txnid);
+    cmo_rsp.dbid         = txn_id_t'(req.txnid);
+    cmo_rsp.qos          = req.qos;
+    cmo_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
+    cmo_rsp.rsp_resp_err = resp_err;
+    cmo_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_CMO_C);
+    this.drive_rsp(cmo_rsp);
+
+    if (!this.req_opcode_combined_cmo_is_persist(req_opcode_t'(req.opcode))) begin
+      return;
+    end
+
+    persist_rsp              = new("combined_persist_rsp");
+    persist_rsp.role         = VIP_CHI_ROLE_SNF_E;
+    persist_rsp.src_id       = node_id_t'(req.tgtid);
+    persist_rsp.tgt_id       = node_id_t'(req.srcid);
+    persist_rsp.txn_id       = txn_id_t'(req.txnid);
+    persist_rsp.dbid         = txn_id_t'(req.txnid);
+    persist_rsp.qos          = req.qos;
+    persist_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
+    persist_rsp.rsp_resp_err = resp_err;
+    persist_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C);
+    this.drive_rsp(persist_rsp);
   endtask
 
   // ---------------------------------------------------------------------------

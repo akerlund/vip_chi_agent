@@ -124,6 +124,22 @@ package vip_chi_types_pkg;
   localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_UNIQUE_PTL_C  = 7'h18;
   localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_UNIQUE_FULL_C = 7'h19;
 
+  // Combined Write + CMO (Issue E only). One request carrying both a write and a
+  // cache-maintenance operation to the same address, which the completer must
+  // apply IN THAT ORDER -- the CMO acts on the state the write leaves behind, so
+  // a completer that applied them the other way round would be silently wrong on
+  // exactly the case the combined form exists to make efficient.
+  //
+  // Table 13-14 is two-dimensional: rows are Opcode[5:0] and these all sit in
+  // the Opcode[6] = 1 column, which is why they are 0x40 above the row value and
+  // why they cannot fit CHI-D's 6-bit REQ opcode field at all.
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C         = 7'h50;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C        = 7'h51;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C = 7'h52;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C          = 7'h60;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C         = 7'h61;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C  = 7'h62;
+
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_COMP_ACK_C       = 5'h02;
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_RETRY_ACK_C      = 5'h03;
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_COMP_C           = 5'h04;
@@ -135,6 +151,11 @@ package vip_chi_types_pkg;
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_PERSIST_C        = 5'h0C;
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_COMP_PERSIST_C   = 5'h0D;
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_DBID_RESP_ORD_C  = 5'h0E;
+  // The CMO half of a Combined Write's completion (Issue E only). The write half
+  // completes with Comp / CompDBIDResp as any write does; the CMO half is a
+  // SEPARATE response, and a completer that answered a combined request with the
+  // write completion alone would leave the CMO permanently outstanding.
+  localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_COMP_CMO_C       = 5'h14;
 
   // Snoop-response RSP opcodes (Tier C). IHI0050 RSP encodings: SnpResp = 0x01,
   // SnpRespFwded = 0x09 (0x0A is TagMatch). Both fit the CHI-D 4-bit and CHI-E
@@ -558,8 +579,44 @@ package vip_chi_types_pkg;
     VIP_CHI_REQ_WRITE_BACK_FULL_E          = VIP_CHI_REQ_WRITE_BACK_FULL_C,
     VIP_CHI_REQ_READ_ONCE_E                = VIP_CHI_REQ_READ_ONCE_C,
     VIP_CHI_REQ_WRITE_UNIQUE_PTL_E         = VIP_CHI_REQ_WRITE_UNIQUE_PTL_C,
-    VIP_CHI_REQ_WRITE_UNIQUE_FULL_E        = VIP_CHI_REQ_WRITE_UNIQUE_FULL_C
+    VIP_CHI_REQ_WRITE_UNIQUE_FULL_E        = VIP_CHI_REQ_WRITE_UNIQUE_FULL_C,
+    // Combined Write + CMO (Issue E only).
+    VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_E         = VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C,
+    VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_E        = VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C,
+    VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E = VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C,
+    VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_E          = VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C,
+    VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_E         = VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C,
+    VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E  = VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C
   } vip_chi_req_opcode_t;
+
+  // TRUE for the combined Write + CMO request opcodes (Issue E only).
+  //
+  // A function rather than a range test: the six are not contiguous -- the Full
+  // forms are 0x50-0x52 and the Ptl forms 0x60-0x62 -- because Table 13-14 is
+  // indexed by Opcode[5:0] with Opcode[6] selecting the column, so a family that
+  // reads as one block in the table is two blocks in the encoding.
+  function automatic bit vip_chi_req_opcode_is_combined_write_cmo(
+    input vip_chi_req_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E: return 1'b1;
+      default:                                         return 1'b0;
+    endcase
+  endfunction
+
+  // TRUE when a combined Write + CMO carries a PERSISTENT CMO, whose Persist
+  // response the completer must send only after the write data has arrived.
+  function automatic bit vip_chi_req_opcode_combined_cmo_is_persist(
+    input vip_chi_req_opcode_t opcode
+  );
+    return (opcode == VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E) ||
+           (opcode == VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E);
+  endfunction
 
   typedef enum logic [4 : 0] {
     VIP_CHI_ATOMIC_OP_STORE_0_E = 5'd0,
@@ -594,6 +651,7 @@ package vip_chi_types_pkg;
     VIP_CHI_RSP_PERSIST_E        = VIP_CHI_RSP_PERSIST_C,
     VIP_CHI_RSP_COMP_PERSIST_E   = VIP_CHI_RSP_COMP_PERSIST_C,
     VIP_CHI_RSP_DBID_RESP_ORD_E  = VIP_CHI_RSP_DBID_RESP_ORD_C,
+    VIP_CHI_RSP_COMP_CMO_E       = VIP_CHI_RSP_COMP_CMO_C,
     VIP_CHI_RSP_SNP_RESP_E       = VIP_CHI_RSP_SNP_RESP_C,
     VIP_CHI_RSP_SNP_RESP_FWDED_E = VIP_CHI_RSP_SNP_RESP_FWDED_C
   } vip_chi_rsp_opcode_t;

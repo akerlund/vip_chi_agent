@@ -39,6 +39,7 @@ class VipChiCfgItem:
     self.max_size = 6
     self.enforce_addr_alignment = True
     self.atomic_strict_size = False
+    self.combined_write_cmo_enable = False
     self.get_response = False
 
   def __repr__(self):
