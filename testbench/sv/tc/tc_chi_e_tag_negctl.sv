@@ -73,6 +73,11 @@ class tc_chi_e_tag_negctl extends chi_e_base_test;
     phase.raise_objection(this);
 
     uvm_report_cb::add(null, this.sb_catcher);
+    // Both reachable tag rules are broken here on purpose, declared one by
+    // one so the aggregation records them as provoked -- and so a THIRD,
+    // unintended scoreboard violation would still be reported.
+    super.tb_env.scoreboard.expect_failure(VIP_CHI_SB_CHK_READ_TAG_MATCHES_E);
+    super.tb_env.scoreboard.expect_failure(VIP_CHI_SB_CHK_READ_TAGOP_REPLAYED_E);
 
     for (int i = 0; i < N_BEATS_C; i++) begin
       write_data.push_back(item_t::data_t'(64'h5A5A_0000_0000_0000 + i));

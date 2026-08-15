@@ -281,6 +281,48 @@ CHECK_IDS_SNP = tuple(n for n in CHECK_IDS if n.startswith("CHI_SNP_"))
 CHECK_IDS_MAIN = tuple(n for n in CHECK_IDS if not n.startswith("CHI_SNP_"))
 
 
+# Every SCOREBOARD rule, in the same order as vip_chi_sb_check_id_t in the SV
+# types package.
+#
+# The registry above covers the SVA binds only, and every scoreboard check ever
+# written here has been outside it: named nowhere, counted only when it FAILED,
+# and therefore invisible to the vacuity aggregation. A scoreboard rule that
+# never once evaluated reads, in every log and in the regression summary, exactly
+# like a rule that holds -- which is the state the whole per-check mechanism
+# exists to make impossible.
+#
+# A SECOND registry rather than more entries in the first, for a structural
+# reason: the SVA IDs size four fixed arrays inside EVERY vip_chi_if instance,
+# and a scoreboard rule is judged once per component, not per interface. The two
+# share the CSV schema instead, which is what actually matters -- the aggregation
+# reads both through one code path and gates on both alike.
+#
+# Append-only, like the other registry: the names appear in regression exports.
+CHECK_IDS_SB = (
+  # Checker A -- lifecycle. Orphans are split by CHANNEL because they are
+  # reached by different paths: an RSP arrives for a transaction the table never
+  # opened, a DAT for one whose return leg was never registered.
+  "CHI_SB_TXN_COMPLETES",
+  "CHI_SB_RSP_HAS_OPEN_TXN",
+  "CHI_SB_DAT_HAS_OPEN_TXN",
+  "CHI_SB_TXNID_NOT_REUSED",
+  "CHI_SB_COMPLETION_OPCODE_MODELLED",
+  # Checker B -- cross-agent request fidelity.
+  "CHI_SB_REQ_RELAYED",
+  "CHI_SB_REQ_ROUTED",
+  # Checker C -- data and MTE tag integrity. The read and atomic-return compares
+  # shared one counter before this registry existed, so a regression could not
+  # tell which of the two had actually run.
+  "CHI_SB_READ_DATA_MATCHES",
+  "CHI_SB_ATOMIC_RETURN_MATCHES",
+  "CHI_SB_READ_TAG_MATCHES",
+  "CHI_SB_READ_TAGOP_REPLAYED",
+  "CHI_SB_TAGOP_STABLE_ACROSS_BEATS",
+  # Checker E -- ordered-stream acknowledgement order.
+  "CHI_SB_ORDERED_ACK_IN_ORDER",
+)
+
+
 class Resp(IntEnum):
   """Cache-state Resp field (RSP/DAT). Reserved encodings kept for fidelity."""
   I = 0b000

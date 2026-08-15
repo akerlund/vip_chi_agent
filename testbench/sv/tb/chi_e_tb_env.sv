@@ -103,4 +103,17 @@ class chi_e_tb_env extends uvm_env;
       this.handle_reset();
     end
   endtask
+  // ---------------------------------------------------------------------------
+  // The scoreboard's rules go into the same per-check export as the SVA binds',
+  // under its own bind name. They were outside the mechanism entirely until now,
+  // which meant a scoreboard check could stop evaluating and no report anywhere
+  // would say so.
+  // ---------------------------------------------------------------------------
+  function void report_phase(input uvm_phase phase);
+
+    super.report_phase(phase);
+
+    this.scoreboard.report_checks();
+    this.scoreboard.export_check_csv();
+  endfunction
 endclass

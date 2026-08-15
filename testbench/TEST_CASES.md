@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **148 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **149 pyUVM/cocotb**
+The shared regression currently runs **149 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **150 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -119,6 +119,7 @@ exception of `tc_chi_sva_smoke` described at the top of this file.
 | `tc_chi_lasm_timeout` | INT | negative control for the two link timeouts. `lasm_stall_activation_cycles` withholds the completer's acknowledge and `lasm_stall_deactivation_cycles` withholds its drop, each for four times the configured bound, so the link sits in `ACTIVATE` and then in `DEACTIVATE` past the limit. Both binds must report each episode ONCE -- on the crossing, not per cycle, which would bury the one useful line under thousands of copies -- and the link must recover from each, since a reported timeout is a diagnostic rather than a wedge. The stalls are deliberately finite for that reason. |
 | `tc_chi_check_disable` | INT | negative control for the per-check enable. One rule is disabled by ID before any traffic; on the same write burst it must record NOTHING -- not a pass, not a fail -- while a sibling rule on the transmit side still records passes. The sibling is what proves the disable was targeted rather than taking the whole bind down, which would otherwise be invisible because both rules would read zero. A disabled rule is also excluded from the vacuity report, so "switched off" stays distinguishable from "never ran". |
 | `tc_chi_check_vacuity` | INT | the vacuity report checked against itself. `CHI_COMPACK_WITHOUT_EXPCOMPACK` cannot be evaluated by read-only traffic, so after a read it must read as unexercised while a rule the read does exercise must not; a following write with `ExpCompAck` drives a CompAck and the same rule must move out of that state, having recorded a pass. Asserting the TRANSITION rather than a snapshot is what makes it non-tautological -- a hard-coded answer passes the first half and fails the second. |
+| `tc_chi_sb_vacuity` | INT | the same argument as the row above, applied to the SCOREBOARD half of the registry -- the half that had no pass counts at all until it was named, so a rule that stopped evaluating and a rule that always held produced the identical log. An unordered read cannot reach `CHI_SB_ORDERED_ACK_IN_ORDER`, so it must read as unexercised while `CHI_SB_TXN_COMPLETES`, which that same read retires into, must not; an ordered read then moves it out. The pass COUNT is asserted too, not just the rule's absence from the list: a rule leaves that list on its first FAILURE just as readily, so absence alone would also be satisfied by a completer answering out of order. |
 | `tc_chi_d_split_write_rsp` | INT | `DBIDResp` plus deferred `Comp`, with optional trailing `CompAck` under `ExpCompAck`. |
 | `tc_chi_d_prefetch_tgt` | INT | `PrefetchTgt` treated as a no-completion hint. |
 | `tc_chi_d_atomic` | INT | atomic store/load/swap/compare smoke using the SN-F backing memory for operand capture, RMW, old-data return, and readback. |

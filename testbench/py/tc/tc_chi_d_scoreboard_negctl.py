@@ -17,6 +17,7 @@ from vip_chi_types_pkg import Resp, RespErr, RspOpcode
 from chi_base_test import chi_base_test, WRITE_READ_ADDR_C
 from vip_chi_raw_seq import vip_chi_raw_seq
 from chi_scoreboard_negctl_catcher import chi_scoreboard_negctl_catcher
+from vip_chi_scoreboard import SB_RSP_HAS_OPEN_TXN
 from chi_tb_pkg import RNI_NODE_ID_C, SNF_NODE_ID_C
 
 ORPHAN_TXN_C = 0xF7
@@ -32,6 +33,11 @@ class tc_chi_d_scoreboard_negctl(chi_base_test):
     # Catch (and demote) the single orphan error the scoreboard is expected to
     # emit, so it does not count against the regression verdict.
     scoreboard.logger.addFilter(catcher)
+    # And say WHICH rule is being provoked, so the cross-run aggregation records
+    # the failure as asked-for rather than reporting the run that proves the
+    # check fires as the check failing. Per rule, not per checker: a second,
+    # unintended scoreboard violation in this run must still stand out.
+    scoreboard.expect_failure(SB_RSP_HAS_OPEN_TXN)
 
     # 1) One clean write brings the link to RUN and opens+retires a ctx normally.
     #    The scoreboard must NOT complain about this legal transaction.

@@ -601,7 +601,12 @@ check is vacuous (e.g.
 
 Every protocol rule has a stable identity (`vip_chi_check_id_t` in SV,
 `CHECK_IDS` in Python — the same 54 names, in the same order), a severity, and
-pass/fail counters. Two things follow that did not hold before:
+pass/fail counters. The scoreboard's rules carry the same identity in a second
+registry of 13 (`vip_chi_sb_check_id_t` / `CHECK_IDS_SB`, all named `CHI_SB_*`);
+they are a separate enum because the SVA IDs size four arrays inside *every*
+`vip_chi_if` instance while a scoreboard rule is judged once per component, but
+they share the export schema, so one aggregation reads both. Two things follow
+that did not hold before:
 
 * **An assertion failure fails the run.** The SV checkers report through plain
   `$error`, which raises no UVM error, sets no exit status, and is not read by
@@ -611,7 +616,9 @@ pass/fail counters. Two things follow that did not hold before:
   stay UVM-free, so they remain bindable in a non-UVM bench.
 * **A rule that never RAN is distinguishable from one that held.** Zero passes
   and zero fails means the rule was never evaluated, which a clean log otherwise
-  looks exactly like.
+  looks exactly like. This is why the scoreboard rules needed *pass* counts:
+  every scoreboard check here counted only its failures, so a check that had
+  stopped evaluating produced the same output as one that always held.
 
 Addressing one check:
 
@@ -620,6 +627,7 @@ Addressing one check:
 | Disable (no reports, no counts) | `+vip_chi_disable_check=CHI_LCRD_UNDERFLOW` | `VIP_CHI_DISABLE_CHECK=CHI_LCRD_UNDERFLOW` |
 | Demote to warning (still counted) | `+vip_chi_warn_check=<ID>[,<ID>]` | `VIP_CHI_WARN_CHECK=<ID>[,<ID>]` |
 | Silence but keep counting | `vif.check_severity[<ID>] = VIP_CHI_CHK_SEV_OFF_E` | `checker.expect_failure("<ID>")` |
+| Declare a provoked SCOREBOARD rule | `scoreboard.expect_failure(<ID>)` | `scoreboard.expect_failure("<ID>")` |
 
 An unknown name is an error, not a shrug: the whole value of naming checks is
 being able to address one, and a silently-dropped typo leaves you believing a
@@ -630,6 +638,15 @@ what a negative control needs to prove its rule fires. Disabling stops the
 counting too, so a disabled rule shows as *not exercised* rather than as quietly
 holding.
 
+On the scoreboard, `expect_failure` declares intent for the export and does
+**not** silence the report. The difference is deliberate: the scoreboard's report
+*is* its verdict — it raises a UVM error, and its negative controls assert
+through a report catcher that the message was actually emitted — so suppressing
+it would delete the evidence those tests depend on. A scoreboard rule stands down
+only with the knob that owns it (`scoreboard_check_data`, `scoreboard_check_order`,
+or multi-SN routing), and the export records that as *disabled*, which does not
+gate.
+
 ### Reading the vacuity report
 
 Each run prints, per bind, one line per rule it never evaluated:
@@ -637,6 +654,8 @@ Each run prints, per bind, one line per rule it never evaluated:
 ```
 VIP_CHI CHECK VACUITY: bind=rni_sva not_exercised=12 of=52
 VIP_CHI CHECK NOT EXERCISED: bind=rni_sva rule=CHI_REQ_IDLE_IN_RESET
+VIP_CHI SB CHECK VACUITY: not_exercised=3 of=12
+  SB CHECK NOT EXERCISED  CHI_SB_ATOMIC_RETURN_MATCHES
 ```
 
 One line per rule, deliberately: the report server wraps at a fixed column, so a

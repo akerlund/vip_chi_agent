@@ -65,6 +65,9 @@ class tc_chi_ordered_stream_negctl extends chi_base_test;
     phase.raise_objection(this);
 
     uvm_report_cb::add(null, this.order_catcher);
+    // Declared per rule so the aggregation reads the provoked inversion as
+    // asked-for rather than as this check failing.
+    super.tb_env.scoreboard.expect_failure(VIP_CHI_SB_CHK_ORDERED_ACK_IN_ORDER_E);
 
     super.rni0_rd_seq.reset();
     super.rni0_rd_seq.set_requests(N_C);

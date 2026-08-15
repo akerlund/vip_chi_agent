@@ -441,6 +441,63 @@ package vip_chi_types_pkg;
     return {"CHI_", s.substr(12, s.len() - 3)};
   endfunction
 
+  // ---------------------------------------------------------------------------
+  // Scoreboard-check identity.
+  //
+  // The registry above covers the SVA binds only, and every scoreboard check
+  // ever written here has been outside it: named nowhere, counted only when it
+  // FAILED, and therefore invisible to the vacuity aggregation. A scoreboard
+  // rule that never once evaluated reads, in every log and in the regression
+  // summary, exactly like a rule that holds -- which is the state the whole
+  // per-check mechanism exists to make impossible.
+  //
+  // A SECOND enum rather than more entries in the first, for a structural
+  // reason: vip_chi_check_id_t sizes four fixed arrays inside EVERY vip_chi_if
+  // instance, and a scoreboard rule is judged once per component, not per
+  // interface. Putting them there would add rows to every interface in the
+  // testbench that nothing could ever write. The two registries share the CSV
+  // schema instead, which is what actually matters -- the aggregation reads both
+  // through one code path and gates on both alike.
+  //
+  // Order is append-only for the same reason as the SVA registry: the names
+  // appear in regression exports, and renumbering would silently repoint them.
+  // ---------------------------------------------------------------------------
+  typedef enum int {
+    // Checker A -- lifecycle. Orphans are split by CHANNEL because they are
+    // reached by different paths: an RSP arrives for a transaction the table
+    // never opened, a DAT for one whose return leg was never registered.
+    VIP_CHI_SB_CHK_TXN_COMPLETES_E = 0,
+    VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E,
+    VIP_CHI_SB_CHK_DAT_HAS_OPEN_TXN_E,
+    VIP_CHI_SB_CHK_TXNID_NOT_REUSED_E,
+    VIP_CHI_SB_CHK_COMPLETION_OPCODE_MODELLED_E,
+    // Checker B -- cross-agent request fidelity.
+    VIP_CHI_SB_CHK_REQ_RELAYED_E,
+    VIP_CHI_SB_CHK_REQ_ROUTED_E,
+    // Checker C -- data and MTE tag integrity. The read and atomic-return
+    // compares shared one counter before this registry existed, so a regression
+    // could not tell which of the two had actually run.
+    VIP_CHI_SB_CHK_READ_DATA_MATCHES_E,
+    VIP_CHI_SB_CHK_ATOMIC_RETURN_MATCHES_E,
+    VIP_CHI_SB_CHK_READ_TAG_MATCHES_E,
+    VIP_CHI_SB_CHK_READ_TAGOP_REPLAYED_E,
+    VIP_CHI_SB_CHK_TAGOP_STABLE_ACROSS_BEATS_E,
+    // Checker E -- ordered-stream acknowledgement order.
+    VIP_CHI_SB_CHK_ORDERED_ACK_IN_ORDER_E,
+    // Must stay last: the array bound and the loop terminator.
+    VIP_CHI_SB_CHK_NUM_E
+  } vip_chi_sb_check_id_t;
+
+  // Same derivation as vip_chi_check_name, so the two ports cannot spell a rule
+  // differently: strip "VIP_CHI_SB_CHK_" (15 chars) and "_E" (2), prepend the
+  // CHI_SB_ namespace that separates these from the SVA rules in one CSV.
+  function automatic string vip_chi_sb_check_name(input vip_chi_sb_check_id_t id);
+    string s;
+    s = id.name();
+    return {"CHI_SB_", s.substr(15, s.len() - 3)};
+  endfunction
+
+
   typedef enum logic [2 : 0] {
     VIP_CHI_RESP_STATE_I_E           = 3'b000,
     VIP_CHI_RESP_STATE_SC_E          = 3'b001,

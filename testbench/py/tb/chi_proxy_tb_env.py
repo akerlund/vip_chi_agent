@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+import os
+
 from cocotb.triggers import FallingEdge
 
 from pyuvm import uvm_env, uvm_tlm_analysis_fifo, ConfigDB
@@ -170,6 +172,17 @@ class chi_proxy_tb_env(uvm_env):
     while True:
       await FallingEdge(bus.rst_n)
       self.handle_reset()
+
+  def report_phase(self):
+    # This env is the ONLY one that routes across more than one SN, so it is the
+    # only place CHI_SB_REQ_ROUTED can be evaluated. Without an export here the
+    # aggregation would see that rule standing down in every run it can read and
+    # report it as dead -- while the runs that actually exercise it said nothing.
+    csv_path = os.environ.get("VIP_CHI_CHECK_CSV", "")
+    run_name = os.environ.get("VIP_CHI_TESTNAME", "") or "unknown"
+    self.scoreboard.report_checks(self.logger)
+    if csv_path:
+      self.scoreboard.export_check_csv(csv_path, run_name)
 
   def handle_reset(self):
     self.scoreboard.handle_reset()

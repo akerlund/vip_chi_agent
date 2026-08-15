@@ -43,6 +43,12 @@ class tc_chi_d_scoreboard_negctl extends chi_base_test;
     // emit, so it does not count against the regression verdict.
     uvm_report_cb::add(null, this.sb_catcher);
 
+    // And say WHICH rule is being provoked, so the cross-run aggregation records
+    // the failure as asked-for rather than reporting the run that proves the
+    // check fires as the check failing. Per rule, not per checker: a second,
+    // unintended scoreboard violation in this run must still stand out.
+    super.tb_env.scoreboard.expect_failure(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E);
+
     // 1) One clean write brings the link to RUN and opens+retires a ctx normally.
     //    The scoreboard must NOT complain about this legal transaction.
     super.rni0_wr_seq.reset();

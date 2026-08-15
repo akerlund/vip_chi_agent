@@ -197,5 +197,12 @@ class chi_tb_env extends uvm_env;
     chi_check_report_tallies("snf_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.snf_agent.vif.check_enabled, this.snf_agent.vif.check_severity,
       this.snf_agent.vif.check_pass_count, this.snf_agent.vif.check_fail_count);
+
+    // The scoreboard's rules go into the SAME export, under its own bind name.
+    // They were outside the mechanism entirely until now, which meant a
+    // scoreboard check could stop evaluating and no report anywhere would say
+    // so.
+    this.scoreboard.report_checks();
+    this.scoreboard.export_check_csv();
   endfunction
 endclass

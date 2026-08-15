@@ -20,6 +20,7 @@ from __future__ import annotations
 from vip_chi_types_pkg import ReqOrder
 from chi_base_test import chi_base_test
 from chi_order_negctl_catcher import chi_order_negctl_catcher
+from vip_chi_scoreboard import SB_ORDERED_ACK_IN_ORDER
 
 N_C = 6
 BASE_ADDR_C = 0x3C00_0000
@@ -47,6 +48,9 @@ class tc_chi_ordered_stream_negctl(chi_base_test):
     sb = self.tb_env.scoreboard
     catcher = chi_order_negctl_catcher("order_negctl_catcher")
     sb.logger.addFilter(catcher)
+    # Declared per rule so the aggregation reads the provoked inversion as
+    # asked-for rather than as this check failing.
+    sb.expect_failure(SB_ORDERED_ACK_IN_ORDER)
 
     try:
       rd = self.rni0_rd_seq

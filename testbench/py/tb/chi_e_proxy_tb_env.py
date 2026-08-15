@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import os
+
 from cocotb.triggers import FallingEdge
 
 from pyuvm import uvm_env, uvm_tlm_analysis_fifo, ConfigDB
@@ -138,6 +140,13 @@ class chi_e_proxy_tb_env(uvm_env):
     while True:
       await FallingEdge(bus.rst_n)
       self.handle_reset()
+
+  def report_phase(self):
+    csv_path = os.environ.get("VIP_CHI_CHECK_CSV", "")
+    run_name = os.environ.get("VIP_CHI_TESTNAME", "") or "unknown"
+    self.scoreboard.report_checks(self.logger)
+    if csv_path:
+      self.scoreboard.export_check_csv(csv_path, run_name)
 
   def handle_reset(self):
     self.coverage.handle_reset()

@@ -274,9 +274,26 @@ class vip_chi_scoreboard #(
   // issued them; the head is what the completer owes an acknowledgement for next.
   protected txn_id_t ord_fifo [string][$];
 
-  // Reporting counters.
-  protected int n_incomplete, n_orphan, n_wrong_opcode, n_reuse;
-  protected int n_data_mismatch, n_reads_skipped, n_relay_mismatch, n_route_mismatch;
+  // Per-rule tallies, the scoreboard's half of the per-check registry.
+  //
+  // PASSES are the point. Every scoreboard check here counted only its
+  // failures, which makes a rule that never ran and a rule that always holds
+  // produce the identical log -- and the whole regression could not tell them
+  // apart. A pass count is what turns "no errors" into "compared N times and
+  // none differed", and it is what the cross-run aggregation reads.
+  //
+  // The legacy n_* counters below are now FUNCTIONS derived from these rather
+  // than fields kept beside them, so a new check site that forgets to bump its
+  // rule cannot leave the summary line reading right while the export reads
+  // zero.
+  protected int                      chk_pass     [VIP_CHI_SB_CHK_NUM_E];
+  protected int                      chk_fail     [VIP_CHI_SB_CHK_NUM_E];
+  protected vip_chi_check_severity_t chk_severity [VIP_CHI_SB_CHK_NUM_E];
+
+  // Advisory tallies, deliberately NOT rules: they count what the
+  // predictable-only discipline SKIPPED, which is neither a pass nor a failure,
+  // and they are the denominator that makes a zero-mismatch run readable.
+  protected int n_reads_skipped;
 
   // Checker C, MTE half: the predicted TAG image, alongside pred_mem/written and
   // committed by the same rule (an observed write that resolved OKAY).
@@ -295,19 +312,145 @@ class vip_chi_scoreboard #(
   protected tu_t    pred_tu    [addr_t];
   protected tagop_t pred_tagop [addr_t];
   protected bit   tag_written  [addr_t];
-  protected int   n_tag_mismatch, n_tagop_mismatch, n_tag_reads_skipped;
-  protected int   n_tagop_replay_mismatch;
+  protected int   n_tag_reads_skipped;
   // Tags actually COMPARED. Without it a clean run cannot tell a correct tag
   // path from one the scoreboard never predicted, which is the whole lesson of
   // the vacuity work: zero mismatches out of zero comparisons is not a pass.
   protected int   n_tag_checked;
-  protected int n_order_violation, n_order_checked;
 
   // ---------------------------------------------------------------------------
   // Constructor.
   // ---------------------------------------------------------------------------
   function new(input string name, input uvm_component parent);
     super.new(name, parent);
+
+    foreach (this.chk_severity[i]) begin
+      this.chk_severity[i] = VIP_CHI_CHK_SEV_ERROR_E;
+    end
+    // An unmodelled completion opcode has always been a warning: a genuinely
+    // wrong completion still surfaces as an incomplete at check_phase, so
+    // failing here would double-report the same defect.
+    this.chk_severity[VIP_CHI_SB_CHK_COMPLETION_OPCODE_MODELLED_E] =
+      VIP_CHI_CHK_SEV_WARNING_E;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // The per-rule tally.
+  //
+  // Reporting is unconditional, unlike the SVA checkers' severity handling, and
+  // the difference is deliberate. There, a rule turned OFF is counted but
+  // silent, which is what a negative control needs. Here the report IS the
+  // verdict -- the scoreboard raises a uvm_error and the negative controls
+  // assert, through a report catcher, that the message was actually emitted.
+  // Suppressing it would delete the evidence those tests depend on, so severity
+  // on this side declares INTENT for the export and nothing more; see
+  // expect_failure.
+  // ---------------------------------------------------------------------------
+  protected function void chk_ok(input vip_chi_sb_check_id_t id);
+    this.chk_pass[id]++;
+  endfunction
+
+  protected function void chk_bad(
+    input vip_chi_sb_check_id_t id,
+    input string                msg
+  );
+    this.chk_fail[id]++;
+    if (this.chk_severity[id] == VIP_CHI_CHK_SEV_WARNING_E) begin
+      `uvm_warning(get_name(), msg)
+    end
+    else begin
+      `uvm_error(get_name(), msg)
+    end
+  endfunction
+
+  // Declare that this run provokes `id` on purpose. Without it the cross-run
+  // aggregation reads a negative control as a genuine regression failure -- the
+  // run that PROVES a check fires would be reported as the check failing.
+  // Per rule rather than per checker, so a second, unintended violation inside
+  // the same run still stands out.
+  function void expect_failure(input vip_chi_sb_check_id_t id);
+    this.chk_severity[id] = VIP_CHI_CHK_SEV_OFF_E;
+  endfunction
+
+  // Whether this run could evaluate the rule at all. A rule standing down
+  // because its knob is off was not exercised BY REQUEST, which is a different
+  // thing from a hole: gating on a knob the user turned off would teach the
+  // reader to ignore the report and hide the real gaps with it.
+  function bit chk_rule_enabled(input vip_chi_sb_check_id_t id);
+    if (!this.enable) begin
+      return 1'b0;
+    end
+    case (id)
+      VIP_CHI_SB_CHK_READ_DATA_MATCHES_E,
+      VIP_CHI_SB_CHK_ATOMIC_RETURN_MATCHES_E,
+      VIP_CHI_SB_CHK_READ_TAG_MATCHES_E,
+      VIP_CHI_SB_CHK_READ_TAGOP_REPLAYED_E,
+      VIP_CHI_SB_CHK_TAGOP_STABLE_ACROSS_BEATS_E: return this.check_data;
+      VIP_CHI_SB_CHK_ORDERED_ACK_IN_ORDER_E:      return this.check_order;
+      VIP_CHI_SB_CHK_REQ_ROUTED_E:                return this.route_check;
+      default:                                    return 1'b1;
+    endcase
+  endfunction
+
+  function int get_check_pass_count(input vip_chi_sb_check_id_t id);
+    return this.chk_pass[id];
+  endfunction
+
+  function int get_check_fail_count(input vip_chi_sb_check_id_t id);
+    return this.chk_fail[id];
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // The legacy tallies, DERIVED from the registry rather than kept beside it.
+  // ---------------------------------------------------------------------------
+  protected function int n_incomplete();
+    return this.chk_fail[VIP_CHI_SB_CHK_TXN_COMPLETES_E];
+  endfunction
+
+  protected function int n_orphan();
+    return this.chk_fail[VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E] +
+           this.chk_fail[VIP_CHI_SB_CHK_DAT_HAS_OPEN_TXN_E];
+  endfunction
+
+  protected function int n_wrong_opcode();
+    return this.chk_fail[VIP_CHI_SB_CHK_COMPLETION_OPCODE_MODELLED_E];
+  endfunction
+
+  protected function int n_reuse();
+    return this.chk_fail[VIP_CHI_SB_CHK_TXNID_NOT_REUSED_E];
+  endfunction
+
+  protected function int n_data_mismatch();
+    return this.chk_fail[VIP_CHI_SB_CHK_READ_DATA_MATCHES_E] +
+           this.chk_fail[VIP_CHI_SB_CHK_ATOMIC_RETURN_MATCHES_E];
+  endfunction
+
+  protected function int n_relay_mismatch();
+    return this.chk_fail[VIP_CHI_SB_CHK_REQ_RELAYED_E];
+  endfunction
+
+  protected function int n_route_mismatch();
+    return this.chk_fail[VIP_CHI_SB_CHK_REQ_ROUTED_E];
+  endfunction
+
+  protected function int n_tag_mismatch();
+    return this.chk_fail[VIP_CHI_SB_CHK_READ_TAG_MATCHES_E];
+  endfunction
+
+  protected function int n_tagop_replay_mismatch();
+    return this.chk_fail[VIP_CHI_SB_CHK_READ_TAGOP_REPLAYED_E];
+  endfunction
+
+  protected function int n_tagop_mismatch();
+    return this.chk_fail[VIP_CHI_SB_CHK_TAGOP_STABLE_ACROSS_BEATS_E];
+  endfunction
+
+  protected function int n_order_violation();
+    return this.chk_fail[VIP_CHI_SB_CHK_ORDERED_ACK_IN_ORDER_E];
+  endfunction
+
+  protected function int n_order_checked();
+    return this.chk_pass[VIP_CHI_SB_CHK_ORDERED_ACK_IN_ORDER_E];
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -559,14 +702,13 @@ class vip_chi_scoreboard #(
       // Count the in-order acknowledgement as well as the violation: a check that
       // only ever tallies failures reads, in a passing log, exactly like a check
       // that never ran.
-      this.n_order_checked++;
+      this.chk_ok(VIP_CHI_SB_CHK_ORDERED_ACK_IN_ORDER_E);
       void'(this.ord_fifo[ctx.ord_key].pop_front());
     end
     else begin
-      this.n_order_violation++;
-      `uvm_error(get_name(), $sformatf(
+      this.chk_bad(VIP_CHI_SB_CHK_ORDERED_ACK_IN_ORDER_E, $sformatf(
         "Ordered stream out of order: stream=%0d src=0x%0h order=0x%0h expected txn=0x%0h to be acknowledged first, observed txn=0x%0h",
-        ctx.stream, ctx.requester_node, ctx.order_val, expected, ctx.txn_id))
+        ctx.stream, ctx.requester_node, ctx.order_val, expected, ctx.txn_id));
       // Drop the transaction that jumped the queue from wherever it sits, so one
       // inversion costs one error instead of cascading down the rest of the stream.
       idx = this.ord_find(ctx.ord_key, ctx.txn_id);
@@ -609,7 +751,11 @@ class vip_chi_scoreboard #(
       ctx = this.open_ctx[key];
       if (!ctx.retired) begin
         if (ctx.retry_seen) begin
-          // Legitimate retry re-issue (same TxnID) - reset and keep tracking.
+          // Legitimate retry re-issue (same TxnID) - reset and keep tracking. It
+          // counts as a PASS of the reuse rule rather than as nothing at all:
+          // re-using the ID of a refused request is the one case the rule has to
+          // let through, so it is exactly where the rule earns its keep.
+          this.chk_ok(VIP_CHI_SB_CHK_TXNID_NOT_REUSED_E);
           ctx.reset_milestones();
           this.set_contract(ctx, item);
           ctx.addr = item.addr;
@@ -617,12 +763,17 @@ class vip_chi_scoreboard #(
           this.ord_enroll(ctx);
           return;
         end
-        this.n_reuse++;
-        `uvm_error(get_name(), $sformatf(
+        this.chk_bad(VIP_CHI_SB_CHK_TXNID_NOT_REUSED_E, $sformatf(
           "TxnID reuse while in flight: stream=%0d src=0x%0h txn=0x%0h opcode=0x%0h",
-          stream, item.src_id, item.txn_id, item.opcode))
+          stream, item.src_id, item.txn_id, item.opcode));
         // fall through and overwrite with a fresh ctx
       end
+      else begin
+        this.chk_ok(VIP_CHI_SB_CHK_TXNID_NOT_REUSED_E);
+      end
+    end
+    else begin
+      this.chk_ok(VIP_CHI_SB_CHK_TXNID_NOT_REUSED_E);
     end
 
     ctx                = new();
@@ -659,12 +810,14 @@ class vip_chi_scoreboard #(
     string       key;
     ctx_t        ctx;
     rsp_opcode_t opc;
+    bit          opc_modelled;
 
     if (!this.enable) begin
       return;
     end
 
-    opc = item.rsp_opcode;
+    opc          = item.rsp_opcode;
+    opc_modelled = 1'b1;
 
     // Outbound RSP from the requester == CompAck (keyed by src_id).
     if (this.is_outbound(item)) begin
@@ -694,12 +847,12 @@ class vip_chi_scoreboard #(
     // Inbound completion (keyed by tgt_id == requester node).
     key = this.ctx_key(stream, item.tgt_id, item.txn_id);
     if (!this.open_ctx.exists(key)) begin
-      this.n_orphan++;
-      `uvm_error(get_name(), $sformatf(
+      this.chk_bad(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E, $sformatf(
         "Orphan RSP (no open ctx): stream=%0d tgt=0x%0h txn=0x%0h rsp_opcode=0x%0h",
-        stream, item.tgt_id, item.txn_id, opc))
+        stream, item.tgt_id, item.txn_id, opc));
       return;
     end
+    this.chk_ok(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E);
     ctx = this.open_ctx[key];
 
     case (opc)
@@ -745,12 +898,19 @@ class vip_chi_scoreboard #(
         // completion still surfaces as an "incomplete" at check_phase (the
         // required milestone never ticks), so this cannot mask a real bug while
         // it does avoid false-failing on a legal opcode this contract omits.
-        this.n_wrong_opcode++;
-        `uvm_warning(get_name(), $sformatf(
+        opc_modelled = 1'b0;
+        this.chk_bad(VIP_CHI_SB_CHK_COMPLETION_OPCODE_MODELLED_E, $sformatf(
           "Unmodeled completion RSP opcode 0x%0h for kind=%0d stream=%0d txn=0x%0h",
           opc, ctx.kind, stream, item.txn_id));
       end
     endcase
+
+    // Every branch above except the default and the RetryAck: a refusal is not a
+    // completion opcode, so counting it here would inflate the rule with flits it
+    // does not judge.
+    if (opc_modelled && (opc != rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C))) begin
+      this.chk_ok(VIP_CHI_SB_CHK_COMPLETION_OPCODE_MODELLED_E);
+    end
 
     // Checker E: the first inbound response is the completer committing to this
     // transaction's position in its ordered stream. A no-op after that, and a
@@ -807,12 +967,12 @@ class vip_chi_scoreboard #(
       ctx = this.sep_ret_ctx[key];
     end
     else begin
-      this.n_orphan++;
-      `uvm_error(get_name(), $sformatf(
+      this.chk_bad(VIP_CHI_SB_CHK_DAT_HAS_OPEN_TXN_E, $sformatf(
         "Orphan DAT (no open ctx): stream=%0d tgt=0x%0h txn=0x%0h dat_opcode=0x%0h",
         stream, item.tgt_id, item.txn_id, item.dat_opcode));
       return;
     end
+    this.chk_ok(VIP_CHI_SB_CHK_DAT_HAS_OPEN_TXN_E);
     ctx.read_data_seen = 1'b1;
 
     // Checker E: normally the ReadReceipt got here first and this is a no-op; it
@@ -1056,11 +1216,13 @@ class vip_chi_scoreboard #(
           exp_b = ctx.atomic_old[i][(8 * j) +: 8];
           got_b = ret_item.data[i][(8 * j) +: 8];
           if (byte'(got_b) != byte'(exp_b)) begin
-            this.n_data_mismatch++;
-            `uvm_error(get_name(), $sformatf(
+            this.chk_bad(VIP_CHI_SB_CHK_ATOMIC_RETURN_MATCHES_E, $sformatf(
               "Atomic return mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
               ctx.stream, ctx.txn_id,
               ctx.addr + addr_t'((i * DATA_BYTES_C) + j), exp_b, got_b));
+          end
+          else begin
+            this.chk_ok(VIP_CHI_SB_CHK_ATOMIC_RETURN_MATCHES_E);
           end
         end
       end
@@ -1111,6 +1273,8 @@ class vip_chi_scoreboard #(
   protected function void compare_read_tags(input ctx_t ctx, input item_t item);
     addr_t  slot;
     tagop_t first_op;
+    bit     tagops_agreed;
+    bit     tag_matched;
 
     if (!this.check_data) begin
       return;
@@ -1121,25 +1285,36 @@ class vip_chi_scoreboard #(
     // scalar dat_tagop cannot show a disagreement -- every beat overwrites it,
     // so the last beat wins. dat_tagop_beats is why this is checkable at all.
     //
-    // KNOWN UNREACHABLE IN THIS TESTBENCH, and recorded rather than left to be
-    // discovered. The only MTE-capable link here is the wide CHI-E one at 64
-    // bytes, and CHI's maximum transfer Size is also 64 bytes, so every MTE
-    // transfer on it is exactly ONE beat and the loop below never has two to
-    // compare. It is kept because it is correct and costs nothing on a narrower
-    // E link, where it is the only thing that would catch a completer losing
-    // track of a burst -- but it is not exercised here, and this comment is the
-    // substitute for a vacuity report that cannot see scoreboard checks.
-    // Rule 3 below is the reachable half of the same concern.
+    // This was recorded as UNREACHABLE on this testbench when it was written,
+    // and that was WRONG. The claim was that the only MTE-capable link here is
+    // the 64-byte CHI-E one and CHI's maximum transfer Size is also 64 bytes, so
+    // every transfer carrying TAGS is a single beat -- true, and irrelevant,
+    // because the loop below does not require tags. dat_tagop_beats is sized per
+    // beat for EVERY data transfer, so any multi-beat read exercises this rule,
+    // and the whole CHI-D regression does: 36 runs, comparing TagOp zero against
+    // TagOp zero across four beats.
+    //
+    // Naming the rule in the registry is what found that out, on the first sweep
+    // after it was named. What remains genuinely out of reach here is the
+    // FAILING direction -- a multi-beat burst whose beats carry disagreeing
+    // non-zero TagOps -- because no link in this testbench is both MTE-capable
+    // and narrow enough to burst. That is why the M3.1 negative control could not
+    // break this rule, and it is a statement about the negative control, not
+    // about whether the rule runs. Rule 3 below is the half a control can break.
     if (item.dat_tagop_beats.size() > 1) begin
       first_op = item.dat_tagop_beats[0];
+      tagops_agreed = 1'b1;
       foreach (item.dat_tagop_beats[i]) begin
         if (item.dat_tagop_beats[i] != first_op) begin
-          this.n_tagop_mismatch++;
-          `uvm_error(get_name(), $sformatf(
+          tagops_agreed = 1'b0;
+          this.chk_bad(VIP_CHI_SB_CHK_TAGOP_STABLE_ACROSS_BEATS_E, $sformatf(
             "TagOp mismatch across beats stream=%0d txn=0x%0h beat=%0d exp=0x%0h got=0x%0h",
             ctx.stream, ctx.txn_id, i, first_op, item.dat_tagop_beats[i]));
           break;   // one report per transfer, not one per remaining beat
         end
+      end
+      if (tagops_agreed) begin
+        this.chk_ok(VIP_CHI_SB_CHK_TAGOP_STABLE_ACROSS_BEATS_E);
       end
     end
 
@@ -1154,17 +1329,21 @@ class vip_chi_scoreboard #(
         continue;
       end
       this.n_tag_checked++;
+      tag_matched = 1'b1;
       if (item.tag[i] != this.pred_tag[slot]) begin
-        this.n_tag_mismatch++;
-        `uvm_error(get_name(), $sformatf(
+        tag_matched = 1'b0;
+        this.chk_bad(VIP_CHI_SB_CHK_READ_TAG_MATCHES_E, $sformatf(
           "Tag mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
           ctx.stream, ctx.txn_id, slot, this.pred_tag[slot], item.tag[i]));
       end
       if ((item.tu.size() > i) && (item.tu[i] != this.pred_tu[slot])) begin
-        this.n_tag_mismatch++;
-        `uvm_error(get_name(), $sformatf(
+        tag_matched = 1'b0;
+        this.chk_bad(VIP_CHI_SB_CHK_READ_TAG_MATCHES_E, $sformatf(
           "TagUpdate mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
           ctx.stream, ctx.txn_id, slot, this.pred_tu[slot], item.tu[i]));
+      end
+      if (tag_matched) begin
+        this.chk_ok(VIP_CHI_SB_CHK_READ_TAG_MATCHES_E);
       end
 
       // Rule 3: the TagOp that comes back is the TagOp that went in. The
@@ -1172,13 +1351,16 @@ class vip_chi_scoreboard #(
       // rule 1 it is exercised on this testbench's 64-byte MTE link. A completer
       // that invented a TagOp instead of replaying the stored one is caught
       // here; one that changed TagOp mid-burst needs rule 1 and a narrower link.
-      if ((i < item.dat_tagop_beats.size()) &&
-          (item.dat_tagop_beats[i] != this.pred_tagop[slot])) begin
-        this.n_tagop_replay_mismatch++;
-        `uvm_error(get_name(), $sformatf(
-          "TagOp replay mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
-          ctx.stream, ctx.txn_id, slot, this.pred_tagop[slot],
-          item.dat_tagop_beats[i]));
+      if (i < item.dat_tagop_beats.size()) begin
+        if (item.dat_tagop_beats[i] != this.pred_tagop[slot]) begin
+          this.chk_bad(VIP_CHI_SB_CHK_READ_TAGOP_REPLAYED_E, $sformatf(
+            "TagOp replay mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
+            ctx.stream, ctx.txn_id, slot, this.pred_tagop[slot],
+            item.dat_tagop_beats[i]));
+        end
+        else begin
+          this.chk_ok(VIP_CHI_SB_CHK_READ_TAGOP_REPLAYED_E);
+        end
       end
     end
   endfunction
@@ -1225,10 +1407,12 @@ class vip_chi_scoreboard #(
         end
         got = item.data[i][(8 * j) +: 8];
         if (byte'(got) != this.pred_mem[a]) begin
-          this.n_data_mismatch++;
-          `uvm_error(get_name(), $sformatf(
+          this.chk_bad(VIP_CHI_SB_CHK_READ_DATA_MATCHES_E, $sformatf(
             "Data mismatch stream=%0d txn=0x%0h addr=0x%0h exp=0x%0h got=0x%0h",
             ctx.stream, ctx.txn_id, a, this.pred_mem[a], got));
+        end
+        else begin
+          this.chk_ok(VIP_CHI_SB_CHK_READ_DATA_MATCHES_E);
         end
       end
     end
@@ -1248,6 +1432,11 @@ class vip_chi_scoreboard #(
       return;
     end
     ctx.retired = 1'b1;
+    // The pass half of the completion rule. Its failure half fires once, at
+    // check_phase, on whatever is left open -- so without this the rule would
+    // report zero of both on every clean run and be indistinguishable from a
+    // scoreboard that had stopped tracking transactions altogether.
+    this.chk_ok(VIP_CHI_SB_CHK_TXN_COMPLETES_E);
     dkey = this.dbid_key(ctx.stream, ctx.dbid);
     if (this.ctx_by_dbid.exists(dkey) && (this.ctx_by_dbid[dkey] == ctx)) begin
       this.ctx_by_dbid.delete(dkey);
@@ -1318,25 +1507,29 @@ class vip_chi_scoreboard #(
   // Checker B multiset compare between requester and completer views.
   // ---------------------------------------------------------------------------
   protected function void check_relay(
-    input string   label,
-    ref   int      req_cnt [string],
-    ref   int      cmp_cnt [string],
-    ref   int      mismatch_cnt
+    input string                label,
+    ref   int                   req_cnt [string],
+    ref   int                   cmp_cnt [string],
+    input vip_chi_sb_check_id_t id
   );
     foreach (req_cnt[k]) begin
       int seen = cmp_cnt.exists(k) ? cmp_cnt[k] : 0;
       if (seen < req_cnt[k]) begin
-        mismatch_cnt++;
-        `uvm_error(get_name(), $sformatf(
+        this.chk_bad(id, $sformatf(
           "%s: request key=%s issued %0d time(s) but observed at completer %0d time(s)",
           label, k, req_cnt[k], seen));
+      end
+      else begin
+        // One pass per request key that arrived, so a run in which the two views
+        // simply never met -- no requester traffic, or a completer imp nothing
+        // connected -- cannot read as a clean compare.
+        this.chk_ok(id);
       end
     end
     foreach (cmp_cnt[k]) begin
       int issued = req_cnt.exists(k) ? req_cnt[k] : 0;
       if (cmp_cnt[k] > issued) begin
-        mismatch_cnt++;
-        `uvm_error(get_name(), $sformatf(
+        this.chk_bad(id, $sformatf(
           "%s: phantom request key=%s at completer %0d time(s) but issued %0d time(s)",
           label, k, cmp_cnt[k], issued));
       end
@@ -1347,13 +1540,13 @@ class vip_chi_scoreboard #(
   // Checker E accessors: the violation count for a negative control, and the
   // in-order tally so a positive test can require that the check actually ran.
   // ---------------------------------------------------------------------------
-  function int get_tag_mismatch_count();      return this.n_tag_mismatch;      endfunction
-  function int get_tagop_mismatch_count();    return this.n_tagop_mismatch;    endfunction
-  function int get_tagop_replay_mismatch_count(); return this.n_tagop_replay_mismatch; endfunction
-  function int get_tag_checked_count();       return this.n_tag_checked;       endfunction
+  function int get_tag_mismatch_count();      return this.n_tag_mismatch();      endfunction
+  function int get_tagop_mismatch_count();    return this.n_tagop_mismatch();    endfunction
+  function int get_tagop_replay_mismatch_count(); return this.n_tagop_replay_mismatch(); endfunction
+  function int get_tag_checked_count();       return this.n_tag_checked;         endfunction
 
-  function int get_order_violation_count(); return this.n_order_violation; endfunction
-  function int get_order_checked_count();   return this.n_order_checked;   endfunction
+  function int get_order_violation_count(); return this.n_order_violation(); endfunction
+  function int get_order_checked_count();   return this.n_order_checked();   endfunction
 
   // ---------------------------------------------------------------------------
   // Final checks: incomplete transactions + request fidelity.
@@ -1368,8 +1561,7 @@ class vip_chi_scoreboard #(
     foreach (this.open_ctx[k]) begin
       ctx_t ctx = this.open_ctx[k];
       if (!ctx.retired) begin
-        this.n_incomplete++;
-        `uvm_error(get_name(), $sformatf(
+        this.chk_bad(VIP_CHI_SB_CHK_TXN_COMPLETES_E, $sformatf(
           "Incomplete transaction stream=%0d node=0x%0h txn=0x%0h opcode=0x%0h kind=%0d (grant=%0b wdat=%0b rdat=%0b comp=%0b rcpt=%0b prst=%0b cack=%0b)",
           ctx.stream, ctx.requester_node, ctx.txn_id, ctx.opcode, ctx.kind,
           ctx.grant_seen, ctx.write_data_sent, ctx.read_data_seen, ctx.comp_seen,
@@ -1378,21 +1570,21 @@ class vip_chi_scoreboard #(
     end
 
     this.check_relay("Checker-B integrated", this.int_req_cnt, this.int_cmp_cnt,
-                     this.n_relay_mismatch);
+                     VIP_CHI_SB_CHK_REQ_RELAYED_E);
     this.check_relay("Checker-B HN-I proxy", this.hni_req_cnt, this.hni_cmp_cnt,
-                     this.n_relay_mismatch);
+                     VIP_CHI_SB_CHK_REQ_RELAYED_E);
 
     // Per-port routing fidelity: each proxied REQ must land on the SN target its
     // address decodes to. Mis-route => shortfall at predicted + phantom at actual.
     if (this.route_check) begin
       this.check_relay("Checker-B HN-I routing", this.hni_route_pred,
-                       this.hni_route_obs, this.n_route_mismatch);
+                       this.hni_route_obs, VIP_CHI_SB_CHK_REQ_ROUTED_E);
     end
 
     `uvm_info(get_name(), $sformatf(
       "scoreboard summary: incomplete=%0d orphan=%0d wrong_opcode=%0d reuse=%0d data_mismatch=%0d relay_mismatch=%0d route_mismatch=%0d (reads_skipped_unpredictable=%0d)",
-      this.n_incomplete, this.n_orphan, this.n_wrong_opcode, this.n_reuse,
-      this.n_data_mismatch, this.n_relay_mismatch, this.n_route_mismatch,
+      this.n_incomplete(), this.n_orphan(), this.n_wrong_opcode(), this.n_reuse(),
+      this.n_data_mismatch(), this.n_relay_mismatch(), this.n_route_mismatch(),
       this.n_reads_skipped), UVM_LOW);
 
     // The MTE tag half on its OWN line, for the same reason Checker E below is:
@@ -1400,8 +1592,8 @@ class vip_chi_scoreboard #(
     // column, and a wrapped field name is a field nobody can sweep for.
     `uvm_info(get_name(), $sformatf(
       "scoreboard tag summary: tag_checked=%0d tag_mismatch=%0d tagop_replay_mismatch=%0d tagop_beat_mismatch=%0d (tag_reads_skipped_unpredictable=%0d)",
-      this.n_tag_checked, this.n_tag_mismatch, this.n_tagop_replay_mismatch,
-      this.n_tagop_mismatch, this.n_tag_reads_skipped),
+      this.n_tag_checked, this.n_tag_mismatch(), this.n_tagop_replay_mismatch(),
+      this.n_tagop_mismatch(), this.n_tag_reads_skipped),
       UVM_LOW);
 
     // Checker E on its own line, deliberately: appended to the summary above it
@@ -1410,7 +1602,89 @@ class vip_chi_scoreboard #(
     // exactly the sweep an ordered-stream check needs to prove it is not vacuous.
     `uvm_info(get_name(), $sformatf(
       "ordered-stream summary: order_violation=%0d order_in_order=%0d",
-      this.n_order_violation, this.n_order_checked), UVM_LOW);
+      this.n_order_violation(), this.n_order_checked()), UVM_LOW);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // The per-rule report and its export, in the same shape and the same CSV
+  // schema as the SVA checkers' -- which is what lets one aggregation script
+  // read both and gate on both.
+  //
+  // Called from the env's report_phase rather than done here, because
+  // check_phase is where the last failures are still being counted: reporting
+  // from inside it would publish a tally taken before the run's own
+  // end-of-test checks had finished writing it.
+  // ---------------------------------------------------------------------------
+  function void report_checks();
+    int unsigned not_exercised;
+    int unsigned in_scope;
+
+    not_exercised = 0;
+    in_scope      = 0;
+
+    for (int unsigned i = 0; i < int'(VIP_CHI_SB_CHK_NUM_E); i++) begin
+      vip_chi_sb_check_id_t id = vip_chi_sb_check_id_t'(i);
+      if (!this.chk_rule_enabled(id)) begin
+        continue;
+      end
+      in_scope++;
+      if ((this.chk_pass[id] == 0) && (this.chk_fail[id] == 0)) begin
+        not_exercised++;
+        // One line per rule: the report server wraps at a fixed column, so a
+        // line carrying a list loses everything past the wrap.
+        `uvm_info(get_name(), $sformatf(
+          "SB CHECK NOT EXERCISED  %s", vip_chi_sb_check_name(id)), UVM_LOW)
+      end
+    end
+
+    `uvm_info(get_name(), $sformatf(
+      "VIP_CHI SB CHECK VACUITY: not_exercised=%0d of=%0d",
+      not_exercised, in_scope), UVM_LOW)
+  endfunction
+
+  function void export_check_csv();
+    string path;
+    string run_name;
+    int    fd;
+
+    if (!$value$plusargs("vip_chi_check_csv=%s", path)) begin
+      return;
+    end
+
+    run_name = "unknown";
+    void'($value$plusargs("UVM_TESTNAME=%s", run_name));
+
+    // Append, and write the header only when the file is new -- the aggregation
+    // script reads one file produced by a whole sweep.
+    fd = $fopen(path, "r");
+    if (fd == 0) begin
+      fd = $fopen(path, "w");
+      if (fd == 0) begin
+        `uvm_warning(get_name(), $sformatf(
+          "could not open %s for the check-tally export", path))
+        return;
+      end
+      $fdisplay(fd, "run,bind,check,enabled,severity,passes,fails");
+    end
+    else begin
+      $fclose(fd);
+      fd = $fopen(path, "a");
+      if (fd == 0) begin
+        `uvm_warning(get_name(), $sformatf(
+          "could not append to %s for the check-tally export", path))
+        return;
+      end
+    end
+
+    for (int unsigned i = 0; i < int'(VIP_CHI_SB_CHK_NUM_E); i++) begin
+      vip_chi_sb_check_id_t id = vip_chi_sb_check_id_t'(i);
+      $fdisplay(fd, "%s,%s,%s,%0d,%s,%0d,%0d",
+        run_name, get_name(), vip_chi_sb_check_name(id),
+        this.chk_rule_enabled(id), this.chk_severity[id].name(),
+        this.chk_pass[id], this.chk_fail[id]);
+    end
+
+    $fclose(fd);
   endfunction
 
 endclass

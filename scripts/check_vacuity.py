@@ -12,7 +12,8 @@ Reads the CSV the checkers append to:
   SV     ./simv +UVM_TESTNAME=<tc> +vip_chi_check_csv=<path>
   Python VIP_CHI_CHECK_CSV=<path> python3 testbench/py/scripts/run.py --all
 
-and reports, in order of how alarming it is:
+covering BOTH registries -- the SVA binds' rules and the scoreboard's -- and
+reports, in order of how alarming it is:
 
   NEVER   zero passes and zero fails in every run that evaluated it
   THIN    exercised by only one or two runs -- alive, but one deleted testcase
@@ -103,13 +104,17 @@ def main() -> int:
   # CHECK_IDS_SV_ONLY. Gating on those would fail every Python sweep forever and
   # teach the reader to pass --allow-never, which would hide the real holes too.
   #
-  # Read from the Python registry rather than a copy, so a rule added to the
-  # types package cannot go missing here.
+  # BOTH registries are read: the SVA binds' rules and the scoreboard's. They are
+  # separate enums -- the SVA IDs size per-interface arrays, while a scoreboard
+  # rule is judged once per component -- but they share this CSV schema, which is
+  # what lets one aggregation read them and gate on them alike. Scoreboard checks
+  # were outside this mechanism entirely until they were given names, so one
+  # could stop evaluating and nothing anywhere would say so.
   unexported, by_design = [], []
   try:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "py"))
-    from vip_chi_types_pkg import CHECK_IDS, CHECK_IDS_SV_ONLY
-    for rule in CHECK_IDS:
+    from vip_chi_types_pkg import CHECK_IDS, CHECK_IDS_SV_ONLY, CHECK_IDS_SB
+    for rule in tuple(CHECK_IDS) + tuple(CHECK_IDS_SB):
       if rule in seen:
         continue
       if rule in CHECK_IDS_SV_ONLY:
@@ -167,8 +172,8 @@ def main() -> int:
       print(f"  {rule:<44s} {n}: {', '.join(where)}")
 
   if not never and not thin and not failing and not unexported:
-    print("\nevery check in the registry was exported, exercised by more than "
-          f"{args.thin} run(s), and none failed")
+    print("\nevery check in both registries was exported, exercised by more "
+          f"than {args.thin} run(s), and none failed")
 
   # A rule disabled in every run was not exercised BY REQUEST, so it is reported
   # but does not gate: failing on it would punish the user for using the feature.

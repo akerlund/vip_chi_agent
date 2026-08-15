@@ -169,6 +169,14 @@ class chi_tb_env(uvm_env):
       checker.report(self.logger)
       if csv_path:
         checker.export_check_csv(csv_path, run_name)
+
+    # The scoreboard's rules go into the SAME export, under its own bind name.
+    # They were outside the mechanism entirely until now, which meant a
+    # scoreboard check could stop evaluating and no report anywhere would say so.
+    self.scoreboard.report_checks(self.logger)
+    if csv_path:
+      self.scoreboard.export_check_csv(csv_path, run_name)
+
     total = self.rni_sva.errors + self.snf_sva.errors
     assert total == 0, (
       f"CHI protocol checkers reported {total} violation(s): "

@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 
 from chi_e_base_test import chi_e_base_test
+from vip_chi_scoreboard import SB_READ_TAG_MATCHES, SB_READ_TAGOP_REPLAYED
 from chi_tb_pkg import (
   E_TAG_NEGCTL_ADDR_C, E_MTE_RNI_NODE_ID_C, E_MTE_SNF_NODE_ID_C,
   E_MTE_WRITE_TAGOP_C,
@@ -79,6 +80,11 @@ class tc_chi_e_tag_negctl(chi_e_base_test):
 
     catcher = _tag_negctl_filter("tag_negctl_catcher")
     self.tb_env.scoreboard.logger.addFilter(catcher)
+    # Both reachable tag rules are broken here on purpose, declared one by one
+    # so the aggregation records them as provoked -- and so a THIRD,
+    # unintended scoreboard violation would still be reported.
+    self.tb_env.scoreboard.expect_failure(SB_READ_TAG_MATCHES)
+    self.tb_env.scoreboard.expect_failure(SB_READ_TAGOP_REPLAYED)
 
     wr = self.rni_wr_seq
     wr.reset()
