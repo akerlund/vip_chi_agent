@@ -681,6 +681,37 @@ by one or two runs — alive, but one deleted testcase from becoming `NEVER`),
 `FAILING`, and `PROVOKED` (failures a negative control asked for, which are
 evidence the rule works rather than a bug). It exits non-zero on `NEVER`.
 
+### Checking the encodings against the specification
+
+Every opcode constant here is a transcription of a number out of Arm IHI 0050,
+and a wrong transcription is invisible from inside: the VIP drives a
+legal-looking flit and the testbench agrees with itself, because both ends read
+the same wrong constant. `docs/FUTURE_WORK.md` records what one such mistake
+already cost.
+
+[scripts/check_opcodes.py](scripts/check_opcodes.py) removes the guesswork:
+
+```bash
+# The two ports against each other — no specification needed
+python3 scripts/check_opcodes.py
+
+# …and both against the document
+python3 scripts/check_opcodes.py --spec-e ~/chi/IHI0050E.md --spec-d ~/chi/IHI0050D.md
+```
+
+It reads the REQ/RSP/SNP/DAT opcode tables out of a **markdown conversion** of
+the spec and reports `PORT` (the SV and Python packages disagree), `MISMATCH`
+(our value differs from the spec's), `UNKNOWN` (a name the spec's tables do not
+have), and `ISSUE` (a CHI-D randomization pool offering an Issue-E-only opcode —
+the mistake `FUTURE_WORK` describes, now caught automatically). `--show-unimplemented`
+lists the opcode space this VIP does not yet cover, which is what the CHI-E
+breadth tasks are picked from.
+
+**The Arm document is not in this repository and must not be** — only our own
+constants live here. With no conversion available the script checks the two
+ports against each other and says plainly what went unchecked: an absent
+authority is not the same as a disagreement with one.
+
 ---
 
 ## Interface

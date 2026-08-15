@@ -425,6 +425,13 @@ class DatOpcode(IntEnum):
 
 
 class SnpOpcode(IntEnum):
+  # Link-layer credit return, opcode 0 on every channel; carries no transaction.
+  # See VIP_CHI_*_LCRD_RETURN_C. The other three channel enums have always had
+  # this and the snoop one did not, which is a naming gap rather than a
+  # behavioural one -- the monitor tests opcode 0 directly -- but it left the SV
+  # and Python ports disagreeing about which opcodes exist, and a divergence
+  # report that always contains one entry is a report nobody reads.
+  LCRD_RETURN = 0x00
   SHARED = 0x01
   CLEAN = 0x02
   ONCE = 0x03

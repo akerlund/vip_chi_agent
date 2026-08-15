@@ -102,4 +102,11 @@ if [ -f "$CHECK_CSV" ]; then
   python3 "$ROOT/scripts/check_vacuity.py" "$CHECK_CSV" >> "$SUMMARY" 2>&1 || true
 fi
 
+# Opcode encodings: the two ports against each other always, and both against
+# the specification when a conversion of it is available (CHI_SPEC_E_MD). The
+# Arm document is not in this repository, so this checks what it can and says
+# what it could not. Advisory here for the same reason as the vacuity report --
+# the pass/fail verdict above should not be buried behind a separate concern.
+python3 "$ROOT/scripts/check_opcodes.py" >> "$SUMMARY" 2>&1 || true
+
 exit $(( fail > 0 ))
