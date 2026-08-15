@@ -56,6 +56,7 @@ filesets:
       - tc/tc_chi_lasm_illegal_transition.sv:              {is_include_file: true}
       - tc/tc_chi_lasm_deactivate.sv:                       {is_include_file: true}
       - tc/tc_chi_lasm_timeout.sv:                          {is_include_file: true}
+      - tc/tc_chi_lasm_race.sv:                             {is_include_file: true}
       - tc/tc_chi_flitpend_without_valid.sv:                {is_include_file: true}
       - tc/tc_chi_recording_smoke.sv:                       {is_include_file: true}
       - tc/tc_chi_check_disable.sv:                        {is_include_file: true}

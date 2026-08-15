@@ -42,7 +42,7 @@ from pyuvm import uvm_driver, ConfigDB
 
 from vip_chi_types_pkg import (
   Role, Dir, ReqOpcode, RspOpcode, RawChannel,
-  req_opcode_is_atomic,
+  req_opcode_is_atomic, lasm,
 )
 from vip_chi_if import ChiBus
 from vip_chi_lcrd_mgr import VipChiLcrdMgr
@@ -135,6 +135,11 @@ class vip_chi_driver_rni(uvm_driver):
     # unambiguous.
     self.flitpend_negctl_done = False
 
+    # One-shot latch for cfg.lasm_reactivate_during_deactivate.
+    self.lasm_race_done = False
+    # Shadow of the activation request last driven; see _drive_link_req.
+    self._req_driven = False
+
     # Forked-coroutine registry so handle_reset() can tear down the credit loop
     # (cocotb does not cascade-kill start_soon children when the agent kills the
     # top-level driver_start()).
@@ -221,6 +226,7 @@ class vip_chi_driver_rni(uvm_driver):
   # ==========================================================================
   def reset_outputs(self):
     bus = self.bus
+    self._req_driven = False
     bus.drive(txlinkactivereq=0, txlinkactiveack=0, txsactive=0)
     bus.drive(txreqflitpend=0, txreqflitv=0)
     bus.drive_flit("req", {})
@@ -244,6 +250,7 @@ class vip_chi_driver_rni(uvm_driver):
     self._tx_active_extend = 0
     self.lasm_abort_done = False
     self.flitpend_negctl_done = False
+    self.lasm_race_done = False
     # A reset takes the link down by force, which is not the graceful path: the
     # published "done" would otherwise survive as a claim about a drain that
     # never happened.
@@ -488,10 +495,10 @@ class vip_chi_driver_rni(uvm_driver):
     # is ordinary traffic.
     if self.cfg.lasm_abort_activation and not self.lasm_abort_done:
       self.lasm_abort_done = True
-      bus.drive(txlinkactivereq=1)
+      self._drive_link_req(1)
       await bus.rising()
       self.drive_idle_sideband()
-      bus.drive(txlinkactivereq=0)
+      self._drive_link_req(0)
       await bus.rising()
       self.drive_idle_sideband()
       # Let the completer's mirrored acknowledge retire before asking again, so
@@ -501,7 +508,9 @@ class vip_chi_driver_rni(uvm_driver):
         await bus.rising()
         self.drive_idle_sideband()
 
-    bus.drive(txlinkactivereq=1)
+    await self.wait_lasm_req_delay()
+
+    self._drive_link_req(1)
     while True:
       await bus.rising()
       self.drive_idle_sideband()
@@ -511,6 +520,34 @@ class vip_chi_driver_rni(uvm_driver):
     await self.drive_flitpend_negctl()
 
   # --------------------------------------------------------------------------
+  def _observed_lasm(self):
+    """The link state this endpoint currently observes.
+
+    One LASM per link, so this node's own request and the peer's mirrored
+    acknowledge are the whole state -- the same pair the checkers read. The
+    request comes from the shadow rather than the wire, mirroring the SV port
+    where a clocking-block output cannot be sampled at all.
+    """
+    return lasm(self._req_driven, bool(self.bus.get_or("rxlinkactiveack")))
+
+  def _drive_link_req(self, value):
+    """The only place txlinkactivereq is driven, so the shadow cannot drift."""
+    self._req_driven = bool(value)
+    self.bus.drive(txlinkactivereq=1 if value else 0)
+
+  async def wait_lasm_req_delay(self):
+    """Hold off the activation request by cfg.lasm_req_delay_by_state.
+
+    Indexed by the state the link is in RIGHT NOW, and sampled once before the
+    wait: the delay is a property of the state the requester decided to act
+    from, and re-reading it each cycle would make the wait chase a moving index
+    and never settle.
+    """
+    cycles = int(self.cfg.lasm_req_delay_by_state[int(self._observed_lasm())])
+    for _ in range(cycles):
+      await self.bus.rising()
+      self.drive_idle_sideband()
+
   async def drive_flitpend_negctl(self):
     """Raise FLITPEND on REQ and RSP for one cycle with no flit behind it.
 
@@ -591,10 +628,28 @@ class vip_chi_driver_rni(uvm_driver):
 
       # 2 + 3. Stand the grants down, then withdraw the request.
       self.link_deactivating = True
-      bus.drive(txlinkactivereq=0)
+      self._drive_link_req(0)
 
       await bus.rising()
       self.drive_idle_sideband()
+
+      # Negative control (cfg.lasm_reactivate_during_deactivate): change our mind
+      # half way through the tear-down. The link is in DEACTIVATE (request low,
+      # acknowledge still high), so raising the request again makes the pair
+      # {1,1} = RUN -- a jump the cycle does not allow, since DEACTIVATE may only
+      # advance to STOP.
+      #
+      # Placed HERE, before the drain, because that is what makes it a race
+      # rather than a malformed sequence: the completer is still returning
+      # credits and has not yet decided to drop its acknowledge.
+      if self.cfg.lasm_reactivate_during_deactivate and not self.lasm_race_done:
+        self.lasm_race_done = True
+        self._drive_link_req(1)
+        await bus.rising()
+        self.drive_idle_sideband()
+        self._drive_link_req(0)
+        await bus.rising()
+        self.drive_idle_sideband()
 
       # 4. Hand back what this node holds.
       await self.drain_tx_credits()

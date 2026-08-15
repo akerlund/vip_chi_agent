@@ -349,6 +349,7 @@ they are listed here rather than left to a grep.
 | `lasm_abort_activation` | requester raises `txlinkactivereq` and withdraws it again before the completer acknowledges, so the link leaves `ACTIVATE` without ever reaching `RUN` | the link-activation state machine's legal-transition check (requester roles only) |
 | `snf_corrupt_tag` | exact-CHI-E completer returns a tag and a TagOp that are not the ones it was given | the MTE tag read-back and TagOp-replay checks |
 | `flitpend_without_valid` | requester pulses `txreqflitpend`/`txrspflitpend`, and the home pulses `txsnpflitpend`, for one cycle with no flit behind them | the REQ, RSP and SNP FLITPEND rules (requester and home roles) |
+| `lasm_reactivate_during_deactivate` | requester raises `txlinkactivereq` again while the link is still in `DEACTIVATE`, jumping it to `RUN` | the LASM legal-transition rule, under a race rather than a malformed sequence |
 | `lasm_stall_activation_cycles` | completer withholds `txlinkactiveack` for N cycles, leaving the link in `ACTIVATE` with nothing in flight to time out | the link **activation** timeout (completer roles only) |
 | `lasm_stall_deactivation_cycles` | completer withholds the *drop* of `txlinkactiveack` for N cycles after the drain has finished, leaving the link in `DEACTIVATE` | the link **deactivation** timeout (completer roles only) |
 
@@ -553,6 +554,14 @@ The `_e` monitor republishes the CHI-E-only fields on the same ports.
 
   `DEACTIVATE` is the one state in which a sender may still transmit, and only
   L-credit returns: the flit-gating rules admit opcode 0 there and nothing else.
+- **Peer-state-relative activation delay** — `cfg.lasm_req_delay_by_state[]`
+  holds the requester's `LINKACTIVEREQ` off by a number of cycles chosen by the
+  link state it observes at that moment (`STOP` / `DEACTIVATE` / `ACTIVATE` /
+  `RUN`), all zero by default. Every other delay here is a uniform min/max per
+  channel, which can only ever produce the same bring-up shifted in time; making
+  the delay a function of the state the link is *already* in is what makes
+  activation races reachable, and those races are exactly what the LASM
+  transition rule exists to judge.
 - **Link activation/deactivation timeouts** —
   `tb_cfg.link_activation_timeout_cycles` and
   `tb_cfg.link_deactivation_timeout_cycles` (0 = disabled, the default) bound how

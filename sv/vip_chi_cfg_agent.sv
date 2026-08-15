@@ -257,6 +257,35 @@ class vip_chi_cfg_agent extends uvm_object;
 
   vip_mem_config mem_cfg;
 
+  // Cycles the requester waits before asserting txlinkactivereq, indexed by the
+  // LINK STATE it observes at that moment (vip_chi_lasm_state_t: STOP,
+  // DEACTIVATE, ACTIVATE, RUN).
+  //
+  // Every other delay in this VIP is a uniform min/max per channel, which can
+  // only ever produce the same bring-up shifted in time. Making the delay a
+  // function of the state the link is ALREADY in is what makes activation races
+  // reachable -- a request timed to land inside the peer's tear-down window is a
+  // different scenario, not the same one later, and it is precisely what the
+  // LASM transition rule exists to judge.
+  //
+  // All zero by default, which reproduces today's behaviour exactly.
+  int unsigned lasm_req_delay_by_state [4] = '{default: 0};
+
+  // Negative control for the LASM transition rule under a RACE rather than a
+  // malformed sequence: the requester re-raises txlinkactivereq as soon as the
+  // link enters DEACTIVATE, without waiting for the tear-down to reach STOP.
+  //
+  // {req=1, ack=1} is RUN, so the link jumps DEACTIVATE -> RUN, which the cycle
+  // does not allow (DEACTIVATE may only advance to STOP). It is a genuine
+  // violation rather than stimulus tuned to the check: a requester that has
+  // withdrawn its request has committed to the tear-down and may not change its
+  // mind half way through.
+  //
+  // Distinct from lasm_abort_activation, which breaks the BRING-UP half by
+  // withdrawing a request before the acknowledge. This breaks the tear-down
+  // half, and only became reachable once graceful deactivation existed.
+  bit lasm_reactivate_during_deactivate = 1'b0;
+
   bit link_act_delay_enabled = 1'b1;
   int link_act_delay_min        = 0;
   int link_act_delay_max        = 4;
@@ -622,7 +651,8 @@ class vip_chi_cfg_agent extends uvm_object;
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
         this.snf_corrupt_tag ||
-        this.lasm_abort_activation || this.flitpend_without_valid) begin
+        this.lasm_abort_activation || this.flitpend_without_valid ||
+        this.lasm_reactivate_during_deactivate) begin
       if (!silent) begin
         `uvm_warning("VIP_CHI_CFG", $sformatf(
           "a negative-control knob is set (suppress_snoops=%0b corrupt_dirty_merge=%0b force_excl_success=%0b corrupt_fwd_data=%0b downstream_corrupt_data=%0b downstream_force_decerr=%0b snf_duplicate_dat_beat=%0b snf_reorder_ordered_service=%0b lasm_abort_activation=%0b): this deliberately breaks the invariant a checker guards",
@@ -657,6 +687,18 @@ class vip_chi_cfg_agent extends uvm_object;
       if (!silent) begin
         `uvm_error("VIP_CHI_CFG",
           "flitpend_without_valid is set on a role whose driver does not run the pulse: the requester emits it on REQ/RSP and the home on SNP, so on any other role it would set a flag nothing reads")
+      end
+      is_valid = 1'b0;
+    end
+
+    // Same reasoning as the abort and the deactivation request: it is the
+    // requester that drives txlinkactivereq, so on any other role this would set
+    // a flag nothing reads.
+    if (this.lasm_reactivate_during_deactivate &&
+        (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_RNF_E)) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG",
+          "lasm_reactivate_during_deactivate is set on a role that does not originate link activation")
       end
       is_valid = 1'b0;
     end

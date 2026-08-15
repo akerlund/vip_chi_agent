@@ -204,6 +204,31 @@ class VipChiCfgAgent:
 
     self.mem_cfg = None       # constructed by the SN-F driver (A2)
 
+    # Cycles the requester waits before asserting txlinkactivereq, indexed by
+    # the LINK STATE it observes at that moment (LasmState: STOP, DEACTIVATE,
+    # ACTIVATE, RUN).
+    #
+    # Every other delay in this VIP is a uniform min/max per channel, which can
+    # only ever produce the same bring-up shifted in time. Making the delay a
+    # function of the state the link is ALREADY in is what makes activation
+    # races reachable -- a request timed to land inside the peer's tear-down
+    # window is a different scenario, not the same one later, and it is
+    # precisely what the LASM transition rule exists to judge.
+    #
+    # All zero by default, which reproduces today's behaviour exactly.
+    self.lasm_req_delay_by_state = [0, 0, 0, 0]
+
+    # Negative control for the LASM transition rule under a RACE rather than a
+    # malformed sequence: the requester re-raises txlinkactivereq as soon as the
+    # link enters DEACTIVATE, without waiting for the tear-down to reach STOP.
+    #
+    # {req=1, ack=1} is RUN, so the link jumps DEACTIVATE -> RUN, which the
+    # cycle does not allow (DEACTIVATE may only advance to STOP). Distinct from
+    # lasm_abort_activation, which breaks the BRING-UP half; this breaks the
+    # tear-down half, and only became reachable once graceful deactivation
+    # existed.
+    self.lasm_reactivate_during_deactivate = False
+
     self.link_act_delay_enabled = True
     self.link_act_delay_min = 0
     self.link_act_delay_max = 4
@@ -325,6 +350,11 @@ class VipChiCfgAgent:
 
     # Same reasoning as the abort above, and the same failure if it is ignored:
     # deactivation is driven by whoever raised the request in the first place.
+    if (self.lasm_reactivate_during_deactivate
+        and self.role not in (Role.RNI, Role.RNF)):
+      err("lasm_reactivate_during_deactivate is set on a role that does not "
+          "originate link activation")
+
     if self.link_deactivate_request and self.role not in (Role.RNI, Role.RNF):
       err("link_deactivate_request is set on a role that does not originate "
           "link activation: only a requester drives txlinkactivereq, so there "
@@ -403,6 +433,7 @@ class VipChiCfgAgent:
       "snf_corrupt_tag": self.snf_corrupt_tag,
       "snf_reorder_ordered_service": self.snf_reorder_ordered_service,
       "lasm_abort_activation": self.lasm_abort_activation,
+      "lasm_reactivate_during_deactivate": self.lasm_reactivate_during_deactivate,
       "flitpend_without_valid": self.flitpend_without_valid,
     }
     on = [k for k, v in negctl.items() if v]

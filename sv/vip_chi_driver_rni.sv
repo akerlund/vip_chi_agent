@@ -127,6 +127,18 @@ class vip_chi_driver_rni #(
   // above: the control fires once so the count a test asserts on is unambiguous.
   protected bit flitpend_negctl_done;
 
+  // One-shot latch for cfg.lasm_reactivate_during_deactivate, same reasoning as
+  // the other controls: it fires once so the count a test asserts on is
+  // unambiguous.
+  protected bit lasm_race_done;
+
+  // Shadow of the activation request last driven. A clocking-block OUTPUT cannot
+  // be sampled, so the per-state delay -- which needs the CURRENT link state,
+  // and the request is half of it -- reads this instead of the wire. Written by
+  // drive_link_req, which is the only thing that drives the signal, so the two
+  // cannot disagree.
+  protected bit req_driven;
+
   // Graceful-deactivation state (see deactivate_watch).
   //
   // link_deactivating suppresses NEW receive-credit grants: a receiver may not
@@ -298,7 +310,7 @@ class vip_chi_driver_rni #(
   // Reset all RN-I driven outputs to the idle state.
   // ---------------------------------------------------------------------------
   protected function void reset_outputs();
-    this.vif_rni.g_drv.rni_cb.txlinkactivereq <= 1'b0;
+    this.drive_link_req(1'b0);
     this.vif_rni.g_drv.rni_cb.txlinkactiveack <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txsactive       <= 1'b0;
 
@@ -406,6 +418,7 @@ class vip_chi_driver_rni #(
     this.tx_active_extend = 0;
     this.lasm_abort_done = 1'b0;
     this.flitpend_negctl_done = 1'b0;
+    this.lasm_race_done = 1'b0;
     // A reset takes the link down by force, which is not the graceful path: the
     // published "done" would otherwise survive as a claim about a drain that
     // never happened.
@@ -818,10 +831,10 @@ class vip_chi_driver_rni #(
     // is ordinary traffic.
     if (this.cfg.lasm_abort_activation && !this.lasm_abort_done) begin
       this.lasm_abort_done = 1'b1;
-      this.vif_rni.g_drv.rni_cb.txlinkactivereq <= 1'b1;
+      this.drive_link_req(1'b1);
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
-      this.vif_rni.g_drv.rni_cb.txlinkactivereq <= 1'b0;
+      this.drive_link_req(1'b0);
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
       // Let the completer's mirrored acknowledge retire before asking again, so
@@ -833,7 +846,9 @@ class vip_chi_driver_rni #(
       end
     end
 
-    this.vif_rni.g_drv.rni_cb.txlinkactivereq <= 1'b1;
+    this.wait_lasm_req_delay();
+
+    this.drive_link_req(1'b1);
 
     do begin
 
@@ -843,6 +858,43 @@ class vip_chi_driver_rni #(
 
     this.schedule_initial_credit_grants();
     this.drive_flitpend_negctl();
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // The link state this endpoint currently observes.
+  //
+  // One LASM per link, so the requester's own txlinkactivereq and the peer's
+  // mirrored acknowledge are the whole state -- the same pair the checkers read.
+  // ---------------------------------------------------------------------------
+  protected function vip_chi_lasm_state_t observed_lasm();
+    return vip_chi_lasm(this.req_driven,
+                        this.vif_rni.g_drv.rni_cb.rxlinkactiveack === 1'b1);
+  endfunction
+
+  // The only place txlinkactivereq is driven, so the shadow above cannot drift.
+  protected function void drive_link_req(input bit value);
+    this.req_driven = value;
+    this.vif_rni.g_drv.rni_cb.txlinkactivereq <= value;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Hold off the activation request by cfg.lasm_req_delay_by_state, indexed by
+  // the state the link is in RIGHT NOW.
+  //
+  // Sampled once, before the wait, deliberately: the delay is a property of the
+  // state the requester decided to act from, and re-reading it each cycle would
+  // make the wait chase a moving index and never settle.
+  // ---------------------------------------------------------------------------
+  protected task wait_lasm_req_delay();
+
+    int unsigned cycles;
+
+    cycles = this.cfg.lasm_req_delay_by_state[int'(this.observed_lasm())];
+
+    repeat (cycles) begin
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
+    end
   endtask
 
   // ---------------------------------------------------------------------------
@@ -937,10 +989,29 @@ class vip_chi_driver_rni #(
       // same cycle: the credit loop reads the flag on its next edge, which is
       // the same edge the lowered request reaches the wire on.
       this.link_deactivating = 1'b1;
-      this.vif_rni.g_drv.rni_cb.txlinkactivereq <= 1'b0;
+      this.drive_link_req(1'b0);
 
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
+
+      // Negative control (cfg.lasm_reactivate_during_deactivate): change our
+      // mind half way through the tear-down. The link is in DEACTIVATE (request
+      // low, acknowledge still high), so raising the request again makes the
+      // pair {1,1} = RUN -- a jump the cycle does not allow, since DEACTIVATE
+      // may only advance to STOP.
+      //
+      // Placed HERE, before the drain, because that is what makes it a race
+      // rather than a malformed sequence: the completer is still returning
+      // credits and has not yet decided to drop its acknowledge.
+      if (this.cfg.lasm_reactivate_during_deactivate && !this.lasm_race_done) begin
+        this.lasm_race_done = 1'b1;
+        this.drive_link_req(1'b1);
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+        this.drive_link_req(1'b0);
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+      end
 
       // 4. Hand back what this node holds.
       this.drain_tx_credits();
