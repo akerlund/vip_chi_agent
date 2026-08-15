@@ -154,6 +154,18 @@ class vip_chi_cfg_agent extends uvm_object;
   // transaction-level milestones are always stamped and cost nothing per beat.
   bit collect_beat_timestamps = 1'b0;
 
+  // Waveform-correlated transaction recording in the monitor
+  // (accept_tr / begin_tr / end_tr). Off by default: a recorded stream costs
+  // simulator time and database space on every transaction of every run, which
+  // is not worth paying in a long regression for something only read when a
+  // specific flow is being debugged.
+  //
+  // The highest-value flows here are exactly the ones hardest to read as raw
+  // flits -- a retry re-issue, a snoop, a DCT forward -- so the recording nests
+  // a re-issue under the attempt it replaces rather than showing two unrelated
+  // transactions on one TxnID.
+  bit record_transactions = 1'b0;
+
   // Same-line hazard rule: a requester must not have two requests outstanding to
   // one cache line at a time. On by default. A bench whose requester model
   // deliberately overlaps same-line requests turns it off rather than papering

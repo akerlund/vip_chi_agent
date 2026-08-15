@@ -564,6 +564,21 @@ The `_e` monitor republishes the CHI-E-only fields on the same ports.
   *testbench* config rather than the per-agent config because a stuck link is a
   property of the link, and the checker that judges it is bound to an interface
   rather than to one endpoint's driver.
+- **Transaction recording** — `cfg.record_transactions` (default off) has the
+  monitor bracket each transaction with `accept_tr` / `begin_tr` / `end_tr`, so a
+  waveform viewer shows transaction streams rather than raw flits across four
+  channels and two links. A retry re-issue is recorded as a CHILD of the attempt
+  it replaces, not as a second unrelated transaction on the same TxnID. Off by
+  default because recording costs time and database space on every transaction
+  of every run, and is only read when a specific flow is being debugged.
+
+  Two limits, both stated rather than discovered: a snoop is its own stream and
+  not a child of the request that caused it, because the two are seen by
+  different monitor instances on different ports and neither holds the other's
+  handle (the TxnID appears on both, so they still correlate by eye); and the
+  Python port records the lifecycle but produces no stream, because pyUVM 4.0.1's
+  recording backend is a stub — `begin_tr` returns handle 0 and the `do_*_tr`
+  hooks are empty.
 - **Perf counters** ([vip_chi_perf_counters.sv](sv/vip_chi_perf_counters.sv)) —
   per-requester latency (min/avg/max, read/write), throughput, retry count, and
   per-channel back-pressure cycles, off a reset-gated cycle counter.

@@ -111,6 +111,16 @@ class VipChiCfgAgent:
     # transaction-level milestones are always stamped and cost nothing per beat.
     self.collect_beat_timestamps = False
 
+    # Waveform-correlated transaction recording in the monitor
+    # (accept_tr / begin_tr / end_tr). Off by default: recording costs time on
+    # every transaction of every run, which is not worth paying in a long
+    # regression for something only read when a specific flow is being debugged.
+    #
+    # See vip_chi_monitor._record_begin for what this port can and cannot do
+    # with it: pyUVM 4.0.1's recording backend is a stub, so the lifecycle is
+    # recorded on the item but no waveform stream is produced.
+    self.record_transactions = False
+
     # Same-line hazard rule: a requester must not have two requests outstanding
     # to one cache line at a time. On by default. A bench whose requester model
     # deliberately overlaps same-line requests turns it off rather than papering

@@ -146,6 +146,32 @@ class vip_chi_monitor #(
   // Set by the agent from its cfg; default off.
   bit          collect_beat_timestamps = 1'b0;
 
+  // Waveform-correlated transaction recording. Off by default: a recorded
+  // stream costs simulator time and database space on every transaction of every
+  // run, which is not worth paying in a long regression for something only read
+  // when a specific flow is being debugged.
+  bit record_transactions = 1'b0;
+
+  // The REQ item whose stream is open, per in-flight TxnID, plus its handle.
+  //
+  // The item is held because end_tr must be called on the SAME object begin_tr
+  // opened, and the completion arrives as a DIFFERENT item on a different
+  // channel -- ending the stream on the completion item would silently open a
+  // second stream and never close the first. The handle is held so a retry
+  // re-issue can be recorded as a CHILD of the attempt it replaces rather than
+  // as an unrelated transaction.
+  protected item_t open_tr_item   [txn_id_t];
+  protected int    open_tr_handle [txn_id_t];
+  protected item_t open_snp_item  [txn_id_t];
+
+  // Whole-run stream tallies, readable by a test. A recorder that opened every
+  // stream and closed none would otherwise look identical to a correct one on a
+  // passing run, so these are what the smoke test asserts on: opened must equal
+  // closed, and nothing may still be open once every transaction has retired.
+  int unsigned n_tr_opened;
+  int unsigned n_tr_closed;
+  int unsigned n_tr_still_open;
+
   // Latency bounds, 0 = unbounded. Set by the agent from its cfg.
   int unsigned max_read_xact_latency  = 0;
   int unsigned max_write_xact_latency = 0;
@@ -239,6 +265,80 @@ class vip_chi_monitor #(
     item.retry_count    = rec.retry_count;
   endfunction
 
+  // ---------------------------------------------------------------------------
+  // Transaction recording.
+  //
+  // accept_tr / begin_tr / end_tr rather than a bare begin/end pair, because the
+  // three carry different information and a waveform viewer shows them
+  // separately: ACCEPTED is when the monitor saw the request on the wire, BEGUN
+  // is when it started being serviced, ENDED is its completion milestone. For an
+  // observed transaction the first two coincide, which is exactly why both are
+  // called -- a stream missing its accept time reads as though the monitor
+  // invented the transaction at the moment it began.
+  // ---------------------------------------------------------------------------
+  protected function void record_begin(input item_t  item,
+                                       input txn_id_t txn_id,
+                                       input string  stream,
+                                       input bit     is_snoop = 1'b0);
+    int handle;
+
+    if (!this.record_transactions) begin
+      return;
+    end
+
+    // A retry re-issue is the SAME transaction making a second attempt, so it
+    // nests under the attempt it replaces. Recording it as a fresh top-level
+    // stream would show two unrelated transactions on one TxnID and lose the
+    // very relationship a reader is looking for.
+    if (!is_snoop && this.open_tr_handle.exists(txn_id)) begin
+      void'(this.begin_child_tr(item, this.open_tr_handle[txn_id], stream));
+      return;
+    end
+
+    this.accept_tr(item);
+    handle = this.begin_tr(item, stream);
+    this.n_tr_opened++;
+
+    if (is_snoop) begin
+      this.open_snp_item[txn_id] = item;
+    end
+    else begin
+      this.open_tr_item[txn_id]   = item;
+      this.open_tr_handle[txn_id] = handle;
+    end
+  endfunction
+
+  // Closes the stream on the item that OPENED it, not on the completion item.
+  protected function void record_end(input txn_id_t txn_id,
+                                     input bit      is_snoop = 1'b0);
+    if (!this.record_transactions) begin
+      return;
+    end
+
+    if (is_snoop) begin
+      if (this.open_snp_item.exists(txn_id)) begin
+        this.end_tr(this.open_snp_item[txn_id]);
+        this.n_tr_closed++;
+        this.open_snp_item.delete(txn_id);
+      end
+      return;
+    end
+
+    if (this.open_tr_item.exists(txn_id)) begin
+      this.end_tr(this.open_tr_item[txn_id]);
+      this.n_tr_closed++;
+      this.open_tr_item.delete(txn_id);
+      this.open_tr_handle.delete(txn_id);
+    end
+  endfunction
+
+  // How many streams are still open. A function rather than a variable so it
+  // cannot go stale, and because a testcase compiles into a package and may not
+  // reach into the monitor's associative arrays itself.
+  function int unsigned tr_still_open();
+    return this.open_tr_item.num() + this.open_snp_item.num();
+  endfunction
+
   // Latency bound, checked once at the transaction's completion milestone
   // against the item's OWN timestamps -- so the number reported is the same one
   // a test reads back off the item, not a separately-derived figure that could
@@ -291,6 +391,7 @@ class vip_chi_monitor #(
     item.t_req_issued = rec.t_req_issued;
     item.t_comp       = this.cycle_count;
     this.check_latency_bound(item, txn_id, 1'b0, 1'b1);
+    this.record_end(txn_id, 1'b1);
   endfunction
 
   // Sampled only when the covered tuple changes: the bins are three bits wide,
@@ -596,6 +697,8 @@ class vip_chi_monitor #(
     end
     this.stamp_item(item, item.txn_id);
 
+    this.record_begin(item, item.txn_id, "chi_req");
+
     this.req_port.write(item);
   endfunction
 
@@ -701,6 +804,7 @@ class vip_chi_monitor #(
       // a persist) is bounded here. A read completes on DAT and is bounded there.
       if (is_completion) begin
         this.check_latency_bound(item, item.txn_id, rec.is_write);
+        this.record_end(item.txn_id);
       end
     end
 
@@ -928,6 +1032,7 @@ class vip_chi_monitor #(
       // the RSP side), so only the read direction is bounded here.
       if (!is_write_data) begin
         this.check_latency_bound(item, dat_txn_id, 1'b0);
+        this.record_end(dat_txn_id);
       end
     end
 
@@ -985,6 +1090,16 @@ class vip_chi_monitor #(
       this.snp_times[item.txn_id] = rec;
       item.t_req_issued = this.cycle_count;
     end
+
+    // Its own stream rather than a child of the request that caused it, and the
+    // reason is structural rather than a shortcut. A snoop leaves the home on a
+    // DIFFERENT port from the one the originating request arrived on, so the two
+    // are seen by two different monitor instances and neither holds the other's
+    // transaction handle. Parenting across them would need a handle registry
+    // shared by every monitor on the home -- which is the "snoop nesting" half of
+    // this task, and is left out on purpose rather than faked. The snoop's TxnID
+    // is on both streams, so a reader can still correlate them by eye.
+    this.record_begin(item, item.txn_id, "chi_snp", 1'b1);
 
     this.snp_port.write(item);
   endfunction

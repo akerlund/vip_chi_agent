@@ -254,6 +254,24 @@ class vip_chi_monitor(uvm_monitor):
     self.txn_times = {}
     self.snp_times = {}
 
+    # Waveform-correlated transaction recording; see _record_begin. Off by
+    # default, set by the agent from cfg.record_transactions.
+    self.record_transactions = False
+    # The item whose stream is open, per in-flight TxnID, plus its handle. The
+    # ITEM is held because end_tr must be called on the same object begin_tr
+    # opened; the HANDLE so a retry re-issue can nest under the attempt it
+    # replaces.
+    self._open_tr_item = {}
+    self._open_tr_handle = {}
+    self._open_snp_item = {}
+    # Whole-run stream tallies. A recorder that opened every stream and closed
+    # none would otherwise look identical to a correct one on a passing run, so
+    # these are what the smoke test asserts on: opened must equal closed, and
+    # nothing may still be open once every transaction has retired.
+    self.n_tr_opened = 0
+    self.n_tr_closed = 0
+    self.last_closed_item = None
+
   def set_bus(self, bus: ChiBus, cfg: ChiCfg, role: Role) -> None:
     self.bus = bus
     self.cfg = cfg
@@ -312,6 +330,71 @@ class vip_chi_monitor(uvm_monitor):
   # a test can read back off the item, not a separately-derived figure that
   # could disagree with it.
   # ==========================================================================
+  # ===========================================================================
+  # Transaction recording.
+  #
+  # The same lifecycle as the SV monitor's, at the same call sites, driven by the
+  # same cfg knob -- but with a STATED difference in what the simulator does with
+  # it, because the two ports genuinely differ here.
+  #
+  # pyUVM 4.0.1's recording API is a stub: uvm_transaction.begin_tr always
+  # returns handle 0, do_accept_tr / do_begin_tr / do_end_tr are empty hooks, the
+  # source carries "TODO: update recording API calls", and there is no
+  # transaction database behind any of it. There is also no uvm_component
+  # begin_tr at all -- the calls live on the transaction, with a different shape
+  # from UVM's. So this port records the transaction LIFECYCLE (accept, begin and
+  # end times land on the item and are readable through get_begin_time() and
+  # friends) but produces no waveform-correlated stream, because the framework
+  # has nowhere to put one.
+  #
+  # Mirrored rather than skipped so the two ports call the same things in the
+  # same places: when pyUVM implements the backend, this port gets the streams
+  # with no further work, and until then the call sites do not silently drift.
+  # ===========================================================================
+  def _record_begin(self, item, txn_id, is_snoop=False):
+    """Open a transaction stream, or nest a retry re-issue under its original.
+
+    A retry re-issue is the SAME transaction making a second attempt, so it nests
+    under the attempt it replaces. Recording it as a fresh top-level stream would
+    show two unrelated transactions on one TxnID and lose the very relationship a
+    reader is looking for.
+    """
+    if not self.record_transactions:
+      return
+
+    if not is_snoop and txn_id in self._open_tr_handle:
+      item.begin_tr(parent_handle=self._open_tr_handle[txn_id])
+      return
+
+    item.accept_tr()
+    handle = item.begin_tr()
+    self.n_tr_opened += 1
+    if is_snoop:
+      self._open_snp_item[txn_id] = item
+    else:
+      self._open_tr_item[txn_id] = item
+      self._open_tr_handle[txn_id] = handle
+
+  def _record_end(self, txn_id, is_snoop=False):
+    """Close the stream on the item that OPENED it, not on the completion item.
+
+    end_tr must be called on the same object begin_tr opened, and the completion
+    arrives as a DIFFERENT item on a different channel -- ending the stream on
+    the completion item would silently open a second stream and never close the
+    first.
+    """
+    if not self.record_transactions:
+      return
+
+    store = self._open_snp_item if is_snoop else self._open_tr_item
+    item = store.pop(txn_id, None)
+    if item is not None:
+      item.end_tr()
+      self.n_tr_closed += 1
+      self.last_closed_item = item
+    if not is_snoop:
+      self._open_tr_handle.pop(txn_id, None)
+
   def _check_latency_bound(self, item, txn_id, is_write, is_snoop=False):
     if is_snoop:
       bound = self.max_snp_xact_latency
@@ -360,6 +443,7 @@ class vip_chi_monitor(uvm_monitor):
     # arrives on a different channel carrying a different item.
     rec["is_write"] = int(it.direction) == int(Dir.WRITE)
     self._stamp(it, it.txn_id)
+    self._record_begin(it, it.txn_id)
     self.req_port.write(it)
 
   def _publish_rsp(self, flit_int, observed_role):
@@ -391,6 +475,7 @@ class vip_chi_monitor(uvm_monitor):
     # persist) is bounded here. A read completes on DAT and is bounded there.
     if opc in _COMPLETION_RSP_OPCODES:
       self._check_latency_bound(it, it.txn_id, rec.get("is_write", True))
+      self._record_end(it.txn_id)
     if opc in _SNP_RESP_RSP_OPCODES:
       self._close_snoop(it, it.txn_id)
 
@@ -405,6 +490,12 @@ class vip_chi_monitor(uvm_monitor):
     # other's milestones.
     self.snp_times[int(it.txn_id)] = {"t_req_issued": self.cycle_count}
     it.t_req_issued = self.cycle_count
+    # Its own stream rather than a child of the request that caused it, and the
+    # reason is structural rather than a shortcut: a snoop leaves the home on a
+    # DIFFERENT port from the one the originating request arrived on, so the two
+    # are seen by two different monitor instances and neither holds the other's
+    # handle. The snoop's TxnID is on both streams, so a reader can correlate.
+    self._record_begin(it, it.txn_id, is_snoop=True)
     self.snp_port.write(it)
 
   # A snoop completes on its SnpResp (RSP) or SnpRespData (DAT). Both carry the
@@ -416,6 +507,7 @@ class vip_chi_monitor(uvm_monitor):
     item.t_req_issued = rec["t_req_issued"]
     item.t_comp = self.cycle_count
     self._check_latency_bound(item, txn_id, False, is_snoop=True)
+    self._record_end(txn_id, is_snoop=True)
 
   def _publish_dat(self, flit_int, flit_pending, observed_role):
     f = unpack(self.cfg, "dat", flit_int)
@@ -544,6 +636,7 @@ class vip_chi_monitor(uvm_monitor):
     # RSP side), so only the read direction is bounded here.
     if not is_write_data:
       self._check_latency_bound(it, dat_txn, False)
+      self._record_end(dat_txn)
     if int(it.dat_opcode) in _SNP_RESP_DAT_OPCODES:
       self._close_snoop(it, dat_txn)
 

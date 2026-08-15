@@ -1069,6 +1069,13 @@ async def tc_chi_flitpend_without_valid(dut) -> None:
   await _run_d_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_recording_smoke", timeout_time=20, timeout_unit="ms")
+async def tc_chi_recording_smoke(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_recording_smoke"
+  await _run_d_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_lasm_deactivate", timeout_time=20, timeout_unit="ms")
 async def tc_chi_lasm_deactivate(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""

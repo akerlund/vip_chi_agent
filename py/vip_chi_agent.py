@@ -174,6 +174,7 @@ class vip_chi_agent(uvm_agent):
     self.monitor.max_read_xact_latency = self.cfg.max_read_xact_latency
     self.monitor.max_write_xact_latency = self.cfg.max_write_xact_latency
     self.monitor.max_snp_xact_latency = self.cfg.max_snp_xact_latency
+    self.monitor.record_transactions = self.cfg.record_transactions
 
   # ==========================================================================
   # Single rst_n watcher (SV fork/disable-fork -> cocotb tasks + kill).

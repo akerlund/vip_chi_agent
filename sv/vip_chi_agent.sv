@@ -115,6 +115,7 @@ class vip_chi_agent #(
     this.monitor.max_read_xact_latency   = this.cfg.max_read_xact_latency;
     this.monitor.max_write_xact_latency  = this.cfg.max_write_xact_latency;
     this.monitor.max_snp_xact_latency    = this.cfg.max_snp_xact_latency;
+    this.monitor.record_transactions     = this.cfg.record_transactions;
 
     if (this.cfg.is_active == UVM_ACTIVE) begin
       if (ROLE_P == VIP_CHI_ROLE_RNI_E) begin
