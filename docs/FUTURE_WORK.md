@@ -5,8 +5,14 @@ Checker D, coherent coverage, HN-I proxy, scoreboard, perf counters, exclusives,
 CMO, DCT forwarding, SN-F-behind-HN-F, MakeUnique, bounded-cache eviction) is
 **complete and tested** — every charter item has a named testcase in
 [../testbench/TEST_CASES.md](../testbench/TEST_CASES.md). The regression is
-**129 SV + 129 PY** — the same list on both flows — last verified green in full
-on branch `dev` (2026-08-07). This file is the single
+**150 SV + 151 PY** — the same list on both flows apart from one documented
+exception, `tc_chi_sva_smoke`, which is Python-only (see
+[../testbench/TEST_CASES.md](../testbench/TEST_CASES.md)) — last verified green
+in full on branch `dev` (2026-08-16). Those counts are not maintained by hand:
+`scripts/check_test_counts.py` compares them with the tree on every sweep,
+because this sentence had gone stale by twenty-odd testcases before anyone
+noticed, and a stale count makes the green verdict it supports unattributable to
+any state a reader can check. This file is the single
 remaining backlog: optional breadth (more of
 the CHI feature surface) and depth (hardening what already ships). Nothing here
 is required by any current consumer.
@@ -107,6 +113,20 @@ Extends the RN-F / HN-F subsystem with more of the CHI coherency surface.
   scope for v1. *Effort M.*
 - **CHI-A / CHI-B** — earlier CHI issues. Out of scope by design; the VIP targets
   CHI-D and CHI-E.
+- **System Coherency Interface (`SYSCOREQ` / `SYSCOACK`)** — the system-level
+  handshake by which a system controller enables and disables an interface's
+  participation in coherency (IHI 0050D Ch. 14 / IHI 0050E_a Ch. 15). Neither
+  port models the two sideband signals, and no testcase drives them. Backlog
+  rather than a non-goal: the VIP already models the link-level analogue (LASM
+  activation, deactivation and the quiescence handshake), so the system-level
+  pair is the same shape of state machine one level up, and a bench that
+  connects a real RN-F to a real system controller would need it. *Effort M.*
+
+  **Name collision, deliberately noted here:** grepping the tree for "system
+  coherency" finds the VIP's own *system coherency checker* (Checker D), which
+  is an unrelated thing that happens to share the words. That collision is why
+  this gap survived several documentation passes: the grep that should have
+  found nothing found something plausible instead. Search for `SYSCOREQ`.
 
 ## 3. Depth / polish (deferred from the retired TODO.md)
 

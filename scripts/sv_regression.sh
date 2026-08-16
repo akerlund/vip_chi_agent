@@ -109,4 +109,17 @@ fi
 # the pass/fail verdict above should not be buried behind a separate concern.
 python3 "$ROOT/scripts/check_opcodes.py" >> "$SUMMARY" 2>&1 || true
 
+# Cross-port parity of the hand-transcribed surfaces: the check-ID registries,
+# non-opcode enums and flit field order (check_type_parity), and the agent-config
+# fields (check_cfg_parity). Both compare the ports to each other and need no
+# simulator, so they run here for the same reason the opcode check does -- a
+# parity claim nothing sweeps is a claim that decays between reviews. Advisory,
+# like the two above, so the pass/fail verdict stays legible.
+python3 "$ROOT/scripts/check_type_parity.py" >> "$SUMMARY" 2>&1 || true
+python3 "$ROOT/scripts/check_cfg_parity.py" >> "$SUMMARY" 2>&1 || true
+
+# The regression sizes quoted in prose, against the testcases that exist. The
+# sweep is the only place that knows both numbers at once.
+python3 "$ROOT/scripts/check_test_counts.py" >> "$SUMMARY" 2>&1 || true
+
 exit $(( fail > 0 ))
