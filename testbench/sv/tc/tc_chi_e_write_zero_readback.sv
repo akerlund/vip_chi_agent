@@ -90,10 +90,13 @@ class tc_chi_e_write_zero_readback extends chi_e_base_test;
     this.rni_wr_zero_seq.start(super.tb_env.rni_agent.sequencer);
     zero_rsp = this.rni_wr_zero_seq.get_responses();
 
+    // WriteNoSnpZero is answered by a combined CompDBIDResp, or by DBIDResp then
+    // Comp under cfg.split_write_rsp. It carries no data, so the granted buffer
+    // is never used -- but the completion form is normative regardless.
     if ((zero_rsp.size() != 1) ||
-        (zero_rsp[0].rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C))) begin
+        (zero_rsp[0].rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C))) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] WriteNoSnpZero did not complete with Comp",
+        "FATAL [%s] WriteNoSnpZero did not complete with CompDBIDResp",
         super.tc_name))
     end
 

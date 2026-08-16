@@ -1639,6 +1639,7 @@ class vip_chi_driver_snf #(
   // ---------------------------------------------------------------------------
   protected task drive_auto_write_zero_comp(input req_flit_t req);
     item_t       rsp;
+    item_t       comp_rsp;
     bit          is_decerr;
     addr_t       req_addr;
     data_t       zero_data[$];
@@ -1679,6 +1680,15 @@ class vip_chi_driver_snf #(
       end
     end
 
+    // The response to WriteNoSnpZero is DBIDResp and a Comp, or a combined
+    // CompDBIDResp. A bare Comp is neither, and that is what this drove: the
+    // request carries no write data, so the DBID looks pointless and was simply
+    // left out -- but the completion form is normative regardless of whether the
+    // requester ever uses the buffer it is granted.
+    //
+    // cfg.split_write_rsp already means "grant and complete separately" for
+    // ordinary writes, so the zero write follows the same switch rather than
+    // inventing a second one.
     rsp              = new("auto_write_zero_rsp");
     rsp.role         = VIP_CHI_ROLE_SNF_E;
     rsp.src_id       = node_id_t'(req.tgtid);
@@ -1688,8 +1698,26 @@ class vip_chi_driver_snf #(
     rsp.qos          = req.qos;
     rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
     rsp.rsp_resp_err = is_decerr ? VIP_CHI_RESP_ERR_NONDATA_ERROR_E : VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
-    rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C);
+
+    if (!this.cfg.split_write_rsp) begin
+      rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C);
+      this.drive_rsp(rsp);
+      return;
+    end
+
+    rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_C);
     this.drive_rsp(rsp);
+
+    comp_rsp              = new("auto_write_zero_comp");
+    comp_rsp.role         = VIP_CHI_ROLE_SNF_E;
+    comp_rsp.src_id       = node_id_t'(req.tgtid);
+    comp_rsp.tgt_id       = node_id_t'(req.srcid);
+    comp_rsp.txn_id       = txn_id_t'(req.txnid);
+    comp_rsp.qos          = req.qos;
+    comp_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
+    comp_rsp.rsp_resp_err = rsp.rsp_resp_err;
+    comp_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C);
+    this.drive_rsp(comp_rsp);
   endtask
 
   // ---------------------------------------------------------------------------

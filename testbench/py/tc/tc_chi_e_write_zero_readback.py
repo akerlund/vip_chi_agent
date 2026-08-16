@@ -55,7 +55,12 @@ class tc_chi_e_write_zero_readback(chi_e_base_test):
     zseq.set_verbose(False)
     await zseq.start(self.tb_env.rni_agent.sequencer)
     zero_rsp = zseq.get_responses()
-    assert len(zero_rsp) == 1 and int(zero_rsp[0].rsp_opcode) == int(RspOpcode.COMP)
+    # WriteNoSnpZero is answered by a combined CompDBIDResp, or by DBIDResp then
+    # Comp under cfg.split_write_rsp. It carries no data, so the granted buffer is
+    # never used -- but the completion form is normative regardless.
+    assert len(zero_rsp) == 1 and \
+      int(zero_rsp[0].rsp_opcode) == int(RspOpcode.COMP_DBID_RESP), \
+      "WriteNoSnpZero did not complete with CompDBIDResp"
 
     # Post-zero readback must be all zeros.
     post = self._read()

@@ -894,12 +894,27 @@ class vip_chi_driver_snf(uvm_driver):
       for row in range(first_row, last_row + 1):
         self.mem_rows_written.add(row)
 
-    await self.drive_rsp({
-      "opcode": int(RspOpcode.COMP), "srcid": req["tgtid"], "tgtid": req["srcid"],
-      "txnid": req["txnid"], "dbid": req["txnid"], "qos": req["qos"],
-      "resp": int(Resp.I),
+    # The response to WriteNoSnpZero is DBIDResp and a Comp, or a combined
+    # CompDBIDResp. A bare Comp is neither, and that is what this drove: the
+    # request carries no write data, so the DBID looks pointless and was simply
+    # left out -- but the completion form is normative regardless of whether the
+    # requester ever uses the buffer it is granted.
+    #
+    # cfg.split_write_rsp already means "grant and complete separately" for
+    # ordinary writes, so the zero write follows the same switch rather than
+    # inventing a second one.
+    base = {
+      "srcid": req["tgtid"], "tgtid": req["srcid"], "txnid": req["txnid"],
+      "dbid": req["txnid"], "qos": req["qos"], "resp": int(Resp.I),
       "resperr": int(RespErr.NDERR) if is_decerr else int(RespErr.OKAY),
-    })
+    }
+
+    if not self.cfg.split_write_rsp:
+      await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP_DBID_RESP)))
+      return
+
+    await self.drive_rsp(dict(base, opcode=int(RspOpcode.DBID_RESP)))
+    await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP)))
 
   async def drive_auto_read_compdata(self, req):
     bus = self.bus

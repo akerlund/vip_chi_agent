@@ -762,6 +762,10 @@ class vip_chi_driver_rni #(
 
             this.collect_persist_sep_completion(req);
           end
+          else if (req.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) begin
+
+            this.collect_write_zero_completion(req);
+          end
           else begin
 
             this.collect_write_completion(req);
@@ -1874,6 +1878,47 @@ class vip_chi_driver_rni #(
 
       `uvm_fatal(get_name(), $sformatf(
       "FATAL [%s] combined Write+PCMO persist opcode 0x%0h was not Persist",
+      get_name(), flit.opcode))
+    end
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Collect a zero-write completion, in either of its two legal forms.
+  //
+  // WriteNoSnpZero is answered by DBIDResp and a Comp, or by a combined
+  // CompDBIDResp. It carries no write data, so the granted buffer is never used
+  // and the DBID looks pointless -- which is exactly why this used to accept a
+  // bare Comp, matching a completer that sent one. Both were wrong together.
+  // ---------------------------------------------------------------------------
+  protected task collect_write_zero_completion(inout item_t req);
+
+    rsp_flit_t flit;
+
+    this.wait_for_matching_rsp(req.txn_id, flit);
+
+    if (rsp_opcode_t'(flit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)) begin
+
+      this.stamp_rsp_flit_on_req(req, flit);
+      return;
+    end
+
+    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_C)) begin
+
+      `uvm_fatal(get_name(), $sformatf(
+      "FATAL [%s] Zero-write first response opcode 0x%0h was neither DBIDResp nor CompDBIDResp",
+      get_name(), flit.opcode))
+    end
+
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+
+    this.wait_for_matching_rsp(req.txn_id, flit);
+    this.stamp_rsp_flit_on_req(req, flit);
+
+    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) begin
+
+      `uvm_fatal(get_name(), $sformatf(
+      "FATAL [%s] Zero-write completion after DBIDResp had opcode 0x%0h, not Comp",
       get_name(), flit.opcode))
     end
   endtask

@@ -828,6 +828,8 @@ class vip_chi_driver_rni(uvm_driver):
         else:
           if self.req_expects_persist_sep_completion(req):
             await self.collect_persist_sep_completion(req)
+          elif _I(req.opcode) == int(ReqOpcode.WRITE_NO_SNP_ZERO):
+            await self.collect_write_zero_completion(req)
           else:
             await self.collect_write_completion(req)
 
@@ -1050,6 +1052,34 @@ class vip_chi_driver_rni(uvm_driver):
       raise AssertionError(
         f"[{self.get_name()}] combined Write+PCMO persist opcode "
         f"0x{flit['opcode']:x} was not Persist")
+
+  async def collect_write_zero_completion(self, req):
+    """Collect a zero-write completion, in either of its two legal forms.
+
+    WriteNoSnpZero is answered by DBIDResp and a Comp, or by a combined
+    CompDBIDResp. It carries no write data, so the granted buffer is never used
+    and the DBID looks pointless -- which is exactly why this used to accept a
+    bare Comp, matching a completer that sent one. Both were wrong together.
+    """
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+
+    if flit["opcode"] == int(RspOpcode.COMP_DBID_RESP):
+      self.stamp_rsp_flit_on_req(req, flit)
+      return
+
+    if flit["opcode"] != int(RspOpcode.DBID_RESP):
+      raise AssertionError(
+        f"[{self.get_name()}] zero-write first response opcode "
+        f"0x{flit['opcode']:x} was neither DBIDResp nor CompDBIDResp")
+
+    await self.bus.rising()
+    self.drive_idle_sideband()
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    self.stamp_rsp_flit_on_req(req, flit)
+    if flit["opcode"] != int(RspOpcode.COMP):
+      raise AssertionError(
+        f"[{self.get_name()}] zero-write completion after DBIDResp had opcode "
+        f"0x{flit['opcode']:x}, not Comp")
 
   async def collect_persist_sep_completion(self, req):
     """Collect a separated-persist completion, in either of its two legal forms.

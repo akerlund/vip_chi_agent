@@ -777,7 +777,8 @@ RX-REQ → decode → addr range check (decerr/derr) →
   ReadNoSnpSep    → RespSepData(RSP) then DataSepResp(DAT); + ReadReceipt if Order requires
   WriteNoSnp*     → CompDBIDResp (or DBIDResp+deferred Comp if split_write_rsp) →
                     collect DAT → commit vip_mem → if ExpCompAck wait CompAck (timeout→fatal)
-  WriteNoSnpZero  → zero range in vip_mem → Comp (no DBID/DAT)
+  WriteNoSnpZero  → zero range in vip_mem → CompDBIDResp (or DBIDResp+Comp if
+                    split_write_rsp); no DAT, and the granted buffer is unused
   Atomic*         → (Tier B) collect operand → RMW on vip_mem →
                     CompData(original) for load/swap/compare; Comp for store
   CleanSharedPersist[Sep] → (Tier B) completion-only (Comp, or Persist+CompPersist)

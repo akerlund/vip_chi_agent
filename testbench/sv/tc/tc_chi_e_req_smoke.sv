@@ -92,7 +92,9 @@ class tc_chi_e_req_smoke extends chi_e_base_test;
         super.tc_name))
     end
 
-    if (rsp_item.rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) begin
+    // WriteNoSnpZero completes with a combined CompDBIDResp (or DBIDResp then
+    // Comp under cfg.split_write_rsp); a bare Comp is not a legal completion.
+    if (rsp_item.rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)) begin
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] Monitor observed wrong RSP opcode 0x%0h",
         super.tc_name, rsp_item.rsp_opcode))

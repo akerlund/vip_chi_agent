@@ -456,7 +456,12 @@ RN ──RSP: CompAck ───────────────────�
 ### 13.4 Zero write — `WriteNoSnpZero` (CHI-E)
 
 A write that zeroes the addressed region with **no data transfer at all**: the
-completer just zeroes the bytes and returns `Comp`. No `DBID`, no DAT beats.
+completer just zeroes the bytes and completes. No DAT beats.
+
+The completion is still a *write* completion, though — `DBIDResp` and a `Comp`,
+or the combined `CompDBIDResp`. A bare `Comp` is not one of the legal forms. The
+granted buffer is never used, because the requester sends no data; the grant is
+part of the response shape regardless.
 
 ### 13.5 Atomics (CHI-D/E) — `AtomicStore/Load/Swap/Compare`
 

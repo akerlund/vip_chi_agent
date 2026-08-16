@@ -49,7 +49,9 @@ class tc_chi_e_req_smoke(chi_e_base_test):
     assert int(req_item.tracetag) == 1 and int(req_item.dodwt) == 1
     assert int(req_item.likelyshared) == 1 and int(req_item.endian) == 1
     assert int(req_item.group_id_ext) == 0x3 and int(req_item.tagop) == 0x2
-    assert int(rsp_item.rsp_opcode) == int(RspOpcode.COMP)
+    # WriteNoSnpZero completes with a combined CompDBIDResp (or DBIDResp then
+    # Comp under cfg.split_write_rsp); a bare Comp is not a legal completion.
+    assert int(rsp_item.rsp_opcode) == int(RspOpcode.COMP_DBID_RESP)
 
     self.logger.info("Test (tc_chi_e_req_smoke) PASS")
     self.drop_objection()
