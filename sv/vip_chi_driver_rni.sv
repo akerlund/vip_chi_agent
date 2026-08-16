@@ -111,6 +111,15 @@ class vip_chi_driver_rni #(
   // owed that type consumes one to re-issue (mirrors the serial handle_retry,
   // which can pair its single RetryAck/PCrdGrant directly).
   protected int unsigned pcrd_pool [vip_chi_pcrd_type_t];
+  // PCrdType -> the granter's SrcID and our own NodeID, both taken off the
+  // PCrdGrant. PCrdReturn must carry the granter as its TgtID ("the TgtID must
+  // match the SrcID of the credit that was obtained") and this requester as its
+  // SrcID, so both identities have to survive banking; the count alone cannot
+  // say where to send the credit back. They come off the grant rather than out
+  // of config because the grant is addressed to us: its TgtID is this requester.
+  protected node_id_t    pcrd_granter [vip_chi_pcrd_type_t];
+  protected node_id_t    pcrd_own_id  [vip_chi_pcrd_type_t];
+  int unsigned           n_pcrd_returned = 0;
 
   protected vip_chi_lcrd_mgr req_lcrd_mgr;
   protected vip_chi_lcrd_mgr rsp_lcrd_mgr;
@@ -446,6 +455,8 @@ class vip_chi_driver_rni #(
     this.outstanding_ids.delete();
     this.mx_ctx.delete();
     this.pcrd_pool.delete();
+    this.pcrd_granter.delete();
+    this.pcrd_own_id.delete();
     this.tx_active_count = 0;
     this.tx_active_extend = 0;
     this.lasm_abort_done = 1'b0;
@@ -1142,6 +1153,59 @@ class vip_chi_driver_rni #(
     this.vif_rni.g_drv.rni_cb.txreqflitv <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txreqflit  <= '0;
     this.release_tx_flit();
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Hand back every banked P-credit with PCrdReturn.
+  //
+  // PCrdReturn is a NOP transaction that consumes the credit it names, so it is
+  // the only way to give one back. There is no response to wait for -- which is
+  // also why a randomly generated PCrdReturn would wedge this driver, and why
+  // the opcode is kept out of the item randomization pools.
+  //
+  // Identifier fields are fixed by the specification rather than chosen: TxnID
+  // is not used and must be zero, TgtID must match the SrcID of the node that
+  // granted the credit, and PCrdType must match the grant's.
+  // ---------------------------------------------------------------------------
+  task return_unused_pcrds();
+
+    req_flit_t          flit;
+    vip_chi_pcrd_type_t pcrd_type;
+
+    if (!this.pcrd_pool.first(pcrd_type)) begin
+      return;
+    end
+
+    do begin
+      while (this.pcrd_pool[pcrd_type] > 0) begin
+
+        flit          = '0;
+        flit.opcode   = req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C);
+        flit.pcrdtype = pcrd_type;
+        flit.txnid    = '0;
+        flit.srcid    = this.pcrd_own_id.exists(pcrd_type)
+                      ? this.pcrd_own_id[pcrd_type] : '0;
+        flit.tgtid    = this.pcrd_granter.exists(pcrd_type)
+                      ? this.pcrd_granter[pcrd_type] : '0;
+
+        this.wait_for_credit(this.req_lcrd_mgr);
+        this.acquire_tx_flit();
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+        this.vif_rni.g_drv.rni_cb.txreqflitpend <= 1'b0;
+        this.vif_rni.g_drv.rni_cb.txreqflit     <= flit;
+        this.vif_rni.g_drv.rni_cb.txreqflitv    <= 1'b1;
+
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+        this.vif_rni.g_drv.rni_cb.txreqflitv <= 1'b0;
+        this.vif_rni.g_drv.rni_cb.txreqflit  <= '0;
+        this.release_tx_flit();
+
+        this.pcrd_pool[pcrd_type] -= 1;
+        this.n_pcrd_returned++;
+      end
+    end while (this.pcrd_pool.next(pcrd_type));
   endtask
 
   protected task drive_rsp_lcrd_return();
@@ -2275,6 +2339,20 @@ class vip_chi_driver_rni #(
         continue;
       end
 
+      // 0b) Hand back credits nothing is waiting for. Gated on an IDLE pipeline,
+      //    because that is the only moment when "nothing can claim this credit"
+      //    is knowable: a bounced request still sits in mx_ctx with
+      //    retry_pending set, so returning a credit while any context is live
+      //    risks giving away the one a re-issue is about to need, and that
+      //    request would then never go out again. (The Python twin also checks
+      //    its pre-accepted queue; this port pulls items on demand through
+      //    try_next_item, so an empty mx_ctx is the whole condition here.)
+      if (this.cfg.return_unused_pcrd && (this.mx_ctx.size() == 0) &&
+          (this.pcrd_pool_total() > 0)) begin
+        this.return_unused_pcrds();
+        continue;
+      end
+
       // 1) Issue-first: launch the next plain read or write if depth allows AND a
       //    REQ link-credit is actually in hand. The credit gate is essential: if we
       //    entered drive_req() with no REQ credit it would block this single TX
@@ -2524,6 +2602,8 @@ class vip_chi_driver_rni #(
       // PCrdType for a bounced entry to consume, then step off (no ctx lookup).
       if (op == rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C)) begin
         this.pcrd_pool[flit.pcrdtype] += 1;
+        this.pcrd_granter[flit.pcrdtype] = node_id_t'(flit.srcid);
+        this.pcrd_own_id[flit.pcrdtype]  = node_id_t'(flit.tgtid);
         this.check_pcrd_budget();
         @(this.vif_rni.g_drv.rni_cb);
         this.drive_idle_sideband();

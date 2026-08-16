@@ -143,6 +143,14 @@ class vip_chi_driver_rni(uvm_driver):
     self.mx_ctx = []          # in-flight _MxCtx entries
     self._accepted = []       # items accepted off the sequencer, awaiting issue
     self.pcrd_pool = {}       # PCrdType -> banked PCrdGrant credit count
+    # PCrdType -> (granter SrcID, our own NodeID), both taken off the PCrdGrant.
+    # PCrdReturn must carry the granter as its TgtID ("the TgtID must match the
+    # SrcID of the credit that was obtained") and this requester as its SrcID, so
+    # both identities have to survive banking; the count alone cannot say where
+    # to send the credit back. They come off the grant rather than out of config
+    # because the grant is addressed to us: its TgtID is this requester.
+    self.pcrd_src = {}
+    self.n_pcrd_returned = 0  # credits handed back with PCrdReturn
     self.n_pcrd_budget_violation = 0  # banked credits past cfg.max_pcrd_budget
     self.n_pcrd_leak = 0              # credits still banked at end of test
 
@@ -275,6 +283,7 @@ class vip_chi_driver_rni(uvm_driver):
     self.mx_ctx = []
     self._accepted = []
     self.pcrd_pool = {}
+    self.pcrd_src = {}
     self._tx_flit_locked = False
     self.tx_active_count = 0
     self._tx_active_extend = 0
@@ -909,6 +918,46 @@ class vip_chi_driver_rni(uvm_driver):
     bus.drive_flit("req", {})
     self.release_tx_flit()
 
+  async def return_unused_pcrds(self):
+    """Hand back every banked P-credit with PCrdReturn.
+
+    PCrdReturn is a NOP transaction that consumes the credit it names, so it is
+    the only way to give one back. There is no response to wait for -- which is
+    also why a randomly generated PCrdReturn would wedge this driver, and why the
+    opcode is kept out of the item randomization pools.
+
+    Identifier fields are fixed by the specification rather than chosen: TxnID is
+    not used and must be zero, TgtID must match the SrcID of the node that
+    granted the credit, and PCrdType must match the grant's.
+    """
+    bus = self.bus
+    for pcrd_type in sorted(self.pcrd_pool):
+      granter, own_id = self.pcrd_src.get(pcrd_type, (0, 0))
+      while self.pcrd_pool[pcrd_type] > 0:
+        fields = {
+          "opcode": int(ReqOpcode.PCRD_RETURN),
+          "pcrdtype": pcrd_type,
+          "txnid": 0,
+          "srcid": own_id,
+          "tgtid": granter,
+          "qos": 0, "addr": 0, "size": 0, "allowretry": 0,
+        }
+
+        await self.wait_for_credit(self.req_lcrd)
+        await self.acquire_tx_flit()
+        await bus.rising()
+        self.drive_idle_sideband()
+        bus.drive(txreqflitpend=0, txreqflitv=1)
+        bus.drive_flit("req", fields)
+        await bus.rising()
+        self.drive_idle_sideband()
+        bus.drive(txreqflitv=0)
+        bus.drive_flit("req", {})
+        self.release_tx_flit()
+
+        self.pcrd_pool[pcrd_type] -= 1
+        self.n_pcrd_returned += 1
+
   async def drive_dat(self, req):
     bus = self.bus
     cfg = self.bus.cfg
@@ -1454,6 +1503,17 @@ class vip_chi_driver_rni(uvm_driver):
         await self.drive_req(c.item, alloc_id=False)
         continue
 
+      # 0b) Hand back credits nothing is waiting for. Gated on an IDLE pipeline --
+      # no context outstanding and nothing accepted but unissued -- because that
+      # is the only moment when "nothing can claim this credit" is knowable. A
+      # bounced request still sits in mx_ctx with retry_pending set, so returning
+      # a credit while any context is live risks giving away the one a re-issue
+      # is about to need, and that request would then never go out again.
+      if (self.cfg.return_unused_pcrd and not self.mx_ctx and not self._accepted
+          and any(n > 0 for n in self.pcrd_pool.values())):
+        await self.return_unused_pcrds()
+        continue
+
       # 1) Issue-first: launch the next request if depth AND a REQ credit allow.
       if (len(self.mx_ctx) < max_out and self.req_lcrd.has_credit() and self._accepted):
         req = self._accepted.pop(0)
@@ -1525,6 +1585,7 @@ class vip_chi_driver_rni(uvm_driver):
       # PCrdGrant is credit-typed, not TxnID-tied: bank one credit and step off.
       if op == int(RspOpcode.PCRD_GRANT):
         self.pcrd_pool[flit["pcrdtype"]] = self.pcrd_pool.get(flit["pcrdtype"], 0) + 1
+        self.pcrd_src[flit["pcrdtype"]] = (flit["srcid"], flit["tgtid"])
         self.check_pcrd_budget()
         await bus.rising()
         self.drive_idle_sideband()

@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **149 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **150 pyUVM/cocotb**
+The shared regression currently runs **151 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **152 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -233,4 +233,5 @@ silent, so a disabled or disconnected checker cannot pass unnoticed.
 | `tc_chi_d_perf_smoke` | INT | guard for `vip_chi_perf_counters` (latency / throughput / retry / back-pressure off a reset-gated cycle counter): drives reads and writes then fails unless the read/write completion counts, the latency accumulator, and the cycle counter are all non-zero. |
 | `tc_chi_d_scoreboard_negctl` | INT | guard for the always-on `vip_chi_scoreboard`: after one clean write it raw-injects an orphan `Comp` RSP (bogus TxnID); a report catcher demotes the induced "Orphan RSP" error and the test fails unless the checker actually fired. |
 | `tc_chi_dataid_duplicate` | INT | guard for the monitor's DataID placement checks: `snf_duplicate_dat_beat` makes the SN-F send the last beat of a read burst carrying `DataID` 0 again, so one position arrives twice and one never; a report catcher demotes both induced errors and the test fails unless BOTH the duplicate and the missing-beat check fired. Arrival-order reassembly sees neither fault -- the beat count still adds up. |
+| `tc_chi_pcrd_return` | INT | the other half of the retry handshake: `tc_chi_pcrd_leak` proves the requester NOTICES a granted-and-unused P-credit, this proves it can GIVE ONE BACK. Same stimulus as the leak test — pipelined RN-I, a raw `PCrdGrant` that bounced nothing — with `cfg.return_unused_pcrd` on, so the verdict flips from "leak reported" to "credit returned". Asserts the `PCrdReturn` as an OBSERVED REQ flit, not just a drained internal bank: draining without emitting would satisfy every counter and return nothing to the completer. Its identifier fields are checked against the rules the specification fixes for this transaction — `PCrdType` matching the grant, `TxnID` zero, `TgtID` the granter. |
 | `tc_chi_pcrd_leak` | INT | guard for the RN-I's end-of-test P-credit accounting: with the pipeline enabled (the path that banks credits) a bare `PCrdGrant` that bounces nothing is injected from the SN-F; a report catcher demotes the induced leak error and the test fails unless the driver's `check_phase` actually reported it. A leaked P-credit changes nothing observable otherwise — the traffic completes and the run goes green. |

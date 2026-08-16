@@ -34,6 +34,13 @@ SV_PKG = SV_TC_DIR / "chi_tc_pkg.sv"
 CLAIMS = (
   (ROOT / "docs" / "FUTURE_WORK.md",
    re.compile(r"\*\*(\d+)\s+SV\s*\+\s*(\d+)\s+PY\*\*")),
+  # TEST_CASES.md states the same pair in prose, and states that it is
+  # maintained by hand as part of adding a testcase. It was stale too, by one,
+  # and the first version of this check did not look at it -- a checker that
+  # covers some of the copies of a number leaves the rest free to rot.
+  (ROOT / "testbench" / "TEST_CASES.md",
+   re.compile(r"\*\*(\d+)\s+SystemVerilog\*\*\s+testcases.*?\*\*(\d+)\s+pyUVM",
+              re.S)),
 )
 
 # Documents that quote a single bare count of the whole regression.

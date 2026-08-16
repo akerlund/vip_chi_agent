@@ -121,6 +121,13 @@ class vip_chi_cfg_agent extends uvm_object;
   bit split_write_rsp = 1'b0;
   bit ordered_dbid_resp = 1'b0;
 
+  // Return P-credits this requester banked but never used, with PCrdReturn.
+  // The specification requires unused credits to be returned "in a timely
+  // manner" -- holding one leaves the completer's re-issue slot reserved
+  // forever. Default off because returning a credit puts an extra REQ flit on
+  // the wire, which would change the waveform of every existing retry test.
+  bit return_unused_pcrd = 1'b0;
+
   // CleanSharedPersistSep has two legal completions: a Comp (the request reached
   // the Point of Coherency) followed by a Persist (it reached the Point of
   // Persistence), or the two combined into a single CompPersist. A requester

@@ -83,6 +83,13 @@ class VipChiCfgAgent:
     self.split_write_rsp = False
     self.ordered_dbid_resp = False
 
+    # Return P-credits this requester banked but never used, with PCrdReturn.
+    # The specification requires unused credits to be returned "in a timely
+    # manner" -- holding one leaves the completer's re-issue slot reserved
+    # forever. Default off because returning a credit puts an extra REQ flit on
+    # the wire, which would change the waveform of every existing retry test.
+    self.return_unused_pcrd = False
+
     # CleanSharedPersistSep has two legal completions: a Comp (the request
     # reached the Point of Coherency) followed by a Persist (it reached the Point
     # of Persistence), or the two combined into a single CompPersist. A requester

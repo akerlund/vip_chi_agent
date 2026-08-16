@@ -213,6 +213,7 @@ filesets:
       - tc/tc_chi_dataid_out_of_order.sv:                   {is_include_file: true}
       - tc/tc_chi_dataid_duplicate.sv:                      {is_include_file: true}
       - tc/tc_chi_pcrd_leak.sv:                             {is_include_file: true}
+      - tc/tc_chi_pcrd_return.sv:                           {is_include_file: true}
       - tc/chi_tc_pkg.sv:                               {is_include_file: true}
       - tb/chi_link_adapter.sv:                         {is_include_file: true}
       - tb/chi_tb_top.sv:                               {is_include_file: true}
