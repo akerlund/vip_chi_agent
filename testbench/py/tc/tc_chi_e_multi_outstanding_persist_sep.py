@@ -51,14 +51,18 @@ class tc_chi_e_multi_outstanding_persist_sep(chi_e_base_test):
     for k, r in enumerate(rsp):
       assert int(r.opcode) == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP), \
         f"persist {k} was not CleanSharedPersistSep (opcode 0x{int(r.opcode):x})"
-      # The pipeline consumed the intermediate Persist; final completion is CompPersist.
-      assert int(r.rsp_opcode) == int(RspOpcode.COMP_PERSIST), \
-        f"persist-sep {k} final opcode 0x{int(r.rsp_opcode):x} was not CompPersist"
+      # Two milestones, in order: Comp says Point of Coherency, Persist says
+      # Point of Persistence. The item carries the LAST completion stamped on
+      # it, so a retired separated persist shows Persist -- and it only retires
+      # once both have arrived, which is what keeps a pipelined persist from
+      # being handed back while its Persist is still in flight.
+      assert int(r.rsp_opcode) == int(RspOpcode.PERSIST), \
+        f"persist-sep {k} final opcode 0x{int(r.rsp_opcode):x} was not Persist"
 
     peak = self.rni_cfg.observed_peak_outstanding
     assert peak > 1, f"persist-sep CMOs did not overlap: peak was {peak} (expected > 1)"
 
     self.logger.info(
       f"Test (tc_chi_e_multi_outstanding_persist_sep) PASS: {N_C} "
-      f"CleanSharedPersistSep CMOs pipelined (Persist+CompPersist), peak = {peak}")
+      f"CleanSharedPersistSep CMOs pipelined (Comp then Persist), peak = {peak}")
     self.drop_objection()

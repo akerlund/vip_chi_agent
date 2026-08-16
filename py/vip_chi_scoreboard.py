@@ -723,7 +723,12 @@ class vip_chi_scoreboard(uvm_component):
     elif opc == int(RspOpcode.PERSIST):
       ctx.persist_seen = True
     elif opc == int(RspOpcode.COMP_PERSIST):
+      # Comp AND Persist in one flit, so it ticks both milestones. Ticking only
+      # comp_seen would leave a separated persist answered by the legal combined
+      # response permanently owing a Persist that is never coming, and it would
+      # be reported incomplete for doing nothing wrong.
       ctx.comp_seen = True
+      ctx.persist_seen = True
       ctx.comp_err = int(item.rsp_resp_err)
     elif opc == int(RspOpcode.RETRY_ACK):
       ctx.retry_seen = True

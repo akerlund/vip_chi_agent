@@ -3,9 +3,11 @@
 #
 # Drive one non-separated CleanSharedPersist and one separated
 # CleanSharedPersistSep through the CHI-E integrated RN-I/SN-F path and verify the
-# observed completions: the non-sep form retires on a single Comp; the sep form
-# retires on a Persist + CompPersist pair. Neither produces DAT traffic, and the
-# completion routing fields must mirror the request.
+# observed completions. The non-sep form retires on a single Comp. The sep form
+# has exactly TWO legal completions and both are driven here, because a requester
+# must accept both: Comp (Point of Coherency reached) then Persist (Point of
+# Persistence reached), and the two combined into one CompPersist. Neither
+# produces DAT traffic, and the completion routing fields must mirror the request.
 # Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
@@ -79,29 +81,68 @@ class tc_chi_e_persist(chi_e_base_test):
     assert len(responses) == 1, \
       f"expected 1 CleanSharedPersistSep response, got {len(responses)}"
 
+    # CleanSharedPersistSep has exactly two legal completions: Comp (the request
+    # reached the Point of Coherency) then Persist (it reached the Point of
+    # Persistence), or the two combined into a single CompPersist. This half
+    # checks the separated form, which is what the completer drives by default;
+    # the combined form is checked below under cfg.combined_persist_rsp.
     req_item = await self.tb_env.rni_req_fifo.get()
+    comp_rsp = await self.tb_env.rni_rsp_fifo.get()
     persist_rsp = await self.tb_env.rni_rsp_fifo.get()
-    comp_persist_rsp = await self.tb_env.rni_rsp_fifo.get()
     ok, _dat = self.tb_env.rni_dat_fifo.try_get()
     assert not ok, "CleanSharedPersistSep unexpectedly produced DAT traffic"
 
     assert int(req_item.opcode) == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP), \
       f"monitor observed wrong persist-sep REQ opcode 0x{int(req_item.opcode):x}"
+    assert int(comp_rsp.rsp_opcode) == int(RspOpcode.COMP), \
+      f"persistSep first RSP opcode 0x{int(comp_rsp.rsp_opcode):x} was not Comp"
     assert int(persist_rsp.rsp_opcode) == int(RspOpcode.PERSIST), \
-      f"persistSep first RSP opcode 0x{int(persist_rsp.rsp_opcode):x} was not Persist"
-    assert int(comp_persist_rsp.rsp_opcode) == int(RspOpcode.COMP_PERSIST), \
-      f"persistSep second RSP opcode 0x{int(comp_persist_rsp.rsp_opcode):x} was not CompPersist"
+      f"persistSep second RSP opcode 0x{int(persist_rsp.rsp_opcode):x} was not Persist"
     assert (int(persist_rsp.txn_id) == int(req_item.txn_id) and
-            int(comp_persist_rsp.txn_id) == int(req_item.txn_id) and
+            int(comp_rsp.txn_id) == int(req_item.txn_id) and
             int(persist_rsp.src_id) == int(req_item.tgt_id) and
             int(persist_rsp.tgt_id) == int(req_item.src_id) and
-            int(comp_persist_rsp.src_id) == int(req_item.tgt_id) and
-            int(comp_persist_rsp.tgt_id) == int(req_item.src_id)), \
+            int(comp_rsp.src_id) == int(req_item.tgt_id) and
+            int(comp_rsp.tgt_id) == int(req_item.src_id)), \
       "persistSep completion routing fields did not match the request"
-    assert int(responses[0].rsp_opcode) == int(RspOpcode.COMP_PERSIST), \
-      f"persistSep sequence response opcode 0x{int(responses[0].rsp_opcode):x} was not CompPersist"
+    assert int(responses[0].rsp_opcode) == int(RspOpcode.PERSIST), \
+      f"persistSep sequence response opcode 0x{int(responses[0].rsp_opcode):x} was not Persist"
+
+    # --- The same request, answered with the combined CompPersist -------------
+    # A requester must accept both forms, so both are driven here. Without this,
+    # the combined form would be a response the VIP claims to support and has
+    # never once received.
+    self.snf_cfg.combined_persist_rsp = True
+    self.drain_observation_fifos()
+
+    persist_seq.reset()
+    persist_seq.set_sep_persist(True)
+    persist_seq.set_requests(1)
+    persist_seq.set_initial_addr(E_PERSIST_SEP_ADDR_C + 0x100)
+    persist_seq.set_size(6)
+    persist_seq.set_src_id(E_PERSIST_SEP_RNI_NODE_ID_C)
+    persist_seq.set_tgt_id(E_PERSIST_SEP_SNF_NODE_ID_C)
+    persist_seq.set_qos(0xA)
+    persist_seq.set_allow_retry(0)
+    persist_seq.set_get_response(True)
+    persist_seq.set_verbose(False)
+    await persist_seq.start(self.v_sqr.rni_sequencer)
+
+    responses = persist_seq.get_responses()
+    assert len(responses) == 1, \
+      f"expected 1 combined-CompPersist response, got {len(responses)}"
+
+    _req_item = await self.tb_env.rni_req_fifo.get()
+    combined_rsp = await self.tb_env.rni_rsp_fifo.get()
+    ok, _extra = self.tb_env.rni_rsp_fifo.try_get()
+    assert not ok, "combined CompPersist was followed by another RSP flit"
+    assert int(combined_rsp.rsp_opcode) == int(RspOpcode.COMP_PERSIST), \
+      f"combined form RSP opcode 0x{int(combined_rsp.rsp_opcode):x} was not CompPersist"
+
+    self.snf_cfg.combined_persist_rsp = False
 
     self.logger.info(
-      "Test (tc_chi_e_persist) PASS: CleanSharedPersist retired on Comp and "
-      "CleanSharedPersistSep on Persist+CompPersist")
+      "Test (tc_chi_e_persist) PASS: CleanSharedPersist retired on Comp, and "
+      "CleanSharedPersistSep on both of its legal completions -- Comp then "
+      "Persist, and the combined CompPersist")
     self.drop_objection()

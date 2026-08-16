@@ -2047,10 +2047,21 @@ class vip_chi_driver_snf #(
 
   // ---------------------------------------------------------------------------
   // Auto-respond to one persist request with completion-only RSP traffic.
+  //
+  // CleanSharedPersist takes a single Comp. CleanSharedPersistSep has exactly two
+  // legal completions, and this drives one of them:
+  //
+  //   * Comp then Persist -- the request reached the Point of Coherency, then it
+  //     reached the Point of Persistence. Two milestones, two responses. Default.
+  //   * a single CompPersist, the two combined. cfg.combined_persist_rsp.
+  //
+  // It used to drive Persist then CompPersist, which is neither: the requester
+  // never received a bare Comp, and persistence was signalled twice -- once
+  // alone and again inside the combined response.
   // ---------------------------------------------------------------------------
   protected task drive_auto_persist_rsp(input req_flit_t req);
     item_t rsp;
-    item_t comp_persist_rsp;
+    item_t persist_rsp;
     bit    is_sep;
 
     is_sep = (req_opcode_t'(req.opcode) == req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C));
@@ -2063,21 +2074,27 @@ class vip_chi_driver_snf #(
     rsp.qos          = req.qos;
     rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
     rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
-    rsp.rsp_opcode   = is_sep ? item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)
-                              : item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C);
+
+    if (is_sep && this.cfg.combined_persist_rsp) begin
+      rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C);
+      this.drive_rsp(rsp);
+      return;
+    end
+
+    rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C);
     this.drive_rsp(rsp);
 
     if (is_sep) begin
-      comp_persist_rsp              = new("auto_comp_persist_rsp");
-      comp_persist_rsp.role         = VIP_CHI_ROLE_SNF_E;
-      comp_persist_rsp.src_id       = node_id_t'(req.tgtid);
-      comp_persist_rsp.tgt_id       = node_id_t'(req.srcid);
-      comp_persist_rsp.txn_id       = txn_id_t'(req.txnid);
-      comp_persist_rsp.qos          = req.qos;
-      comp_persist_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
-      comp_persist_rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
-      comp_persist_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C);
-      this.drive_rsp(comp_persist_rsp);
+      persist_rsp              = new("auto_persist_sep_rsp");
+      persist_rsp.role         = VIP_CHI_ROLE_SNF_E;
+      persist_rsp.src_id       = node_id_t'(req.tgtid);
+      persist_rsp.tgt_id       = node_id_t'(req.srcid);
+      persist_rsp.txn_id       = txn_id_t'(req.txnid);
+      persist_rsp.qos          = req.qos;
+      persist_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
+      persist_rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
+      persist_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C);
+      this.drive_rsp(persist_rsp);
     end
   endtask
 

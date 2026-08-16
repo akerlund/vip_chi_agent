@@ -914,8 +914,13 @@ class vip_chi_scoreboard #(
         ctx.persist_seen = 1'b1;
       end
       rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C): begin
-        ctx.comp_seen = 1'b1;
-        ctx.comp_err  = item.rsp_resp_err;
+        // Comp AND Persist in one flit, so it ticks both milestones. Ticking
+        // only comp_seen would leave a separated persist answered by the legal
+        // combined response permanently owing a Persist that is never coming,
+        // and it would be reported incomplete for doing nothing wrong.
+        ctx.comp_seen    = 1'b1;
+        ctx.persist_seen = 1'b1;
+        ctx.comp_err     = item.rsp_resp_err;
       end
       rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C): begin
         ctx.retry_seen = 1'b1;

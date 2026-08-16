@@ -655,9 +655,18 @@ class vip_chi_driver_snf(uvm_driver):
       await self.drive_auto_write_comp(req)
 
   # ==========================================================================
-  # Persist CMO auto-response: a single Comp for CleanSharedPersist, or an
-  # intermediate Persist followed by a final CompPersist for the CHI-E
-  # CleanSharedPersistSep. Carries no data and grants no DBID.
+  # Persist CMO auto-response. Carries no data and grants no DBID.
+  #
+  # CleanSharedPersist takes a single Comp. CleanSharedPersistSep has exactly two
+  # legal completions, and this drives one of them:
+  #
+  #   * Comp then Persist -- the request reached the Point of Coherency, then it
+  #     reached the Point of Persistence. Two milestones, two responses. Default.
+  #   * a single CompPersist, the two combined. cfg.combined_persist_rsp.
+  #
+  # It used to drive Persist then CompPersist, which is neither: the requester
+  # never received a bare Comp, and persistence was signalled twice -- once alone
+  # and again inside the combined response.
   # ==========================================================================
   async def drive_auto_persist_rsp(self, req):
     is_sep = req["opcode"] == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP)
@@ -665,14 +674,15 @@ class vip_chi_driver_snf(uvm_driver):
       "srcid": req["tgtid"], "tgtid": req["srcid"], "txnid": req["txnid"],
       "qos": req["qos"], "resp": int(Resp.I), "resperr": int(RespErr.OKAY),
     }
-    first = dict(base)
-    first["opcode"] = int(RspOpcode.PERSIST if is_sep else RspOpcode.COMP)
-    await self.drive_rsp(first)
+
+    if is_sep and self.cfg.combined_persist_rsp:
+      await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP_PERSIST)))
+      return
+
+    await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP)))
 
     if is_sep:
-      second = dict(base)
-      second["opcode"] = int(RspOpcode.COMP_PERSIST)
-      await self.drive_rsp(second)
+      await self.drive_rsp(dict(base, opcode=int(RspOpcode.PERSIST)))
 
   # ==========================================================================
   # Opcode classifiers / helpers.

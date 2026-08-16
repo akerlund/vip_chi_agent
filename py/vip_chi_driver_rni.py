@@ -101,8 +101,8 @@ class _MxCtx:
 
   __slots__ = (
     "kind", "item", "dbid", "grant_seen", "comp_seen", "data_sent",
-    "read_done", "receipt_seen", "compack_sent", "retry_pending", "retried",
-    "pcrd_type", "req_src_id", "req_tgt_id",
+    "read_done", "receipt_seen", "persist_seen", "compack_sent",
+    "retry_pending", "retried", "pcrd_type", "req_src_id", "req_tgt_id",
   )
 
   def __init__(self, kind, item):
@@ -114,6 +114,12 @@ class _MxCtx:
     self.data_sent = False
     self.read_done = False
     self.receipt_seen = False
+    # Separated persist: Comp says Point of Coherency, Persist says Point of
+    # Persistence, and the transaction is not done until BOTH have arrived -- or
+    # a single CompPersist has, which is both at once. comp_seen alone would
+    # retire on the Comp and leave the Persist to arrive against a closed
+    # transaction.
+    self.persist_seen = False
     self.compack_sent = False
     self.retry_pending = False
     self.retried = False
@@ -1046,19 +1052,40 @@ class vip_chi_driver_rni(uvm_driver):
         f"0x{flit['opcode']:x} was not Persist")
 
   async def collect_persist_sep_completion(self, req):
+    """Collect a separated-persist completion, in either of its two legal forms.
+
+    A requester MUST accept both, so this accepts both rather than picking one:
+
+      * Comp then Persist -- Point of Coherency reached, then Point of
+        Persistence. Two milestones, two responses.
+      * CompPersist alone -- the completer combined them.
+
+    Everything else is rejected, and the rejection is the point. This used to
+    demand Persist THEN CompPersist, which is neither form: no bare Comp ever
+    arrived, and persistence was signalled twice. Because the requester demanded
+    exactly what this VIP's own completer produced, the two agreed with each
+    other and the pair was wrong together.
+    """
     flit = await self.wait_for_matching_rsp(_I(req.txn_id))
-    if flit["opcode"] != int(RspOpcode.PERSIST):
+
+    # The combined form is the whole completion: nothing follows it.
+    if flit["opcode"] == int(RspOpcode.COMP_PERSIST):
+      self.stamp_rsp_flit_on_req(req, flit)
+      return
+
+    if flit["opcode"] != int(RspOpcode.COMP):
       raise AssertionError(
         f"[{self.get_name()}] PersistSep first completion opcode "
-        f"0x{flit['opcode']:x} was not Persist")
+        f"0x{flit['opcode']:x} was neither Comp nor CompPersist")
+
     await self.bus.rising()
     self.drive_idle_sideband()
     flit = await self.wait_for_matching_rsp(_I(req.txn_id))
     self.stamp_rsp_flit_on_req(req, flit)
-    if flit["opcode"] != int(RspOpcode.COMP_PERSIST):
+    if flit["opcode"] != int(RspOpcode.PERSIST):
       raise AssertionError(
-        f"[{self.get_name()}] PersistSep final completion opcode "
-        f"0x{flit['opcode']:x} was not CompPersist")
+        f"[{self.get_name()}] PersistSep completion after Comp had opcode "
+        f"0x{flit['opcode']:x}, not Persist")
 
   # No clear_activity parameter any more: TXSACTIVE is closed at the shared
   # retire point, so a collector no longer needs to know whether it is the
@@ -1348,7 +1375,16 @@ class vip_chi_driver_rni(uvm_driver):
           done = c.data_sent and c.comp_seen
         done = done and (not _I(c.item.exp_comp_ack) or c.compack_sent)
       elif c.kind == _KIND_PERSIST:
-        done = c.comp_seen
+        # CleanSharedPersist is done on its Comp. The separated form owes BOTH
+        # milestones -- Point of Coherency and Point of Persistence -- so
+        # retiring on comp_seen alone would close the transaction while its
+        # Persist was still in flight, and that Persist would then arrive
+        # against a transaction the driver had forgotten. A CompPersist sets
+        # both flags, so the combined form still retires on one flit.
+        if self.req_expects_persist_sep_completion(c.item):
+          done = c.comp_seen and c.persist_seen
+        else:
+          done = c.comp_seen
       else:  # WRITE
         done = (c.data_sent and c.comp_seen and
                 (not _I(c.item.exp_comp_ack) or c.compack_sent))
@@ -1494,8 +1530,12 @@ class vip_chi_driver_rni(uvm_driver):
       if c.kind == _KIND_PERSIST:
         self.stamp_rsp_flit_on_req(c.item, flit)
         if op == int(RspOpcode.PERSIST):
-          pass  # separated-persist intermediate ack; CompPersist still owed
-        elif op in (int(RspOpcode.COMP_PERSIST), int(RspOpcode.COMP)):
+          c.persist_seen = True
+        elif op == int(RspOpcode.COMP_PERSIST):
+          # Comp and Persist in one flit: both milestones at once.
+          c.comp_seen = True
+          c.persist_seen = True
+        elif op == int(RspOpcode.COMP):
           c.comp_seen = True
         else:
           raise AssertionError(

@@ -115,9 +115,14 @@ class tc_chi_e_persist extends chi_e_base_test;
         super.tc_name, sequence_responses.size()))
     end
 
+    // CleanSharedPersistSep has exactly two legal completions: Comp (the request
+    // reached the Point of Coherency) then Persist (it reached the Point of
+    // Persistence), or the two combined into a single CompPersist. This half
+    // checks the separated form, which is what the completer drives by default;
+    // the combined form is checked below under cfg.combined_persist_rsp.
     super.tb_env.rni_req_fifo.get(req_item);
-    super.tb_env.rni_rsp_fifo.get(persist_rsp_item);
     super.tb_env.rni_rsp_fifo.get(comp_persist_rsp_item);
+    super.tb_env.rni_rsp_fifo.get(persist_rsp_item);
     if (super.tb_env.rni_dat_fifo.try_get(unexpected_dat)) begin
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] CleanSharedPersistSep unexpectedly produced DAT traffic",
@@ -130,16 +135,16 @@ class tc_chi_e_persist extends chi_e_base_test;
         super.tc_name, req_item.opcode))
     end
 
-    if (persist_rsp_item.rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
+    if (comp_persist_rsp_item.rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] PersistSep first RSP opcode 0x%0h was not Persist",
-        super.tc_name, persist_rsp_item.rsp_opcode))
+        "FATAL [%s] PersistSep first RSP opcode 0x%0h was not Comp",
+        super.tc_name, comp_persist_rsp_item.rsp_opcode))
     end
 
-    if (comp_persist_rsp_item.rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C)) begin
+    if (persist_rsp_item.rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] PersistSep second RSP opcode 0x%0h was not CompPersist",
-        super.tc_name, comp_persist_rsp_item.rsp_opcode))
+        "FATAL [%s] PersistSep second RSP opcode 0x%0h was not Persist",
+        super.tc_name, persist_rsp_item.rsp_opcode))
     end
 
     if ((persist_rsp_item.txn_id != req_item.txn_id) ||
@@ -153,11 +158,57 @@ class tc_chi_e_persist extends chi_e_base_test;
         super.tc_name))
     end
 
-    if (sequence_responses[0].rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C)) begin
+    if (sequence_responses[0].rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] PersistSep sequence response opcode 0x%0h was not CompPersist",
+        "FATAL [%s] PersistSep sequence response opcode 0x%0h was not Persist",
         super.tc_name, sequence_responses[0].rsp_opcode))
     end
+
+    // -------------------------------------------------------------------------
+    // The same request, answered with the combined CompPersist. A requester must
+    // accept both forms, so both are driven here -- without this, the combined
+    // form would be a response the VIP claims to support and has never once
+    // received.
+    // -------------------------------------------------------------------------
+    super.snf_cfg.combined_persist_rsp = 1'b1;
+    super.drain_observation_fifos();
+
+    this.persist_seq.reset();
+    this.persist_seq.set_sep_persist(1'b1);
+    this.persist_seq.set_requests(1);
+    this.persist_seq.set_initial_addr(E_PERSIST_SEP_ADDR_C + item_t::addr_t'('h100));
+    this.persist_seq.set_size(3'd6);
+    this.persist_seq.set_src_id(E_PERSIST_SEP_RNI_NODE_ID_C);
+    this.persist_seq.set_tgt_id(E_PERSIST_SEP_SNF_NODE_ID_C);
+    this.persist_seq.set_qos(4'ha);
+    this.persist_seq.set_allow_retry(1'b0);
+    this.persist_seq.set_get_response(1'b1);
+    this.persist_seq.set_verbose(1'b0);
+    this.persist_seq.start(super.tb_env.rni_agent.sequencer);
+
+    sequence_responses = this.persist_seq.get_responses();
+    if (sequence_responses.size() != 1) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] Expected 1 combined-CompPersist response, got %0d",
+        super.tc_name, sequence_responses.size()))
+    end
+
+    super.tb_env.rni_req_fifo.get(req_item);
+    super.tb_env.rni_rsp_fifo.get(comp_persist_rsp_item);
+
+    if (comp_persist_rsp_item.rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] Combined form RSP opcode 0x%0h was not CompPersist",
+        super.tc_name, comp_persist_rsp_item.rsp_opcode))
+    end
+
+    if (super.tb_env.rni_rsp_fifo.try_get(persist_rsp_item)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] Combined CompPersist was followed by another RSP flit (0x%0h)",
+        super.tc_name, persist_rsp_item.rsp_opcode))
+    end
+
+    super.snf_cfg.combined_persist_rsp = 1'b0;
 
     phase.drop_objection(this);
   endtask

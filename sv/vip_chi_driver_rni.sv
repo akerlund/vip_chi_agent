@@ -90,6 +90,12 @@ class vip_chi_driver_rni #(
     bit        data_sent;
     bit        read_done;
     bit        receipt_seen;   // ordered reads: ReadReceipt (RSP) has arrived
+    // Separated persist: Comp says Point of Coherency, Persist says Point of
+    // Persistence, and the transaction is not done until BOTH have arrived --
+    // or a single CompPersist has, which is both at once. comp_seen alone would
+    // retire on the Comp and leave the Persist to arrive against a closed
+    // transaction.
+    bit        persist_seen;
     bit        compack_sent;   // exp_comp_ack writes: CompAck has been driven
     bit        retry_pending;  // RetryAck seen; awaiting a P-credit to re-issue
     bit        retried;        // already re-issued once (allow_retry now cleared)
@@ -1873,7 +1879,19 @@ class vip_chi_driver_rni #(
   endtask
 
   // ---------------------------------------------------------------------------
-  // Wait for Persist then CompPersist on a separated persist completion.
+  // Collect a separated-persist completion, in either of its two legal forms.
+  //
+  // A requester MUST accept both, so this accepts both rather than picking one:
+  //
+  //   * Comp then Persist  -- Point of Coherency reached, then Point of
+  //                           Persistence. Two milestones, two responses.
+  //   * CompPersist alone  -- the completer combined them.
+  //
+  // Everything else is rejected, and the rejection is the point. This used to
+  // demand Persist THEN CompPersist, which is neither form: no bare Comp ever
+  // arrived, and persistence was signalled twice. Because the requester demanded
+  // exactly what this VIP's own completer produced, the two agreed with each
+  // other and the pair was wrong together.
   // ---------------------------------------------------------------------------
   protected task collect_persist_sep_completion(inout item_t req);
 
@@ -1881,14 +1899,21 @@ class vip_chi_driver_rni #(
 
     this.wait_for_matching_rsp(req.txn_id, flit);
 
-    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
+    // The combined form is the whole completion: nothing follows it.
+    if (rsp_opcode_t'(flit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C)) begin
+
+      this.stamp_rsp_flit_on_req(req, flit);
+      return;
+    end
+
+    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) begin
 
       `uvm_fatal(get_name(), $sformatf(
-      "FATAL [%s] PersistSep first completion opcode 0x%0h was not Persist",
+      "FATAL [%s] PersistSep first completion opcode 0x%0h was neither Comp nor CompPersist",
       get_name(), flit.opcode))
     end
 
-    // Step off the accepted Persist beat so the next wait cannot reconsume the
+    // Step off the accepted Comp beat so the next wait cannot reconsume the
     // same flit while rxrspflitv is still high in the current cycle.
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
@@ -1896,10 +1921,10 @@ class vip_chi_driver_rni #(
     this.wait_for_matching_rsp(req.txn_id, flit);
     this.stamp_rsp_flit_on_req(req, flit);
 
-    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C)) begin
+    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
 
       `uvm_fatal(get_name(), $sformatf(
-      "FATAL [%s] PersistSep final completion opcode 0x%0h was not CompPersist",
+      "FATAL [%s] PersistSep completion after Comp had opcode 0x%0h, not Persist",
       get_name(), flit.opcode))
     end
   endtask
@@ -2224,7 +2249,7 @@ class vip_chi_driver_rni #(
             this.drive_req(req);
             ctx = '{kind: TXN_KIND_READ, item: req, dbid: '0,
                     grant_seen: 1'b0, comp_seen: 1'b0, data_sent: 1'b0, read_done: 1'b0,
-                    receipt_seen: 1'b0, compack_sent: 1'b0,
+                    receipt_seen: 1'b0, persist_seen: 1'b0, compack_sent: 1'b0,
                     retry_pending: 1'b0, retried: 1'b0, pcrd_type: '0,
                     req_src_id: req.src_id, req_tgt_id: req.tgt_id};
             this.mx_ctx.push_back(ctx);
@@ -2235,7 +2260,7 @@ class vip_chi_driver_rni #(
             this.drive_req(req);
             ctx = '{kind: TXN_KIND_WRITE, item: req, dbid: '0,
                     grant_seen: 1'b0, comp_seen: 1'b0, data_sent: 1'b0, read_done: 1'b0,
-                    receipt_seen: 1'b0, compack_sent: 1'b0,
+                    receipt_seen: 1'b0, persist_seen: 1'b0, compack_sent: 1'b0,
                     retry_pending: 1'b0, retried: 1'b0, pcrd_type: '0,
                     req_src_id: req.src_id, req_tgt_id: req.tgt_id};
             this.mx_ctx.push_back(ctx);
@@ -2246,7 +2271,7 @@ class vip_chi_driver_rni #(
             this.drive_req(req);
             ctx = '{kind: TXN_KIND_ATOMIC, item: req, dbid: '0,
                     grant_seen: 1'b0, comp_seen: 1'b0, data_sent: 1'b0, read_done: 1'b0,
-                    receipt_seen: 1'b0, compack_sent: 1'b0,
+                    receipt_seen: 1'b0, persist_seen: 1'b0, compack_sent: 1'b0,
                     retry_pending: 1'b0, retried: 1'b0, pcrd_type: '0,
                     req_src_id: req.src_id, req_tgt_id: req.tgt_id};
             this.mx_ctx.push_back(ctx);
@@ -2257,7 +2282,7 @@ class vip_chi_driver_rni #(
             this.drive_req(req);
             ctx = '{kind: TXN_KIND_PERSIST, item: req, dbid: '0,
                     grant_seen: 1'b0, comp_seen: 1'b0, data_sent: 1'b0, read_done: 1'b0,
-                    receipt_seen: 1'b0, compack_sent: 1'b0,
+                    receipt_seen: 1'b0, persist_seen: 1'b0, compack_sent: 1'b0,
                     retry_pending: 1'b0, retried: 1'b0, pcrd_type: '0,
                     req_src_id: req.src_id, req_tgt_id: req.tgt_id};
             this.mx_ctx.push_back(ctx);
@@ -2387,9 +2412,19 @@ class vip_chi_driver_rni #(
         done = done && (!this.mx_ctx[i].item.exp_comp_ack || this.mx_ctx[i].compack_sent);
       end
       else if (this.mx_ctx[i].kind == TXN_KIND_PERSIST) begin
-        // A persist has no data phase; it is done once its final RSP completion
-        // (Comp, or CompPersist for the separated form) has arrived.
-        done = this.mx_ctx[i].comp_seen;
+        // A persist has no data phase. CleanSharedPersist is done on its Comp.
+        // The separated form owes BOTH milestones -- Point of Coherency and Point
+        // of Persistence -- so retiring on comp_seen alone would close the
+        // transaction while its Persist was still in flight, and that Persist
+        // would then arrive against a transaction the driver had forgotten.
+        // A CompPersist sets both flags, so the combined form still retires on
+        // one flit.
+        if (this.req_expects_persist_sep_completion(this.mx_ctx[i].item)) begin
+          done = this.mx_ctx[i].comp_seen && this.mx_ctx[i].persist_seen;
+        end
+        else begin
+          done = this.mx_ctx[i].comp_seen;
+        end
       end
       else begin
         // A write is done once data is sent and completion is seen; an
@@ -2489,18 +2524,26 @@ class vip_chi_driver_rni #(
         continue;
       end
 
-      // A persist CMO carries no data and completes on RSP only: a single Comp
-      // for the non-separated form, or a Persist (intermediate) then CompPersist
-      // (final) for the separated form. stamp so the handed-back item shows the
-      // final completion opcode; comp_seen (set by Comp/CompPersist) retires it,
-      // while the intermediate Persist is just consumed (credit already returned).
+      // A persist CMO carries no data and completes on RSP only:
+      //
+      //   * CleanSharedPersist      -- a single Comp.
+      //   * CleanSharedPersistSep   -- Comp (Point of Coherency) then Persist
+      //                                (Point of Persistence), or the two
+      //                                combined as one CompPersist.
+      //
+      // Both separated forms are accepted because a requester must accept both.
+      // stamp so the handed-back item shows the latest completion opcode.
       if (this.mx_ctx[idx].kind == TXN_KIND_PERSIST) begin
         this.stamp_rsp_flit_on_req(this.mx_ctx[idx].item, flit);
         case (op)
           rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C): begin
-            // Separated-persist intermediate ack; CompPersist still owed.
+            this.mx_ctx[idx].persist_seen = 1'b1;
           end
-          rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C),
+          rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C): begin
+            // Comp and Persist in one flit: both milestones at once.
+            this.mx_ctx[idx].comp_seen    = 1'b1;
+            this.mx_ctx[idx].persist_seen = 1'b1;
+          end
           rsp_opcode_t'(VIP_CHI_RSP_COMP_C): begin
             this.mx_ctx[idx].comp_seen = 1'b1;
           end

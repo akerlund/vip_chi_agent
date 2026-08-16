@@ -83,6 +83,15 @@ class VipChiCfgAgent:
     self.split_write_rsp = False
     self.ordered_dbid_resp = False
 
+    # CleanSharedPersistSep has two legal completions: a Comp (the request
+    # reached the Point of Coherency) followed by a Persist (it reached the Point
+    # of Persistence), or the two combined into a single CompPersist. A requester
+    # must accept both, so the completer must be able to produce both. Default
+    # off = separate Comp then Persist, which is the form that carries the PoC
+    # and PoP milestones as distinguishable events; the combined form collapses
+    # them.
+    self.combined_persist_rsp = False
+
     # Completer DAT beat ordering. CHI identifies a beat's position by its
     # DataID, not by its position in the burst, so a completer may return the
     # beats of one transfer in any order. Set this to have the SN-F return read

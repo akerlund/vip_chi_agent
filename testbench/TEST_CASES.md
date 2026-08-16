@@ -172,7 +172,7 @@ serial. See [../docs/IMPLEMENTATION_PLAN.md](../docs/IMPLEMENTATION_PLAN.md).
 | `tc_chi_e_dat_smoke` | E-RNI | exact-CHI-E RN-I loopback smoke for DAT tagging on write data. |
 | `tc_chi_e_snf_dat_smoke` | E-SNF | exact-CHI-E manual SN-F completion smoke for responder-side DAT tagging. |
 | `tc_chi_e_mte` | E-SNF-A | exact-CHI-E autonomous SN-F tag-storage round-trip for `TagOp`/`Tag`/`TU`. |
-| `tc_chi_e_persist` | E | exact-CHI-E `CleanSharedPersistSep` returns `Persist` then `CompPersist`. |
+| `tc_chi_e_persist` | E | `CleanSharedPersist` retires on a single `Comp`; `CleanSharedPersistSep` has **two** legal completions and both are driven — `Comp` (the request reached the Point of Coherency) then `Persist` (it reached the Point of Persistence), and the two combined into a single `CompPersist` under `cfg.combined_persist_rsp`. A requester must accept both, so testing one would leave the other as a response the VIP claims to support and has never received. |
 | `tc_chi_e_dbid_resp_ord` | E | exact-CHI-E ordered split write returns `DBIDRespOrd` before deferred `Comp` and trailing `CompAck`. |
 | `tc_chi_e_sep_read` | E | exact-CHI-E separated read: `DataSepResp` data returns on `ReturnTxnID` (≠ request TxnID); exercises the scoreboard Checker-A return-index so the separated completion is matched rather than false-orphaned. |
 

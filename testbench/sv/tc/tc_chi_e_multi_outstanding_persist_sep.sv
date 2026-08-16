@@ -85,11 +85,14 @@ class tc_chi_e_multi_outstanding_persist_sep extends chi_e_base_test;
           super.tc_name, k, r.opcode))
       end
 
-      // The final completion is CompPersist; the pipeline consumed the
-      // intermediate Persist before retiring.
-      if (r.rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C)) begin
+      // Two milestones, in order: Comp says Point of Coherency, Persist says
+      // Point of Persistence. The item carries the LAST completion stamped on
+      // it, so a retired separated persist shows Persist -- and it only retires
+      // once both have arrived, which is what keeps a pipelined persist from
+      // being handed back while its Persist is still in flight.
+      if (r.rsp_opcode != item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
         `uvm_fatal(get_name(), $sformatf(
-          "FATAL [%s] Persist-sep %0d final completion opcode 0x%0h was not CompPersist",
+          "FATAL [%s] Persist-sep %0d final completion opcode 0x%0h was not Persist",
           super.tc_name, k, r.rsp_opcode))
       end
     end

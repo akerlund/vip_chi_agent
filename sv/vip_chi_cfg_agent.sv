@@ -121,6 +121,14 @@ class vip_chi_cfg_agent extends uvm_object;
   bit split_write_rsp = 1'b0;
   bit ordered_dbid_resp = 1'b0;
 
+  // CleanSharedPersistSep has two legal completions: a Comp (the request reached
+  // the Point of Coherency) followed by a Persist (it reached the Point of
+  // Persistence), or the two combined into a single CompPersist. A requester
+  // must accept both, so the completer must be able to produce both. Default off
+  // = separate Comp then Persist, which is the form that carries the PoC and PoP
+  // milestones as distinguishable events; the combined form collapses them.
+  bit combined_persist_rsp = 1'b0;
+
   // Completer DAT beat ordering. CHI identifies a beat's position by its DataID,
   // not by its position in the burst, so a completer is free to return the beats
   // of one transfer in any order. This VIP's completers emit them in ascending
