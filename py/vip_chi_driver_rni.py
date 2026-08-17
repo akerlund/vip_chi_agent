@@ -42,7 +42,7 @@ from pyuvm import uvm_driver, ConfigDB
 
 from vip_chi_types_pkg import (
   Role, Dir, ReqOpcode, RspOpcode, RawChannel,
-  req_opcode_is_atomic, lasm,
+  req_opcode_is_atomic, lasm, chi_xfer_dat_beats,
 )
 from vip_chi_if import ChiBus
 
@@ -103,6 +103,7 @@ class _MxCtx:
     "kind", "item", "dbid", "grant_seen", "comp_seen", "data_sent",
     "read_done", "receipt_seen", "persist_seen", "compack_sent",
     "retry_pending", "retried", "pcrd_type", "req_src_id", "req_tgt_id",
+    "dat_beats",
   )
 
   def __init__(self, kind, item):
@@ -113,6 +114,11 @@ class _MxCtx:
     self.comp_seen = False
     self.data_sent = False
     self.read_done = False
+    # Read-data beats banked for THIS transaction so far. A completer may
+    # interleave the beats of several reads on the DAT channel, so a beat is
+    # filed against the transaction its TxnID names rather than assumed to
+    # belong to whichever read is currently being collected.
+    self.dat_beats = []
     self.receipt_seen = False
     # Separated persist: Comp says Point of Coherency, Persist says Point of
     # Persistence, and the transaction is not done until BOTH have arrived -- or
@@ -1171,10 +1177,56 @@ class vip_chi_driver_rni(uvm_driver):
   # serial path (which used to drop the sideband here) or the pipelined one
   # (which had to be told not to, or it would have dropped it while its peers
   # were still outstanding).
+  # Fields a read-data beat carries about the transfer as a whole, copied onto
+  # the request so a sequence can read them back. Every beat of a transfer
+  # carries the same values, so the last one to land wins and it does not matter
+  # which order they arrived in.
+  def stamp_dat_beat_on_req(self, req, flit):
+    req.role = int(Role.SNF)
+    req.src_id = flit["srcid"]
+    req.tgt_id = flit["tgtid"]
+    req.qos = flit["qos"]
+    req.dat_opcode = flit["opcode"]
+    req.dbid = flit["dbid"]
+    req.rsp_resp = flit["resp"]
+    req.rsp_resp_err = flit["resperr"]
+
+  # Place each beat at the position its DataID names, not at the position it
+  # arrived in: CHI lets the beats of one transfer return in any order, and a
+  # sequence reading back req.data[] must see the payload in address order
+  # regardless. A DataID outside the burst cannot be placed, so that beat keeps
+  # its arrival slot and the arrival order stands for the whole burst -- the
+  # monitor is the component that reports the malformed DataID.
+  def place_dat_beats(self, req, beats):
+    n = len(beats)
+    id_q = [int(f["dataid"]) for f in beats]
+    order = list(range(n))
+    if all(d < n for d in id_q):
+      order = id_q
+
+    req.data = [0] * n
+    req.be = [0] * n
+    req.data_id = [0] * n
+    req.cc_id = [0] * n
+    req.dat_resp = [0] * n
+    req.dat_resp_err = [0] * n
+    for i, pos in enumerate(order):
+      req.data[pos] = beats[i]["data"]
+      req.be[pos] = beats[i]["be"]
+      req.data_id[pos] = beats[i]["dataid"]
+      req.cc_id[pos] = beats[i]["ccid"]
+      req.dat_resp[pos] = beats[i]["resp"]
+      req.dat_resp_err[pos] = beats[i]["resperr"]
+
+  # Collect ONE read's data as a contiguous run of beats, terminated by the
+  # FLITPEND deassert. Used by the serial issue paths and by the atomic data
+  # completion, all of which have exactly one transfer outstanding, so no beat on
+  # the channel can belong to anything else. The mixed pipeline cannot assume
+  # that and files beats by TxnID instead -- see mixed_dat_proc.
   async def collect_read_completion(self, req):
     bus = self.bus
     expected = self.expected_read_completion_txn_id(req)
-    data_q, be_q, id_q, cc_q, resp_q, err_q = [], [], [], [], [], []
+    beats = []
 
     while True:
       while not bus.get("rxdatflitv"):
@@ -1188,51 +1240,15 @@ class vip_chi_driver_rni(uvm_driver):
           f"!= expected 0x{expected:x}")
       self.schedule_dat_credit_return()
 
-      data_q.append(flit["data"])
-      be_q.append(flit["be"])
-      id_q.append(flit["dataid"])
-      cc_q.append(flit["ccid"])
-      resp_q.append(flit["resp"])
-      err_q.append(flit["resperr"])
-
-      req.role = int(Role.SNF)
-      req.src_id = flit["srcid"]
-      req.tgt_id = flit["tgtid"]
-      req.qos = flit["qos"]
-      req.dat_opcode = flit["opcode"]
-      req.dbid = flit["dbid"]
-      req.rsp_resp = flit["resp"]
-      req.rsp_resp_err = flit["resperr"]
+      beats.append(flit)
+      self.stamp_dat_beat_on_req(req, flit)
 
       if not bus.get("rxdatflitpend"):
         break
       await bus.rising()
       self.drive_idle_sideband()
 
-    # Place each beat at the position its DataID names, not at the position it
-    # arrived in: CHI lets the beats of one transfer return in any order, and a
-    # sequence reading back req.data[] must see the payload in address order
-    # regardless. A DataID outside the burst cannot be placed, so that beat keeps
-    # its arrival slot and the arrival order stands for the whole burst -- the
-    # monitor is the component that reports the malformed DataID.
-    n = len(data_q)
-    order = list(range(n))
-    if all(int(d) < n for d in id_q):
-      order = [int(d) for d in id_q]
-
-    req.data = [0] * n
-    req.be = [0] * n
-    req.data_id = [0] * n
-    req.cc_id = [0] * n
-    req.dat_resp = [0] * n
-    req.dat_resp_err = [0] * n
-    for i, pos in enumerate(order):
-      req.data[pos] = data_q[i]
-      req.be[pos] = be_q[i]
-      req.data_id[pos] = id_q[i]
-      req.cc_id[pos] = cc_q[i]
-      req.dat_resp[pos] = resp_q[i]
-      req.dat_resp_err[pos] = err_q[i]
+    self.place_dat_beats(req, beats)
 
     await bus.rising()
     self.drive_idle_sideband()
@@ -1655,6 +1671,16 @@ class vip_chi_driver_rni(uvm_driver):
       await bus.rising()
       self.drive_idle_sideband()
 
+  # The pipeline's DAT receive path, one beat at a time.
+  #
+  # Each beat is filed against the transaction its TxnID names and the transfer
+  # retires on its OWN beat count, derived from the request Size. That is the
+  # difference from collect_read_completion: with several reads outstanding a
+  # completer may interleave their beats on the channel, and the FLITPEND
+  # deassert then marks the end of the channel's activity rather than the end of
+  # any one transfer. Counting beats per transaction is the only reading that
+  # survives both shapes -- and it costs nothing on contiguous traffic, where the
+  # count is reached on exactly the beat FLITPEND would have marked.
   async def mixed_dat_proc(self):
     bus = self.bus
     while True:
@@ -1662,22 +1688,49 @@ class vip_chi_driver_rni(uvm_driver):
         await bus.rising()
         self.drive_idle_sideband()
 
-      beat_txn = bus.sample_flit("dat", "rx")["txnid"]
-      idx = self.find_mixed_read_by_completion(beat_txn)
+      flit = bus.sample_flit("dat", "rx")
+      idx = self.find_mixed_read_by_completion(flit["txnid"])
       if idx < 0:
         raise AssertionError(
-          f"[{self.get_name()}] Mixed CompData TxnID 0x{beat_txn:x} "
+          f"[{self.get_name()}] Mixed CompData TxnID 0x{flit['txnid']:x} "
           f"matches no outstanding read")
 
-      r = self.mx_ctx[idx].item
-      await self.collect_read_completion(r)
+      ctx = self.mx_ctx[idx]
+      r = ctx.item
 
-      # Re-find by request TxnID: the queue may have shifted while
-      # collect_read_completion() yielded (only the TX thread deletes, and it
-      # will not retire this read until read_done is set just below).
-      idx = self.find_mixed_ctx_by_txn(_I(r.txn_id))
-      if idx < 0:
-        raise AssertionError(
-          f"[{self.get_name()}] Mixed read TxnID 0x{_I(r.txn_id):x} "
-          f"vanished before completion")
-      self.mx_ctx[idx].read_done = True
+      # Atomic data completions keep the contiguous collector: the returned size
+      # is not the request Size (AtomicCompare returns half of it), so there is
+      # no beat count to retire on, and the completer never interleaves them.
+      if ctx.kind != _KIND_READ:
+        await self.collect_read_completion(r)
+        idx = self.find_mixed_ctx_by_txn(_I(r.txn_id))
+        if idx < 0:
+          raise AssertionError(
+            f"[{self.get_name()}] Mixed read TxnID 0x{_I(r.txn_id):x} "
+            f"vanished before completion")
+        self.mx_ctx[idx].read_done = True
+        continue
+
+      self.schedule_dat_credit_return()
+      ctx.dat_beats.append(flit)
+      self.stamp_dat_beat_on_req(r, flit)
+
+      expected = chi_xfer_dat_beats(_I(r.size), bus.cfg.data_bytes)
+      complete = len(ctx.dat_beats) >= expected
+      if complete:
+        self.place_dat_beats(r, ctx.dat_beats)
+        ctx.dat_beats = []
+
+      await bus.rising()
+      self.drive_idle_sideband()
+
+      if complete:
+        # Re-find by request TxnID: the queue may have shifted while this
+        # coroutine yielded (only the TX thread deletes, and it will not retire
+        # this read until read_done is set just below).
+        idx = self.find_mixed_ctx_by_txn(_I(r.txn_id))
+        if idx < 0:
+          raise AssertionError(
+            f"[{self.get_name()}] Mixed read TxnID 0x{_I(r.txn_id):x} "
+            f"vanished before completion")
+        self.mx_ctx[idx].read_done = True

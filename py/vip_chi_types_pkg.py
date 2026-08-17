@@ -150,6 +150,24 @@ class LasmState(IntEnum):
   RUN = 0b11
 
 
+class DatInterleavePolicy(IntEnum):
+  """Which in-flight transfer a completer takes the next DAT beat from.
+
+  CHI relates every data packet to its transaction by TxnID and to its position
+  by DataID, so a completer is free to interleave the beats of several transfers
+  on one DAT channel; nothing in the protocol requires the beats of a transfer to
+  be contiguous. See vip_chi_cfg_agent.dat_interleave_depth for the gate.
+
+  ROUND_ROBIN : one beat per eligible stream, in turn. Deterministic, so a test
+                can state the exact beat order it expects.
+  RANDOM      : a uniform draw among the eligible streams each beat. Reaches
+                orders round-robin never produces, including runs of beats from
+                one stream.
+  """
+  ROUND_ROBIN = 0
+  RANDOM = 1
+
+
 def lasm(req, ack) -> LasmState:
   """Map one direction's request/acknowledge pair onto its LASM state."""
   return LasmState(((1 if req else 0) << 1) | (1 if ack else 0))

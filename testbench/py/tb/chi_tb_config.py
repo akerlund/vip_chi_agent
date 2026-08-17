@@ -41,6 +41,11 @@ class chi_tb_config:
     # completer deliberately emits DAT beats out of DataID order raises this;
     # the beat-count, TxnID and credit checks are unaffected either way.
     self.dat_reorder_allowed = False
+    # Stand the protocol checkers' burst-shape rules down. Only a test whose
+    # completer interleaves the DAT beats of several reads raises this; those
+    # rules read one FLITPEND run as one transfer, which is this VIP's own
+    # emission convention rather than a CHI rule.
+    self.dat_interleave_allowed = False
     # Cycles a sender may keep TXSACTIVE asserted past the close of its
     # outstanding window. 0 (the default) is the tightest legal behaviour:
     # drop it as soon as the window closes. Raising it models a node that

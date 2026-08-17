@@ -106,6 +106,15 @@ class vip_chi_driver_rni #(
 
   protected mx_ctx_t mx_ctx [$];
 
+  // Read-data beats banked per in-flight transfer, keyed by the TxnID the
+  // completion carries. A completer may interleave the beats of several reads on
+  // the DAT channel, so a beat is filed against the transaction its TxnID names
+  // rather than assumed to belong to whichever read is currently being
+  // collected. Kept beside mx_ctx rather than inside it because the context
+  // queue is indexed by position and shifts as entries retire, while a TxnID
+  // does not move. Entries are deleted the moment their transfer is placed.
+  protected dat_flit_t mx_dat_beats [txn_id_t][$];
+
   // Pipeline P-credit pool: PCrdGrant is credit-typed, not TxnID-tied, so a
   // grant banks one credit of its PCrdType here and any bounced pipeline entry
   // owed that type consumes one to re-issue (mirrors the serial handle_retry,
@@ -454,6 +463,7 @@ class vip_chi_driver_rni #(
     this.next_txn_id = '0;
     this.outstanding_ids.delete();
     this.mx_ctx.delete();
+    this.mx_dat_beats.delete();
     this.pcrd_pool.delete();
     this.pcrd_granter.delete();
     this.pcrd_own_id.delete();
@@ -2079,18 +2089,72 @@ class vip_chi_driver_rni #(
   // serial path (which used to drop the sideband here) or the pipelined one
   // (which had to be told not to, or it would have dropped it while its peers
   // were still outstanding).
+  // Fields a read-data beat carries about the transfer as a whole, copied onto
+  // the request so a sequence can read them back. Every beat of a transfer
+  // carries the same values, so the last one to land wins and it does not matter
+  // which order they arrived in.
+  protected function void stamp_dat_beat_on_req(
+    inout item_t     req,
+    input dat_flit_t flit
+  );
+    req.role         = VIP_CHI_ROLE_SNF_E;
+    req.src_id       = node_id_t'(flit.srcid);
+    req.tgt_id       = node_id_t'(flit.tgtid);
+    req.qos          = flit.qos;
+    req.dat_opcode   = item_t::dat_opcode_t'(flit.opcode);
+    req.dbid         = txn_id_t'(flit.dbid);
+    req.rsp_resp     = vip_chi_resp_t'(flit.resp);
+    req.rsp_resp_err = vip_chi_resp_err_t'(flit.resperr);
+  endfunction
+
+  // Place each beat at the position its DataID names, not at the position it
+  // arrived in: CHI lets the beats of one transfer return in any order, and a
+  // sequence reading back req.data[] must see the payload in address order
+  // regardless. A DataID outside the burst cannot be placed, so that beat keeps
+  // its arrival slot and the arrival order stands for the whole burst -- the
+  // monitor is the component that reports the malformed DataID.
+  protected function void place_dat_beats(
+    inout item_t     req,
+    input dat_flit_t beats[$]
+  );
+    bit placeable;
+    int beat_pos;
+
+    req.data         = new[beats.size()];
+    req.be           = new[beats.size()];
+    req.data_id      = new[beats.size()];
+    req.cc_id        = new[beats.size()];
+    req.dat_resp     = new[beats.size()];
+    req.dat_resp_err = new[beats.size()];
+
+    placeable = 1'b1;
+    foreach (beats[i]) begin
+      if (int'(beats[i].dataid) >= beats.size()) begin
+        placeable = 1'b0;
+      end
+    end
+
+    foreach (beats[i]) begin
+      beat_pos                   = placeable ? int'(beats[i].dataid) : i;
+      req.data[beat_pos]         = data_t'(beats[i].data);
+      req.be[beat_pos]           = be_t'(beats[i].be);
+      req.data_id[beat_pos]      = data_id_t'(beats[i].dataid);
+      req.cc_id[beat_pos]        = cc_id_t'(beats[i].ccid);
+      req.dat_resp[beat_pos]     = vip_chi_resp_t'(beats[i].resp);
+      req.dat_resp_err[beat_pos] = vip_chi_resp_err_t'(beats[i].resperr);
+    end
+  endfunction
+
+  // Collect ONE read's data as a contiguous run of beats, terminated by the
+  // FLITPEND deassert. Used by the serial issue paths and by the atomic data
+  // completion, all of which have exactly one transfer outstanding, so no beat on
+  // the channel can belong to anything else. The mixed pipeline cannot assume
+  // that and files beats by TxnID instead -- see mixed_dat_proc.
   protected task collect_read_completion(inout item_t req);
 
     dat_flit_t         flit;
-    data_t             data_q[$];
-    be_t               be_q[$];
-    data_id_t          data_id_q[$];
-    cc_id_t            cc_id_q[$];
+    dat_flit_t         beats[$];
     txn_id_t           expected_txn_id;
-    vip_chi_resp_t     dat_resp_q[$];
-    vip_chi_resp_err_t dat_resp_err_q[$];
-    bit                placeable;
-    int                beat_pos;
 
     expected_txn_id = this.expected_read_completion_txn_id(req);
 
@@ -2113,21 +2177,8 @@ class vip_chi_driver_rni #(
 
       this.schedule_dat_credit_return();
 
-      data_q.push_back(data_t'(flit.data));
-      be_q.push_back(be_t'(flit.be));
-      data_id_q.push_back(data_id_t'(flit.dataid));
-      cc_id_q.push_back(cc_id_t'(flit.ccid));
-      dat_resp_q.push_back(vip_chi_resp_t'(flit.resp));
-      dat_resp_err_q.push_back(vip_chi_resp_err_t'(flit.resperr));
-
-      req.role       = VIP_CHI_ROLE_SNF_E;
-      req.src_id     = node_id_t'(flit.srcid);
-      req.tgt_id     = node_id_t'(flit.tgtid);
-      req.qos        = flit.qos;
-      req.dat_opcode = item_t::dat_opcode_t'(flit.opcode);
-      req.dbid       = txn_id_t'(flit.dbid);
-      req.rsp_resp   = vip_chi_resp_t'(flit.resp);
-      req.rsp_resp_err = vip_chi_resp_err_t'(flit.resperr);
+      beats.push_back(flit);
+      this.stamp_dat_beat_on_req(req, flit);
 
       if (!this.vif_rni.g_drv.rni_cb.rxdatflitpend) begin
         break;
@@ -2137,35 +2188,7 @@ class vip_chi_driver_rni #(
       this.drive_idle_sideband();
     end
 
-    req.data         = new[data_q.size()];
-    req.be           = new[be_q.size()];
-    req.data_id      = new[data_id_q.size()];
-    req.cc_id        = new[cc_id_q.size()];
-    req.dat_resp     = new[dat_resp_q.size()];
-    req.dat_resp_err = new[dat_resp_err_q.size()];
-
-    // Place each beat at the position its DataID names, not at the position it
-    // arrived in: CHI lets the beats of one transfer return in any order, and a
-    // sequence reading back req.data[] must see the payload in address order
-    // regardless. A DataID outside the burst cannot be placed, so that beat
-    // keeps its arrival slot and the arrival order stands for the whole burst
-    // -- the monitor is the component that reports the malformed DataID.
-    placeable = 1'b1;
-    foreach (data_id_q[i]) begin
-      if (int'(data_id_q[i]) >= data_q.size()) begin
-        placeable = 1'b0;
-      end
-    end
-
-    foreach (data_q[i]) begin
-      beat_pos                   = placeable ? int'(data_id_q[i]) : i;
-      req.data[beat_pos]         = data_q[i];
-      req.be[beat_pos]           = be_q[i];
-      req.data_id[beat_pos]      = data_id_q[i];
-      req.cc_id[beat_pos]        = cc_id_q[i];
-      req.dat_resp[beat_pos]     = dat_resp_q[i];
-      req.dat_resp_err[beat_pos] = dat_resp_err_q[i];
-    end
+    this.place_dat_beats(req, beats);
 
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
@@ -2726,10 +2749,24 @@ class vip_chi_driver_rni #(
   // outstanding read by TxnID, assemble the payload onto the request item, and
   // flag it done for the TX thread to retire. Drives no TX, no sequencer.
   // ---------------------------------------------------------------------------
+  // The pipeline's DAT receive path, one beat at a time.
+  //
+  // Each beat is filed against the transaction its TxnID names and the transfer
+  // retires on its OWN beat count, derived from the request Size. That is the
+  // difference from collect_read_completion: with several reads outstanding a
+  // completer may interleave their beats on the channel, and the FLITPEND
+  // deassert then marks the end of the channel's activity rather than the end of
+  // any one transfer. Counting beats per transaction is the only reading that
+  // survives both shapes -- and it costs nothing on contiguous traffic, where the
+  // count is reached on exactly the beat FLITPEND would have marked.
   protected task mixed_dat_proc();
-    txn_id_t beat_txn;
-    int      idx;
-    item_t   r;
+    dat_flit_t beat;
+    txn_id_t   beat_txn;
+    txn_id_t   req_txn;
+    int        idx;
+    int        expected;
+    bit        complete;
+    item_t     r;
 
     forever begin
       while (!this.vif_rni.g_drv.rni_cb.rxdatflitv) begin
@@ -2737,7 +2774,8 @@ class vip_chi_driver_rni #(
         this.drive_idle_sideband();
       end
 
-      beat_txn = txn_id_t'(this.vif_rni.g_drv.rni_cb.rxdatflit.txnid);
+      beat     = this.vif_rni.g_drv.rni_cb.rxdatflit;
+      beat_txn = txn_id_t'(beat.txnid);
 
       idx = this.find_mixed_read_by_completion(beat_txn);
       if (idx < 0) begin
@@ -2747,18 +2785,50 @@ class vip_chi_driver_rni #(
       end
 
       r = this.mx_ctx[idx].item;
-      this.collect_read_completion(r);
 
-      // Re-find by request TxnID: the queue may have shifted while
-      // collect_read_completion() yielded (only the TX thread deletes, and it
-      // will not retire this read until read_done is set just below).
-      idx = this.find_mixed_ctx_by_txn(r.txn_id);
-      if (idx < 0) begin
-        `uvm_fatal(get_name(), $sformatf(
-          "FATAL [%s] Mixed read TxnID 0x%0h vanished before completion",
-          get_name(), r.txn_id))
+      // Atomic data completions keep the contiguous collector: the returned size
+      // is not the request Size (AtomicCompare returns half of it), so there is
+      // no beat count to retire on, and the completer never interleaves them.
+      if (this.mx_ctx[idx].kind != TXN_KIND_READ) begin
+        this.collect_read_completion(r);
+        idx = this.find_mixed_ctx_by_txn(r.txn_id);
+        if (idx < 0) begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] Mixed read TxnID 0x%0h vanished before completion",
+            get_name(), r.txn_id))
+        end
+        this.mx_ctx[idx].read_done = 1'b1;
+        continue;
       end
-      this.mx_ctx[idx].read_done = 1'b1;
+
+      this.schedule_dat_credit_return();
+      this.mx_dat_beats[beat_txn].push_back(beat);
+      this.stamp_dat_beat_on_req(r, beat);
+
+      expected = vip_chi_types_pkg::chi_xfer_dat_beats(int'(r.size), CFG_P.DATA_BYTES_P);
+      complete = (this.mx_dat_beats[beat_txn].size() >= expected);
+      if (complete) begin
+        this.place_dat_beats(r, this.mx_dat_beats[beat_txn]);
+        this.mx_dat_beats.delete(beat_txn);
+      end
+
+      req_txn = r.txn_id;
+
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
+
+      if (complete) begin
+        // Re-find by request TxnID: the queue may have shifted while this thread
+        // was blocked (only the TX thread deletes, and it will not retire this
+        // read until read_done is set just below).
+        idx = this.find_mixed_ctx_by_txn(req_txn);
+        if (idx < 0) begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] Mixed read TxnID 0x%0h vanished before completion",
+            get_name(), req_txn))
+        end
+        this.mx_ctx[idx].read_done = 1'b1;
+      end
     end
   endtask
 

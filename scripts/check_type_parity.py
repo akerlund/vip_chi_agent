@@ -166,6 +166,11 @@ def _compare_non_opcode_enums(sv: str, py_types) -> list[str]:
       },
     ),
     (
+      "DatInterleavePolicy",
+      py_types.DatInterleavePolicy,
+      {m.name: f"VIP_CHI_DAT_INTERLEAVE_{m.name}_E" for m in py_types.DatInterleavePolicy},
+    ),
+    (
       "LasmState",
       py_types.LasmState,
       {

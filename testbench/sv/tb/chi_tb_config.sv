@@ -15,6 +15,12 @@ class chi_tb_config extends uvm_object;
   // VIP's own in-order emission convention, not a CHI rule -- CHI places a beat
   // by its DataID -- so a reordering test must clear them and nothing else.
   bit dat_reorder_allowed;
+  // Stand the SVA burst-shape checks down: set by a test whose completer
+  // interleaves the DAT beats of several reads. Those checks read one FLITPEND
+  // run as one transfer, which is this VIP's own emission convention rather than
+  // a CHI rule -- a DAT flit names its transaction in TxnID and its position in
+  // DataID, so beats of different transfers may share the channel.
+  bit dat_interleave_allowed;
   // Cycles a sender may keep TXSACTIVE asserted past the close of its
   // outstanding window. 0 (the default) is the tightest legal behaviour: drop
   // it as soon as the window closes. Raising it models a node that keeps the
@@ -36,6 +42,7 @@ class chi_tb_config extends uvm_object;
     `uvm_field_int(scoreboard_check_order, UVM_DEFAULT)
     `uvm_field_int(perf_enable, UVM_DEFAULT)
     `uvm_field_int(dat_reorder_allowed, UVM_DEFAULT)
+    `uvm_field_int(dat_interleave_allowed, UVM_DEFAULT)
     `uvm_field_int(txsactive_extend_max_cycles, UVM_DEFAULT)
     `uvm_field_int(link_activation_timeout_cycles, UVM_DEFAULT)
     `uvm_field_int(link_deactivation_timeout_cycles, UVM_DEFAULT)
@@ -54,6 +61,7 @@ class chi_tb_config extends uvm_object;
     this.scoreboard_check_order = 1'b1;
     this.perf_enable            = 1'b1;
     this.dat_reorder_allowed    = 1'b0;
+    this.dat_interleave_allowed = 1'b0;
     this.txsactive_extend_max_cycles = 0;
     this.link_activation_timeout_cycles   = 0;
     this.link_deactivation_timeout_cycles = 0;

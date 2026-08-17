@@ -62,6 +62,12 @@ class tc_chi_cfg_invalid extends chi_base_test;
     c = this.fresh(); c.snf_reorder_ordered_service = 1'b1;
     this.expect_invalid(c, "snf_reorder_ordered_service without multi_outstanding");
 
+    c = this.fresh(); c.dat_interleave_depth = 0;
+    this.expect_invalid(c, "dat_interleave_depth of 0");
+
+    c = this.fresh(); c.dat_interleave_depth = 2;
+    this.expect_invalid(c, "dat_interleave_depth above 1 without multi_outstanding");
+
     c = this.fresh(); c.initial_req_credits = 65;
     this.expect_invalid(c, "initial REQ credits above the send-credit cap");
 
@@ -129,6 +135,11 @@ class tc_chi_cfg_invalid extends chi_base_test;
     c.multi_outstanding             = 1'b1;
     c.snf_reorder_ordered_service   = 1'b1;
     this.expect_valid(c, "the ordered-service reorder knob with its master enable");
+
+    c = this.fresh();
+    c.multi_outstanding      = 1'b1;
+    c.dat_interleave_depth   = 4;
+    this.expect_valid(c, "DAT beat interleaving with its master enable");
 
     c = this.fresh();
     c.decerr_ranges = new[1];

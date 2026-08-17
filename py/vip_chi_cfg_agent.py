@@ -22,7 +22,7 @@
 
 from __future__ import annotations
 
-from vip_chi_types_pkg import Role, Resp
+from vip_chi_types_pkg import Role, Resp, DatInterleavePolicy
 
 # is_active values (mirror uvm_active_passive_enum).
 UVM_ACTIVE = True
@@ -110,6 +110,43 @@ class VipChiCfgAgent:
     # the final beat of a read burst carrying DataID 0 again instead of its own
     # position, so one position arrives twice and one never arrives.
     self.snf_duplicate_dat_beat = False
+
+    # How many in-flight read transfers the completer may take DAT beats from
+    # before finishing any one of them. 1, the default, is the behaviour this VIP
+    # has always had: a read's beats are emitted contiguously, so the DAT channel
+    # carries one transfer at a time and every existing test sees the same wire.
+    #
+    # Above 1 the SN-F drains up to this many queued reads together, one beat at
+    # a time in the order dat_interleave_policy names. That is legal because a
+    # DAT flit is self-identifying -- TxnID says which transaction, DataID says
+    # which position -- and CHI nowhere requires the beats of a transfer to be
+    # contiguous on the channel. It is worth reaching because a receiver that
+    # assumes contiguity reassembles correctly right up until something upstream
+    # stops being contiguous, and then reports a DATA MISMATCH rather than a
+    # reassembly fault.
+    #
+    # Requires multi_outstanding: the serial responder never holds two requests
+    # at once, so there is never a second stream to interleave with (is_valid()
+    # rejects the combination rather than leaving the knob silently inert).
+    self.dat_interleave_depth = 1
+
+    # Which eligible stream the next beat comes from. Only consulted when
+    # dat_interleave_depth > 1.
+    self.dat_interleave_policy = DatInterleavePolicy.ROUND_ROBIN
+
+    # Cycles the responder will wait, with a read already queued, for enough
+    # further reads to fill dat_interleave_depth.
+    #
+    # A completer only has something to interleave when two transfers are queued
+    # at once, and a requester pipelines its requests a cycle or two apart --
+    # without a window the responder starts the first read's data before the
+    # second request is even off the wire, and dat_interleave_depth would look
+    # enabled while never once engaging. Bounded, and only entered while a read
+    # is already waiting, so nothing stalls on traffic that is not coming.
+    #
+    # Only consulted when dat_interleave_depth > 1, which is what keeps the
+    # default responder's timing untouched.
+    self.dat_interleave_gather_cycles = 8
 
     # Negative control for the MTE tag checks: the exact-CHI-E completer returns
     # the stored tag with its low bit inverted on the FIRST beat of a read burst,
@@ -347,6 +384,20 @@ class VipChiCfgAgent:
       err("snf_reorder_ordered_service is set without multi_outstanding: the "
           "serial SN-F loop never holds two requests at once, so nothing is "
           "reordered")
+
+    # Zero is not "no interleaving", it is a depth no scheduler can honour -- the
+    # emitter would have no stream to take a beat from. Reject it rather than
+    # quietly reading it as 1.
+    if self.dat_interleave_depth == 0:
+      err("dat_interleave_depth is 0: the minimum is 1, which is one transfer "
+          "at a time (no interleaving)")
+
+    # Same reasoning as snf_reorder_ordered_service above: the serial loop
+    # services one REQ to completion before sampling the next, so there is never
+    # a second beat stream and the knob would be inert.
+    if self.dat_interleave_depth > 1 and not self.multi_outstanding:
+      err("dat_interleave_depth > 1 without multi_outstanding: the serial SN-F "
+          "loop never holds two reads at once, so no beats are ever interleaved")
 
     # The abort is driven by activate_link, which only the requester roles run;
     # on a completer the knob would set a flag nothing reads and the negative

@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **151 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **152 pyUVM/cocotb**
+The shared regression currently runs **152 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **153 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -131,6 +131,7 @@ exception of `tc_chi_sva_smoke` described at the top of this file.
 | `tc_chi_d_derr_smoke` | INT | DERR-marked read data returned from the backing store. |
 | `tc_chi_d_raw_inject` | INT | raw RN-I REQ + raw SN-F DAT/RSP injection, incl. verbatim observation of an illegal opcode (negative testing). |
 | `tc_chi_dataid_out_of_order` | INT | DAT beats are placed by `DataID`, not by arrival: `snf_reverse_dat_beats` makes the SN-F return a 4-beat read in DESCENDING `DataID` and the payload must still reassemble in address order, in the monitor's item and in the requester's own response. The SVA `DataID`-ordering checks (which hold this VIP's in-order emission convention, not a CHI rule) stand down via `tb_cfg.dat_reorder_allowed`. |
+| `tc_chi_dat_interleave` | INT | the beats of two reads share the DAT channel: `dat_interleave_depth = 2` makes the SN-F drain two queued 4-beat reads together, one beat each in turn, and both payloads must still arrive whole and in address order. A DAT flit is self-identifying (`TxnID` names the transaction, `DataID` the position) and CHI nowhere requires a transfer's beats to be contiguous. Checked on BOTH reassembly paths — the requester's own collector and the monitor's — because a receiver that reads the `FLITPEND` deassert as "this transfer ended" does not fail loudly here, it staples one read's beats onto another's and reports a data mismatch. Anti-vacuity: the emitted `TxnID` sequence must actually alternate (`n_dat_stream_switches > 0`); with the depth forced to 1 the test fails on "no interleaving reached the wire". The burst-shape assertions stand down via `tb_cfg.dat_interleave_allowed`; the per-`TxnID` retirement and the outstanding/`TXSACTIVE` pair stay armed. |
 
 ## Multi-outstanding pipeline
 

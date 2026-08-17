@@ -315,6 +315,23 @@ package vip_chi_types_pkg;
     VIP_CHI_LASM_RUN_E        = 2'b11
   } vip_chi_lasm_state_t;
 
+  // Which in-flight transfer a completer takes the next DAT beat from when more
+  // than one is eligible. CHI relates every data packet to its transaction by
+  // TxnID and to its position by DataID, so a completer is free to interleave
+  // the beats of several transfers on one DAT channel; nothing in the protocol
+  // requires the beats of a transfer to be contiguous. See
+  // vip_chi_cfg_agent::dat_interleave_depth for the gate.
+  //
+  //   ROUND_ROBIN : one beat per eligible stream, in turn. Deterministic, so a
+  //                 test can state the exact beat order it expects.
+  //   RANDOM      : a uniform draw among the eligible streams each beat. Reaches
+  //                 orders round-robin never produces, including runs of beats
+  //                 from one stream.
+  typedef enum logic {
+    VIP_CHI_DAT_INTERLEAVE_ROUND_ROBIN_E = 1'b0,
+    VIP_CHI_DAT_INTERLEAVE_RANDOM_E      = 1'b1
+  } vip_chi_dat_interleave_policy_t;
+
   // Map one direction's request/acknowledge pair onto its LASM state.
   function automatic vip_chi_lasm_state_t vip_chi_lasm(input bit req, input bit ack);
     return vip_chi_lasm_state_t'({req, ack});

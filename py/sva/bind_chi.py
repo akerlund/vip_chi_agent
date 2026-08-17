@@ -602,6 +602,11 @@ class bind_chi:
     self._dat_completion_req_valid_by_txn = {}
     self._dat_completion_req_txn_by_txn = {}
 
+    # Read-completion DAT beats seen so far, per direction and per TxnID -- see
+    # _retire_dat_transfer for why this is counted per transfer rather than read
+    # off the FLITPEND run.
+    self._dat_beats_by_txn = {"tx": {}, "rx": {}}
+
     self._burst = {
       d: {"active": False, "txn_id": 0, "expected_data_id": 0, "count": 0,
           "opcode": int(DatOpcode.COMP_DATA)}
@@ -720,6 +725,19 @@ class bind_chi:
     """
     return bool(self.tb_cfg is not None
                 and getattr(self.tb_cfg, "dat_reorder_allowed", False))
+
+  def _dat_interleave_allowed(self) -> bool:
+    """The DAT channel may carry more than one transfer's beats per FLITPEND run.
+
+    CHI permits it: a DAT flit names its transaction in TxnID and its position in
+    DataID, and nothing requires a transfer's beats to be contiguous. What stands
+    down is exactly the set of checks that read one run as one transfer -- TxnID
+    stability across the run, the run's beat count, and the DataID-ordering pair.
+    The per-TxnID bookkeeping that retires a completed transfer stays armed,
+    which is what keeps the outstanding / TXSACTIVE checks meaningful here.
+    """
+    return bool(self.tb_cfg is not None
+                and getattr(self.tb_cfg, "dat_interleave_allowed", False))
 
   # ---------------------------------------------------------------------------
   async def run(self) -> None:
@@ -1392,7 +1410,12 @@ class bind_chi:
     st = self._burst[d]
     up = d.upper()
     more = bool(s[f"{d}datflitpend"])
-    reorder = self._dat_reorder_allowed()
+    interleaved = self._dat_interleave_allowed()
+    reorder = self._dat_reorder_allowed() or interleaved
+
+    # Retire the transfer this beat belongs to, counted by TxnID, before the
+    # run-shaped tracking below. See _retire_dat_transfer.
+    self._retire_dat_transfer(d, f)
 
     if not st["active"]:
       self._post(st, "count", 1)
@@ -1409,7 +1432,8 @@ class bind_chi:
         self._close_burst(s, d, int(f["opcode"]), f, 1)
       return
 
-    self._chk(f"CHI_{up}_DAT_TXNID_STABLE", f["txnid"] == st["txn_id"],
+    self._chk(f"CHI_{up}_DAT_TXNID_STABLE",
+              interleaved or f["txnid"] == st["txn_id"],
               f"{up} DAT burst changed txnid before {d}datflitpend dropped",
               "section 2.9")
     if not reorder:
@@ -1430,6 +1454,46 @@ class bind_chi:
     self._post(st, "count", 0)
     self._post(st, "opcode", int(DatOpcode.COMP_DATA))
 
+  # Retire the read completion this beat belongs to, counted by TxnID.
+  #
+  # Deliberately separate from the FLITPEND-run tracker: the run tells you when
+  # the CHANNEL went quiet, which is only the same thing as "this transfer
+  # finished" while no two transfers share the channel. Retiring on the run
+  # would leave every interleaved transfer but the last outstanding forever,
+  # which surfaces at the end of the test as a TXSACTIVE failure with nothing to
+  # point at the data. On contiguous traffic the count is reached on exactly the
+  # beat the run ends at, so this is the same moment as before.
+  def _retire_dat_transfer(self, d: str, f: dict) -> None:
+    completion_side = self._is_completer if d == "tx" else self._is_requester
+    if not completion_side or int(f["opcode"]) not in _READ_COMPLETION_DAT_OPCODES_C:
+      return
+    up = d.upper()
+    txn = f["txnid"]
+    seen = self._dat_beats_by_txn[d]
+
+    if not self._expected_completion_valid_by_txn.get(txn, False):
+      # No request on record for this TxnID. The orphan itself is the
+      # scoreboard's to report; here it just must not accumulate a count a later,
+      # legitimate transfer would inherit.
+      self._post(seen, txn, 0)
+      return
+
+    beats = seen.get(txn, 0) + 1
+    if beats < self._expected_completion_beats_by_txn.get(txn, 0):
+      self._post(seen, txn, beats)
+      return
+
+    self._chk(f"CHI_{up}_READ_COMPLETION_DAT_OPCODE",
+              self._expected_completion_opcode_by_txn.get(txn) == int(f["opcode"]),
+              f"{up} read completion DAT opcode did not match the request "
+              f"type", "section 2.9")
+    self._post(seen, txn, 0)
+    self._post(self._expected_completion_valid_by_txn, txn, False)
+    if self._dat_completion_req_valid_by_txn.get(txn, False):
+      self._post(self._req_inflight,
+                 self._dat_completion_req_txn_by_txn.get(txn, 0), False)
+      self._post(self._dat_completion_req_valid_by_txn, txn, False)
+
   def _close_burst(self, s: dict, d: str, opcode: int, f: dict,
                    beats: int) -> None:
     """Last beat of a burst: does its length match what the request asked for?
@@ -1437,6 +1501,10 @@ class bind_chi:
     Which side of the link a burst is judged from depends on the role. Write
     data flows requester -> completer, so it is outbound at a requester and
     inbound at a completer; read completions flow the other way.
+
+    The opcode check and the retirement moved to _retire_dat_transfer, which is
+    per transfer rather than per run; what is left here is the run's own length,
+    and that only means anything when the run IS one transfer.
     """
     up = d.upper()
     outbound = (d == "tx")
@@ -1457,32 +1525,41 @@ class bind_chi:
       txn = f["txnid"]
       if not self._expected_completion_valid_by_txn.get(txn, False):
         return
-      self._chk(f"CHI_{up}_READ_COMPLETION_DAT_OPCODE",
-                self._expected_completion_opcode_by_txn.get(txn) == opcode,
-                f"{up} read completion DAT opcode did not match the request "
-                f"type", "section 2.9")
       self._chk(f"CHI_{up}_READ_COMPLETION_DAT_BEAT_COUNT",
-                self._expected_completion_beats_by_txn.get(txn, 0) == beats,
+                self._dat_interleave_allowed()
+                or self._expected_completion_beats_by_txn.get(txn, 0) == beats,
                 f"{up} read completion DAT burst beat count did not match the "
                 f"request size", "section 2.9")
-      self._post(self._expected_completion_valid_by_txn, txn, False)
-      if self._dat_completion_req_valid_by_txn.get(txn, False):
-        self._post(self._req_inflight,
-                   self._dat_completion_req_txn_by_txn.get(txn, 0), False)
-        self._post(self._dat_completion_req_valid_by_txn, txn, False)
 
   # ---------------------------------------------------------------------------
   # Temporal attempts
   # ---------------------------------------------------------------------------
+  def _dat_transfer_last_beat(self, s: dict, d: str, completion_txn: int) -> bool:
+    """Is the DAT beat on the wire this cycle the last one of its OWN transfer?
+
+    The FLITPEND deassert used to answer this on its own, and on contiguous
+    traffic it still does -- the transfer's last beat is the run's last beat. It
+    stops answering it the moment a completer interleaves transfers, because
+    FLITPEND then says the CHANNEL has more to send, not that THIS transfer
+    does. Counting the transfer's own beats holds either way; the FLITPEND
+    fallback covers a transfer with no request on record, where there is no
+    expected count to compare against.
+    """
+    if not self._expected_completion_valid_by_txn.get(completion_txn, False):
+      return not s[f"{d}datflitpend"]
+    seen = self._dat_beats_by_txn[d].get(completion_txn, 0)
+    return (seen + 1) >= self._expected_completion_beats_by_txn.get(completion_txn, 0)
+
   def _final_completion_observed(self, s: dict, opcode: int, req_txn: int,
                                  completion_txn: int) -> bool:
     """Is the completion that retires this request on the wire right now?"""
     cd = self._completion_dir
     if _req_completion_uses_dat(opcode):
-      if not s[f"{cd}datflitv"] or s[f"{cd}datflitpend"]:
+      if not s[f"{cd}datflitv"]:
         return False
       f = s[f"{cd}datflit"]
       return (f["txnid"] == completion_txn
+              and self._dat_transfer_last_beat(s, cd, completion_txn)
               and int(f["opcode"]) == _expected_completion_dat_opcode(opcode))
     if not s[f"{cd}rspflitv"]:
       return False

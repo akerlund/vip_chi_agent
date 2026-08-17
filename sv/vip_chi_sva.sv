@@ -46,6 +46,19 @@ module vip_chi_sva #(
     // completer deliberately reorders beats: the ordering checks stand down,
     // everything else (beat counts, TxnID stability, credits) keeps checking.
     input bit  dat_reorder_allowed,
+    // The DAT channel may carry the beats of MORE THAN ONE transfer between one
+    // FLITPEND assertion and the next -- the completer is interleaving them (see
+    // vip_chi_cfg_agent::dat_interleave_depth). CHI permits this: a DAT flit
+    // names its transaction in TxnID and its position in DataID, and nothing
+    // requires a transfer's beats to be contiguous on the channel.
+    //
+    // What stands down is exactly the set of checks that read a FLITPEND run as
+    // one transfer: TxnID stability across the run, the run's beat count, and
+    // (with dat_reorder_allowed) the DataID-ordering pair. The bookkeeping that
+    // retires a completed transfer does NOT stand down -- it is counted per
+    // TxnID and stays correct either way, which is what keeps the outstanding /
+    // TXSACTIVE checks armed on an interleaved link.
+    input bit  dat_interleave_allowed,
     // Cycles a sender may keep TXSACTIVE asserted past the close of its
     // outstanding window (cfg_agent.txsactive_extend_max_cycles). An input
     // rather than a parameter, like dat_reorder_allowed above and for the same
@@ -314,6 +327,25 @@ module vip_chi_sva #(
     return txn_id;
   endfunction
 
+  // Expected read-completion shape per TxnID, recorded when the request is seen.
+  // Declared here, ahead of the rest of the tracking state further down, because
+  // dat_transfer_last_beat() below reads them.
+  int unsigned expected_completion_beats_by_txn[TXN_ID_COUNT_C];
+  dat_opcode_t  expected_completion_opcode_by_txn[TXN_ID_COUNT_C];
+  bit expected_completion_valid_by_txn[TXN_ID_COUNT_C];
+
+  // Read-completion DAT beats seen so far, counted PER TRANSFER rather than per
+  // FLITPEND run. The run is not necessarily one transfer: a completer may
+  // interleave the beats of several reads on one DAT channel (see
+  // vip_chi_cfg_agent::dat_interleave_depth), and the burst tracker further down
+  // -- which follows the run -- would then retire only whichever transfer
+  // happened to send the run's last beat, leaving every other one outstanding
+  // forever. That surfaces at the end of the test as a TXSACTIVE failure, with
+  // nothing to point at the data. Counting by TxnID retires each transfer on its
+  // own last beat, which on contiguous traffic is the very beat the run ends at.
+  int unsigned txdat_beats_by_txn[TXN_ID_COUNT_C];
+  int unsigned rxdat_beats_by_txn[TXN_ID_COUNT_C];
+
   function automatic bit req_has_modeled_completion(input req_opcode_t opcode);
     case (opcode)
       req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_C),
@@ -371,14 +403,40 @@ module vip_chi_sva #(
     return req_txn_id;
   endfunction
 
+  // TRUE when the DAT beat on the wire this cycle is the LAST one of its own
+  // transfer.
+  //
+  // The FLITPEND deassert used to answer this on its own, and on contiguous
+  // traffic it still does -- the transfer's last beat is the run's last beat.
+  // It stops answering it the moment a completer interleaves transfers, because
+  // FLITPEND then says the CHANNEL has more to send, not that THIS transfer
+  // does. Counting the transfer's own beats is the reading that holds either
+  // way; the FLITPEND fallback covers a transfer with no request on record,
+  // where there is no expected count to compare against.
+  function automatic bit dat_transfer_last_beat(
+    input bit      is_rx,
+    input txn_id_t completion_txn_id
+  );
+    int unsigned idx;
+
+    idx = txn_id_to_index(completion_txn_id);
+    if (!expected_completion_valid_by_txn[idx]) begin
+      return is_rx ? !vif.rxdatflitpend : !vif.txdatflitpend;
+    end
+
+    return (((is_rx ? rxdat_beats_by_txn[idx] : txdat_beats_by_txn[idx]) + 1) >=
+            expected_completion_beats_by_txn[idx]);
+  endfunction
+
   function automatic bit rni_final_completion_observed(
     input req_opcode_t opcode,
     input txn_id_t     req_txn_id,
     input txn_id_t     completion_txn_id
   );
     if (req_completion_uses_dat(opcode)) begin
-      return (vif.rxdatflitv && !vif.rxdatflitpend &&
+      return (vif.rxdatflitv &&
               (txn_id_t'(vif.rxdatflit.txnid) == completion_txn_id) &&
+              dat_transfer_last_beat(1'b1, completion_txn_id) &&
               (dat_opcode_t'(vif.rxdatflit.opcode) == expected_completion_dat_opcode(opcode)));
     end
 
@@ -393,8 +451,9 @@ module vip_chi_sva #(
     input txn_id_t     completion_txn_id
   );
     if (req_completion_uses_dat(opcode)) begin
-      return (vif.txdatflitv && !vif.txdatflitpend &&
+      return (vif.txdatflitv &&
               (txn_id_t'(vif.txdatflit.txnid) == completion_txn_id) &&
+              dat_transfer_last_beat(1'b0, completion_txn_id) &&
               (dat_opcode_t'(vif.txdatflit.opcode) == expected_completion_dat_opcode(opcode)));
     end
 
@@ -479,9 +538,6 @@ module vip_chi_sva #(
   int unsigned expected_write_beats_by_txn[TXN_ID_COUNT_C];
   int unsigned expected_write_beats_by_dbid[TXN_ID_COUNT_C];
   bit expected_write_valid_by_dbid[TXN_ID_COUNT_C];
-  int unsigned expected_completion_beats_by_txn[TXN_ID_COUNT_C];
-  dat_opcode_t  expected_completion_opcode_by_txn[TXN_ID_COUNT_C];
-  bit expected_completion_valid_by_txn[TXN_ID_COUNT_C];
   bit txdat_burst_active;
   txn_id_t txdat_burst_txn_id;
   data_id_t txdat_expected_data_id;
@@ -596,6 +652,8 @@ module vip_chi_sva #(
         expected_completion_opcode_by_txn[txn_i] <=
           dat_opcode_t'(VIP_CHI_DAT_COMP_DATA_C);
         expected_completion_valid_by_txn[txn_i] <= 1'b0;
+        txdat_beats_by_txn[txn_i] <= 0;
+        rxdat_beats_by_txn[txn_i] <= 0;
         req_inflight_by_txn[txn_i] <= 1'b0;
         dat_completion_req_valid_by_txn[txn_i] <= 1'b0;
         dat_completion_req_txn_by_txn[txn_i] <= '0;
@@ -836,10 +894,56 @@ module vip_chi_sva #(
       end
 
       if (vif.txdatflitv) begin
+        // Retire the read completion this beat belongs to, counted by TxnID --
+        // see txdat_beats_by_txn. This runs on every beat and is deliberately
+        // NOT part of the FLITPEND-run tracker below: the run tells you when the
+        // CHANNEL went quiet, which is only the same thing as "this transfer
+        // finished" while no two transfers share the channel.
+        //
+        // The clears here are non-blocking, so the run-end code below still sees
+        // this cycle's pre-update values and its own beat-count check is
+        // unaffected.
+        if (ROLE_IS_COMPLETER_C &&
+            ((dat_opcode_t'(vif.txdatflit.opcode) == dat_opcode_t'(VIP_CHI_DAT_COMP_DATA_C)) ||
+             (dat_opcode_t'(vif.txdatflit.opcode) == dat_opcode_t'(VIP_CHI_DAT_DATA_SEP_RESP_C)))) begin
+          int unsigned rt_txn_idx;
+          int unsigned rt_beats;
+
+          rt_txn_idx = txn_id_to_index(txn_id_t'(vif.txdatflit.txnid));
+          rt_beats   = txdat_beats_by_txn[rt_txn_idx] + 1;
+
+          if (!expected_completion_valid_by_txn[rt_txn_idx]) begin
+            // No request on record for this TxnID. The orphan itself is the
+            // scoreboard's to report; here it just must not accumulate a count
+            // that a later, legitimate transfer would inherit.
+            txdat_beats_by_txn[rt_txn_idx] <= 0;
+          end
+          else if (rt_beats >= expected_completion_beats_by_txn[rt_txn_idx]) begin
+            if (expected_completion_opcode_by_txn[rt_txn_idx] != dat_opcode_t'(vif.txdatflit.opcode)) begin
+              chk_miss(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E, $sformatf("TX read completion DAT opcode did not match the request type"));
+            end
+            else begin
+              chk_hit(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E);
+            end
+            expected_completion_valid_by_txn[rt_txn_idx] <= 1'b0;
+            txdat_beats_by_txn[rt_txn_idx] <= 0;
+            if (dat_completion_req_valid_by_txn[rt_txn_idx]) begin
+              if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[rt_txn_idx])]) begin
+                req_outstanding_delta--;
+              end
+              req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[rt_txn_idx])] <= 1'b0;
+              dat_completion_req_valid_by_txn[rt_txn_idx] <= 1'b0;
+            end
+          end
+          else begin
+            txdat_beats_by_txn[rt_txn_idx] <= rt_beats;
+          end
+        end
+
         if (!txdat_burst_active) begin
           txdat_burst_count <= 1;
           txdat_burst_opcode <= dat_opcode_t'(vif.txdatflit.opcode);
-          if (!dat_reorder_allowed &&
+          if (!dat_reorder_allowed && !dat_interleave_allowed &&
               (data_id_t'(vif.txdatflit.dataid) != data_id_t'('0))) begin
             chk_miss(VIP_CHI_CHK_TX_DAT_FIRST_BEAT_DATAID_ZERO_E, $sformatf("first TX DAT beat did not start at dataid 0"));
           end
@@ -874,39 +978,27 @@ module vip_chi_sva #(
 
               txn_idx = txn_id_to_index(txn_id_t'(vif.txdatflit.txnid));
               if (expected_completion_valid_by_txn[txn_idx]) begin
-                if (expected_completion_opcode_by_txn[txn_idx] != dat_opcode_t'(vif.txdatflit.opcode)) begin
-                  chk_miss(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E, $sformatf("TX read completion DAT opcode did not match the request type"));
-                end
-                else begin
-                  chk_hit(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E);
-                end
-                if (expected_completion_beats_by_txn[txn_idx] != 1) begin
+                if (!dat_interleave_allowed &&
+                    (expected_completion_beats_by_txn[txn_idx] != 1)) begin
                   chk_miss(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_BEAT_COUNT_E, $sformatf("TX read completion DAT burst beat count did not match the request size"));
                 end
                 else begin
                   chk_hit(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_BEAT_COUNT_E);
-                end
-                expected_completion_valid_by_txn[txn_idx] <= 1'b0;
-                if (dat_completion_req_valid_by_txn[txn_idx]) begin
-                  if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])]) begin
-                    req_outstanding_delta--;
-                  end
-                  req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])] <= 1'b0;
-                  dat_completion_req_valid_by_txn[txn_idx] <= 1'b0;
                 end
               end
             end
           end
         end
         else begin
-          if (txn_id_t'(vif.txdatflit.txnid) != txdat_burst_txn_id) begin
+          if (!dat_interleave_allowed &&
+              (txn_id_t'(vif.txdatflit.txnid) != txdat_burst_txn_id)) begin
             chk_miss(VIP_CHI_CHK_TX_DAT_TXNID_STABLE_E, $sformatf("TX DAT burst changed txnid before txdatflitpend dropped"));
           end
           else begin
             chk_hit(VIP_CHI_CHK_TX_DAT_TXNID_STABLE_E);
           end
 
-          if (!dat_reorder_allowed &&
+          if (!dat_reorder_allowed && !dat_interleave_allowed &&
               (data_id_t'(vif.txdatflit.dataid) != txdat_expected_data_id)) begin
             chk_miss(VIP_CHI_CHK_TX_DAT_DATAID_SEQUENTIAL_E, $sformatf("TX DAT burst dataid was not sequential"));
           end
@@ -940,25 +1032,12 @@ module vip_chi_sva #(
 
               txn_idx = txn_id_to_index(txn_id_t'(vif.txdatflit.txnid));
               if (expected_completion_valid_by_txn[txn_idx]) begin
-                if (expected_completion_opcode_by_txn[txn_idx] != txdat_burst_opcode) begin
-                  chk_miss(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E, $sformatf("TX read completion DAT opcode did not match the request type"));
-                end
-                else begin
-                  chk_hit(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E);
-                end
-                if (expected_completion_beats_by_txn[txn_idx] != (txdat_burst_count + 1)) begin
+                if (!dat_interleave_allowed &&
+                    (expected_completion_beats_by_txn[txn_idx] != (txdat_burst_count + 1))) begin
                   chk_miss(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_BEAT_COUNT_E, $sformatf("TX read completion DAT burst beat count did not match the request size"));
                 end
                 else begin
                   chk_hit(VIP_CHI_CHK_TX_READ_COMPLETION_DAT_BEAT_COUNT_E);
-                end
-                expected_completion_valid_by_txn[txn_idx] <= 1'b0;
-                if (dat_completion_req_valid_by_txn[txn_idx]) begin
-                  if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])]) begin
-                    req_outstanding_delta--;
-                  end
-                  req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])] <= 1'b0;
-                  dat_completion_req_valid_by_txn[txn_idx] <= 1'b0;
                 end
               end
             end
@@ -972,10 +1051,47 @@ module vip_chi_sva #(
       end
 
       if (vif.rxdatflitv) begin
+        // Requester-side twin of the TX retirement above: this end receives the
+        // interleaved beats the completer sent, so it needs the same per-TxnID
+        // accounting to know which transfer just finished.
+        if (ROLE_IS_REQUESTER_C &&
+            ((dat_opcode_t'(vif.rxdatflit.opcode) == dat_opcode_t'(VIP_CHI_DAT_COMP_DATA_C)) ||
+             (dat_opcode_t'(vif.rxdatflit.opcode) == dat_opcode_t'(VIP_CHI_DAT_DATA_SEP_RESP_C)))) begin
+          int unsigned rr_txn_idx;
+          int unsigned rr_beats;
+
+          rr_txn_idx = txn_id_to_index(txn_id_t'(vif.rxdatflit.txnid));
+          rr_beats   = rxdat_beats_by_txn[rr_txn_idx] + 1;
+
+          if (!expected_completion_valid_by_txn[rr_txn_idx]) begin
+            rxdat_beats_by_txn[rr_txn_idx] <= 0;
+          end
+          else if (rr_beats >= expected_completion_beats_by_txn[rr_txn_idx]) begin
+            if (expected_completion_opcode_by_txn[rr_txn_idx] != dat_opcode_t'(vif.rxdatflit.opcode)) begin
+              chk_miss(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E, $sformatf("RX read completion DAT opcode did not match the request type"));
+            end
+            else begin
+              chk_hit(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E);
+            end
+            expected_completion_valid_by_txn[rr_txn_idx] <= 1'b0;
+            rxdat_beats_by_txn[rr_txn_idx] <= 0;
+            if (dat_completion_req_valid_by_txn[rr_txn_idx]) begin
+              if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[rr_txn_idx])]) begin
+                req_outstanding_delta--;
+              end
+              req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[rr_txn_idx])] <= 1'b0;
+              dat_completion_req_valid_by_txn[rr_txn_idx] <= 1'b0;
+            end
+          end
+          else begin
+            rxdat_beats_by_txn[rr_txn_idx] <= rr_beats;
+          end
+        end
+
         if (!rxdat_burst_active) begin
           rxdat_burst_count <= 1;
           rxdat_burst_opcode <= dat_opcode_t'(vif.rxdatflit.opcode);
-          if (!dat_reorder_allowed &&
+          if (!dat_reorder_allowed && !dat_interleave_allowed &&
               (data_id_t'(vif.rxdatflit.dataid) != data_id_t'('0))) begin
             chk_miss(VIP_CHI_CHK_RX_DAT_FIRST_BEAT_DATAID_ZERO_E, $sformatf("first RX DAT beat did not start at dataid 0"));
           end
@@ -1010,39 +1126,27 @@ module vip_chi_sva #(
 
               txn_idx = txn_id_to_index(txn_id_t'(vif.rxdatflit.txnid));
               if (expected_completion_valid_by_txn[txn_idx]) begin
-                if (expected_completion_opcode_by_txn[txn_idx] != dat_opcode_t'(vif.rxdatflit.opcode)) begin
-                  chk_miss(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E, $sformatf("RX read completion DAT opcode did not match the request type"));
-                end
-                else begin
-                  chk_hit(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E);
-                end
-                if (expected_completion_beats_by_txn[txn_idx] != 1) begin
+                if (!dat_interleave_allowed &&
+                    (expected_completion_beats_by_txn[txn_idx] != 1)) begin
                   chk_miss(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_BEAT_COUNT_E, $sformatf("RX read completion DAT burst beat count did not match the request size"));
                 end
                 else begin
                   chk_hit(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_BEAT_COUNT_E);
-                end
-                expected_completion_valid_by_txn[txn_idx] <= 1'b0;
-                if (dat_completion_req_valid_by_txn[txn_idx]) begin
-                  if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])]) begin
-                    req_outstanding_delta--;
-                  end
-                  req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])] <= 1'b0;
-                  dat_completion_req_valid_by_txn[txn_idx] <= 1'b0;
                 end
               end
             end
           end
         end
         else begin
-          if (txn_id_t'(vif.rxdatflit.txnid) != rxdat_burst_txn_id) begin
+          if (!dat_interleave_allowed &&
+              (txn_id_t'(vif.rxdatflit.txnid) != rxdat_burst_txn_id)) begin
             chk_miss(VIP_CHI_CHK_RX_DAT_TXNID_STABLE_E, $sformatf("RX DAT burst changed txnid before rxdatflitpend dropped"));
           end
           else begin
             chk_hit(VIP_CHI_CHK_RX_DAT_TXNID_STABLE_E);
           end
 
-          if (!dat_reorder_allowed &&
+          if (!dat_reorder_allowed && !dat_interleave_allowed &&
               (data_id_t'(vif.rxdatflit.dataid) != rxdat_expected_data_id)) begin
             chk_miss(VIP_CHI_CHK_RX_DAT_DATAID_SEQUENTIAL_E, $sformatf("RX DAT burst dataid was not sequential"));
           end
@@ -1076,25 +1180,12 @@ module vip_chi_sva #(
 
               txn_idx = txn_id_to_index(txn_id_t'(vif.rxdatflit.txnid));
               if (expected_completion_valid_by_txn[txn_idx]) begin
-                if (expected_completion_opcode_by_txn[txn_idx] != rxdat_burst_opcode) begin
-                  chk_miss(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E, $sformatf("RX read completion DAT opcode did not match the request type"));
-                end
-                else begin
-                  chk_hit(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E);
-                end
-                if (expected_completion_beats_by_txn[txn_idx] != (rxdat_burst_count + 1)) begin
+                if (!dat_interleave_allowed &&
+                    (expected_completion_beats_by_txn[txn_idx] != (rxdat_burst_count + 1))) begin
                   chk_miss(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_BEAT_COUNT_E, $sformatf("RX read completion DAT burst beat count did not match the request size"));
                 end
                 else begin
                   chk_hit(VIP_CHI_CHK_RX_READ_COMPLETION_DAT_BEAT_COUNT_E);
-                end
-                expected_completion_valid_by_txn[txn_idx] <= 1'b0;
-                if (dat_completion_req_valid_by_txn[txn_idx]) begin
-                  if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])]) begin
-                    req_outstanding_delta--;
-                  end
-                  req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[txn_idx])] <= 1'b0;
-                  dat_completion_req_valid_by_txn[txn_idx] <= 1'b0;
                 end
               end
             end

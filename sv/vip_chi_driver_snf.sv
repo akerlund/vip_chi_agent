@@ -112,6 +112,18 @@ class vip_chi_driver_snf #(
   // RetryAck + PCrdGrant instead of being serviced (opt-in; default 0 = off).
   protected int unsigned                                       retries_issued;
 
+  // What actually reached the DAT wire, for a test to check the emission
+  // against. dat_beat_txn_log is the TxnID of every beat this driver has sent,
+  // in order; n_dat_stream_switches counts the points in an interleaved emission
+  // where the next beat came from a different transfer than the last.
+  //
+  // Zero switches means the beats went out contiguously -- which is what makes
+  // this the anti-vacuity handle for the interleaving test: without it, a test
+  // that asserts "the payload reassembled correctly" passes just as happily when
+  // no interleaving ever happened.
+  txn_id_t                                                     dat_beat_txn_log [$];
+  int unsigned                                                 n_dat_stream_switches;
+
   // TXSACTIVE outstanding-window state. See tx_activity_begin().
   protected int unsigned                                       tx_active_count;
   protected int unsigned                                       tx_active_extend;
@@ -465,6 +477,8 @@ class vip_chi_driver_snf #(
   function void handle_reset();
     this.retries_issued = 0;
     this.ordered_swap_done = 1'b0;
+    this.dat_beat_txn_log.delete();
+    this.n_dat_stream_switches = 0;
     this.tx_active_count = 0;
     this.tx_active_extend = 0;
     this.reset_credit_state();
@@ -849,8 +863,64 @@ class vip_chi_driver_snf #(
   // ---------------------------------------------------------------------------
   // Response thread: drive the auto-response for each buffered REQ in order.
   // ---------------------------------------------------------------------------
+  // Head-of-queue reads this responder may complete together, or an empty queue
+  // for none.
+  //
+  // Only a RUN of reads at the head qualifies, and the walk stops at the first
+  // request that is not one. Reordering across an intervening write would be a
+  // separate decision with its own ordering consequences; interleaving is meant
+  // to change the shape of the DATA on the channel, not the order in which
+  // requests are served.
+  protected function void head_read_run(output req_flit_t run[$]);
+    run.delete();
+    foreach (this.captured_reqs[i]) begin
+      // A request that is about to be retried has no data leg at all.
+      if (!this.req_opcode_is_auto_read(req_opcode_t'(this.captured_reqs[i].opcode)) ||
+          this.should_auto_retry(this.captured_reqs[i])) begin
+        break;
+      end
+      run.push_back(this.captured_reqs[i]);
+    end
+  endfunction
+
+  protected task interleave_group(output req_flit_t group[$]);
+    req_flit_t run[$];
+
+    group.delete();
+    this.head_read_run(run);
+    if ((this.cfg.dat_interleave_depth <= 1) || (run.size() == 0)) begin
+      return;
+    end
+
+    // Hold briefly for the rest of the group -- see
+    // cfg.dat_interleave_gather_cycles for why a window is needed at all.
+    for (int w = 0; w < this.cfg.dat_interleave_gather_cycles; w++) begin
+      this.head_read_run(run);
+      if (run.size() >= this.cfg.dat_interleave_depth) begin
+        break;
+      end
+      @(this.vif_snf.g_drv.snf_cb);
+      this.drive_idle_sideband();
+    end
+
+    this.head_read_run(run);
+    foreach (run[i]) begin
+      if (group.size() >= this.cfg.dat_interleave_depth) begin
+        break;
+      end
+      group.push_back(run[i]);
+    end
+
+    // One stream is not an interleaving; fall through to the ordinary path so a
+    // lone read still produces exactly the wire it always did.
+    if (group.size() < 2) begin
+      group.delete();
+    end
+  endtask
+
   protected task req_response_loop();
     req_flit_t req;
+    req_flit_t group[$];
 
     forever begin
       if (this.captured_reqs.size() != 0) begin
@@ -868,12 +938,28 @@ class vip_chi_driver_snf #(
           this.ordered_swap_done = 1'b1;
           req = this.captured_reqs[1];
           this.captured_reqs.delete(1);
+          this.dispatch_auto_response(req);
+          this.tx_activity_end();
         end
         else begin
-          req = this.captured_reqs.pop_front();
+          this.interleave_group(group);
+          if (group.size() != 0) begin
+            repeat (group.size()) begin
+              void'(this.captured_reqs.pop_front());
+            end
+            this.drive_interleaved_reads(group);
+            // One activity close per request served, not one per call: TXSACTIVE
+            // counts outstanding transactions, and this call retired several.
+            repeat (group.size()) begin
+              this.tx_activity_end();
+            end
+          end
+          else begin
+            req = this.captured_reqs.pop_front();
+            this.dispatch_auto_response(req);
+            this.tx_activity_end();
+          end
         end
-        this.dispatch_auto_response(req);
-        this.tx_activity_end();
       end
       else begin
         @(this.vif_snf.g_drv.snf_cb);
@@ -1723,66 +1809,95 @@ class vip_chi_driver_snf #(
   // ---------------------------------------------------------------------------
   // Auto-respond to one observed non-coherent read request with CompData.
   // ---------------------------------------------------------------------------
-  protected task drive_auto_read_compdata(input req_flit_t req);
-    dat_flit_t flit;
-    item_t     resp_sep_rsp;
-    int        beat_count;
-    int        beat_index;
-    size_t     req_size;
-    addr_t     req_addr;
-    txn_id_t   req_txn_id;
-    txn_id_t   rsp_txn_id;
-    node_id_t  req_src_id;
-    node_id_t  req_tgt_id;
-    node_id_t  rsp_tgt_id;
-    vip_chi_resp_t     resp_code;
-    vip_chi_resp_err_t resp_err_code;
-    bit        is_sep_read;
-    bit        is_decerr;
-    bit        is_derr;
+  // The read completion is in three pieces so the interleaved emitter can reuse
+  // two of them unchanged: the RSP prelude a read may owe before any data, the
+  // list of beats its data leg consists of, and the emission of one beat.
+  //
+  // Splitting it is what keeps the two paths honestly identical -- an interleaved
+  // beat is the same flit the contiguous path would have sent, placed at a
+  // different moment, rather than a second construction of the same thing that
+  // can drift from it.
 
-    req_size   = size_t'(req.size);
-    req_addr   = addr_t'(req.addr);
-    req_txn_id = txn_id_t'(req.txnid);
-    req_src_id = node_id_t'(req.srcid);
-    req_tgt_id = node_id_t'(req.tgtid);
-    is_sep_read = (req_opcode_t'(req.opcode) == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C));
-    rsp_txn_id = is_sep_read ? txn_id_t'(req.returntxnid) : req_txn_id;
-    rsp_tgt_id = is_sep_read ? node_id_t'(req.returnnid) : req_src_id;
-    is_decerr  = this.decerr_check(req_addr);
-    is_derr    = this.derr_check(req_addr);
-    beat_count = vip_chi_types_pkg::chi_xfer_dat_beats(req_size, CFG_P.DATA_BYTES_P);
+  // The response codes every leg of this read carries.
+  protected function void read_resp_codes(
+    input  req_flit_t         req,
+    output vip_chi_resp_t     resp_code,
+    output vip_chi_resp_err_t resp_err_code
+  );
+    addr_t req_addr;
 
-    if (is_decerr) begin
-      resp_code  = VIP_CHI_RESP_STATE_I_E;
+    req_addr  = addr_t'(req.addr);
+    resp_code = VIP_CHI_RESP_STATE_I_E;
+    if (this.decerr_check(req_addr)) begin
       resp_err_code = VIP_CHI_RESP_ERR_NONDATA_ERROR_E;
     end
-    else begin
-      resp_code  = VIP_CHI_RESP_STATE_I_E;
-      resp_err_code = is_derr ? VIP_CHI_RESP_ERR_DATA_ERROR_E : VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
+    else if (this.derr_check(req_addr)) begin
+      resp_err_code = VIP_CHI_RESP_ERR_DATA_ERROR_E;
     end
+    else begin
+      resp_err_code = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
+    end
+  endfunction
+
+  // RSP flits owed before the data leg. Ordered reads take a ReadReceipt;
+  // ReadNoSnpSep additionally takes RespSepData on the RSP channel to the
+  // requester (original TxnID), separate from the DataSepResp data leg that goes
+  // to ReturnNID/ReturnTxnID. Combined reads send neither.
+  protected task drive_read_prelude(
+    input req_flit_t         req,
+    input vip_chi_resp_t     resp_code,
+    input vip_chi_resp_err_t resp_err_code
+  );
+    item_t resp_sep_rsp;
 
     if (this.req_has_ordering(req)) begin
       this.drive_auto_read_receipt(req);
     end
 
-    // Separated read: the response leg (RespSepData) is sent on the RSP channel
-    // to the requester (original TxnID), separate from the data leg (DataSepResp)
-    // that follows on DAT to ReturnNID/ReturnTxnID. Combined reads send neither.
-    if (is_sep_read) begin
+    if (req_opcode_t'(req.opcode) == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C)) begin
       resp_sep_rsp              = new("auto_read_resp_sep");
       resp_sep_rsp.role         = VIP_CHI_ROLE_SNF_E;
-      resp_sep_rsp.src_id       = req_tgt_id;
-      resp_sep_rsp.tgt_id       = req_src_id;
-      resp_sep_rsp.txn_id       = req_txn_id;
-      resp_sep_rsp.dbid         = req_txn_id;
+      resp_sep_rsp.src_id       = node_id_t'(req.tgtid);
+      resp_sep_rsp.tgt_id       = node_id_t'(req.srcid);
+      resp_sep_rsp.txn_id       = txn_id_t'(req.txnid);
+      resp_sep_rsp.dbid         = txn_id_t'(req.txnid);
       resp_sep_rsp.qos          = req.qos;
       resp_sep_rsp.rsp_resp     = resp_code;
       resp_sep_rsp.rsp_resp_err = resp_err_code;
       resp_sep_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_RESP_SEP_DATA_C);
       this.drive_rsp(resp_sep_rsp);
     end
+  endtask
 
+  // Every DAT flit of one read, in the order this completer intends to send
+  // them. A function, not a task: it reads memory and the config but touches
+  // neither the wire nor the clock, so the interleaver can build several reads'
+  // beats up front and then decide the order they go out in.
+  protected function void build_read_beats(
+    input  req_flit_t         req,
+    input  vip_chi_resp_t     resp_code,
+    input  vip_chi_resp_err_t resp_err_code,
+    output dat_flit_t         beats[$]
+  );
+    dat_flit_t flit;
+    int        beat_count;
+    int        beat_index;
+    addr_t     req_addr;
+    txn_id_t   rsp_txn_id;
+    node_id_t  req_tgt_id;
+    node_id_t  rsp_tgt_id;
+    bit        is_sep_read;
+    bit        is_decerr;
+
+    req_addr    = addr_t'(req.addr);
+    req_tgt_id  = node_id_t'(req.tgtid);
+    is_sep_read = (req_opcode_t'(req.opcode) == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C));
+    rsp_txn_id  = is_sep_read ? txn_id_t'(req.returntxnid) : txn_id_t'(req.txnid);
+    rsp_tgt_id  = is_sep_read ? node_id_t'(req.returnnid) : node_id_t'(req.srcid);
+    is_decerr   = this.decerr_check(req_addr);
+    beat_count  = vip_chi_types_pkg::chi_xfer_dat_beats(size_t'(req.size), CFG_P.DATA_BYTES_P);
+
+    beats.delete();
     for (int send_index = 0; send_index < beat_count; send_index++) begin
 
       // Which beat position this send carries. Ascending by default; the two
@@ -1811,19 +1926,122 @@ class vip_chi_driver_snf #(
         this.apply_auto_read_issue_specific_fields(flit, req_addr, beat_index);
       end
 
-      this.wait_for_credit(this.dat_lcrd_mgr);
+      beats.push_back(flit);
+    end
+  endfunction
 
-      @(this.vif_snf.g_drv.snf_cb);
-      this.drive_idle_sideband();
-      this.vif_snf.g_drv.snf_cb.txdatflitpend   <= (send_index != (beat_count - 1));
-      this.vif_snf.g_drv.snf_cb.txdatflit       <= flit;
-      this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b1;
+  // One DAT beat on the wire. `more_to_come` drives FLITPEND, which CHI defines
+  // as "a flit may be sent next cycle" -- a property of the CHANNEL, not of any
+  // one transaction -- so under interleaving it stays asserted across a stream
+  // change and drops only on the last beat this emitter will send.
+  protected task emit_dat_beat(input dat_flit_t flit, input bit more_to_come);
+    this.dat_beat_txn_log.push_back(txn_id_t'(flit.txnid));
+    this.wait_for_credit(this.dat_lcrd_mgr);
 
-      @(this.vif_snf.g_drv.snf_cb);
-      this.drive_idle_sideband();
-      this.vif_snf.g_drv.snf_cb.txdatflitpend   <= 1'b0;
-      this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b0;
-      this.vif_snf.g_drv.snf_cb.txdatflit       <= '0;
+    @(this.vif_snf.g_drv.snf_cb);
+    this.drive_idle_sideband();
+    this.vif_snf.g_drv.snf_cb.txdatflitpend   <= more_to_come;
+    this.vif_snf.g_drv.snf_cb.txdatflit       <= flit;
+    this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b1;
+
+    @(this.vif_snf.g_drv.snf_cb);
+    this.drive_idle_sideband();
+    this.vif_snf.g_drv.snf_cb.txdatflitpend   <= 1'b0;
+    this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b0;
+    this.vif_snf.g_drv.snf_cb.txdatflit       <= '0;
+  endtask
+
+  protected task drive_auto_read_compdata(input req_flit_t req);
+    dat_flit_t         beats[$];
+    vip_chi_resp_t     resp_code;
+    vip_chi_resp_err_t resp_err_code;
+
+    this.read_resp_codes(req, resp_code, resp_err_code);
+    this.drive_read_prelude(req, resp_code, resp_err_code);
+    this.build_read_beats(req, resp_code, resp_err_code, beats);
+
+    foreach (beats[i]) begin
+      this.emit_dat_beat(beats[i], (i != (beats.size() - 1)));
+    end
+
+    @(this.vif_snf.g_drv.snf_cb);
+    this.drive_idle_sideband();
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Several reads completed together, one beat at a time (cfg.dat_interleave_*).
+  //
+  // The preludes go out first and in request order: the ReadReceipt of an ordered
+  // read is the acknowledgement that fixes its position in the ordered stream, so
+  // interleaving the DATA must not disturb the order the receipts were sent in.
+  // Only the data leg is interleaved.
+  // ---------------------------------------------------------------------------
+  protected task drive_interleaved_reads(input req_flit_t reqs[$]);
+    // One flat queue of every beat, with each stream owning a contiguous span of
+    // it: head[i] is the next beat stream i will send, tail[i] one past its last.
+    // Flat rather than a queue of queues because the interleaver only ever needs
+    // "the next beat of stream i", and a span pair says that without nesting.
+    dat_flit_t         all_beats[$];
+    dat_flit_t         beats[$];
+    int                head[$];
+    int                tail[$];
+    int                eligible[$];
+    int                n_streams;
+    int                cursor;
+    int                pick;
+    int                prev_pick;
+    int                total;
+    vip_chi_resp_t     resp_code;
+    vip_chi_resp_err_t resp_err_code;
+
+    foreach (reqs[i]) begin
+      this.read_resp_codes(reqs[i], resp_code, resp_err_code);
+      this.drive_read_prelude(reqs[i], resp_code, resp_err_code);
+      this.build_read_beats(reqs[i], resp_code, resp_err_code, beats);
+      head.push_back(all_beats.size());
+      foreach (beats[b]) begin
+        all_beats.push_back(beats[b]);
+      end
+      tail.push_back(all_beats.size());
+    end
+
+    n_streams = head.size();
+    total     = all_beats.size();
+    cursor    = 0;
+    prev_pick = -1;
+
+    for (int sent = 0; sent < total; sent++) begin
+      eligible.delete();
+      for (int i = 0; i < n_streams; i++) begin
+        if (head[i] < tail[i]) begin
+          eligible.push_back(i);
+        end
+      end
+
+      if (this.cfg.dat_interleave_policy == VIP_CHI_DAT_INTERLEAVE_RANDOM_E) begin
+        pick = eligible[$urandom_range(eligible.size() - 1, 0)];
+      end
+      else begin
+        // Round-robin: the first eligible stream at or after the cursor, wrapping
+        // to the first eligible one when the tail has drained. Skipping drained
+        // streams rather than stalling on them is what keeps the emitter making
+        // progress when the reads have different sizes.
+        pick = eligible[0];
+        foreach (eligible[i]) begin
+          if (eligible[i] >= cursor) begin
+            pick = eligible[i];
+            break;
+          end
+        end
+      end
+
+      cursor = (pick + 1) % n_streams;
+      if ((prev_pick >= 0) && (pick != prev_pick)) begin
+        this.n_dat_stream_switches++;
+      end
+      prev_pick = pick;
+      this.emit_dat_beat(all_beats[head[pick]], (sent != (total - 1)));
+      head[pick]++;
     end
 
     @(this.vif_snf.g_drv.snf_cb);

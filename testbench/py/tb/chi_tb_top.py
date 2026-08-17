@@ -810,6 +810,13 @@ async def tc_chi_dataid_out_of_order(dut) -> None:
   await _run_d_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_dat_interleave", timeout_time=20, timeout_unit="ms")
+async def tc_chi_dat_interleave(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_dat_interleave"
+  await _run_d_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_pcrd_leak", timeout_time=20, timeout_unit="ms")
 async def tc_chi_pcrd_leak(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""

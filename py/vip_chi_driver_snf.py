@@ -26,12 +26,15 @@
 
 from __future__ import annotations
 
+import random
+
 import cocotb
 
 from pyuvm import uvm_driver, ConfigDB
 
 from vip_chi_types_pkg import (
   Role, ReqOpcode, RspOpcode, DatOpcode, Resp, RespErr, RawChannel,
+  DatInterleavePolicy,
   chi_xfer_dat_beats, req_opcode_is_atomic, req_opcode_is_atomic_compare,
   req_opcode_is_atomic_returning_data, req_opcode_atomic_variant, mask,
 )
@@ -104,6 +107,18 @@ class vip_chi_driver_snf(uvm_driver):
     # the negative control inverts a single pair, so the ordered-stream check has
     # exactly one violation to report.
     self.ordered_swap_done = False
+
+    # What actually reached the DAT wire, for a test to check the emission
+    # against. dat_beat_txn_log is the TxnID of every beat this driver has sent,
+    # in order; n_dat_stream_switches counts the points in an interleaved
+    # emission where the next beat came from a different transfer than the last.
+    #
+    # Zero switches means the beats went out contiguously -- which is what makes
+    # this the anti-vacuity handle for the interleaving test: without it, a test
+    # that asserts "the payload reassembled correctly" passes just as happily
+    # when no interleaving ever happened.
+    self.dat_beat_txn_log = []
+    self.n_dat_stream_switches = 0
 
     self._driver_tasks = []
     self.agent_owned = False
@@ -243,6 +258,8 @@ class vip_chi_driver_snf(uvm_driver):
     self.retries_issued = 0
     self.captured_reqs = []
     self.ordered_swap_done = False
+    self.dat_beat_txn_log = []
+    self.n_dat_stream_switches = 0
     self.tx_active_count = 0
     self._tx_active_extend = 0
     self.reset_credit_state()
@@ -603,6 +620,40 @@ class vip_chi_driver_snf(uvm_driver):
         # has to say so.
         self.tx_activity_begin()
 
+  # Head-of-queue reads this responder may complete together, or [] for none.
+  #
+  # Only a RUN of reads at the head qualifies, and the walk stops at the first
+  # request that is not one. Reordering across an intervening write would be a
+  # separate decision with its own ordering consequences; interleaving is meant
+  # to change the shape of the DATA on the channel, not the order in which
+  # requests are served.
+  def _head_read_run(self):
+    group = []
+    for req in self.captured_reqs:
+      # A request that is about to be retried has no data leg at all.
+      if req["opcode"] not in _AUTO_READ or self.should_auto_retry(req):
+        break
+      group.append(req)
+    return group
+
+  async def _interleave_group(self):
+    depth = self.cfg.dat_interleave_depth
+    if depth <= 1 or not self._head_read_run():
+      return []
+
+    # Hold briefly for the rest of the group -- see
+    # cfg.dat_interleave_gather_cycles for why a window is needed at all.
+    for _ in range(self.cfg.dat_interleave_gather_cycles):
+      if len(self._head_read_run()) >= depth:
+        break
+      await self.bus.rising()
+      self.drive_idle_sideband()
+
+    group = self._head_read_run()[:depth]
+    # One stream is not an interleaving; fall through to the ordinary path so a
+    # lone read still produces exactly the wire it always did.
+    return group if len(group) >= 2 else []
+
   async def req_response_loop(self):
     bus = self.bus
     while True:
@@ -621,6 +672,17 @@ class vip_chi_driver_snf(uvm_driver):
           self.ordered_swap_done = True
           req = self.captured_reqs.pop(1)
         else:
+          group = await self._interleave_group()
+          if group:
+            del self.captured_reqs[:len(group)]
+            try:
+              await self.drive_interleaved_reads(group)
+            finally:
+              # One activity close per request served, not one per call: TXSACTIVE
+              # counts outstanding transactions, and this call retired several.
+              for _ in group:
+                self.tx_activity_end()
+            continue
           req = self.captured_reqs.pop(0)
         try:
           await self.dispatch_auto_response(req)
@@ -916,39 +978,44 @@ class vip_chi_driver_snf(uvm_driver):
     await self.drive_rsp(dict(base, opcode=int(RspOpcode.DBID_RESP)))
     await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP)))
 
-  async def drive_auto_read_compdata(self, req):
-    bus = self.bus
-    cfg = self.bus.cfg
-    req_size = req["size"]
-    req_addr = req["addr"]
-    req_txn = req["txnid"]
-    req_src = req["srcid"]
-    req_tgt = req["tgtid"]
-    is_sep = (req["opcode"] == int(ReqOpcode.READ_NO_SNP_SEP))
-    rsp_txn = req["returntxnid"] if is_sep else req_txn
-    rsp_tgt = req["returnnid"] if is_sep else req_src
-    is_decerr = self.decerr_check(req_addr)
-    is_derr = self.derr_check(req_addr)
-    beat_count = chi_xfer_dat_beats(req_size, cfg.data_bytes)
+  # The read completion is in three pieces so the interleaved emitter can reuse
+  # two of them unchanged: the RSP prelude a read may owe before any data, the
+  # list of beats its data leg consists of, and the emission of one beat.
+  #
+  # Splitting it is what keeps the two paths honestly identical -- an interleaved
+  # beat is the same flit the contiguous path would have sent, placed at a
+  # different moment, rather than a second construction of the same thing that
+  # can drift from it.
 
-    resp_code = int(Resp.I)
-    if is_decerr:
-      resp_err = int(RespErr.NDERR)
-    else:
-      resp_err = int(RespErr.DERR) if is_derr else int(RespErr.OKAY)
-
+  # RSP flits owed before the data leg. Ordered reads take a ReadReceipt;
+  # ReadNoSnpSep additionally takes RespSepData on RSP to the requester, separate
+  # from the DataSepResp data leg that goes to ReturnNID/ReturnTxnID.
+  async def drive_read_prelude(self, req, resp_code, resp_err):
     if self.req_has_ordering(req):
       await self.drive_auto_read_receipt(req)
-
-    if is_sep:
+    if req["opcode"] == int(ReqOpcode.READ_NO_SNP_SEP):
       await self.drive_rsp({
-        "opcode": int(RspOpcode.RESP_SEP_DATA), "srcid": req_tgt, "tgtid": req_src,
-        "txnid": req_txn, "dbid": req_txn, "qos": req["qos"],
-        "resp": resp_code, "resperr": resp_err,
+        "opcode": int(RspOpcode.RESP_SEP_DATA), "srcid": req["tgtid"],
+        "tgtid": req["srcid"], "txnid": req["txnid"], "dbid": req["txnid"],
+        "qos": req["qos"], "resp": resp_code, "resperr": resp_err,
       })
 
+  # Every DAT flit of one read, in the order this completer intends to send
+  # them. Pure: it reads memory and the config but touches neither the wire nor
+  # the clock, so the interleaver can build several reads' beats up front and
+  # then decide the order they go out in.
+  def build_read_beats(self, req, resp_code, resp_err):
+    cfg = self.bus.cfg
+    req_addr = req["addr"]
+    is_sep = (req["opcode"] == int(ReqOpcode.READ_NO_SNP_SEP))
+    rsp_txn = req["returntxnid"] if is_sep else req["txnid"]
+    rsp_tgt = req["returnnid"] if is_sep else req["srcid"]
+    is_decerr = self.decerr_check(req_addr)
+    beat_count = chi_xfer_dat_beats(req["size"], cfg.data_bytes)
     dat_op = int(DatOpcode.DATA_SEP_RESP) if is_sep else int(DatOpcode.COMP_DATA)
     be_all = (1 << cfg.be_width) - 1
+
+    beats = []
     for send_index in range(beat_count):
       # Which beat position this send carries. The knobs move the position
       # without touching the payload, so a beat always carries the data
@@ -959,7 +1026,7 @@ class vip_chi_driver_snf(uvm_driver):
         "be": 0 if is_decerr else be_all,
         "dataid": beat_index, "ccid": 0, "dbid": rsp_txn,
         "resp": resp_code, "resperr": resp_err, "opcode": dat_op,
-        "homenid": req_tgt, "txnid": rsp_txn, "srcid": req_tgt,
+        "homenid": req["tgtid"], "txnid": rsp_txn, "srcid": req["tgtid"],
         "tgtid": rsp_tgt, "qos": req["qos"],
       }
       if cfg.is_e:
@@ -976,17 +1043,79 @@ class vip_chi_driver_snf(uvm_driver):
         if self.cfg.snf_corrupt_tag and tg is not None:
           fields["tag"] ^= 1
           fields["tagop"] ^= 1
-      await self.wait_for_credit(self.dat_lcrd)
-      await bus.rising()
-      self.drive_idle_sideband()
-      bus.drive(txdatflitpend=1 if send_index != (beat_count - 1) else 0,
-                txdatflitv=1)
-      bus.drive_flit("dat", fields)
-      await bus.rising()
-      self.drive_idle_sideband()
-      bus.drive(txdatflitpend=0, txdatflitv=0)
-      bus.drive_flit("dat", {})
+      beats.append(fields)
+    return beats
+
+  # One DAT beat on the wire. `more_to_come` drives FLITPEND, which CHI defines
+  # as "a flit may be sent next cycle" -- a property of the CHANNEL, not of any
+  # one transaction -- so under interleaving it stays asserted across a stream
+  # change and drops only on the last beat this emitter will send.
+  async def emit_dat_beat(self, fields, more_to_come):
+    bus = self.bus
+    self.dat_beat_txn_log.append(fields.get("txnid", 0))
+    await self.wait_for_credit(self.dat_lcrd)
     await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(txdatflitpend=1 if more_to_come else 0, txdatflitv=1)
+    bus.drive_flit("dat", fields)
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(txdatflitpend=0, txdatflitv=0)
+    bus.drive_flit("dat", {})
+
+  def _read_resp_codes(self, req):
+    if self.decerr_check(req["addr"]):
+      return int(Resp.I), int(RespErr.NDERR)
+    if self.derr_check(req["addr"]):
+      return int(Resp.I), int(RespErr.DERR)
+    return int(Resp.I), int(RespErr.OKAY)
+
+  async def drive_auto_read_compdata(self, req):
+    resp_code, resp_err = self._read_resp_codes(req)
+    await self.drive_read_prelude(req, resp_code, resp_err)
+    beats = self.build_read_beats(req, resp_code, resp_err)
+    for i, fields in enumerate(beats):
+      await self.emit_dat_beat(fields, i != (len(beats) - 1))
+    await self.bus.rising()
+    self.drive_idle_sideband()
+
+  # ==========================================================================
+  # Several reads completed together, one beat at a time (cfg.dat_interleave_*).
+  #
+  # The preludes go out first and in request order: the ReadReceipt of an ordered
+  # read is the acknowledgement that fixes its position in the ordered stream, so
+  # interleaving the DATA must not disturb the order the receipts were sent in.
+  # Only the data leg is interleaved.
+  # ==========================================================================
+  async def drive_interleaved_reads(self, reqs):
+    streams = []
+    for req in reqs:
+      resp_code, resp_err = self._read_resp_codes(req)
+      await self.drive_read_prelude(req, resp_code, resp_err)
+      streams.append(self.build_read_beats(req, resp_code, resp_err))
+
+    pos = [0] * len(streams)
+    total = sum(len(s) for s in streams)
+    cursor = 0
+    prev_pick = -1
+    for sent in range(total):
+      eligible = [i for i in range(len(streams)) if pos[i] < len(streams[i])]
+      if self.cfg.dat_interleave_policy == DatInterleavePolicy.RANDOM:
+        pick = random.choice(eligible)
+      else:
+        # Round-robin: the first eligible stream at or after the cursor, wrapping
+        # to the first eligible one when the tail has drained. Skipping drained
+        # streams rather than stalling on them is what keeps the emitter making
+        # progress when the reads have different sizes.
+        pick = next((i for i in eligible if i >= cursor), eligible[0])
+      cursor = (pick + 1) % len(streams)
+      if prev_pick >= 0 and pick != prev_pick:
+        self.n_dat_stream_switches += 1
+      prev_pick = pick
+      fields = streams[pick][pos[pick]]
+      pos[pick] += 1
+      await self.emit_dat_beat(fields, sent != (total - 1))
+    await self.bus.rising()
     self.drive_idle_sideband()
 
   def _apply_atomic_variant(self, variant, current, operand):

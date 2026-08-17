@@ -204,6 +204,7 @@ package chi_tc_pkg;
   `include "tc_chi_cfg_invalid.sv"
   `include "tc_chi_dataid_out_of_order.sv"
   `include "tc_chi_dataid_duplicate.sv"
+  `include "tc_chi_dat_interleave.sv"
   `include "tc_chi_pcrd_leak.sv"
   `include "tc_chi_pcrd_return.sv"
 
