@@ -4,3 +4,6 @@
 [submodule "submodules/vip_report_server"]
 	path = submodules/vip_report_server
 	url = git@github.com:akerlund/vip_report_server.git
+[submodule "submodules/vip_gauss"]
+	path = submodules/vip_gauss
+	url = git@github.com:akerlund/vip_gauss.git

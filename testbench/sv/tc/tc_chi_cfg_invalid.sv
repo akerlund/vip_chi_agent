@@ -68,6 +68,16 @@ class tc_chi_cfg_invalid extends chi_base_test;
     c = this.fresh(); c.dat_interleave_depth = 2;
     this.expect_invalid(c, "dat_interleave_depth above 1 without multi_outstanding");
 
+    c = this.fresh();
+    c.req_valid_delay_enabled       = 1'b1;
+    c.req_valid_delay_gauss_enabled = 1'b1;
+    c.req_valid_delay_stddev        = 0.0;
+    this.expect_invalid(c, "gaussian delay shaping with a zero spread");
+
+    c = this.fresh();
+    c.rsp_valid_delay_gauss_enabled = 1'b1;
+    this.expect_invalid(c, "gaussian shaping on a channel whose delay is off");
+
     c = this.fresh(); c.initial_req_credits = 65;
     this.expect_invalid(c, "initial REQ credits above the send-credit cap");
 
@@ -140,6 +150,11 @@ class tc_chi_cfg_invalid extends chi_base_test;
     c.multi_outstanding      = 1'b1;
     c.dat_interleave_depth   = 4;
     this.expect_valid(c, "DAT beat interleaving with its master enable");
+
+    c = this.fresh();
+    c.dat_valid_delay_enabled       = 1'b1;
+    c.dat_valid_delay_gauss_enabled = 1'b1;
+    this.expect_valid(c, "gaussian delay shaping with its channel delay enabled");
 
     c = this.fresh();
     c.decerr_ranges = new[1];

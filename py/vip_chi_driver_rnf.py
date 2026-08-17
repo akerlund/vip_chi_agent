@@ -41,7 +41,10 @@ _COHERENT_CMO_OPS = {int(ReqOpcode.CLEAN_INVALID), int(ReqOpcode.MAKE_INVALID)}
 # Non-allocating coherent writes (WriteUnique Full/Ptl -> end Invalid).
 _COHERENT_WU_OPS = {int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL)}
 # Coherent writes that evict the line to the home (end Invalid).
-_COHERENT_EVICT_WRITE_OPS = {int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.EVICT)}
+# WriteEvictOrEvict gives the line up either way: with the data when the home
+# asks for it, and as a plain Evict when it does not.
+_COHERENT_EVICT_WRITE_OPS = {int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.EVICT),
+                             int(ReqOpcode.WRITE_EVICT_OR_EVICT)}
 
 # Forwarding (DCT) snoop opcodes -- the snoopee forwards its data for relay.
 _SNP_FWD_OPS = {
@@ -291,7 +294,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
       "resperr": int(RespErr.OKAY), "txnid": snp["txnid"],
       "srcid": 0, "tgtid": snp["srcid"], "qos": snp["qos"],
     }
-    await self.wait_for_credit(self.rsp_lcrd)
+    await self.wait_rsp_credit()
 
     await self.acquire_tx_flit()
     await bus.rising()
@@ -324,7 +327,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
         "resp": _I(resp_state), "resperr": int(RespErr.OKAY), "opcode": opcode,
         "txnid": snp["txnid"], "srcid": 0, "tgtid": snp["srcid"], "qos": snp["qos"],
       }
-      await self.wait_for_credit(self.dat_lcrd)
+      await self.wait_dat_credit()
 
       await bus.rising()
       self.drive_idle_sideband()

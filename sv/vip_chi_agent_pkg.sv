@@ -33,6 +33,7 @@ package vip_chi_agent_pkg;
   import vip_chi_types_pkg::*;
   import vip_memory_pkg::*;
 
+  `include "vip_gauss.sv"
   `include "vip_chi_cfg_agent.sv"
   `include "vip_chi_cfg_item.sv"
   `include "vip_chi_lcrd_mgr.sv"
@@ -65,6 +66,8 @@ package vip_chi_agent_pkg;
   `include "seq_lib/vip_chi_readunique_seq.sv"
   `include "seq_lib/vip_chi_writeback_seq.sv"
   `include "seq_lib/vip_chi_evict_seq.sv"
+  `include "seq_lib/vip_chi_write_unique_zero_seq.sv"
+  `include "seq_lib/vip_chi_write_evict_or_evict_seq.sv"
   `include "seq_lib/vip_chi_makereadunique_seq.sv"
   `include "seq_lib/vip_chi_cleaninvalid_seq.sv"
   `include "seq_lib/vip_chi_makeinvalid_seq.sv"

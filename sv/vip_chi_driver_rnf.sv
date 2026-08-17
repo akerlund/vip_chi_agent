@@ -497,7 +497,7 @@ class vip_chi_driver_rnf #(
     flit.tgtid   = node_id_t'(snp.srcid);
     flit.qos     = snp.qos;
 
-    this.wait_for_credit(this.rsp_lcrd_mgr);
+    this.wait_rsp_credit();
 
     // Serialize against the request thread's own flit drivers: the snoop
     // responder runs concurrently with seq_loop, so both would otherwise drive
@@ -558,7 +558,7 @@ class vip_chi_driver_rnf #(
       flit.tgtid   = node_id_t'(snp.srcid);
       flit.qos     = snp.qos;
 
-      this.wait_for_credit(this.dat_lcrd_mgr);
+      this.wait_dat_credit();
 
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
@@ -645,7 +645,10 @@ class vip_chi_driver_rnf #(
   // ---------------------------------------------------------------------------
   protected function bit req_opcode_is_coherent_evicting_write(input req_opcode_t opcode);
     return (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_C)) ||
-           (opcode == req_opcode_t'(VIP_CHI_REQ_EVICT_C));
+           (opcode == req_opcode_t'(VIP_CHI_REQ_EVICT_C)) ||
+           // WriteEvictOrEvict gives the line up either way: with the data when
+           // the home asks for it, and as a plain Evict when it does not.
+           (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C));
   endfunction
 
   // ---------------------------------------------------------------------------

@@ -73,12 +73,22 @@ _RNF_WRITE_OPCODES = [_RO.WRITE_BACK_FULL, _RO.WRITE_CLEAN_FULL, _RO.EVICT,
                       _RO.CLEAN_UNIQUE, _RO.MAKE_UNIQUE, _RO.CLEAN_INVALID,
                       _RO.MAKE_INVALID, _RO.WRITE_UNIQUE_FULL, _RO.WRITE_UNIQUE_PTL]
 
+# Two isolated CHI-E coherent opcodes. Legal to BUILD, but deliberately NOT in
+# the pool above: each is opt-in through its own item knob, for the same reason
+# the combined Write + CMO forms are -- both look like ordinary coherent writes
+# to the solver, so an unconditional pool entry would put them into every random
+# coherent write test. Both sit in the Opcode[6] = 1 half of Table 13-14 and do
+# not fit CHI-D's 6-bit REQ opcode field at all.
+_WRITE_UNIQUE_ZERO_OPCODES = [_RO.WRITE_UNIQUE_ZERO]
+_WRITE_EVICT_OR_EVICT_OPCODES = [_RO.WRITE_EVICT_OR_EVICT]
+
 # Opcodes that carry write/atomic DAT payload (get_payload_beat_count). The
 # combined forms carry the same payload as the write they contain -- the CMO half
 # adds responses, not data.
 _WRITE_PAYLOAD_OPCODES = {
   int(_RO.WRITE_NO_SNP_FULL), int(_RO.WRITE_NO_SNP_PTL), int(_RO.WRITE_BACK_FULL),
   int(_RO.WRITE_CLEAN_FULL), int(_RO.WRITE_UNIQUE_FULL), int(_RO.WRITE_UNIQUE_PTL),
+  int(_RO.WRITE_EVICT_OR_EVICT),
 } | {int(o) for o in _COMBINED_WRITE_CMO_OPCODES}
 
 _PARTIAL_WRITE_OPCODES = {
@@ -91,6 +101,7 @@ _PARTIAL_WRITE_OPCODES = {
 _NO_EXP_COMP_ACK_OPCODES = [
   _RO.PREFETCH_TGT, _RO.PCRD_RETURN, _RO.CLEAN_SHARED_PERSIST,
   _RO.CLEAN_SHARED_PERSIST_SEP, _RO.WRITE_NO_SNP_ZERO, _RO.MAKE_UNIQUE,
+  _RO.WRITE_UNIQUE_ZERO,
 ] + list(range(0x28, 0x3A))
 
 
@@ -157,6 +168,8 @@ class vip_chi_item(uvm_sequence_item):
     self.s_enforce_align = vsc.uint8_t(1)
     self.s_atomic_strict = vsc.uint8_t(0)
     self.s_combined_cmo = vsc.uint8_t(0)
+    self.s_write_unique_zero = vsc.uint8_t(0)
+    self.s_write_evict_or_evict = vsc.uint8_t(0)
     self.s_min_size = vsc.uint8_t(0)
     self.s_max_size = vsc.uint8_t(6)
     self.s_min_addr = vsc.uint64_t(0)
@@ -237,6 +250,8 @@ class vip_chi_item(uvm_sequence_item):
     # unconditionally would have every existing random write test start emitting
     # them and change every waveform in the regression.
     self.combined_write_cmo_enable = False
+    self.write_unique_zero_enable = False
+    self.write_evict_or_evict_enable = False
     self.data_type = DataType.RANDOM
     self.counter_value = 0
     self.counter_increment = 1
@@ -273,6 +288,12 @@ class vip_chi_item(uvm_sequence_item):
 
   def set_combined_write_cmo_enable(self, value: bool) -> None:
     self.combined_write_cmo_enable = bool(value)
+
+  def set_write_unique_zero_enable(self, value: bool) -> None:
+    self.write_unique_zero_enable = bool(value)
+
+  def set_write_evict_or_evict_enable(self, value: bool) -> None:
+    self.write_evict_or_evict_enable = bool(value)
 
   def set_counter_value(self, start: int) -> None:
     self.counter_value = int(start) & mask(self._data_w)
@@ -398,6 +419,11 @@ class vip_chi_item(uvm_sequence_item):
         return self._issue_e
       if v in {int(o) for o in _COMBINED_WRITE_CMO_OPCODES}:
         return self._issue_e
+      # Both sit in the Opcode[6] = 1 half of the REQ table, so neither fits
+      # CHI-D's 6-bit opcode field at all.
+      if v in {int(o) for o in
+               _WRITE_UNIQUE_ZERO_OPCODES + _WRITE_EVICT_OR_EVICT_OPCODES}:
+        return self._issue_e
       return v in legal
     return False
 
@@ -424,6 +450,8 @@ class vip_chi_item(uvm_sequence_item):
     self.s_enforce_align = 1 if self.enforce_addr_alignment else 0
     self.s_atomic_strict = 1 if self.atomic_strict_size else 0
     self.s_combined_cmo = 1 if self.combined_write_cmo_enable else 0
+    self.s_write_unique_zero = 1 if self.write_unique_zero_enable else 0
+    self.s_write_evict_or_evict = 1 if self.write_evict_or_evict_enable else 0
     self.s_min_size = int(self.min_size)
     self.s_max_size = int(self.max_size)
     self.s_min_addr = int(self.min_addr)
@@ -509,7 +537,24 @@ class vip_chi_item(uvm_sequence_item):
         with vsc.if_then(self.direction == int(Dir.READ)):
           self.opcode.inside(vsc.rangelist(*[int(o) for o in self._rnf_read_set]))
         with vsc.if_then(self.direction == int(Dir.WRITE)):
-          self.opcode.inside(vsc.rangelist(*[int(o) for o in _RNF_WRITE_OPCODES]))
+          # Each of the two isolated CHI-E opcodes joins the coherent write pool
+          # only when asked for, for the same reason the combined Write + CMO
+          # forms do on the non-coherent side: both look like ordinary coherent
+          # writes to the solver. Spelled as the four combinations because the
+          # two knobs are independent of each other.
+          _base = [int(o) for o in _RNF_WRITE_OPCODES]
+          _zero = [int(o) for o in _WRITE_UNIQUE_ZERO_OPCODES]
+          _evict = [int(o) for o in _WRITE_EVICT_OR_EVICT_OPCODES]
+          with vsc.if_then(self.s_write_unique_zero == 0):
+            with vsc.if_then(self.s_write_evict_or_evict == 0):
+              self.opcode.inside(vsc.rangelist(*_base))
+            with vsc.else_then:
+              self.opcode.inside(vsc.rangelist(*(_base + _evict)))
+          with vsc.else_then:
+            with vsc.if_then(self.s_write_evict_or_evict == 0):
+              self.opcode.inside(vsc.rangelist(*(_base + _zero)))
+            with vsc.else_then:
+              self.opcode.inside(vsc.rangelist(*(_base + _zero + _evict)))
 
   @vsc.constraint
   def con_return_path_fields(self):
@@ -530,6 +575,12 @@ class vip_chi_item(uvm_sequence_item):
       with vsc.if_then(self.opcode.inside(
           vsc.rangelist(*[int(o) for o in _NO_EXP_COMP_ACK_OPCODES]))):
         self.exp_comp_ack == 0
+      # The one opcode that REQUIRES it. WriteEvictOrEvict lets the home decline
+      # the data and answer with a bare Comp, and that leg completes only when
+      # the requester acks -- so the bit is not optional the way it is on every
+      # other write.
+      with vsc.if_then(self.opcode == int(_RO.WRITE_EVICT_OR_EVICT)):
+        self.exp_comp_ack == 1
 
   @vsc.constraint
   def con_issue_gated_fields(self):
@@ -606,7 +657,11 @@ class vip_chi_item(uvm_sequence_item):
 
     if op in _WRITE_PAYLOAD_OPCODES or req_opcode_is_atomic(op):
       # WriteUnique/atomic data travels as NonCopyBackWrData (+CompAck variant).
-      if op in (int(_RO.WRITE_BACK_FULL), int(_RO.WRITE_CLEAN_FULL)):
+      if op in (int(_RO.WRITE_BACK_FULL), int(_RO.WRITE_CLEAN_FULL),
+                # WriteEvictOrEvict is a CopyBack too, and its CopyBackWrData is
+                # treated as an IMPLICIT CompAck -- which is why it keeps the
+                # plain opcode here even though ExpCompAck is always set.
+                int(_RO.WRITE_EVICT_OR_EVICT)):
         self.dat_opcode = int(DatOpcode.COPY_BACK_WR_DATA)
       elif int(self.exp_comp_ack):
         self.dat_opcode = int(DatOpcode.NCB_WR_DATA_COMP_ACK)

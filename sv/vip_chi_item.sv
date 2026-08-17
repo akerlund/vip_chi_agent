@@ -204,6 +204,8 @@ class vip_chi_item #(
   bit                 enforce_addr_alignment = 1'b1;
   bit                 atomic_strict_size = 1'b0;
   bit                 combined_write_cmo_enable = 1'b0;
+  bit                 write_unique_zero_enable = 1'b0;
+  bit                 write_evict_or_evict_enable = 1'b0;
   vip_chi_data_type_t data_type    = VIP_CHI_DATA_RANDOM_E;
 
   // ---------------------------------------------------------------------------
@@ -298,6 +300,14 @@ class vip_chi_item #(
   // ---------------------------------------------------------------------------
   function void set_combined_write_cmo_enable(input bit value);
     this.combined_write_cmo_enable = value;
+  endfunction
+
+  function void set_write_unique_zero_enable(input bit value);
+    this.write_unique_zero_enable = value;
+  endfunction
+
+  function void set_write_evict_or_evict_enable(input bit value);
+    this.write_evict_or_evict_enable = value;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -703,7 +713,11 @@ class vip_chi_item #(
           req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C): begin
             return 1'b1;
           end
-          req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C): begin
+          req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C),
+          // Both sit in the Opcode[6] = 1 half of the REQ table, so neither fits
+          // CHI-D's 6-bit opcode field at all.
+          req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C),
+          req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C): begin
             return (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E);
           end
           default: begin
@@ -749,7 +763,11 @@ class vip_chi_item #(
         (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_C)) ||
         (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_C)) ||
         (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_C)) ||
-        (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C))) begin
+        (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C)) ||
+        // WriteEvictOrEvict carries a full line, but only when the home asks for
+        // it. This is the payload the transfer WOULD carry; whether it is sent at
+        // all is the home's choice, resolved on the wire by CompDBIDResp vs Comp.
+        (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C))) begin
       return vip_chi_types_pkg::chi_xfer_dat_beats(size, DATA_BYTES_C);
     end
     return 0;
@@ -937,7 +955,11 @@ class vip_chi_item #(
       end
     end
     else if ((this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_C)) ||
-             (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_C))) begin
+             (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_C)) ||
+             // WriteEvictOrEvict is a CopyBack too, and its CopyBackWrData is
+             // treated as an IMPLICIT CompAck -- which is why it keeps the plain
+             // opcode here even though ExpCompAck is always set.
+             (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C))) begin
       // Coherent writeback data travels as CopyBackWrData.
       this.dat_opcode = dat_opcode_t'(VIP_CHI_DAT_COPY_BACK_WR_DATA_C);
     end
@@ -1039,6 +1061,8 @@ class vip_chi_item #(
     this.enforce_addr_alignment  = rhs_item.enforce_addr_alignment;
     this.atomic_strict_size      = rhs_item.atomic_strict_size;
     this.combined_write_cmo_enable = rhs_item.combined_write_cmo_enable;
+    this.write_unique_zero_enable = rhs_item.write_unique_zero_enable;
+    this.write_evict_or_evict_enable = rhs_item.write_evict_or_evict_enable;
     this.data_type               = rhs_item.data_type;
     this.min_size                = rhs_item.min_size;
     this.max_size                = rhs_item.max_size;
@@ -1178,6 +1202,8 @@ class vip_chi_item #(
         (this.enforce_addr_alignment   !== rhs_item.enforce_addr_alignment) ||
         (this.atomic_strict_size       !== rhs_item.atomic_strict_size) ||
         (this.combined_write_cmo_enable !== rhs_item.combined_write_cmo_enable) ||
+        (this.write_unique_zero_enable !== rhs_item.write_unique_zero_enable) ||
+        (this.write_evict_or_evict_enable !== rhs_item.write_evict_or_evict_enable) ||
         (this.data_type                !== rhs_item.data_type) ||
         (this.min_size                 !== rhs_item.min_size) ||
         (this.max_size                 !== rhs_item.max_size) ||
@@ -1553,7 +1579,16 @@ class vip_chi_item #(
           // WriteUnique: non-allocating coherent write (M2).
           req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_C),
           req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C)
-        };
+        } || (write_unique_zero_enable && opcode inside {
+          // Opt-in for the same reason the combined Write + CMO forms are: it is
+          // an ordinary coherent write to the solver, so an unconditional pool
+          // entry would put it into every random coherent write test. Disjunction
+          // inside the one constraint, not a second `inside` -- constraints
+          // conjoin, so a separate one would intersect to nothing.
+          req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C)
+        }) || (write_evict_or_evict_enable && opcode inside {
+          req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)
+        });
       }
     }
   }
@@ -1585,12 +1620,24 @@ class vip_chi_item #(
            (opcode == req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C)) ||
            (opcode == req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C)) ||
            (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) ||
+           // WriteUniqueZero carries no CompAck, exactly like the WriteNoSnpZero
+           // it mirrors.
+           (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C)) ||
            // MakeUnique is modeled as a plain RSP-only Comp (no CompAck), so a free
            // randomize() must not draw ExpCompAck and wedge the RN-F waiting to ack
            // a completion the HN-F never expects (T1/T2 trap-hardening).
            (opcode == req_opcode_t'(VIP_CHI_REQ_MAKE_UNIQUE_C)) ||
            vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(vip_chi_req_opcode_t'(opcode)))) {
       exp_comp_ack == 1'b0;
+    }
+
+    // The one opcode that REQUIRES it. WriteEvictOrEvict lets the home decline
+    // the data and answer with a bare Comp, and that leg completes only when the
+    // requester acks -- so the bit is not optional the way it is on every other
+    // write.
+    if (!raw_override &&
+        (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C))) {
+      exp_comp_ack == 1'b1;
     }
   }
 

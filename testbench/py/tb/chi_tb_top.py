@@ -509,6 +509,20 @@ async def tc_chi_coh_e_cmo_invalidate(dut) -> None:
   await _run_e_coherent(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_e_write_unique_zero", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_write_unique_zero(dut) -> None:
+  """Run this public testcase through the CHI-E coherent topology."""
+  test_name = "tc_chi_e_write_unique_zero"
+  await _run_e_coherent(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_write_evict_or_evict", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_write_evict_or_evict(dut) -> None:
+  """Run this public testcase through the CHI-E coherent topology."""
+  test_name = "tc_chi_e_write_evict_or_evict"
+  await _run_e_coherent(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_coh_e_cmo_negctl", timeout_time=20, timeout_unit="ms")
 async def tc_chi_coh_e_cmo_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
@@ -814,6 +828,20 @@ async def tc_chi_dataid_out_of_order(dut) -> None:
 async def tc_chi_dat_interleave(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
   test_name = "tc_chi_dat_interleave"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_channel_delay", timeout_time=20, timeout_unit="ms")
+async def tc_chi_channel_delay(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_channel_delay"
+  await _run_d_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_delay_gauss", timeout_time=20, timeout_unit="ms")
+async def tc_chi_delay_gauss(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_delay_gauss"
   await _run_d_link(dut, test_name)
 
 

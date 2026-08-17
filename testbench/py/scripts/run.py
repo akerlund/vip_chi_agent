@@ -192,6 +192,7 @@ def env(root: Path, case: TestCase | None = None) -> dict[str, str]:
     root / "py",
     root / "py" / "seq_lib",
     root / "submodules" / "vip_memory" / "py",
+    root / "submodules" / "vip_gauss" / "py",
   ]
   values = os.environ.copy()
   values["VIP_ROOT"] = str(root)

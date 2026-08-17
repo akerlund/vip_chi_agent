@@ -522,6 +522,30 @@ class vip_chi_driver_hni #(
   endtask
 
   // ---------------------------------------------------------------------------
+  // Hold an assembled flit for its channel's configured transmit delay, then
+  // take the credit. See the RN-I twin for why the delay lands before the credit
+  // and why L-credit returns are excluded.
+  //
+  // The delay window is per AGENT while this driver is per PORT, so every RN
+  // port draws from the same knob. That is the honest reading of a config that
+  // has no port dimension, and it is still a real shape on each link -- the
+  // draws are independent, so the ports do not move in lock step.
+  // ---------------------------------------------------------------------------
+  protected task wait_rn_channel_delay(input int p, input int unsigned cycles);
+
+    repeat (cycles) begin
+      @(this.vif_rn[p].g_drv.hni_cb);
+    end
+  endtask
+
+  protected task wait_sn_channel_delay(input int s, input int unsigned cycles);
+
+    repeat (cycles) begin
+      @(this.vif_sn[s].g_drv.rni_cb);
+    end
+  endtask
+
+  // ---------------------------------------------------------------------------
   // Credit acquire helpers.
   // ---------------------------------------------------------------------------
   protected task wait_rn_send_credit(input int p, input vip_chi_lcrd_mgr mgr);
@@ -868,6 +892,7 @@ class vip_chi_driver_hni #(
       this.active_write_comp_done             = 1'b0;
       this.active_busy                        = 1'b1;
 
+      this.wait_sn_channel_delay(s, this.cfg.draw_req_valid_delay());
       this.wait_sn_send_credit(s, this.sn_req_send_mgr[s]);
 
       @(this.vif_sn[s].g_drv.rni_cb);
@@ -916,6 +941,7 @@ class vip_chi_driver_hni #(
       pend = this.vif_rn[p].g_drv.hni_cb.rxrspflitpend;
       s    = this.active_sn_of_rn[p];
 
+      this.wait_sn_channel_delay(s, this.cfg.draw_rsp_valid_delay());
       this.wait_sn_send_credit(s, this.sn_rsp_send_mgr[s]);
 
       @(this.vif_sn[s].g_drv.rni_cb);
@@ -964,6 +990,7 @@ class vip_chi_driver_hni #(
         flit = this.vif_rn[p].g_drv.hni_cb.rxdatflit;
         pend = this.vif_rn[p].g_drv.hni_cb.rxdatflitpend;
 
+        this.wait_sn_channel_delay(s, this.cfg.draw_dat_valid_delay());
         this.wait_sn_send_credit(s, this.sn_dat_send_mgr[s]);
 
         @(this.vif_sn[s].g_drv.rni_cb);
@@ -1028,6 +1055,7 @@ class vip_chi_driver_hni #(
       pend = this.vif_sn[s].g_drv.rni_cb.rxrspflitpend;
       p    = this.resolve_rn_port(node_id_t'(flit.tgtid));
 
+      this.wait_rn_channel_delay(p, this.cfg.draw_rsp_valid_delay());
       this.wait_rn_send_credit(p, this.rn_rsp_send_mgr[p]);
 
       @(this.vif_rn[p].g_drv.hni_cb);
@@ -1112,6 +1140,7 @@ class vip_chi_driver_hni #(
         pend = this.vif_sn[s].g_drv.rni_cb.rxdatflitpend;
         p    = this.resolve_rn_port(node_id_t'(flit.tgtid));
 
+        this.wait_rn_channel_delay(p, this.cfg.draw_dat_valid_delay());
         this.wait_rn_send_credit(p, this.rn_dat_send_mgr[p]);
 
         @(this.vif_rn[p].g_drv.hni_cb);

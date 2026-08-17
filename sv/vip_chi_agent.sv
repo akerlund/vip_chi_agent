@@ -102,6 +102,12 @@ class vip_chi_agent #(
     this.check_cfg_p();
     this.check_cfg();
 
+    // Build the delay CDFs for any channel configured for gaussian shaping, so
+    // the first delayed flit does not pay for the build. Nothing depends on this
+    // -- a draw builds on demand, and a test that retunes mid-run is rebuilt
+    // for automatically -- so this is a head start, not a contract.
+    this.cfg.rebuild_gauss_cdfs();
+
     if ((this.cfg.is_active == UVM_ACTIVE) && (ROLE_P == VIP_CHI_ROLE_MONITOR_E)) begin
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] Active agent requires a driving role, not MONITOR",

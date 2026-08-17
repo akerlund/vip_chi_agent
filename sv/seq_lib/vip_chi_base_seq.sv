@@ -269,6 +269,14 @@ class vip_chi_base_seq #(
     this.item_cfg.combined_write_cmo_enable = enabled;
   endfunction
 
+  function void set_write_unique_zero_enable(input bit enabled);
+    this.item_cfg.write_unique_zero_enable = enabled;
+  endfunction
+
+  function void set_write_evict_or_evict_enable(input bit enabled);
+    this.item_cfg.write_evict_or_evict_enable = enabled;
+  endfunction
+
   // ---------------------------------------------------------------------------
   // Select the write payload generation mode.
   // ---------------------------------------------------------------------------
@@ -575,6 +583,8 @@ class vip_chi_base_seq #(
     req.set_enforce_addr_alignment(this.item_cfg.enforce_addr_alignment);
     req.set_atomic_strict_size(this.item_cfg.atomic_strict_size);
     req.set_combined_write_cmo_enable(this.item_cfg.combined_write_cmo_enable);
+    req.set_write_unique_zero_enable(this.item_cfg.write_unique_zero_enable);
+    req.set_write_evict_or_evict_enable(this.item_cfg.write_evict_or_evict_enable);
     req.min_addr = this.addr_iter.current();
     req.max_addr = this.addr_iter.current();
     req.set_ns(this.ns_val);

@@ -339,21 +339,67 @@ class vip_chi_cfg_agent extends uvm_object;
   // half, and only became reachable once graceful deactivation existed.
   bit lasm_reactivate_during_deactivate = 1'b0;
 
+  // Per-channel transmit delay: cycles the driver holds an assembled flit before
+  // asking for a credit and asserting FLITV. Drawn through draw_*_valid_delay()
+  // below, which owns the distribution.
+  //
+  // These three read `enabled = 0` because that is what the wire has always
+  // done. They were declared, validated and documented long before anything
+  // drew from them, and req_valid_delay_enabled in particular sat at 1 while no
+  // driver in either port ever read it -- so its value never meant anything.
+  // Wiring them up without flipping that default would have retimed every
+  // existing test as a side effect of making a knob work.
+  //
+  // link_act_delay_* is NOT wired. It would delay the activation request, which
+  // is exactly what lasm_req_delay_by_state already does and does better, being
+  // a function of the link state the requester acts from rather than a flat
+  // window. Two delays on one event would only be confusing; this one is
+  // superseded.
   bit link_act_delay_enabled = 1'b1;
   int link_act_delay_min        = 0;
   int link_act_delay_max        = 4;
 
-  bit req_valid_delay_enabled = 1'b1;
-  int req_valid_delay_min        = 0;
-  int req_valid_delay_max        = 4;
+  // The shape of the draw inside [min, max]. Off is uniform, which is what the
+  // window alone has always meant; on is a truncated gaussian centred on
+  // <chan>_valid_delay_mean with spread <chan>_valid_delay_stddev, which puts
+  // most flits near the mean and a few out at the edges the way real handshake
+  // latency does, rather than spreading them flat across the window.
+  //
+  // The mean/stddev defaults are non-zero and inside each window on purpose: a
+  // test that flips only the gauss flag gets a usable distribution rather than a
+  // config error or a point mass at an edge.
+  bit  req_valid_delay_enabled = 1'b0;
+  int  req_valid_delay_min        = 0;
+  int  req_valid_delay_max        = 4;
+  bit  req_valid_delay_gauss_enabled = 1'b0;
+  int  req_valid_delay_mean          = 2;
+  real req_valid_delay_stddev        = 1.0;
 
-  bit rsp_valid_delay_enabled = 1'b0;
-  int rsp_valid_delay_min        = 0;
-  int rsp_valid_delay_max        = 2;
+  bit  rsp_valid_delay_enabled = 1'b0;
+  int  rsp_valid_delay_min        = 0;
+  int  rsp_valid_delay_max        = 2;
+  bit  rsp_valid_delay_gauss_enabled = 1'b0;
+  int  rsp_valid_delay_mean          = 1;
+  real rsp_valid_delay_stddev        = 1.0;
 
-  bit dat_valid_delay_enabled = 1'b0;
-  int dat_valid_delay_min        = 0;
-  int dat_valid_delay_max        = 2;
+  bit  dat_valid_delay_enabled = 1'b0;
+  int  dat_valid_delay_min        = 0;
+  int  dat_valid_delay_max        = 2;
+  bit  dat_valid_delay_gauss_enabled = 1'b0;
+  int  dat_valid_delay_mean          = 1;
+  real dat_valid_delay_stddev        = 1.0;
+
+  // Cached CDFs, one per channel. Null until the first gauss draw on that
+  // channel: a config that never enables gauss never allocates one.
+  protected vip_gauss g_req_valid_delay;
+  protected vip_gauss g_rsp_valid_delay;
+  protected vip_gauss g_dat_valid_delay;
+
+  // The knob values each cached CDF was built from, as a signature string. A
+  // draw compares the current knobs against this and rebuilds when they differ.
+  protected string g_req_valid_delay_built = "";
+  protected string g_rsp_valid_delay_built = "";
+  protected string g_dat_valid_delay_built = "";
 
   bit coverage_enabled   = 1'b1;
   bit allow_raw_override = 1'b1;
@@ -395,6 +441,17 @@ class vip_chi_cfg_agent extends uvm_object;
   // Snoop-origination latency (cycles the HN-F waits before issuing a snoop).
   // Unused until M3; declared now so the coherent config shape is stable.
   int unsigned hnf_snoop_latency = 0;
+
+  // Which leg of a WriteEvictOrEvict this home takes. The specification leaves
+  // the choice to "its own heuristics", which is not something a test can
+  // predict, so it is a knob rather than a draw -- both legs stay reachable, each
+  // deterministically, and a test can assert the one it asked for.
+  //
+  //   1 (default) -> ask for the data: CompDBIDResp, answered with
+  //                  CopyBackWrData, which is itself the implicit CompAck.
+  //   0           -> decline it: a bare Comp, answered with an explicit CompAck.
+  //                  The transaction degenerates into an Evict.
+  bit hnf_write_evict_request_data = 1'b1;
 
   // Negative-control knob: when set, the HN-F grants coherent reads WITHOUT
   // snooping the other sharers -- deliberately breaking coherency so a second
@@ -490,6 +547,181 @@ class vip_chi_cfg_agent extends uvm_object;
           chan, delay_min, delay_max))
       end
       check_delay_window = 1'b0;
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // One channel's gaussian shaping knobs.
+  //
+  // Both rules exist because the alternative is silence. vip_gauss fatals on a
+  // non-positive stddev, so catching it here turns a mid-run simulator abort
+  // into a config error naming the channel. And a shape set on a channel whose
+  // delay is switched off is the exact failure this feature was built to end:
+  // configuration that reads as active and does nothing.
+  // ---------------------------------------------------------------------------
+  protected function bit check_delay_gauss(
+    input string chan,
+    input bit    delay_enabled,
+    input bit    gauss_enabled,
+    input real   stddev,
+    input bit    silent
+  );
+    check_delay_gauss = 1'b1;
+
+    if (!gauss_enabled) begin
+      return check_delay_gauss;
+    end
+
+    if (stddev <= 0.0) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "%s_valid_delay_stddev is %0f; a gaussian spread must be greater than zero",
+          chan, stddev))
+      end
+      check_delay_gauss = 1'b0;
+    end
+
+    if (!delay_enabled) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG", $sformatf(
+          "%s_valid_delay_gauss_enabled is set while %s_valid_delay_enabled is not: the channel draws no delay at all, so the shape would never be used",
+          chan, chan))
+      end
+      check_delay_gauss = 1'b0;
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // One channel delay draw, in cycles: how long the driver holds an assembled
+  // flit before it asks for a credit and puts it on the wire.
+  //
+  // The distribution lives HERE, not in the drivers. A driver asks its channel
+  // for a number of cycles and waits that many; it has no opinion about how the
+  // number was produced. That is what lets the shape change without touching a
+  // single driver.
+  //
+  // Disabled returns 0, which is the same wire behaviour as before these were
+  // wired up at all.
+  // ---------------------------------------------------------------------------
+  // The shape is chosen here too: uniform across the window, or a truncated
+  // gaussian drawn from a cached CDF.
+  //
+  // The CDF is (re)built whenever the knobs it was built from have moved, which
+  // is a deliberate departure from the sibling agent's contract. There,
+  // rebuild_gauss_cdfs() must be called by hand after any retune and a missed
+  // call is a null dereference. Tests in this VIP retune mid-run as a matter of
+  // course -- tc_chi_channel_delay changes the window three times in one run --
+  // so a draw that silently used a stale CDF, or fataled on a fresh one, would
+  // be a trap set for exactly the tests this feature exists for.
+  protected function int unsigned draw_delay(
+    input     bit       enabled,
+    input     int       delay_min,
+    input     int       delay_max,
+    input     bit       gauss_enabled,
+    input     int       mean,
+    input     real      stddev,
+    input     string    name,
+    ref       vip_gauss g,
+    ref       string    built
+  );
+    if (!enabled) begin
+      return 0;
+    end
+
+    if (!gauss_enabled) begin
+      return $urandom_range(delay_max, delay_min);
+    end
+
+    this.build_gauss_cdf(delay_min, delay_max, mean, stddev, name, g, built);
+
+    return g.get_r_cdf_int();
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Allocate the channel's vip_gauss on first use and (re)build its CDF when the
+  // knobs it was built from have moved. A no-op on the common path.
+  // ---------------------------------------------------------------------------
+  protected function void build_gauss_cdf(
+    input     int       delay_min,
+    input     int       delay_max,
+    input     int       mean,
+    input     real      stddev,
+    input     string    name,
+    ref       vip_gauss g,
+    ref       string    built
+  );
+    string want;
+
+    want = $sformatf("%0d:%0d:%0d:%f", delay_min, delay_max, mean, stddev);
+
+    if ((g != null) && (built == want)) begin
+      return;
+    end
+
+    if (g == null) begin
+      g = vip_gauss::type_id::create(name);
+    end
+
+    g.gen_cdf(delay_min, delay_max, mean, stddev);
+    built = want;
+  endfunction
+
+  function int unsigned draw_req_valid_delay();
+    return this.draw_delay(this.req_valid_delay_enabled,
+                           this.req_valid_delay_min, this.req_valid_delay_max,
+                           this.req_valid_delay_gauss_enabled,
+                           this.req_valid_delay_mean, this.req_valid_delay_stddev,
+                           "g_req_valid_delay",
+                           this.g_req_valid_delay, this.g_req_valid_delay_built);
+  endfunction
+
+  function int unsigned draw_rsp_valid_delay();
+    return this.draw_delay(this.rsp_valid_delay_enabled,
+                           this.rsp_valid_delay_min, this.rsp_valid_delay_max,
+                           this.rsp_valid_delay_gauss_enabled,
+                           this.rsp_valid_delay_mean, this.rsp_valid_delay_stddev,
+                           "g_rsp_valid_delay",
+                           this.g_rsp_valid_delay, this.g_rsp_valid_delay_built);
+  endfunction
+
+  function int unsigned draw_dat_valid_delay();
+    return this.draw_delay(this.dat_valid_delay_enabled,
+                           this.dat_valid_delay_min, this.dat_valid_delay_max,
+                           this.dat_valid_delay_gauss_enabled,
+                           this.dat_valid_delay_mean, this.dat_valid_delay_stddev,
+                           "g_dat_valid_delay",
+                           this.g_dat_valid_delay, this.g_dat_valid_delay_built);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Build every gauss-enabled channel's CDF up front, so the first delayed flit
+  // does not pay for it. The agent calls this from build_phase.
+  //
+  // Nothing DEPENDS on this having been called -- the draw builds on demand --
+  // and it draws no random numbers, so calling it cannot shift the RNG stream
+  // of a run that was not using gauss anyway.
+  // ---------------------------------------------------------------------------
+  function void rebuild_gauss_cdfs();
+
+    if (this.req_valid_delay_gauss_enabled) begin
+      this.build_gauss_cdf(this.req_valid_delay_min, this.req_valid_delay_max,
+                           this.req_valid_delay_mean, this.req_valid_delay_stddev,
+                           "g_req_valid_delay",
+                           this.g_req_valid_delay, this.g_req_valid_delay_built);
+    end
+
+    if (this.rsp_valid_delay_gauss_enabled) begin
+      this.build_gauss_cdf(this.rsp_valid_delay_min, this.rsp_valid_delay_max,
+                           this.rsp_valid_delay_mean, this.rsp_valid_delay_stddev,
+                           "g_rsp_valid_delay",
+                           this.g_rsp_valid_delay, this.g_rsp_valid_delay_built);
+    end
+
+    if (this.dat_valid_delay_gauss_enabled) begin
+      this.build_gauss_cdf(this.dat_valid_delay_min, this.dat_valid_delay_max,
+                           this.dat_valid_delay_mean, this.dat_valid_delay_stddev,
+                           "g_dat_valid_delay",
+                           this.g_dat_valid_delay, this.g_dat_valid_delay_built);
     end
   endfunction
 
@@ -827,6 +1059,16 @@ class vip_chi_cfg_agent extends uvm_object;
                                         this.rsp_valid_delay_max, silent);
     is_valid &= this.check_delay_window("dat", this.dat_valid_delay_min,
                                         this.dat_valid_delay_max, silent);
+
+    is_valid &= this.check_delay_gauss("req", this.req_valid_delay_enabled,
+                                       this.req_valid_delay_gauss_enabled,
+                                       this.req_valid_delay_stddev, silent);
+    is_valid &= this.check_delay_gauss("rsp", this.rsp_valid_delay_enabled,
+                                       this.rsp_valid_delay_gauss_enabled,
+                                       this.rsp_valid_delay_stddev, silent);
+    is_valid &= this.check_delay_gauss("dat", this.dat_valid_delay_enabled,
+                                       this.dat_valid_delay_gauss_enabled,
+                                       this.dat_valid_delay_stddev, silent);
   endfunction
 
 endclass

@@ -713,6 +713,29 @@ class vip_chi_driver_snf #(
   endtask
 
   // ---------------------------------------------------------------------------
+  // Hold an assembled flit for its channel's configured transmit delay, then
+  // take the credit. See the RN-I twin for why the delay lands before the credit
+  // and why L-credit returns are excluded.
+  // ---------------------------------------------------------------------------
+  protected task wait_channel_delay(input int unsigned cycles);
+
+    repeat (cycles) begin
+      @(this.vif_snf.g_drv.snf_cb);
+      this.drive_idle_sideband();
+    end
+  endtask
+
+  protected task wait_rsp_credit();
+    this.wait_channel_delay(this.cfg.draw_rsp_valid_delay());
+    this.wait_for_credit(this.rsp_lcrd_mgr);
+  endtask
+
+  protected task wait_dat_credit();
+    this.wait_channel_delay(this.cfg.draw_dat_valid_delay());
+    this.wait_for_credit(this.dat_lcrd_mgr);
+  endtask
+
+  // ---------------------------------------------------------------------------
   // Queue one returned credit on the inbound REQ channel.
   // ---------------------------------------------------------------------------
   protected function void schedule_req_credit_return();
@@ -1251,7 +1274,7 @@ class vip_chi_driver_snf #(
     flit.pcrdtype = rsp.pcrd_type;
     flit.qos      = rsp.qos;
 
-    this.wait_for_credit(this.rsp_lcrd_mgr);
+    this.wait_rsp_credit();
 
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
@@ -1378,7 +1401,7 @@ class vip_chi_driver_snf #(
     flit.qos      = item.raw_rsp.qos;
     this.apply_raw_rsp_issue_specific_fields(flit, item.raw_rsp);
 
-    this.wait_for_credit(this.rsp_lcrd_mgr);
+    this.wait_rsp_credit();
 
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
@@ -1477,7 +1500,7 @@ class vip_chi_driver_snf #(
     flit.qos        = item.raw_dat.qos;
     this.apply_raw_dat_issue_specific_fields(flit, item.raw_dat);
 
-    this.wait_for_credit(this.dat_lcrd_mgr);
+    this.wait_dat_credit();
 
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
@@ -1514,7 +1537,7 @@ class vip_chi_driver_snf #(
       flit.qos        = rsp.qos;
       this.apply_dat_issue_specific_fields(flit, rsp, i);
 
-      this.wait_for_credit(this.dat_lcrd_mgr);
+      this.wait_dat_credit();
 
       @(this.vif_snf.g_drv.snf_cb);
       this.drive_idle_sideband();
@@ -1936,7 +1959,7 @@ class vip_chi_driver_snf #(
   // change and drops only on the last beat this emitter will send.
   protected task emit_dat_beat(input dat_flit_t flit, input bit more_to_come);
     this.dat_beat_txn_log.push_back(txn_id_t'(flit.txnid));
-    this.wait_for_credit(this.dat_lcrd_mgr);
+    this.wait_dat_credit();
 
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();

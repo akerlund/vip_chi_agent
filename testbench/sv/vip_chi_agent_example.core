@@ -213,6 +213,10 @@ filesets:
       - tc/tc_chi_dataid_out_of_order.sv:                   {is_include_file: true}
       - tc/tc_chi_dataid_duplicate.sv:                      {is_include_file: true}
       - tc/tc_chi_dat_interleave.sv:                        {is_include_file: true}
+      - tc/tc_chi_channel_delay.sv:                         {is_include_file: true}
+      - tc/tc_chi_delay_gauss.sv:                           {is_include_file: true}
+      - tc/tc_chi_e_write_unique_zero.sv:                   {is_include_file: true}
+      - tc/tc_chi_e_write_evict_or_evict.sv:                {is_include_file: true}
       - tc/tc_chi_pcrd_leak.sv:                             {is_include_file: true}
       - tc/tc_chi_pcrd_return.sv:                           {is_include_file: true}
       - tc/chi_tc_pkg.sv:                               {is_include_file: true}

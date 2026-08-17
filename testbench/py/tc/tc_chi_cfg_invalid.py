@@ -74,6 +74,16 @@ class tc_chi_cfg_invalid(chi_base_test):
     c = self.fresh(); c.dat_interleave_depth = 2
     self.expect_invalid(c, "dat_interleave_depth above 1 without multi_outstanding")
 
+    c = self.fresh()
+    c.req_valid_delay_enabled = True
+    c.req_valid_delay_gauss_enabled = True
+    c.req_valid_delay_stddev = 0.0
+    self.expect_invalid(c, "gaussian delay shaping with a zero spread")
+
+    c = self.fresh()
+    c.rsp_valid_delay_gauss_enabled = True
+    self.expect_invalid(c, "gaussian shaping on a channel whose delay is off")
+
     c = self.fresh(); c.initial_req_credits = 65
     self.expect_invalid(c, "initial REQ credits above the send-credit cap")
 
@@ -136,6 +146,11 @@ class tc_chi_cfg_invalid(chi_base_test):
     c.multi_outstanding = True
     c.dat_interleave_depth = 4
     self.expect_valid(c, "DAT beat interleaving with its master enable")
+
+    c = self.fresh()
+    c.dat_valid_delay_enabled = True
+    c.dat_valid_delay_gauss_enabled = True
+    self.expect_valid(c, "gaussian delay shaping with its channel delay enabled")
 
     c = self.fresh()
     c.add_decerr_range(0x1000, 0x2000)

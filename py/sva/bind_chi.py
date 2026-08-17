@@ -148,6 +148,9 @@ _COHERENT_READ_OPCODES_C = frozenset({
 _COHERENT_WRITE_DATA_OPCODES_C = frozenset({
   int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL),
   int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL),
+  # WriteEvictOrEvict is a CopyBack whose data is CONDITIONAL: the home asks for it with CompDBIDResp or declines with a bare Comp.
+  # Listing it here is still right, and the conditionality takes care of itself -- the burst-length check arms only when a DBID is granted, which is exactly the leg that carries data.
+  int(ReqOpcode.WRITE_EVICT_OR_EVICT),
 })
 # MakeUnique completes on an RSP-only Comp (no data), like CleanUnique.
 _COHERENT_RSP_ONLY_OPCODES_C = frozenset({

@@ -275,6 +275,20 @@ class vip_chi_driver_hni(uvm_component):
     while not mgr.try_acquire_credit():
       await sn.rising()
 
+  # The delay window is per AGENT while this driver is per PORT, so every RN port
+  # draws from the same knob. That is the honest reading of a config that has no
+  # port dimension, and it is still a real shape on each link -- the draws are
+  # independent, so the ports do not move in lock step.
+  async def wait_rn_channel_delay(self, p, cycles):
+    rn = self.rn_buses[p]
+    for _ in range(cycles):
+      await rn.rising()
+
+  async def wait_sn_channel_delay(self, s, cycles):
+    sn = self.sn_buses[s]
+    for _ in range(cycles):
+      await sn.rising()
+
   # ==========================================================================
   # Classification + settle helpers.
   # ==========================================================================
@@ -394,6 +408,7 @@ class vip_chi_driver_hni(uvm_component):
       self.active_busy = True
 
       sn = self.sn_buses[s]
+      await self.wait_sn_channel_delay(s, self.cfg.draw_req_valid_delay())
       await self.wait_sn_send_credit(s, self.sn_req_send[s])
 
       await sn.rising()
@@ -429,6 +444,7 @@ class vip_chi_driver_hni(uvm_component):
       s = self.active_sn_of_rn[p]
       sn = self.sn_buses[s]
 
+      await self.wait_sn_channel_delay(s, self.cfg.draw_rsp_valid_delay())
       await self.wait_sn_send_credit(s, self.sn_rsp_send[s])
 
       await sn.rising()
@@ -462,6 +478,7 @@ class vip_chi_driver_hni(uvm_component):
         raw = _I(rn.sig["rxdatflit"].value)
         pend = rn.get("rxdatflitpend")
 
+        await self.wait_sn_channel_delay(s, self.cfg.draw_dat_valid_delay())
         await self.wait_sn_send_credit(s, self.sn_dat_send[s])
 
         await sn.rising()
@@ -498,6 +515,7 @@ class vip_chi_driver_hni(uvm_component):
       p = self.resolve_rn_port(fields["tgtid"])
       rn = self.rn_buses[p]
 
+      await self.wait_rn_channel_delay(p, self.cfg.draw_rsp_valid_delay())
       await self.wait_rn_send_credit(p, self.rn_rsp_send[p])
 
       await rn.rising()
@@ -551,6 +569,7 @@ class vip_chi_driver_hni(uvm_component):
         p = self.resolve_rn_port(fields["tgtid"])
         rn = self.rn_buses[p]
 
+        await self.wait_rn_channel_delay(p, self.cfg.draw_dat_valid_delay())
         await self.wait_rn_send_credit(p, self.rn_dat_send[p])
 
         await rn.rising()

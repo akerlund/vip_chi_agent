@@ -677,6 +677,47 @@ class vip_chi_driver_rni #(
   endtask
 
   // ---------------------------------------------------------------------------
+  // Hold an assembled flit for its channel's configured transmit delay, then
+  // take the credit.
+  //
+  // BEFORE the credit and before acquire_tx_flit(), on purpose. The delay models
+  // a source that is not ready yet, which is upstream of asking for permission
+  // to send; taking the TX-flit mutex first would make one channel's delay stall
+  // every other channel's driver, and holding a credit across it would reserve
+  // link resources for a flit that has not been offered.
+  //
+  // Per FLIT, which inside a DAT burst means per beat. That is what the knob
+  // says -- a transmit delay on a channel -- and gapped beats are legal: a beat
+  // counter counts FLITV cycles, not consecutive ones.
+  //
+  // NOT applied to L-credit returns. Those are link-layer bookkeeping rather
+  // than traffic, and delaying a credit return starves the peer's send side
+  // instead of shaping this side's.
+  // ---------------------------------------------------------------------------
+  protected task wait_channel_delay(input int unsigned cycles);
+
+    repeat (cycles) begin
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
+    end
+  endtask
+
+  protected task wait_req_credit();
+    this.wait_channel_delay(this.cfg.draw_req_valid_delay());
+    this.wait_for_credit(this.req_lcrd_mgr);
+  endtask
+
+  protected task wait_rsp_credit();
+    this.wait_channel_delay(this.cfg.draw_rsp_valid_delay());
+    this.wait_for_credit(this.rsp_lcrd_mgr);
+  endtask
+
+  protected task wait_dat_credit();
+    this.wait_channel_delay(this.cfg.draw_dat_valid_delay());
+    this.wait_for_credit(this.dat_lcrd_mgr);
+  endtask
+
+  // ---------------------------------------------------------------------------
   // Queue one returned credit on the inbound RSP channel.
   // ---------------------------------------------------------------------------
   protected function void schedule_rsp_credit_return();
@@ -752,7 +793,11 @@ class vip_chi_driver_rni #(
         send_write_data    = this.req_expects_write_data(req);
         wait_for_deferred_comp = 1'b0;
 
-        if (send_write_data) begin
+        if (req.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
+
+          this.drive_write_evict_or_evict(req, req_src_id, req_tgt_id);
+        end
+        else if (send_write_data) begin
 
           this.collect_write_dbid_grant(req, wait_for_deferred_comp, write_grant_flit);
           this.drive_dat(req);
@@ -783,7 +828,10 @@ class vip_chi_driver_rni #(
 
             this.collect_persist_sep_completion(req);
           end
-          else if (req.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) begin
+          else if ((req.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) ||
+                   // WriteUniqueZero is the snoopable twin and completes the same
+                   // two ways: DBIDResp* + Comp, or a combined CompDBIDResp.
+                   (req.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C))) begin
 
             this.collect_write_zero_completion(req);
           end
@@ -800,7 +848,12 @@ class vip_chi_driver_rni #(
           this.collect_combined_cmo_completion(req);
         end
 
-        if (req.exp_comp_ack) begin
+        // WriteEvictOrEvict always sets ExpCompAck but acknowledges itself: the
+        // data leg's CopyBackWrData IS the acknowledgement, and the no-data leg
+        // already sent an explicit CompAck above. Either way a second one here
+        // would be a CompAck the home never expects.
+        if (req.exp_comp_ack &&
+            (req.opcode != req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C))) begin
 
           this.drive_comp_ack(req.txn_id, req_src_id, req_tgt_id);
         end
@@ -1198,7 +1251,7 @@ class vip_chi_driver_rni #(
         flit.tgtid    = this.pcrd_granter.exists(pcrd_type)
                       ? this.pcrd_granter[pcrd_type] : '0;
 
-        this.wait_for_credit(this.req_lcrd_mgr);
+        this.wait_req_credit();
         this.acquire_tx_flit();
         @(this.vif_rni.g_drv.rni_cb);
         this.drive_idle_sideband();
@@ -1299,7 +1352,7 @@ class vip_chi_driver_rni #(
     flit.qos          = req.qos;
 
     this.apply_req_issue_specific_fields(flit, req);
-    this.wait_for_credit(this.req_lcrd_mgr);
+    this.wait_req_credit();
 
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);
@@ -1388,7 +1441,7 @@ class vip_chi_driver_rni #(
     flit.qos          = item.raw_req.qos;
 
     this.apply_raw_req_issue_specific_fields(flit, item.raw_req);
-    this.wait_for_credit(this.req_lcrd_mgr);
+    this.wait_req_credit();
 
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);
@@ -1431,7 +1484,7 @@ class vip_chi_driver_rni #(
     flit.qos      = item.raw_rsp.qos;
 
     this.apply_raw_rsp_issue_specific_fields(flit, item.raw_rsp);
-    this.wait_for_credit(this.rsp_lcrd_mgr);
+    this.wait_rsp_credit();
 
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);
@@ -1480,7 +1533,7 @@ class vip_chi_driver_rni #(
     flit.qos        = item.raw_dat.qos;
 
     this.apply_raw_dat_issue_specific_fields(flit, item.raw_dat);
-    this.wait_for_credit(this.dat_lcrd_mgr);
+    this.wait_dat_credit();
 
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);
@@ -1586,7 +1639,7 @@ class vip_chi_driver_rni #(
       flit.qos        = req.qos;
 
       this.apply_dat_issue_specific_fields(flit, req, i);
-      this.wait_for_credit(this.dat_lcrd_mgr);
+      this.wait_dat_credit();
 
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
@@ -1650,6 +1703,51 @@ class vip_chi_driver_rni #(
   // ---------------------------------------------------------------------------
   // Wait for the initial DBID-carrying write response before sending DAT.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // WriteEvictOrEvict: the one write whose shape the COMPLETER chooses.
+  //
+  // The requester hands back a clean line and the home decides whether it wants
+  // the data. Both answers are legal and neither is predictable from the request,
+  // so the requester cannot commit to a data phase until the first response tells
+  // it which transaction this turned out to be:
+  //
+  //   CompDBIDResp -> the home wants it. Send CopyBackWrData. No CompAck follows:
+  //                   the specification states the CopyBackWriteData message is
+  //                   itself the implicit acknowledgement.
+  //   Comp         -> the home declined. Send an explicit CompAck and no data.
+  //                   The transaction degenerates into an Evict.
+  //
+  // This is why the opcode cannot ride the ordinary write path: that path decides
+  // whether to send data from the OPCODE alone, before any response has arrived.
+  // ---------------------------------------------------------------------------
+  protected task drive_write_evict_or_evict(
+    inout item_t    req,
+    input node_id_t req_src_id,
+    input node_id_t req_tgt_id
+  );
+
+    rsp_flit_t flit;
+
+    this.wait_for_matching_rsp(req.txn_id, flit);
+    this.stamp_rsp_flit_on_req(req, flit);
+
+    if (rsp_opcode_t'(flit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)) begin
+
+      req.dbid = txn_id_t'(flit.dbid);
+      this.drive_dat(req);
+      return;
+    end
+
+    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) begin
+
+      `uvm_fatal(get_name(), $sformatf(
+      "FATAL [%s] WriteEvictOrEvict first response opcode 0x%0h was neither CompDBIDResp nor Comp",
+      get_name(), flit.opcode))
+    end
+
+    this.drive_comp_ack(req.txn_id, req_src_id, req_tgt_id);
+  endtask
+
   protected task collect_write_dbid_grant(
     inout  item_t     req,
     output bit        wait_for_deferred_comp,
@@ -2064,7 +2162,7 @@ class vip_chi_driver_rni #(
     flit.srcid  = src_id;
     flit.tgtid  = tgt_id;
 
-    this.wait_for_credit(this.rsp_lcrd_mgr);
+    this.wait_rsp_credit();
 
     this.acquire_tx_flit();
     @(this.vif_rni.g_drv.rni_cb);

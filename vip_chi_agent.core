@@ -58,6 +58,8 @@ filesets:
       - sv/seq_lib/vip_chi_write_cmo_seq.sv:      {is_include_file: true}
       - sv/seq_lib/vip_chi_atomic_seq.sv:         {is_include_file: true}
       - sv/seq_lib/vip_chi_persist_seq.sv:        {is_include_file: true}
+      - sv/seq_lib/vip_chi_write_unique_zero_seq.sv:    {is_include_file: true}
+      - sv/seq_lib/vip_chi_write_evict_or_evict_seq.sv: {is_include_file: true}
       - sv/seq_lib/vip_chi_pipelined_seq.sv:      {is_include_file: true}
       - sv/seq_lib/vip_chi_raw_seq.sv:            {is_include_file: true}
       - sv/vip_chi_agent.sv:                      {is_include_file: true}
@@ -68,6 +70,7 @@ filesets:
     file_type: systemVerilogSource
     depend:
       - "akerlund::vip_memory:2.0.1"
+      - "akerlund::vip_gauss:1.0.0"
 
 targets:
   default:

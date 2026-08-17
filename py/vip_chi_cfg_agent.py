@@ -22,6 +22,9 @@
 
 from __future__ import annotations
 
+import random
+
+from vip_gauss import vip_gauss
 from vip_chi_types_pkg import Role, Resp, DatInterleavePolicy
 
 # is_active values (mirror uvm_active_passive_enum).
@@ -282,21 +285,67 @@ class VipChiCfgAgent:
     # existed.
     self.lasm_reactivate_during_deactivate = False
 
+    # Per-channel transmit delay: cycles the driver holds an assembled flit
+    # before asking for a credit and asserting FLITV. Drawn through
+    # draw_*_valid_delay() below, which owns the distribution.
+    #
+    # These three read enabled = False because that is what the wire has always
+    # done. They were declared, validated and documented long before anything
+    # drew from them, and req_valid_delay_enabled in particular sat at True
+    # while no driver in either port ever read it -- so its value never meant
+    # anything. Wiring them up without flipping that default would have retimed
+    # every existing test as a side effect of making a knob work.
+    #
+    # link_act_delay_* is NOT wired. It would delay the activation request,
+    # which is exactly what lasm_req_delay_by_state already does and does
+    # better, being a function of the link state the requester acts from rather
+    # than a flat window. Two delays on one event would only be confusing; this
+    # one is superseded.
     self.link_act_delay_enabled = True
     self.link_act_delay_min = 0
     self.link_act_delay_max = 4
 
-    self.req_valid_delay_enabled = True
+    # The shape of the draw inside [min, max]. Off is uniform, which is what the
+    # window alone has always meant; on is a truncated gaussian centred on
+    # <chan>_valid_delay_mean with spread <chan>_valid_delay_stddev, which puts
+    # most flits near the mean and a few out at the edges the way real handshake
+    # latency does, rather than spreading them flat across the window.
+    #
+    # The mean/stddev defaults are non-zero and inside each window on purpose: a
+    # test that flips only the gauss flag gets a usable distribution rather than
+    # a config error or a point mass at an edge.
+    self.req_valid_delay_enabled = False
     self.req_valid_delay_min = 0
     self.req_valid_delay_max = 4
+    self.req_valid_delay_gauss_enabled = False
+    self.req_valid_delay_mean = 2
+    self.req_valid_delay_stddev = 1.0
 
     self.rsp_valid_delay_enabled = False
     self.rsp_valid_delay_min = 0
     self.rsp_valid_delay_max = 2
+    self.rsp_valid_delay_gauss_enabled = False
+    self.rsp_valid_delay_mean = 1
+    self.rsp_valid_delay_stddev = 1.0
 
     self.dat_valid_delay_enabled = False
     self.dat_valid_delay_min = 0
     self.dat_valid_delay_max = 2
+    self.dat_valid_delay_gauss_enabled = False
+    self.dat_valid_delay_mean = 1
+    self.dat_valid_delay_stddev = 1.0
+
+    # Cached CDFs, one per channel. None until the first gauss draw on that
+    # channel: a config that never enables gauss never allocates one.
+    self.g_req_valid_delay = None
+    self.g_rsp_valid_delay = None
+    self.g_dat_valid_delay = None
+
+    # The knob values each cached CDF was built from, as a signature string. A
+    # draw compares the current knobs against this and rebuilds when they differ.
+    self.g_req_valid_delay_built = ""
+    self.g_rsp_valid_delay_built = ""
+    self.g_dat_valid_delay_built = ""
 
     self.coverage_enabled = True
     self.allow_raw_override = True
@@ -310,6 +359,17 @@ class VipChiCfgAgent:
     self.coh_read_unique_state = Resp.UC
     self.rnf_cache_max_lines = 0
     self.hnf_snoop_latency = 0
+
+    # Which leg of a WriteEvictOrEvict this home takes. The specification leaves
+    # the choice to "its own heuristics", which is not something a test can
+    # predict, so it is a knob rather than a draw -- both legs stay reachable,
+    # each deterministically, and a test can assert the one it asked for.
+    #
+    #   True (default) -> ask for the data: CompDBIDResp, answered with
+    #                     CopyBackWrData, which is itself the implicit CompAck.
+    #   False          -> decline it: a bare Comp, answered with an explicit
+    #                     CompAck. The transaction degenerates into an Evict.
+    self.hnf_write_evict_request_data = True
     self.hnf_suppress_snoops = False
     self.hnf_corrupt_dirty_merge = False
     self.exclusives_enabled = True
@@ -523,7 +583,104 @@ class VipChiCfgAgent:
       if lo > hi:
         err(f"{chan}_delay window is inverted: min {lo} > max {hi}")
 
+    # Gaussian shaping, per channel. Both rules exist because the alternative is
+    # silence. vip_gauss raises on a non-positive stddev, so catching it here
+    # turns a mid-run exception into a config error naming the channel. And a
+    # shape set on a channel whose delay is switched off is the exact failure
+    # this feature was built to end: configuration that reads as active and does
+    # nothing.
+    for chan in ("req", "rsp", "dat"):
+      if not getattr(self, f"{chan}_valid_delay_gauss_enabled"):
+        continue
+      stddev = float(getattr(self, f"{chan}_valid_delay_stddev"))
+      if stddev <= 0.0:
+        err(f"{chan}_valid_delay_stddev is {stddev:f}; a gaussian spread must "
+            f"be greater than zero")
+      if not getattr(self, f"{chan}_valid_delay_enabled"):
+        err(f"{chan}_valid_delay_gauss_enabled is set while "
+            f"{chan}_valid_delay_enabled is not: the channel draws no delay at "
+            f"all, so the shape would never be used")
+
     return ok
+
+  # ---------------------------------------------------------------------------
+  # One channel delay draw, in cycles: how long the driver holds an assembled
+  # flit before it asks for a credit and puts it on the wire.
+  #
+  # The distribution lives HERE, not in the drivers. A driver asks its channel
+  # for a number of cycles and waits that many; it has no opinion about how the
+  # number was produced. That is what lets the shape change without touching a
+  # single driver.
+  #
+  # Disabled returns 0, which is the same wire behaviour as before these were
+  # wired up at all.
+  # ---------------------------------------------------------------------------
+  # The shape is chosen here too: uniform across the window, or a truncated
+  # gaussian drawn from a cached CDF.
+  #
+  # The CDF is (re)built whenever the knobs it was built from have moved, which
+  # is a deliberate departure from the sibling agent's contract. There,
+  # rebuild_gauss_cdfs() must be called by hand after any retune and a missed
+  # call is a null dereference. Tests in this VIP retune mid-run as a matter of
+  # course -- tc_chi_channel_delay changes the window three times in one run --
+  # so a draw that silently used a stale CDF, or raised on a fresh one, would be
+  # a trap set for exactly the tests this feature exists for.
+  def _draw_delay(self, chan: str) -> int:
+    if not getattr(self, f"{chan}_valid_delay_enabled"):
+      return 0
+
+    delay_min = int(getattr(self, f"{chan}_valid_delay_min"))
+    delay_max = int(getattr(self, f"{chan}_valid_delay_max"))
+
+    if not getattr(self, f"{chan}_valid_delay_gauss_enabled"):
+      return random.randint(delay_min, delay_max)
+
+    self._build_gauss_cdf(chan)
+    return getattr(self, f"g_{chan}_valid_delay").get_r_cdf_int()
+
+  # ---------------------------------------------------------------------------
+  # Allocate the channel's vip_gauss on first use and (re)build its CDF when the
+  # knobs it was built from have moved. A no-op on the common path.
+  # ---------------------------------------------------------------------------
+  def _build_gauss_cdf(self, chan: str) -> None:
+    delay_min = int(getattr(self, f"{chan}_valid_delay_min"))
+    delay_max = int(getattr(self, f"{chan}_valid_delay_max"))
+    mean = int(getattr(self, f"{chan}_valid_delay_mean"))
+    stddev = float(getattr(self, f"{chan}_valid_delay_stddev"))
+
+    want = f"{delay_min}:{delay_max}:{mean}:{stddev:f}"
+    if (getattr(self, f"g_{chan}_valid_delay") is not None
+        and getattr(self, f"g_{chan}_valid_delay_built") == want):
+      return
+
+    if getattr(self, f"g_{chan}_valid_delay") is None:
+      setattr(self, f"g_{chan}_valid_delay", vip_gauss(f"g_{chan}_valid_delay"))
+
+    getattr(self, f"g_{chan}_valid_delay").gen_cdf(
+      delay_min, delay_max, mean, stddev)
+    setattr(self, f"g_{chan}_valid_delay_built", want)
+
+  def draw_req_valid_delay(self) -> int:
+    return self._draw_delay("req")
+
+  def draw_rsp_valid_delay(self) -> int:
+    return self._draw_delay("rsp")
+
+  def draw_dat_valid_delay(self) -> int:
+    return self._draw_delay("dat")
+
+  # ---------------------------------------------------------------------------
+  # Build every gauss-enabled channel's CDF up front, so the first delayed flit
+  # does not pay for it. The agent calls this from build_phase.
+  #
+  # Nothing DEPENDS on this having been called -- the draw builds on demand --
+  # and it draws no random numbers, so calling it cannot shift the RNG stream of
+  # a run that was not using gauss anyway.
+  # ---------------------------------------------------------------------------
+  def rebuild_gauss_cdfs(self) -> None:
+    for chan in ("req", "rsp", "dat"):
+      if getattr(self, f"{chan}_valid_delay_gauss_enabled"):
+        self._build_gauss_cdf(chan)
 
   def add_decerr_range(self, base: int, limit: int) -> None:
     self.decerr_ranges.append((int(base), int(limit)))

@@ -412,13 +412,24 @@ class vip_chi_driver_hnf(uvm_component):
     self.dn_txn_ctr = (self.dn_txn_ctr + 1) & ((1 << self.rn_buses[0].cfg.txn_id_width) - 1)
     return t
 
+  # Each of these holds the flit for its channel's configured transmit delay
+  # before taking the credit. See the RN-I twin for why the delay lands before
+  # the credit and why L-credit returns are excluded.
+  #
+  # wait_rn_snp_send_credit is deliberately NOT delayed: there is no
+  # snp_valid_delay knob, and inventing one here would put a shape on the snoop
+  # channel that no configuration can see or turn off.
   async def wait_sn_req_send_credit(self, s):
     sn = self.sn_buses[s]
+    for _ in range(self.cfg.draw_req_valid_delay()):
+      await sn.rising()
     while not self.sn_req_send[s].try_acquire_credit():
       await sn.rising()
 
   async def wait_sn_dat_send_credit(self, s):
     sn = self.sn_buses[s]
+    for _ in range(self.cfg.draw_dat_valid_delay()):
+      await sn.rising()
     while not self.sn_dat_send[s].try_acquire_credit():
       await sn.rising()
 
@@ -490,12 +501,21 @@ class vip_chi_driver_hnf(uvm_component):
   # ==========================================================================
   async def wait_rn_rsp_send_credit(self, p):
     rn = self.rn_buses[p]
+    # The credit loop below keeps the sideband driven every cycle it waits, so
+    # the delay has to as well -- otherwise a delayed RSP stops this port's
+    # queued LCRDV pulses for the length of the delay, back-pressuring the RN as
+    # a side effect of shaping our own transmit timing.
+    for _ in range(self.cfg.draw_rsp_valid_delay()):
+      await rn.rising()
+      self.drive_rn_idle_sideband(p)
     while not self.rn_rsp_send[p].try_acquire_credit():
       await rn.rising()
       self.drive_rn_idle_sideband(p)
 
   async def wait_rn_dat_send_credit(self, p):
     rn = self.rn_buses[p]
+    for _ in range(self.cfg.draw_dat_valid_delay()):
+      await rn.rising()
     while not self.rn_dat_send[p].try_acquire_credit():
       await rn.rising()
 
@@ -533,6 +553,10 @@ class vip_chi_driver_hnf(uvm_component):
       await self.service_read_once(p, req)
     elif op in (int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL)):
       await self.service_write_unique(p, req)
+    elif op == int(ReqOpcode.WRITE_UNIQUE_ZERO):
+      await self.service_write_unique_zero(p, req)
+    elif op == int(ReqOpcode.WRITE_EVICT_OR_EVICT):
+      await self.service_write_evict_or_evict(p, req)
     elif op == int(ReqOpcode.CLEAN_UNIQUE):
       await self.service_clean_unique(p, req)
     elif op == int(ReqOpcode.MAKE_UNIQUE):
@@ -748,6 +772,117 @@ class vip_chi_driver_hnf(uvm_component):
   # ==========================================================================
   # Evict: RSP-only ownership drop.
   # ==========================================================================
+  # ==========================================================================
+  # WriteUniqueZero: a full-line store of ZERO with no data on the wire.
+  #
+  # The snoopable twin of WriteNoSnpZero. The line is being overwritten in its
+  # entirety, so every other holder is invalidated first and the home then zeroes
+  # the line itself -- there is no write data to wait for, which is the whole
+  # point of the opcode and the one thing that makes it different from a
+  # WriteUniqueFull carrying zeros.
+  #
+  # SnpCleanInvalid rather than SnpMakeInvalid, matching service_write_unique.
+  # The specification permits SnpMakeInvalid here, but only when the home knows
+  # the snoopee holds no dirty tags -- a condition this directory does not track,
+  # and the discarded data costs nothing because the line is about to be zeroed.
+  #
+  # Completion is CompDBIDResp. The specification also allows separate DBIDResp
+  # and Comp; the combined form is used because it is what every other write in
+  # this home already sends, and a DBID is still returned even though no data
+  # will ever be sent against it.
+  # ==========================================================================
+  async def service_write_unique_zero(self, p, req):
+    line = self.line_addr(req["addr"])
+    entry = self._dir_entry(line)
+    for k in range(len(self.rn_buses)):
+      if k == p or self.cfg.hnf_suppress_snoops:
+        continue
+      if entry[k] == int(Resp.I):
+        continue
+      await self.drive_snoop(k, line, int(SnpOpcode.CLEAN_INVALID))
+
+    # The line is invalid everywhere; the zeroing writer does not own it either.
+    self.directory[line] = [int(Resp.I)] * len(self.rn_buses)
+    # The write changed the line's data -> every exclusive reservation is broken.
+    self.excl_monitor.pop(line, None)
+
+    db = self.rn_buses[0].cfg.data_bytes
+    lb = self.line_beats()
+    self.mem.wr_be(line, [0] * lb, [mask(self.rn_buses[0].cfg.be_width)] * lb)
+    for b in range(lb):
+      self._mark_row(line + b * db)
+
+    await self.drive_rn_rsp(p, int(RspOpcode.COMP_DBID_RESP), _I(req["txnid"]),
+                            _I(req["txnid"]), int(Resp.I),
+                            _I(req["tgtid"]), _I(req["srcid"]))
+
+  # ==========================================================================
+  # WriteEvictOrEvict: the one CopyBack whose SHAPE the home chooses.
+  #
+  # The requester is handing back a CLEAN line that a downstream cache may want.
+  # The home decides, "based on its own heuristics", whether that is worth the
+  # data transfer:
+  #
+  #   * want it    -> CompDBIDResp, and the requester sends CopyBackWrData. No
+  #                   explicit CompAck follows: the specification states that the
+  #                   CopyBackWriteData message IS the implicit acknowledgement,
+  #                   which is why this leg must not wait for one.
+  #   * decline it -> Comp, and the requester answers with an explicit CompAck.
+  #                   The transaction degenerates into an Evict.
+  #
+  # "Its own heuristics" is not something a test can predict, so the choice is a
+  # config knob here rather than a random draw: both legs are reachable, each
+  # deterministically, and a test can assert which one it asked for. That is the
+  # difference between a modelled choice and an unverifiable one.
+  # ==========================================================================
+  async def service_write_evict_or_evict(self, p, req):
+    line = self.line_addr(req["addr"])
+
+    # Either way the requester ends up without the line.
+    if line in self.directory:
+      self.directory[line][p] = int(Resp.I)
+
+    if not self.cfg.hnf_write_evict_request_data:
+      await self.drive_rn_rsp(p, int(RspOpcode.COMP), _I(req["txnid"]), 0,
+                              int(Resp.I), _I(req["tgtid"]), _I(req["srcid"]))
+      await self.collect_comp_ack(p, _I(req["txnid"]))
+      return
+
+    await self.drive_rn_rsp(p, int(RspOpcode.COMP_DBID_RESP), _I(req["txnid"]),
+                            _I(req["txnid"]), int(Resp.I),
+                            _I(req["tgtid"]), _I(req["srcid"]))
+
+    expected_beats = chi_xfer_dat_beats(_I(req["size"]),
+                                        self.rn_buses[0].cfg.data_bytes)
+    await self.collect_write_data(p, _I(req["txnid"]), line, expected_beats,
+                                  int(DatOpcode.COPY_BACK_WR_DATA),
+                                  _I(req["srcid"]), _I(req["tgtid"]),
+                                  "WriteEvictOrEvict")
+
+  # ==========================================================================
+  # Wait for the explicit CompAck that closes the no-data leg of a
+  # WriteEvictOrEvict. Same shape as collect_snp_response: any other flit on this
+  # port while the serial engine is waiting means per-line concurrency arrived
+  # without per-TxnID routing, so it is an error rather than silently dropped.
+  # ==========================================================================
+  async def collect_comp_ack(self, p, txn):
+    rn = self.rn_buses[p]
+    while True:
+      if rn.get("rxrspflitv"):
+        rflit = rn.sample_flit("rsp", "rx")
+        self.rn_rsp_lcrdv_pending[p] += 1
+        if (rflit["opcode"] == int(RspOpcode.COMP_ACK)
+            and _I(rflit["txnid"]) == _I(txn)):
+          await rn.rising()
+          self.drive_rn_idle_sideband(p)
+          break
+        raise AssertionError(
+          f"[{self.get_name()}] port {p}: unexpected RSP (opcode "
+          f"0x{rflit['opcode']:x} TxnID 0x{_I(rflit['txnid']):x}) while awaiting "
+          f"CompAck for TxnID 0x{_I(txn):x}")
+      await rn.rising()
+      self.drive_rn_idle_sideband(p)
+
   async def service_evict(self, p, req):
     line = self.line_addr(req["addr"])
     if line in self.directory:

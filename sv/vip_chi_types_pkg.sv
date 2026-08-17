@@ -104,6 +104,19 @@ package vip_chi_types_pkg;
   localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_MAKE_READ_UNIQUE_C         = 7'h41;
   localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C        = 7'h44;
 
+  // Two isolated CHI-E coherent opcodes (Opcode[6] = 1, so CHI-E only).
+  //
+  // WriteEvictOrEvict is a CopyBack, and the ONLY one whose completion shape the
+  // home chooses: it either asks for the data (CompDBIDResp, answered with
+  // CopyBackWrData, which is an implicit CompAck) or declines it (Comp, answered
+  // with an explicit CompAck). ExpCompAck must be set either way.
+  //
+  // WriteUniqueZero is the snoopable twin of WriteNoSnpZero: a full-line store of
+  // zero with no data on the wire, completed by DBIDResp* + Comp or a combined
+  // CompDBIDResp, and never carrying CompAck.
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C     = 7'h42;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C        = 7'h43;
+
   // Coherent REQ opcodes (Tier C: RN-F <-> HN-F). All <= 0x1B so they fit the
   // narrower CHI-D 6-bit REQ opcode field as well as CHI-E's 7-bit field.
   localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_READ_SHARED_C      = 7'h01;
@@ -583,6 +596,8 @@ package vip_chi_types_pkg;
     VIP_CHI_REQ_PREFETCH_TGT_E             = VIP_CHI_REQ_PREFETCH_TGT_C,
     VIP_CHI_REQ_MAKE_READ_UNIQUE_E         = VIP_CHI_REQ_MAKE_READ_UNIQUE_C,
     VIP_CHI_REQ_WRITE_NO_SNP_ZERO_E        = VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C,
+    VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_E     = VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C,
+    VIP_CHI_REQ_WRITE_UNIQUE_ZERO_E        = VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C,
     VIP_CHI_REQ_READ_SHARED_E              = VIP_CHI_REQ_READ_SHARED_C,
     VIP_CHI_REQ_READ_CLEAN_E               = VIP_CHI_REQ_READ_CLEAN_C,
     VIP_CHI_REQ_READ_UNIQUE_E              = VIP_CHI_REQ_READ_UNIQUE_C,

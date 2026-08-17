@@ -465,6 +465,25 @@ class vip_chi_driver_snf(uvm_driver):
       self.drive_idle_sideband()
 
   # --------------------------------------------------------------------------
+  # Hold an assembled flit for its channel's configured transmit delay, then
+  # take the credit. See the RN-I twin for why the delay lands before the credit
+  # and why L-credit returns are excluded.
+  # --------------------------------------------------------------------------
+  async def wait_channel_delay(self, cycles):
+    bus = self.bus
+    for _ in range(cycles):
+      await bus.rising()
+      self.drive_idle_sideband()
+
+  async def wait_rsp_credit(self):
+    await self.wait_channel_delay(self.cfg.draw_rsp_valid_delay())
+    await self.wait_for_credit(self.rsp_lcrd)
+
+  async def wait_dat_credit(self):
+    await self.wait_channel_delay(self.cfg.draw_dat_valid_delay())
+    await self.wait_for_credit(self.dat_lcrd)
+
+  # --------------------------------------------------------------------------
   async def activate_link(self):
     bus = self.bus
     while True:
@@ -760,7 +779,7 @@ class vip_chi_driver_snf(uvm_driver):
   # ==========================================================================
   async def drive_rsp(self, fields):
     bus = self.bus
-    await self.wait_for_credit(self.rsp_lcrd)
+    await self.wait_rsp_credit()
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(txrspflitpend=0, txrspflitv=1)
@@ -796,7 +815,7 @@ class vip_chi_driver_snf(uvm_driver):
         fields["tagop"] = _I(rsp.dat_tagop)
         fields["tag"] = _I(rsp.tag[i]) if i < len(rsp.tag) else 0
         fields["tu"] = _I(rsp.tu[i]) if i < len(rsp.tu) else 0
-      await self.wait_for_credit(self.dat_lcrd)
+      await self.wait_dat_credit()
       await bus.rising()
       self.drive_idle_sideband()
       bus.drive(txdatflitpend=1 if i != (n - 1) else 0, txdatflitv=1)
@@ -1053,7 +1072,7 @@ class vip_chi_driver_snf(uvm_driver):
   async def emit_dat_beat(self, fields, more_to_come):
     bus = self.bus
     self.dat_beat_txn_log.append(fields.get("txnid", 0))
-    await self.wait_for_credit(self.dat_lcrd)
+    await self.wait_dat_credit()
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(txdatflitpend=1 if more_to_come else 0, txdatflitv=1)
@@ -1230,7 +1249,7 @@ class vip_chi_driver_snf(uvm_driver):
           "opcode": int(DatOpcode.COMP_DATA), "homenid": req_tgt,
           "txnid": req_txn, "srcid": req_tgt, "tgtid": req_src, "qos": req["qos"],
         }
-        await self.wait_for_credit(self.dat_lcrd)
+        await self.wait_dat_credit()
         await bus.rising()
         self.drive_idle_sideband()
         bus.drive(txdatflitpend=1 if b != (granule - 1) else 0, txdatflitv=1)
@@ -1290,9 +1309,8 @@ class vip_chi_driver_snf(uvm_driver):
     else:
       raise AssertionError(
         f"[{self.get_name()}] SN-F raw_override only supports RSP or DAT")
-    lcrd = self.rsp_lcrd if channel == "rsp" else self.dat_lcrd
     flitpend = 1 if getattr(item, "raw_flitpend", False) else 0
-    await self.wait_for_credit(lcrd)
+    await (self.wait_rsp_credit() if channel == "rsp" else self.wait_dat_credit())
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(**{f"tx{channel}flitpend": flitpend, f"tx{channel}flitv": 1})

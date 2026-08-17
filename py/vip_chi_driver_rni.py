@@ -522,6 +522,42 @@ class vip_chi_driver_rni(uvm_driver):
       self.drive_idle_sideband()
 
   # --------------------------------------------------------------------------
+  # Hold an assembled flit for its channel's configured transmit delay, then
+  # take the credit.
+  #
+  # BEFORE the credit and before acquire_tx_flit(), on purpose. The delay models
+  # a source that is not ready yet, which is upstream of asking for permission
+  # to send; taking the TX-flit mutex first would make one channel's delay stall
+  # every other channel's driver, and holding a credit across it would reserve
+  # link resources for a flit that has not been offered.
+  #
+  # Per FLIT, which inside a DAT burst means per beat. That is what the knob
+  # says -- a transmit delay on a channel -- and gapped beats are legal: a beat
+  # counter counts FLITV cycles, not consecutive ones.
+  #
+  # NOT applied to L-credit returns. Those are link-layer bookkeeping rather
+  # than traffic, and delaying a credit return starves the peer's send side
+  # instead of shaping this side's.
+  # --------------------------------------------------------------------------
+  async def wait_channel_delay(self, cycles):
+    bus = self.bus
+    for _ in range(cycles):
+      await bus.rising()
+      self.drive_idle_sideband()
+
+  async def wait_req_credit(self):
+    await self.wait_channel_delay(self.cfg.draw_req_valid_delay())
+    await self.wait_for_credit(self.req_lcrd)
+
+  async def wait_rsp_credit(self):
+    await self.wait_channel_delay(self.cfg.draw_rsp_valid_delay())
+    await self.wait_for_credit(self.rsp_lcrd)
+
+  async def wait_dat_credit(self):
+    await self.wait_channel_delay(self.cfg.draw_dat_valid_delay())
+    await self.wait_for_credit(self.dat_lcrd)
+
+  # --------------------------------------------------------------------------
   async def activate_link(self):
     bus = self.bus
     await bus.rising()
@@ -825,7 +861,9 @@ class vip_chi_driver_rni(uvm_driver):
         req_tgt_id = _I(req.tgt_id)
         send_write_data = self.req_expects_write_data(req)
 
-        if send_write_data:
+        if _I(req.opcode) == int(ReqOpcode.WRITE_EVICT_OR_EVICT):
+          await self.drive_write_evict_or_evict(req, req_src_id, req_tgt_id)
+        elif send_write_data:
           wait_deferred, grant = await self.collect_write_dbid_grant(req)
           await self.drive_dat(req)
           if self.req_expects_atomic_data_completion(req):
@@ -843,7 +881,11 @@ class vip_chi_driver_rni(uvm_driver):
         else:
           if self.req_expects_persist_sep_completion(req):
             await self.collect_persist_sep_completion(req)
-          elif _I(req.opcode) == int(ReqOpcode.WRITE_NO_SNP_ZERO):
+          elif _I(req.opcode) in (int(ReqOpcode.WRITE_NO_SNP_ZERO),
+                                  # WriteUniqueZero is the snoopable twin and
+                                  # completes the same two ways: DBIDResp* + Comp,
+                                  # or a combined CompDBIDResp.
+                                  int(ReqOpcode.WRITE_UNIQUE_ZERO)):
             await self.collect_write_zero_completion(req)
           else:
             await self.collect_write_completion(req)
@@ -853,7 +895,12 @@ class vip_chi_driver_rni(uvm_driver):
         if self.req_is_combined_write_cmo(req):
           await self.collect_combined_cmo_completion(req)
 
-        if _I(req.exp_comp_ack):
+        # WriteEvictOrEvict always sets ExpCompAck but acknowledges itself: the
+        # data leg's CopyBackWrData IS the acknowledgement, and the no-data leg
+        # already sent an explicit CompAck above. Either way a second one here
+        # would be a CompAck the home never expects.
+        if (_I(req.exp_comp_ack)
+            and _I(req.opcode) != int(ReqOpcode.WRITE_EVICT_OR_EVICT)):
           await self.drive_comp_ack(_I(req.txn_id), req_src_id, req_tgt_id)
 
         await bus.rising()
@@ -904,7 +951,7 @@ class vip_chi_driver_rni(uvm_driver):
       req.txn_id = self.alloc_txn_id()
     fields = self._req_fields(req)
 
-    await self.wait_for_credit(self.req_lcrd)
+    await self.wait_req_credit()
 
     await self.acquire_tx_flit()
     await bus.rising()
@@ -949,7 +996,7 @@ class vip_chi_driver_rni(uvm_driver):
           "qos": 0, "addr": 0, "size": 0, "allowretry": 0,
         }
 
-        await self.wait_for_credit(self.req_lcrd)
+        await self.wait_req_credit()
         await self.acquire_tx_flit()
         await bus.rising()
         self.drive_idle_sideband()
@@ -967,7 +1014,8 @@ class vip_chi_driver_rni(uvm_driver):
   async def drive_dat(self, req):
     bus = self.bus
     cfg = self.bus.cfg
-    if _I(req.opcode) == int(ReqOpcode.WRITE_NO_SNP_ZERO):
+    if _I(req.opcode) in (int(ReqOpcode.WRITE_NO_SNP_ZERO),
+                          int(ReqOpcode.WRITE_UNIQUE_ZERO)):
       return
 
     # Hold the TX flit mutex for the whole burst so a concurrent flit driver (an
@@ -991,7 +1039,7 @@ class vip_chi_driver_rni(uvm_driver):
         fields["tagop"] = _I(req.dat_tagop)
         fields["tag"] = _I(req.tag[i]) if i < len(req.tag) else 0
         fields["tu"] = _I(req.tu[i]) if i < len(req.tu) else 0
-      await self.wait_for_credit(self.dat_lcrd)
+      await self.wait_dat_credit()
 
       await bus.rising()
       self.drive_idle_sideband()
@@ -1008,7 +1056,7 @@ class vip_chi_driver_rni(uvm_driver):
     bus = self.bus
     fields = {"opcode": int(RspOpcode.COMP_ACK), "txnid": txn_id,
               "srcid": src_id, "tgtid": tgt_id}
-    await self.wait_for_credit(self.rsp_lcrd)
+    await self.wait_rsp_credit()
 
     await self.acquire_tx_flit()
     await bus.rising()
@@ -1047,6 +1095,38 @@ class vip_chi_driver_rni(uvm_driver):
         f"!= request txnid 0x{req_txn_id:x}")
     self.schedule_rsp_credit_return()
     return flit
+
+  async def drive_write_evict_or_evict(self, req, req_src_id, req_tgt_id):
+    """WriteEvictOrEvict: the one write whose shape the COMPLETER chooses.
+
+    The requester hands back a clean line and the home decides whether it wants
+    the data. Both answers are legal and neither is predictable from the request,
+    so the requester cannot commit to a data phase until the first response tells
+    it which transaction this turned out to be:
+
+      CompDBIDResp -> the home wants it. Send CopyBackWrData. No CompAck follows:
+                      the specification states the CopyBackWriteData message is
+                      itself the implicit acknowledgement.
+      Comp         -> the home declined. Send an explicit CompAck and no data.
+                      The transaction degenerates into an Evict.
+
+    This is why the opcode cannot ride the ordinary write path: that path decides
+    whether to send data from the OPCODE alone, before any response has arrived.
+    """
+    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    self.stamp_rsp_flit_on_req(req, flit)
+
+    if flit["opcode"] == int(RspOpcode.COMP_DBID_RESP):
+      req.dbid = flit["dbid"]
+      await self.drive_dat(req)
+      return
+
+    if flit["opcode"] != int(RspOpcode.COMP):
+      raise AssertionError(
+        f"[{self.get_name()}] WriteEvictOrEvict first response opcode "
+        f"0x{flit['opcode']:x} was neither CompDBIDResp nor Comp")
+
+    await self.drive_comp_ack(_I(req.txn_id), req_src_id, req_tgt_id)
 
   async def collect_write_dbid_grant(self, req):
     flit = await self.wait_for_matching_rsp(_I(req.txn_id))
@@ -1364,9 +1444,10 @@ class vip_chi_driver_rni(uvm_driver):
 
   async def _drive_raw(self, item, channel, raw_value):
     bus = self.bus
-    lcrd = {"req": self.req_lcrd, "rsp": self.rsp_lcrd, "dat": self.dat_lcrd}[channel]
     flitpend = 1 if getattr(item, "raw_flitpend", False) else 0
-    await self.wait_for_credit(lcrd)
+    await {"req": self.wait_req_credit,
+           "rsp": self.wait_rsp_credit,
+           "dat": self.wait_dat_credit}[channel]()
 
     await self.acquire_tx_flit()
     await bus.rising()

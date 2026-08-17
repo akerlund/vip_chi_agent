@@ -392,6 +392,8 @@ class ReqOpcode(IntEnum):
   PREFETCH_TGT = 0x3A
   MAKE_READ_UNIQUE = 0x41
   WRITE_NO_SNP_ZERO = 0x44
+  WRITE_EVICT_OR_EVICT = 0x42
+  WRITE_UNIQUE_ZERO = 0x43
   # Coherent (Tier C) -- all <= 0x1B so they fit the CHI-D 6-bit field too.
   READ_SHARED = 0x01
   READ_CLEAN = 0x02

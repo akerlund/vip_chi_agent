@@ -700,7 +700,17 @@ class vip_chi_driver_hnf #(
   endfunction
 
   // Acquire one outbound REQ send credit for the SN link.
+  // Each of these holds the flit for its channel's configured transmit delay
+  // before taking the credit. See the RN-I twin for why the delay lands before
+  // the credit and why L-credit returns are excluded.
+  //
+  // wait_rn_snp_send_credit is deliberately NOT delayed: there is no
+  // snp_valid_delay knob, and inventing one here would put a shape on the snoop
+  // channel that no configuration can see or turn off.
   protected task wait_sn_req_send_credit(input int s);
+    repeat (this.cfg.draw_req_valid_delay()) begin
+      @(this.vif_sn[s].g_drv.rni_cb);
+    end
     forever begin
       if (this.sn_req_send_mgr[s].try_acquire_credit()) begin
         break;
@@ -746,6 +756,9 @@ class vip_chi_driver_hnf #(
 
   // Acquire one outbound DAT send credit for the SN link (granted by the SN-F).
   protected task wait_sn_dat_send_credit(input int s);
+    repeat (this.cfg.draw_dat_valid_delay()) begin
+      @(this.vif_sn[s].g_drv.rni_cb);
+    end
     forever begin
       if (this.sn_dat_send_mgr[s].try_acquire_credit()) begin
         break;
@@ -836,6 +849,9 @@ class vip_chi_driver_hnf #(
   // Acquire one outbound send credit for the RN-facing DAT channel.
   // ---------------------------------------------------------------------------
   protected task wait_rn_dat_send_credit(input int p);
+    repeat (this.cfg.draw_dat_valid_delay()) begin
+      @(this.vif_rn[p].g_drv.hnf_cb);
+    end
     forever begin
       if (this.rn_dat_send_mgr[p].try_acquire_credit()) begin
         break;
@@ -894,6 +910,12 @@ class vip_chi_driver_hnf #(
     else if ((op == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_C)) ||
              (op == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C))) begin
       this.service_write_unique(p, req);
+    end
+    else if (op == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C)) begin
+      this.service_write_unique_zero(p, req);
+    end
+    else if (op == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
+      this.service_write_evict_or_evict(p, req);
     end
     else if (op == req_opcode_t'(VIP_CHI_REQ_CLEAN_UNIQUE_C)) begin
       this.service_clean_unique(p, req);
@@ -1370,6 +1392,163 @@ class vip_chi_driver_hnf #(
   // Serve an Evict: RSP-only ownership drop. Clear the requester's directory
   // entry and return a plain Comp (no data changes hands).
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Serve a WriteUniqueZero: a full-line store of ZERO with no data on the wire.
+  //
+  // The snoopable twin of WriteNoSnpZero. The line is being overwritten in its
+  // entirety, so every other holder is invalidated first and the home then zeroes
+  // the line itself -- there is no write data to wait for, which is the whole
+  // point of the opcode and the one thing that makes it different from a
+  // WriteUniqueFull carrying zeros.
+  //
+  // SnpCleanInvalid rather than SnpMakeInvalid, matching service_write_unique.
+  // The specification permits SnpMakeInvalid here, but only when the home knows
+  // the snoopee holds no dirty tags -- a condition this directory does not track,
+  // and the discarded data costs nothing because the line is about to be zeroed.
+  //
+  // Completion is CompDBIDResp. The specification also allows separate DBIDResp
+  // and Comp; the combined form is used because it is what every other write in
+  // this home already sends, and a DBID is still returned even though no data
+  // will ever be sent against it.
+  // ---------------------------------------------------------------------------
+  protected task service_write_unique_zero(input int p, input req_flit_t req);
+    addr_t                       line;
+    logic [N_RNF_PORTS-1:0][2:0] entry;
+    vip_chi_resp_t               cur_k;
+    int                          line_beats;
+    data_t                       zeros [$];
+    be_t                         be    [$];
+
+    line  = this.line_addr(addr_t'(req.addr));
+    entry = this.directory.exists(line) ? this.directory[line] : '0;
+
+    for (int k = 0; k < N_RNF_PORTS; k++) begin
+      if (k == p) begin
+        continue;
+      end
+      if (this.cfg.hnf_suppress_snoops) begin
+        continue;
+      end
+      cur_k = vip_chi_resp_t'(entry[k]);
+      if (cur_k == VIP_CHI_RESP_STATE_I_E) begin
+        continue;
+      end
+      this.drive_snoop(k, line, snp_opcode_t'(VIP_CHI_SNP_CLEAN_INVALID_C));
+    end
+
+    // The line is invalid everywhere; the zeroing writer does not own it either.
+    this.directory[line] = '0;
+    // The write changed the line's data -> every exclusive reservation is broken.
+    this.excl_monitor.delete(line);
+
+    line_beats = VIP_CHI_CACHE_LINE_BYTES_C / CFG_P.DATA_BYTES_P;
+    for (int b = 0; b < line_beats; b++) begin
+      zeros.push_back('0);
+      be.push_back('1);
+    end
+    this.mem.wr_be(line, zeros, be);
+    for (int b = 0; b < line_beats; b++) begin
+      this.mark_backing_row(line + addr_t'(b * CFG_P.DATA_BYTES_P));
+    end
+
+    this.drive_rn_rsp(p,
+                      item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C),
+                      txn_id_t'(req.txnid), txn_id_t'(req.txnid),
+                      VIP_CHI_RESP_STATE_I_E,
+                      node_id_t'(req.tgtid), node_id_t'(req.srcid));
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Serve a WriteEvictOrEvict: the one CopyBack whose SHAPE the home chooses.
+  //
+  // The requester is handing back a CLEAN line that a downstream cache may want.
+  // The home decides, "based on its own heuristics", whether that is worth the
+  // data transfer:
+  //
+  //   * want it   -> CompDBIDResp, and the requester sends CopyBackWrData. No
+  //                  explicit CompAck follows: the specification states that the
+  //                  CopyBackWriteData message IS the implicit acknowledgement,
+  //                  which is why this leg must not wait for one.
+  //   * decline it -> Comp, and the requester answers with an explicit CompAck.
+  //                  The transaction degenerates into an Evict.
+  //
+  // "Its own heuristics" is not something a test can predict, so the choice is a
+  // config knob here rather than a random draw: both legs are reachable, each
+  // deterministically, and a test can assert which one it asked for. That is the
+  // difference between a modelled choice and an unverifiable one.
+  // ---------------------------------------------------------------------------
+  protected task service_write_evict_or_evict(input int p, input req_flit_t req);
+    addr_t       line;
+    int unsigned expected_beats;
+
+    line = this.line_addr(addr_t'(req.addr));
+
+    // Either way the requester ends up without the line.
+    if (this.directory.exists(line)) begin
+      this.directory[line][p] = VIP_CHI_RESP_STATE_I_E;
+    end
+
+    if (!this.cfg.hnf_write_evict_request_data) begin
+      this.drive_rn_rsp(p,
+                        item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C),
+                        txn_id_t'(req.txnid), txn_id_t'(0),
+                        VIP_CHI_RESP_STATE_I_E,
+                        node_id_t'(req.tgtid), node_id_t'(req.srcid));
+
+      this.collect_comp_ack(p, txn_id_t'(req.txnid));
+      return;
+    end
+
+    this.drive_rn_rsp(p,
+                      item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C),
+                      txn_id_t'(req.txnid), txn_id_t'(req.txnid),
+                      VIP_CHI_RESP_STATE_I_E,
+                      node_id_t'(req.tgtid), node_id_t'(req.srcid));
+
+    expected_beats = vip_chi_types_pkg::chi_xfer_dat_beats(size_t'(req.size),
+                                                           CFG_P.DATA_BYTES_P);
+
+    this.collect_write_data(p,
+                            txn_id_t'(req.txnid),
+                            line,
+                            expected_beats,
+                            dat_opcode_t'(VIP_CHI_DAT_COPY_BACK_WR_DATA_C),
+                            node_id_t'(req.srcid),
+                            node_id_t'(req.tgtid),
+                            "WriteEvictOrEvict");
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Wait for the explicit CompAck that closes the no-data leg of a
+  // WriteEvictOrEvict. Same shape as collect_snp_response: any other flit on this
+  // port while the serial engine is waiting means per-line concurrency arrived
+  // without per-TxnID routing, so it is fatal rather than silently dropped.
+  // ---------------------------------------------------------------------------
+  protected task collect_comp_ack(input int p, input txn_id_t txn);
+    rsp_flit_t rflit;
+
+    forever begin
+      if (this.vif_rn[p].g_drv.hnf_cb.rxrspflitv) begin
+        rflit = this.vif_rn[p].g_drv.hnf_cb.rxrspflit;
+        this.rn_rsp_lcrdv_pending[p] += 1;
+
+        if ((vip_chi_rsp_opcode_t'(rflit.opcode) == vip_chi_rsp_opcode_t'(VIP_CHI_RSP_COMP_ACK_C)) &&
+            (txn_id_t'(rflit.txnid) == txn)) begin
+          @(this.vif_rn[p].g_drv.hnf_cb);
+          this.drive_rn_idle_sideband(p);
+          break;
+        end
+
+        `uvm_fatal(get_name(), $sformatf(
+          "FATAL [%s] port %0d: unexpected RSP (opcode 0x%0h TxnID 0x%0h) while awaiting CompAck for TxnID 0x%0h",
+          get_name(), p, rflit.opcode, rflit.txnid, txn))
+      end
+
+      @(this.vif_rn[p].g_drv.hnf_cb);
+      this.drive_rn_idle_sideband(p);
+    end
+  endtask
+
   protected task service_evict(input int p, input req_flit_t req);
     addr_t line;
 
@@ -1390,6 +1569,14 @@ class vip_chi_driver_hnf #(
   // Acquire one outbound send credit for the RN-facing RSP channel.
   // ---------------------------------------------------------------------------
   protected task wait_rn_rsp_send_credit(input int p);
+    // The credit loop below keeps the sideband driven every cycle it waits, so
+    // the delay has to as well -- otherwise a delayed RSP stops this port's
+    // queued LCRDV pulses for the length of the delay, back-pressuring the RN
+    // as a side effect of shaping our own transmit timing.
+    repeat (this.cfg.draw_rsp_valid_delay()) begin
+      @(this.vif_rn[p].g_drv.hnf_cb);
+      this.drive_rn_idle_sideband(p);
+    end
     forever begin
       if (this.rn_rsp_send_mgr[p].try_acquire_credit()) begin
         break;

@@ -83,6 +83,12 @@ class vip_chi_agent(uvm_agent):
     self._check_chi_cfg(self.vif.cfg)
     self._check_cfg()
 
+    # Build the delay CDFs for any channel configured for gaussian shaping, so
+    # the first delayed flit does not pay for the build. Nothing depends on this
+    # -- a draw builds on demand, and a test that retunes mid-run is rebuilt for
+    # automatically -- so this is a head start, not a contract.
+    self.cfg.rebuild_gauss_cdfs()
+
     is_active = (self.cfg.is_active == UVM_ACTIVE)
     if is_active and self.role == Role.MONITOR:
       raise RuntimeError(
