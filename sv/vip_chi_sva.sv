@@ -462,10 +462,17 @@ module vip_chi_sva #(
             is_final_rsp_completion(opcode, rsp_opcode_t'(vif.txrspflit.opcode)));
   endfunction
 
+  // A combined Write + CMO is a write request here, exactly as its plain form
+  // is. Leaving the family out made this function quietly answer "not a write"
+  // for six legal write opcodes, which switched off the ExpCompAck bookkeeping
+  // below: a combined write that set ExpCompAck was then reported as sending a
+  // CompAck it had never asked for.
   function automatic bit is_write_req_opcode(input req_opcode_t opcode);
     return ((opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C)) ||
             (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C)) ||
             (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) ||
+            vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+              vip_chi_req_opcode_t'(opcode)) ||
             req_opcode_is_coherent_write_data(opcode) ||
             vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(
               vip_chi_req_opcode_t'(opcode)));
@@ -488,10 +495,16 @@ module vip_chi_sva #(
       return vip_chi_types_pkg::chi_xfer_dat_beats(size, CFG_P.DATA_BYTES_P);
     end
 
+    // The combined Write + CMO family carries the write half's data burst like
+    // any other write. Omitting it returned zero beats, which cleared
+    // expected_write_valid_by_dbid and stood the write-burst length checks down
+    // for all six forms -- they passed by never being asked.
     if (vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(
           vip_chi_req_opcode_t'(opcode)) ||
         (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C)) ||
         (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C)) ||
+        vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+          vip_chi_req_opcode_t'(opcode)) ||
         req_opcode_is_coherent_write_data(opcode)) begin
       return vip_chi_types_pkg::chi_xfer_dat_beats(size, CFG_P.DATA_BYTES_P);
     end

@@ -81,6 +81,7 @@ from vip_chi_types_pkg import (
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
   req_opcode_is_atomic_returning_data,
+  req_opcode_is_combined_write_cmo,
 )
 
 # L-credit tracking caps, mirroring REQ/RSP/DAT_SEND_CAP_C in the SV checker.
@@ -206,9 +207,16 @@ def _req_completion_uses_dat(opcode: int) -> bool:
 
 
 def _is_write_req_opcode(opcode: int) -> bool:
+  """A combined Write + CMO is a write request here, exactly as its plain form
+  is. Leaving the family out made this function quietly answer "not a write" for
+  six legal write opcodes, which switched off the ExpCompAck bookkeeping: a
+  combined write that set ExpCompAck was then reported as sending a CompAck it
+  had never asked for.
+  """
   op = int(opcode)
   return (op in _NON_COHERENT_WRITE_OPCODES_C
           or op in _COHERENT_WRITE_DATA_OPCODES_C
+          or req_opcode_is_combined_write_cmo(op)
           or req_opcode_is_atomic(op))
 
 
@@ -1123,8 +1131,13 @@ class bind_chi:
     # spans the whole 2**Size operand region in one contiguous run.
     if req_opcode_is_atomic_compare(op):
       return chi_xfer_dat_beats(size, self._data_bytes)
+    # The combined Write + CMO family carries the write half's data burst like
+    # any other write. Omitting it returned zero beats, which cleared
+    # _expected_write_valid_by_dbid and stood the write-burst length checks down
+    # for all six forms -- they passed by never being asked.
     if (req_opcode_is_atomic(op)
         or op in (int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL))
+        or req_opcode_is_combined_write_cmo(op)
         or op in _COHERENT_WRITE_DATA_OPCODES_C):
       return chi_xfer_dat_beats(size, self._data_bytes)
     return 0

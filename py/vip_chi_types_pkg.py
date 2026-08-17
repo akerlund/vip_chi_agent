@@ -627,6 +627,26 @@ def req_opcode_is_atomic_returning_data(opcode: int) -> bool:
           or op in (int(ReqOpcode.ATOMIC_SWAP), int(ReqOpcode.ATOMIC_COMPARE)))
 
 
+_COMBINED_WRITE_CMO_OPCODES = frozenset({
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
+})
+
+
+def req_opcode_is_combined_write_cmo(opcode: int) -> bool:
+  """A single request carrying both a write and a cache maintenance operation.
+
+  The twin of vip_chi_req_opcode_is_combined_write_cmo in the SystemVerilog
+  types package. It lives here rather than beside its callers because the six
+  are writes first and anything classifying writes has to say so.
+  """
+  return int(opcode) in _COMBINED_WRITE_CMO_OPCODES
+
+
 def req_opcode_atomic_variant(opcode: int) -> int:
   """The arithmetic variant [0:7] encoded by AtomicStore/Load; -1 otherwise."""
   op = int(opcode)

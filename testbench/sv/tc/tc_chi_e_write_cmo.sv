@@ -20,6 +20,14 @@
 //     -- and it is the one thing here a completer can get wrong while still
 //     answering every flit. RSP fifo order is RSP channel order, so this is the
 //     real observation, not a restatement of what the driver enforces.
+//   * CompAck, on the three Ptl forms, which set ExpCompAck. The spec permits
+//     ExpCompAck on a Non-CopyBack Combined Write and requires the CompAck to be
+//     sent AFTER the write's completion response -- a lower bound, with no upper
+//     bound, so the requester is free to send it any time later. This test
+//     checks the bound that exists rather than the placement this RN-I happens
+//     to pick: CompAck after the write completion, present exactly when
+//     ExpCompAck was set and absent when it was not. The three Full forms leave
+//     ExpCompAck clear, so both populations run in the same test.
 //   * the data landed, read back and compared beat by beat afterwards. A
 //     completer that answered correctly and dropped the write would satisfy both
 //     assertions above.
@@ -96,6 +104,7 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
 
     bit                    form_partial [FORMS_C];
     vip_chi_combined_cmo_e form_cmo     [FORMS_C];
+    bit                    form_ack     [FORMS_C];
     item_t::data_t         written      [FORMS_C][];
     item_t::be_t           written_be   [FORMS_C][];
 
@@ -111,6 +120,7 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
     int write_comp_index;
     int comp_cmo_index;
     int persist_index;
+    int comp_ack_index;
     int dat_beats_seen;
 
     phase.raise_objection(this);
@@ -122,6 +132,12 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
                      VIP_CHI_CMO_CLEAN_SH_E,
                      VIP_CHI_CMO_CLEAN_INV_E,
                      VIP_CHI_CMO_CLEAN_SH_PER_SEP_E};
+
+    // ExpCompAck on the Ptl half only. Splitting it this way rather than setting
+    // it everywhere keeps both populations in one run: every CMO kind is covered
+    // with a CompAck and without one, so "no CompAck appeared" is a failure on
+    // one half and the expected outcome on the other.
+    form_ack     = '{1'b0, 1'b0, 1'b0, 1'b1, 1'b1, 1'b1};
 
     expected_beats = vip_chi_types_pkg::chi_xfer_dat_beats(
       item_t::size_t'(SIZE_C), CHI_E_WIDE_CFG_C.DATA_BYTES_P);
@@ -135,6 +151,7 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
       this.write_cmo_seq.reset();
       this.write_cmo_seq.set_partial(form_partial[form]);
       this.write_cmo_seq.set_cmo(form_cmo[form]);
+      this.write_cmo_seq.set_exp_comp_ack(form_ack[form]);
       this.write_cmo_seq.set_requests(1);
       this.write_cmo_seq.set_initial_addr(
         E_WRITE_CMO_ADDR_C + item_t::addr_t'(form * E_WRITE_CMO_STRIDE_C));
@@ -205,6 +222,7 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
       write_comp_index = -1;
       comp_cmo_index   = -1;
       persist_index    = -1;
+      comp_ack_index   = -1;
 
       while (super.tb_env.rni_rsp_fifo.try_get(rsp_item)) begin
 
@@ -227,6 +245,12 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
           end
           item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C): begin
             persist_index = rsp_index;
+          end
+          // The RN-I's own TX response. The monitor publishes both directions of
+          // the RSP channel into this fifo, so its position here is the order the
+          // two directions actually appeared on the link.
+          item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_ACK_C): begin
+            comp_ack_index = rsp_index;
           end
           default: begin
             `uvm_fatal(get_name(), $sformatf(
@@ -274,6 +298,33 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
         `uvm_fatal(get_name(), $sformatf(
           "FATAL [%s] form %0d is not persistent but drew a Persist",
           super.tc_name, form))
+      end
+
+      // ---- CompAck: sent when asked for, and never before the completion -----
+      //
+      // The spec states one bound and only one: with ExpCompAck set, the CompAck
+      // must be sent AFTER Comp / DBIDResp / DBIDRespOrd / CompDBIDResp. Nothing
+      // caps how late it may be, so where it sits relative to CompCMO and
+      // Persist is the requester's choice and is deliberately not asserted --
+      // pinning it would fail a legal implementation that acked earlier.
+      if (form_ack[form]) begin
+
+        if (comp_ack_index < 0) begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] form %0d set ExpCompAck but never sent a CompAck",
+            super.tc_name, form))
+        end
+
+        if (comp_ack_index < write_comp_index) begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] form %0d sent CompAck (RSP %0d) before the write completion (RSP %0d)",
+            super.tc_name, form, comp_ack_index, write_comp_index))
+        end
+      end
+      else if (comp_ack_index >= 0) begin
+        `uvm_fatal(get_name(), $sformatf(
+          "FATAL [%s] form %0d left ExpCompAck clear but sent a CompAck (RSP %0d)",
+          super.tc_name, form, comp_ack_index))
       end
     end
 
@@ -332,7 +383,7 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
     super.drain_observation_fifos();
 
     `uvm_info(get_name(), $sformatf(
-      "INFO [%s] All %0d combined Write+CMO forms completed with CompCMO, both persistent forms drew a Persist after it, and every write read back",
+      "INFO [%s] All %0d combined Write+CMO forms completed with CompCMO, both persistent forms drew a Persist after it, the 3 ExpCompAck forms acked after the write completion, and every write read back",
       super.tc_name, FORMS_C), UVM_LOW)
 
     phase.drop_objection(this);

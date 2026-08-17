@@ -22,6 +22,14 @@
 #     -- and it is the one thing here a completer can get wrong while still
 #     answering every flit. RSP fifo order is RSP channel order, so this is the
 #     real observation, not a restatement of what the driver enforces.
+#   * CompAck, on the three Ptl forms, which set ExpCompAck. The spec permits
+#     ExpCompAck on a Non-CopyBack Combined Write and requires the CompAck to be
+#     sent AFTER the write's completion response -- a lower bound, with no upper
+#     bound, so the requester is free to send it any time later. This test
+#     checks the bound that exists rather than the placement this RN-I happens
+#     to pick: CompAck after the write completion, present exactly when
+#     ExpCompAck was set and absent when it was not. The three Full forms leave
+#     ExpCompAck clear, so both populations run in the same test.
 #   * the data landed, read back and compared byte by byte afterwards. A
 #     completer that answered correctly and dropped the write would satisfy both
 #     assertions above.
@@ -49,6 +57,12 @@ _FORMS_C = [
   (False, CMO_CLEAN_SH), (False, CMO_CLEAN_INV), (False, CMO_CLEAN_SH_PER_SEP),
   (True, CMO_CLEAN_SH), (True, CMO_CLEAN_INV), (True, CMO_CLEAN_SH_PER_SEP),
 ]
+
+# ExpCompAck on the Ptl half only. Splitting it this way rather than setting it
+# everywhere keeps both populations in one run: every CMO kind is covered with a
+# CompAck and without one, so "no CompAck appeared" is a failure on one half and
+# the expected outcome on the other.
+_FORM_ACK_C = [False, False, False, True, True, True]
 
 # The REQ opcode each form must put on the wire. Spelled out rather than
 # recomputed from the sequence's own mapping: a test that asked the thing under
@@ -84,6 +98,7 @@ class tc_chi_e_write_cmo(chi_e_base_test):
       seq.set_partial(partial)
       seq.set_cmo(cmo)
       seq.reset()
+      seq.set_exp_comp_ack(_FORM_ACK_C[index])
       seq.set_requests(1)
       seq.set_initial_addr(addr)
       seq.set_size(SIZE_C)
@@ -132,6 +147,7 @@ class tc_chi_e_write_cmo(chi_e_base_test):
       write_comp_index = None
       comp_cmo_index = None
       persist_index = None
+      comp_ack_index = None
 
       while True:
         ok, rsp_item = self.tb_env.rni_rsp_fifo.try_get()
@@ -151,6 +167,11 @@ class tc_chi_e_write_cmo(chi_e_base_test):
           comp_cmo_index = rsp_index
         elif opcode == int(RspOpcode.PERSIST):
           persist_index = rsp_index
+        elif opcode == int(RspOpcode.COMP_ACK):
+          # The RN-I's own TX response. The monitor publishes both directions of
+          # the RSP channel into this fifo, so its position here is the order the
+          # two directions actually appeared on the link.
+          comp_ack_index = rsp_index
         else:
           raise AssertionError(
             f"form {index} unexpected RSP opcode 0x{opcode:x}")
@@ -176,6 +197,24 @@ class tc_chi_e_write_cmo(chi_e_base_test):
       else:
         assert persist_index is None, (
           f"form {index} is not persistent but drew a Persist")
+
+      # ---- CompAck: sent when asked for, and never before the completion -----
+      #
+      # The spec states one bound and only one: with ExpCompAck set, the CompAck
+      # must be sent AFTER Comp / DBIDResp / DBIDRespOrd / CompDBIDResp. Nothing
+      # caps how late it may be, so where it sits relative to CompCMO and
+      # Persist is the requester's choice and is deliberately not asserted --
+      # pinning it would fail a legal implementation that acked earlier.
+      if _FORM_ACK_C[index]:
+        assert comp_ack_index is not None, (
+          f"form {index} set ExpCompAck but never sent a CompAck")
+        assert comp_ack_index > write_comp_index, (
+          f"form {index} sent CompAck (RSP {comp_ack_index}) before the write "
+          f"completion (RSP {write_comp_index})")
+      else:
+        assert comp_ack_index is None, (
+          f"form {index} left ExpCompAck clear but sent a CompAck "
+          f"(RSP {comp_ack_index})")
 
     # And the writes actually landed. A completer that answered every response
     # correctly and dropped the data would pass everything above.
@@ -218,5 +257,6 @@ class tc_chi_e_write_cmo(chi_e_base_test):
     self.logger.info(
       f"Test (tc_chi_e_write_cmo) PASS: all {len(_FORMS_C)} combined Write+CMO "
       f"forms completed with CompCMO, both persistent forms drew a Persist "
-      f"after it, and every write read back")
+      f"after it, the 3 ExpCompAck forms acked after the write completion, and "
+      f"every write read back")
     self.drop_objection()
