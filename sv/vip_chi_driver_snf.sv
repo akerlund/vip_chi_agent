@@ -1730,7 +1730,7 @@ class vip_chi_driver_snf #(
     persist_rsp.role         = VIP_CHI_ROLE_SNF_E;
     persist_rsp.src_id       = node_id_t'(req.tgtid);
     persist_rsp.tgt_id       = node_id_t'(req.srcid);
-    persist_rsp.txn_id       = txn_id_t'(req.txnid);
+    persist_rsp.txn_id       = '0;   // Persist is not tied to a TxnID
     persist_rsp.dbid         = txn_id_t'(req.txnid);
     persist_rsp.qos          = req.qos;
     persist_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
@@ -2367,7 +2367,7 @@ class vip_chi_driver_snf #(
       persist_rsp.role         = VIP_CHI_ROLE_SNF_E;
       persist_rsp.src_id       = node_id_t'(req.tgtid);
       persist_rsp.tgt_id       = node_id_t'(req.srcid);
-      persist_rsp.txn_id       = txn_id_t'(req.txnid);
+      persist_rsp.txn_id       = '0;   // Persist is not tied to a TxnID
       persist_rsp.qos          = req.qos;
       persist_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
       persist_rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;

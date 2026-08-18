@@ -147,14 +147,14 @@ class tc_chi_e_persist extends chi_e_base_test;
         super.tc_name, persist_rsp_item.rsp_opcode))
     end
 
-    if ((persist_rsp_item.txn_id != req_item.txn_id) ||
+    if ((persist_rsp_item.txn_id != '0) ||
         (comp_persist_rsp_item.txn_id != req_item.txn_id) ||
         (persist_rsp_item.src_id != req_item.tgt_id) ||
         (persist_rsp_item.tgt_id != req_item.src_id) ||
         (comp_persist_rsp_item.src_id != req_item.tgt_id) ||
         (comp_persist_rsp_item.tgt_id != req_item.src_id)) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] PersistSep completion routing fields did not match the request",
+        "FATAL [%s] PersistSep completion fields did not match TxnID applicability and request routing",
         super.tc_name))
     end
 

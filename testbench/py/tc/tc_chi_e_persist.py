@@ -98,13 +98,13 @@ class tc_chi_e_persist(chi_e_base_test):
       f"persistSep first RSP opcode 0x{int(comp_rsp.rsp_opcode):x} was not Comp"
     assert int(persist_rsp.rsp_opcode) == int(RspOpcode.PERSIST), \
       f"persistSep second RSP opcode 0x{int(persist_rsp.rsp_opcode):x} was not Persist"
-    assert (int(persist_rsp.txn_id) == int(req_item.txn_id) and
+    assert (int(persist_rsp.txn_id) == 0 and
             int(comp_rsp.txn_id) == int(req_item.txn_id) and
             int(persist_rsp.src_id) == int(req_item.tgt_id) and
             int(persist_rsp.tgt_id) == int(req_item.src_id) and
             int(comp_rsp.src_id) == int(req_item.tgt_id) and
             int(comp_rsp.tgt_id) == int(req_item.src_id)), \
-      "persistSep completion routing fields did not match the request"
+      "persistSep completion fields did not match TxnID applicability and request routing"
     assert int(responses[0].rsp_opcode) == int(RspOpcode.PERSIST), \
       f"persistSep sequence response opcode 0x{int(responses[0].rsp_opcode):x} was not Persist"
 

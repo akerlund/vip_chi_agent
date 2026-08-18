@@ -89,6 +89,7 @@ class vip_chi_sb_ctx #(
   // Identity (the normalized key).
   vip_chi_sb_stream_e stream;
   node_id_t           requester_node;   // src_id of the REQ == tgt_id of completions
+  node_id_t           responder_node;   // tgt_id of the REQ == src_id of completions
   txn_id_t            txn_id;
 
   // Request attributes captured once at REQ.
@@ -785,6 +786,7 @@ class vip_chi_scoreboard #(
           this.chk_ok(VIP_CHI_SB_CHK_TXNID_NOT_REUSED_E);
           ctx.reset_milestones();
           this.set_contract(ctx, item);
+          ctx.responder_node = item.tgt_id;
           ctx.addr = item.addr;
           ctx.size = item.size;
           this.ord_enroll(ctx);
@@ -806,6 +808,7 @@ class vip_chi_scoreboard #(
     ctx                = new();
     ctx.stream         = stream;
     ctx.requester_node = item.src_id;
+    ctx.responder_node = item.tgt_id;
     ctx.txn_id         = item.txn_id;
     ctx.addr           = item.addr;
     ctx.size           = item.size;
@@ -828,6 +831,33 @@ class vip_chi_scoreboard #(
     // No-completion requests (prefetch / pcrd-return) retire on issue but stay
     // in the table so a later reuse of the TxnID is still caught.
     this.check_and_retire(ctx);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Standalone Persist has no applicable TxnID. Find the open persistent
+  // transaction by stream and routing instead of the primary TxnID key.
+  // ---------------------------------------------------------------------------
+  protected function bit find_persist_rsp_ctx(
+    input  vip_chi_sb_stream_e stream,
+    input  node_id_t           responder_node,
+    input  node_id_t           requester_node,
+    output ctx_t               ctx
+  );
+
+    foreach (this.open_ctx[k]) begin
+      if ((this.open_ctx[k].stream == stream) &&
+          !this.open_ctx[k].retired &&
+          this.open_ctx[k].need_persist &&
+          !this.open_ctx[k].persist_seen &&
+          (this.open_ctx[k].responder_node == responder_node) &&
+          (this.open_ctx[k].requester_node == requester_node)) begin
+        ctx = this.open_ctx[k];
+        return 1'b1;
+      end
+    end
+
+    ctx = null;
+    return 1'b0;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -871,16 +901,27 @@ class vip_chi_scoreboard #(
       return;
     end
 
-    // Inbound completion (keyed by tgt_id == requester node).
-    key = this.ctx_key(stream, item.tgt_id, item.txn_id);
-    if (!this.open_ctx.exists(key)) begin
-      this.chk_bad(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E, $sformatf(
-        "Orphan RSP (no open ctx): stream=%0d tgt=0x%0h txn=0x%0h rsp_opcode=0x%0h",
-        stream, item.tgt_id, item.txn_id, opc));
-      return;
+    // Inbound completion. Standalone Persist is not TxnID-tied; all other RSPs
+    // use the primary key (tgt_id == requester node, TxnID == request TxnID).
+    if (opc == VIP_CHI_RSP_PERSIST_C) begin
+      if (!this.find_persist_rsp_ctx(stream, item.src_id, item.tgt_id, ctx)) begin
+        this.chk_bad(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E, $sformatf(
+          "Orphan Persist RSP (no open persistent ctx): stream=%0d src=0x%0h tgt=0x%0h txn=0x%0h",
+          stream, item.src_id, item.tgt_id, item.txn_id));
+        return;
+      end
+    end
+    else begin
+      key = this.ctx_key(stream, item.tgt_id, item.txn_id);
+      if (!this.open_ctx.exists(key)) begin
+        this.chk_bad(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E, $sformatf(
+          "Orphan RSP (no open ctx): stream=%0d tgt=0x%0h txn=0x%0h rsp_opcode=0x%0h",
+          stream, item.tgt_id, item.txn_id, opc));
+        return;
+      end
+      ctx = this.open_ctx[key];
     end
     this.chk_ok(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E);
-    ctx = this.open_ctx[key];
 
     case (VIP_CHI_MAX_RSP_OPCODE_WIDTH_C'(opc))
       VIP_CHI_RSP_COMP_C: begin

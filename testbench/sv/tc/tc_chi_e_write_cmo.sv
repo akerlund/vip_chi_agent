@@ -226,7 +226,14 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
 
       while (super.tb_env.rni_rsp_fifo.try_get(rsp_item)) begin
 
-        if (rsp_item.txn_id != req_item.txn_id) begin
+        if (rsp_item.rsp_opcode == VIP_CHI_RSP_PERSIST_C) begin
+          if (rsp_item.txn_id != '0) begin
+            `uvm_fatal(get_name(), $sformatf(
+              "FATAL [%s] form %0d Persist TxnID 0x%0h was not zero",
+              super.tc_name, form, rsp_item.txn_id))
+          end
+        end
+        else if (rsp_item.txn_id != req_item.txn_id) begin
           `uvm_fatal(get_name(), $sformatf(
             "FATAL [%s] form %0d RSP TxnID 0x%0h did not match the request 0x%0h",
             super.tc_name, form, rsp_item.txn_id, req_item.txn_id))

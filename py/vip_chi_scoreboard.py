@@ -105,6 +105,7 @@ class vip_chi_sb_ctx:
   def __init__(self):
     self.stream = SB_STREAM_RNI
     self.requester_node = 0
+    self.responder_node = 0
     self.txn_id = 0
     self.addr = 0
     self.size = 0
@@ -629,6 +630,7 @@ class vip_chi_scoreboard(uvm_component):
           self._pass(SB_TXNID_NOT_REUSED)
           ctx.reset_milestones()
           self._set_contract(ctx, item)
+          ctx.responder_node = int(item.tgt_id)
           ctx.addr = int(item.addr)
           ctx.size = int(item.size)
           self._ord_enroll(ctx)
@@ -645,6 +647,7 @@ class vip_chi_scoreboard(uvm_component):
     ctx = vip_chi_sb_ctx()
     ctx.stream = stream
     ctx.requester_node = int(item.src_id)
+    ctx.responder_node = int(item.tgt_id)
     ctx.txn_id = int(item.txn_id)
     ctx.addr = int(item.addr)
     ctx.size = int(item.size)
@@ -663,6 +666,16 @@ class vip_chi_scoreboard(uvm_component):
     # No-completion requests (prefetch / pcrd-return) retire on issue but stay
     # in the table so a later reuse of the TxnID is still caught.
     self._check_and_retire(ctx)
+
+  def _find_persist_rsp_ctx(self, stream, responder_node, requester_node):
+    """Standalone Persist has no applicable TxnID; match by routing fields."""
+    for ctx in self.open_ctx.values():
+      if (ctx.stream == stream and not ctx.retired and ctx.need_persist
+          and not ctx.persist_seen
+          and ctx.responder_node == int(responder_node)
+          and ctx.requester_node == int(requester_node)):
+        return ctx
+    return None
 
   # ==========================================================================
   # Checker A - requester RSP.
@@ -692,15 +705,24 @@ class vip_chi_scoreboard(uvm_component):
           c.pcrd_seen = True
       return
 
-    # Inbound completion (keyed by tgt_id == requester node).
-    key = self._ctx_key(stream, item.tgt_id, item.txn_id)
-    if key not in self.open_ctx:
-      self._fail(SB_RSP_HAS_OPEN_TXN,
-        "Orphan RSP (no open ctx): stream=%d tgt=0x%x txn=0x%x rsp_opcode=0x%x" % (
-          stream, int(item.tgt_id), int(item.txn_id), opc))
-      return
+    # Inbound completion. Standalone Persist is not TxnID-tied; all other RSPs
+    # use the primary key (tgt_id == requester node, TxnID == request TxnID).
+    if opc == int(RspOpcode.PERSIST):
+      ctx = self._find_persist_rsp_ctx(stream, item.src_id, item.tgt_id)
+      if ctx is None:
+        self._fail(SB_RSP_HAS_OPEN_TXN,
+          "Orphan Persist RSP (no open persistent ctx): stream=%d src=0x%x tgt=0x%x txn=0x%x" % (
+            stream, int(item.src_id), int(item.tgt_id), int(item.txn_id)))
+        return
+    else:
+      key = self._ctx_key(stream, item.tgt_id, item.txn_id)
+      if key not in self.open_ctx:
+        self._fail(SB_RSP_HAS_OPEN_TXN,
+          "Orphan RSP (no open ctx): stream=%d tgt=0x%x txn=0x%x rsp_opcode=0x%x" % (
+            stream, int(item.tgt_id), int(item.txn_id), opc))
+        return
+      ctx = self.open_ctx[key]
     self._pass(SB_RSP_HAS_OPEN_TXN)
-    ctx = self.open_ctx[key]
 
     if opc == int(RspOpcode.COMP):
       ctx.comp_seen = True

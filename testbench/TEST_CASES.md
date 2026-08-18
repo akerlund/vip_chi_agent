@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **156 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **157 pyUVM/cocotb**
+The shared regression currently runs **157 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **158 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -177,8 +177,9 @@ serial. See [../docs/IMPLEMENTATION_PLAN.md](../docs/IMPLEMENTATION_PLAN.md).
 | `tc_chi_e_dat_smoke` | E-RNI | exact-CHI-E RN-I loopback smoke for DAT tagging on write data. |
 | `tc_chi_e_snf_dat_smoke` | E-SNF | exact-CHI-E manual SN-F completion smoke for responder-side DAT tagging. |
 | `tc_chi_e_mte` | E-SNF-A | exact-CHI-E autonomous SN-F tag-storage round-trip for `TagOp`/`Tag`/`TU`. |
-| `tc_chi_e_persist` | E | `CleanSharedPersist` retires on a single `Comp`; `CleanSharedPersistSep` has **two** legal completions and both are driven — `Comp` (the request reached the Point of Coherency) then `Persist` (it reached the Point of Persistence), and the two combined into a single `CompPersist` under `cfg.combined_persist_rsp`. A requester must accept both, so testing one would leave the other as a response the VIP claims to support and has never received. |
 | `tc_chi_e_dbid_resp_ord` | E | exact-CHI-E ordered split write returns `DBIDRespOrd` before deferred `Comp` and trailing `CompAck`. |
+| `tc_chi_e_rsp_field_legality` | E | SN-F RSP field applicability: a split DECERR write returns `DBIDRespOrd` with zero `RespErr` while the deferred `Comp` preserves `NDERR`, and `CleanSharedPersistSep` returns `Persist` with `TxnID = 0` while its `Comp` keeps the request TxnID. |
+| `tc_chi_e_persist` | E | `CleanSharedPersist` retires on a single `Comp`; `CleanSharedPersistSep` has **two** legal completions and both are driven — `Comp` (the request reached the Point of Coherency) then `Persist` (it reached the Point of Persistence), and the two combined into a single `CompPersist` under `cfg.combined_persist_rsp`. A requester must accept both, so testing one would leave the other as a response the VIP claims to support and has never received. |
 | `tc_chi_e_sep_read` | E | exact-CHI-E separated read: `DataSepResp` data returns on `ReturnTxnID` (≠ request TxnID); exercises the scoreboard Checker-A return-index so the separated completion is matched rather than false-orphaned. |
 
 ## HN-I proxy suite

@@ -154,11 +154,15 @@ class tc_chi_e_write_cmo(chi_e_base_test):
         if not ok:
           break
 
-        assert int(rsp_item.txn_id) == int(req_item.txn_id), (
-          f"form {index} RSP TxnID 0x{int(rsp_item.txn_id):x} did not match "
-          f"the request 0x{int(req_item.txn_id):x}")
-
         opcode = int(rsp_item.rsp_opcode)
+        if opcode == int(RspOpcode.PERSIST):
+          assert int(rsp_item.txn_id) == 0, (
+            f"form {index} Persist TxnID 0x{int(rsp_item.txn_id):x} was not zero")
+        else:
+          assert int(rsp_item.txn_id) == int(req_item.txn_id), (
+            f"form {index} RSP TxnID 0x{int(rsp_item.txn_id):x} did not match "
+            f"the request 0x{int(req_item.txn_id):x}")
+
         if opcode == int(RspOpcode.DBID_RESP):
           pass                   # buffer grant only; the completion is below
         elif opcode in (int(RspOpcode.COMP), int(RspOpcode.COMP_DBID_RESP)):

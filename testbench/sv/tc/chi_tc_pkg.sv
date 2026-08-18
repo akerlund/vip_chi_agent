@@ -59,6 +59,7 @@ package chi_tc_pkg;
   `include "tc_chi_check_vacuity.sv"
   `include "tc_chi_sb_vacuity.sv"
   `include "tc_chi_e_dbid_resp_ord.sv"
+  `include "tc_chi_e_rsp_field_legality.sv"
   `include "tc_chi_e_persist.sv"
   `include "tc_chi_e_write_zero_readback.sv"
   `include "tc_chi_e_write_cmo.sv"

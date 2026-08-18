@@ -763,7 +763,8 @@ class vip_chi_driver_snf(uvm_driver):
     await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP)))
 
     if is_sep:
-      await self.drive_rsp(dict(base, opcode=int(RspOpcode.PERSIST)))
+      # Persist is not tied to a TxnID.
+      await self.drive_rsp(dict(base, txnid=0, opcode=int(RspOpcode.PERSIST)))
 
   # ==========================================================================
   # Opcode classifiers / helpers.
@@ -954,7 +955,8 @@ class vip_chi_driver_snf(uvm_driver):
     await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP_CMO)))
 
     if req["opcode"] in _COMBINED_CMO_PERSIST:
-      await self.drive_rsp(dict(base, opcode=int(RspOpcode.PERSIST)))
+      # Persist is not tied to a TxnID.
+      await self.drive_rsp(dict(base, txnid=0, opcode=int(RspOpcode.PERSIST)))
 
   async def drive_auto_write_zero_comp(self, req):
     cfg = self.bus.cfg

@@ -845,7 +845,7 @@ class vip_chi_driver_rni #(
         // completer may only send it once the write data has landed.
         if (this.req_is_combined_write_cmo(req)) begin
 
-          this.collect_combined_cmo_completion(req);
+          this.collect_combined_cmo_completion(req, req_src_id, req_tgt_id);
         end
 
         // WriteEvictOrEvict always sets ExpCompAck but acknowledges itself: the
@@ -1701,6 +1701,40 @@ class vip_chi_driver_rni #(
   endtask
 
   // ---------------------------------------------------------------------------
+  // Standalone Persist has no applicable TxnID. Match the already-open
+  // transaction by the requester/completer routing pair instead.
+  // ---------------------------------------------------------------------------
+  protected task wait_for_standalone_persist_rsp(
+    input  node_id_t  req_src_id,
+    input  node_id_t  req_tgt_id,
+    output rsp_flit_t flit
+  );
+
+    forever begin
+
+      while (!this.vif_rni.g_drv.rni_cb.rxrspflitv) begin
+
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+      end
+
+      flit = this.vif_rni.g_drv.rni_cb.rxrspflit;
+
+      if ((node_id_t'(flit.srcid) != req_tgt_id) ||
+          (node_id_t'(flit.tgtid) != req_src_id)) begin
+
+        `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] Standalone Persist route 0x%0h->0x%0h does not match expected 0x%0h->0x%0h",
+        get_name(), flit.srcid, flit.tgtid, req_tgt_id, req_src_id))
+      end
+
+      this.schedule_rsp_credit_return();
+
+      break;
+    end
+  endtask
+
+  // ---------------------------------------------------------------------------
   // Wait for the initial DBID-carrying write response before sending DAT.
   // ---------------------------------------------------------------------------
   // ---------------------------------------------------------------------------
@@ -2019,7 +2053,11 @@ class vip_chi_driver_rni #(
   // ---------------------------------------------------------------------------
   // Collect CompCMO, and the Persist the persistent forms add after it.
   // ---------------------------------------------------------------------------
-  protected task collect_combined_cmo_completion(inout item_t req);
+  protected task collect_combined_cmo_completion(
+    inout  item_t    req,
+    input  node_id_t req_src_id,
+    input  node_id_t req_tgt_id
+  );
 
     rsp_flit_t flit;
 
@@ -2044,7 +2082,7 @@ class vip_chi_driver_rni #(
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
 
-    this.wait_for_matching_rsp(req.txn_id, flit);
+    this.wait_for_standalone_persist_rsp(req_src_id, req_tgt_id, flit);
 
     if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
 
@@ -2113,6 +2151,11 @@ class vip_chi_driver_rni #(
   protected task collect_persist_sep_completion(inout item_t req);
 
     rsp_flit_t flit;
+    node_id_t  req_src_id;
+    node_id_t  req_tgt_id;
+
+    req_src_id = req.src_id;
+    req_tgt_id = req.tgt_id;
 
     this.wait_for_matching_rsp(req.txn_id, flit);
 
@@ -2135,7 +2178,7 @@ class vip_chi_driver_rni #(
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
 
-    this.wait_for_matching_rsp(req.txn_id, flit);
+    this.wait_for_standalone_persist_rsp(req_src_id, req_tgt_id, flit);
     this.stamp_rsp_flit_on_req(req, flit);
 
     if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
@@ -2383,6 +2426,30 @@ class vip_chi_driver_rni #(
     foreach (this.mx_ctx[i]) begin
 
       if (this.mx_ctx[i].item.txn_id == txn) begin
+
+        return i;
+      end
+    end
+
+    return -1;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Locate the separated-persist entry owed a standalone Persist. The flit has no
+  // applicable TxnID, so match by route after the TxnID-keyed Comp milestone.
+  // ---------------------------------------------------------------------------
+  protected function int find_mixed_persist_ctx(
+    input node_id_t rsp_src_id,
+    input node_id_t rsp_tgt_id
+  );
+
+    foreach (this.mx_ctx[i]) begin
+
+      if ((this.mx_ctx[i].kind == TXN_KIND_PERSIST) &&
+          this.mx_ctx[i].comp_seen &&
+          !this.mx_ctx[i].persist_seen &&
+          (this.mx_ctx[i].req_tgt_id == rsp_src_id) &&
+          (this.mx_ctx[i].req_src_id == rsp_tgt_id)) begin
 
         return i;
       end
@@ -2731,11 +2798,23 @@ class vip_chi_driver_rni #(
         continue;
       end
 
-      idx = this.find_mixed_ctx_by_txn(txn);
+      if (op == VIP_CHI_RSP_PERSIST_C) begin
+        idx = this.find_mixed_persist_ctx(node_id_t'(flit.srcid), node_id_t'(flit.tgtid));
+      end
+      else begin
+        idx = this.find_mixed_ctx_by_txn(txn);
+      end
       if (idx < 0) begin
-        `uvm_fatal(get_name(), $sformatf(
-          "FATAL [%s] RSP txn_id 0x%0h matches no outstanding transaction",
-          get_name(), txn))
+        if (op == VIP_CHI_RSP_PERSIST_C) begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] Standalone Persist route 0x%0h->0x%0h matches no outstanding separated-persist transaction",
+            get_name(), flit.srcid, flit.tgtid))
+        end
+        else begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] RSP txn_id 0x%0h matches no outstanding transaction",
+            get_name(), txn))
+        end
       end
 
       // RetryAck bounces this request: mark the entry for re-issue once its

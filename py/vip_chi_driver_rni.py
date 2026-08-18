@@ -893,7 +893,7 @@ class vip_chi_driver_rni(uvm_driver):
         # The CMO half's completion, which arrives after the write's because the
         # completer may only send it once the write data has landed.
         if self.req_is_combined_write_cmo(req):
-          await self.collect_combined_cmo_completion(req)
+          await self.collect_combined_cmo_completion(req, req_src_id, req_tgt_id)
 
         # WriteEvictOrEvict always sets ExpCompAck but acknowledges itself: the
         # data leg's CopyBackWrData IS the acknowledgement, and the no-data leg
@@ -1096,6 +1096,21 @@ class vip_chi_driver_rni(uvm_driver):
     self.schedule_rsp_credit_return()
     return flit
 
+  async def wait_for_standalone_persist_rsp(self, req_src_id, req_tgt_id):
+    """Standalone Persist has no applicable TxnID; match by routing fields."""
+    bus = self.bus
+    while not bus.get("rxrspflitv"):
+      await bus.rising()
+      self.drive_idle_sideband()
+    flit = bus.sample_flit("rsp", "rx")
+    if flit["srcid"] != req_tgt_id or flit["tgtid"] != req_src_id:
+      raise AssertionError(
+        f"[{self.get_name()}] Standalone Persist route "
+        f"0x{flit['srcid']:x}->0x{flit['tgtid']:x} does not match expected "
+        f"0x{req_tgt_id:x}->0x{req_src_id:x}")
+    self.schedule_rsp_credit_return()
+    return flit
+
   async def drive_write_evict_or_evict(self, req, req_src_id, req_tgt_id):
     """WriteEvictOrEvict: the one write whose shape the COMPLETER chooses.
 
@@ -1167,7 +1182,7 @@ class vip_chi_driver_rni(uvm_driver):
     await self.bus.rising()
     self.drive_idle_sideband()
 
-  async def collect_combined_cmo_completion(self, req):
+  async def collect_combined_cmo_completion(self, req, req_src_id, req_tgt_id):
     """Collect CompCMO, and the Persist the persistent forms add after it."""
     await self.bus.rising()
     self.drive_idle_sideband()
@@ -1182,7 +1197,7 @@ class vip_chi_driver_rni(uvm_driver):
 
     await self.bus.rising()
     self.drive_idle_sideband()
-    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    flit = await self.wait_for_standalone_persist_rsp(req_src_id, req_tgt_id)
     if flit["opcode"] != int(RspOpcode.PERSIST):
       raise AssertionError(
         f"[{self.get_name()}] combined Write+PCMO persist opcode "
@@ -1231,6 +1246,9 @@ class vip_chi_driver_rni(uvm_driver):
     exactly what this VIP's own completer produced, the two agreed with each
     other and the pair was wrong together.
     """
+    req_src_id = _I(req.src_id)
+    req_tgt_id = _I(req.tgt_id)
+
     flit = await self.wait_for_matching_rsp(_I(req.txn_id))
 
     # The combined form is the whole completion: nothing follows it.
@@ -1245,7 +1263,7 @@ class vip_chi_driver_rni(uvm_driver):
 
     await self.bus.rising()
     self.drive_idle_sideband()
-    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    flit = await self.wait_for_standalone_persist_rsp(req_src_id, req_tgt_id)
     self.stamp_rsp_flit_on_req(req, flit)
     if flit["opcode"] != int(RspOpcode.PERSIST):
       raise AssertionError(
@@ -1517,6 +1535,13 @@ class vip_chi_driver_rni(uvm_driver):
         return i
     return -1
 
+  def find_mixed_persist_ctx(self, rsp_src_id, rsp_tgt_id):
+    for i, c in enumerate(self.mx_ctx):
+      if (c.kind == _KIND_PERSIST and c.comp_seen and not c.persist_seen
+          and c.req_tgt_id == rsp_src_id and c.req_src_id == rsp_tgt_id):
+        return i
+    return -1
+
   def find_mixed_read_by_completion(self, txn):
     for i, c in enumerate(self.mx_ctx):
       if ((c.kind == _KIND_READ) or
@@ -1688,8 +1713,16 @@ class vip_chi_driver_rni(uvm_driver):
         self.drive_idle_sideband()
         continue
 
-      idx = self.find_mixed_ctx_by_txn(txn)
+      if op == int(RspOpcode.PERSIST):
+        idx = self.find_mixed_persist_ctx(flit["srcid"], flit["tgtid"])
+      else:
+        idx = self.find_mixed_ctx_by_txn(txn)
       if idx < 0:
+        if op == int(RspOpcode.PERSIST):
+          raise AssertionError(
+            f"[{self.get_name()}] Standalone Persist route "
+            f"0x{flit['srcid']:x}->0x{flit['tgtid']:x} matches no outstanding "
+            f"separated-persist transaction")
         raise AssertionError(
           f"[{self.get_name()}] RSP txn_id 0x{txn:x} matches no outstanding transaction")
       c = self.mx_ctx[idx]

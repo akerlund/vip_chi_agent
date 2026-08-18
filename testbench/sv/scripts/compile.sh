@@ -70,6 +70,7 @@ TESTS=(
   tc_chi_d_ordered_write
   tc_chi_d_ordered_read
   tc_chi_e_dbid_resp_ord
+  tc_chi_e_rsp_field_legality
   tc_chi_e_persist
   tc_chi_e_write_zero_readback
   tc_chi_e_write_cmo

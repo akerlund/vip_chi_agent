@@ -1251,6 +1251,13 @@ async def tc_chi_e_dbid_resp_ord(dut) -> None:
   await _run_e_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_e_rsp_field_legality", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_rsp_field_legality(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_rsp_field_legality"
+  await _run_e_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_e_hni_passthrough", timeout_time=20, timeout_unit="ms")
 async def tc_chi_e_hni_passthrough(dut) -> None:
   """Run this public testcase through the CHI-E HN-I topology."""
