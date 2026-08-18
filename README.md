@@ -719,6 +719,14 @@ suppressed without it: with a single CSV the question has no meaning. The four
 X/Z rules are excluded, because Verilator is 2-state and cannot evaluate them by
 construction — they are already reported as absent by design.
 
+Both of those sections compare the inputs against each other, so a CSV left over
+from an earlier sitting reads as a rule the other port never exercised. Nothing
+in the file records which revision produced it, so the report warns when its
+inputs were written more than an hour apart and names the older one. It is a
+warning and not an error: comparing an archived sweep against a fresh one is a
+reasonable thing to do, and the report should say what it is comparing rather
+than refuse to.
+
 ### Checking the encodings against the specification
 
 Every opcode constant here is a transcription of a number out of Arm IHI 0050,

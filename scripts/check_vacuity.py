@@ -45,11 +45,15 @@ import argparse
 import csv
 import fnmatch
 import sys
+from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 
 
 THIN_RUN_THRESHOLD_C = 2
+# How far apart two input CSVs may be written before the comparison between them
+# is worth doubting. See the staleness guard in main().
+STALE_INPUT_SECONDS_C = 3600
 
 
 def normalize_severity(raw: str) -> str:
@@ -111,6 +115,8 @@ def main() -> int:
   # meaning and the section is suppressed rather than answered wrongly.
   labels_exercising = defaultdict(set)
   labels_seen = []
+  # (path, mtime) per input, for the staleness guard below.
+  inputs_seen = []
 
   for spec in args.csv:
     # LABEL=path, but only when LABEL is plausibly a label rather than the first
@@ -123,6 +129,7 @@ def main() -> int:
     elif label not in labels_seen:
       labels_seen.append(label)
     try:
+      inputs_seen.append((path, Path(path).stat().st_mtime))
       with open(path, newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
           rule = row["check"]
@@ -257,6 +264,30 @@ def main() -> int:
       never.append((rule, disabled_everywhere[rule]))
     elif n_runs <= args.thin:
       thin.append((rule, n_runs, sorted(runs_exercising[rule])))
+
+  # Comparing sweeps from different code revisions produces confident nonsense:
+  # a rule the older sweep predates reads as one port's rule that the other never
+  # exercised, and every per-bind verdict inherits the same skew. There is no
+  # revision stamped in the CSV, so age is the only proxy available -- and it has
+  # already caused this report to file a live rule as `sv only` twice.
+  #
+  # Warned rather than gated: comparing an archived sweep against a fresh one is
+  # a legitimate thing to do, and the tool should say what it is comparing rather
+  # than refuse to. The threshold is one hour because a full sweep of either port
+  # finishes in minutes, so a gap that wide is a different sitting, not a slow run.
+  if len(inputs_seen) > 1:
+    newest = max(m for _, m in inputs_seen)
+    oldest = min(m for _, m in inputs_seen)
+    if (newest - oldest) > STALE_INPUT_SECONDS_C:
+      print(f"WARNING: these CSVs are {(newest - oldest) / 3600.0:.1f} hours "
+            "apart, so they may not describe the same code:")
+      for path, mtime in sorted(inputs_seen, key=lambda pair: pair[1]):
+        stamp = datetime.fromtimestamp(mtime).isoformat(timespec="seconds")
+        print(f"  {stamp}  {path}")
+      print("  Re-run the older sweep before trusting EVIDENCE FROM ONE SOURCE "
+            "ONLY or\n  DEAD ON A BIND: both compare sources against each "
+            "other, so a stale file\n  reads as a rule the other port never "
+            "exercised.\n")
 
   print(f"checks: {len(rules)}   binds: {len(binds_seen)}   runs: "
         f"{len({r for s in runs_exercising.values() for r in s})}")
