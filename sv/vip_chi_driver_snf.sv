@@ -1566,6 +1566,7 @@ class vip_chi_driver_snf #(
     addr_t     mem_addr;
     int        beat_count;
     bit        is_decerr;
+    vip_chi_resp_err_t completion_resp_err;
 
     req_addr   = addr_t'(req.addr);
     req_txn_id = txn_id_t'(req.txnid);
@@ -1573,6 +1574,9 @@ class vip_chi_driver_snf #(
     req_tgt_id = node_id_t'(req.tgtid);
     beat_count = vip_chi_types_pkg::chi_xfer_dat_beats(size_t'(req.size), CFG_P.DATA_BYTES_P);
     is_decerr  = this.decerr_check(req_addr);
+    completion_resp_err = is_decerr
+                        ? VIP_CHI_RESP_ERR_NONDATA_ERROR_E
+                        : VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
 
     rsp          = new("auto_write_rsp");
     rsp.role     = VIP_CHI_ROLE_SNF_E;
@@ -1582,8 +1586,8 @@ class vip_chi_driver_snf #(
     rsp.dbid     = req_txn_id;
     rsp.qos      = req.qos;
     rsp.rsp_resp = VIP_CHI_RESP_STATE_I_E;
-    rsp.rsp_resp_err = is_decerr ? VIP_CHI_RESP_ERR_NONDATA_ERROR_E : VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
     if (this.cfg.split_write_rsp) begin
+      rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
       if ((CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) &&
           this.cfg.ordered_dbid_resp &&
           this.req_has_ordering(req)) begin
@@ -1594,6 +1598,7 @@ class vip_chi_driver_snf #(
       end
     end
     else begin
+      rsp.rsp_resp_err = completion_resp_err;
       rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C);
     end
     this.drive_rsp(rsp);
@@ -1607,7 +1612,7 @@ class vip_chi_driver_snf #(
       deferred_comp_rsp.dbid         = req_txn_id;
       deferred_comp_rsp.qos          = req.qos;
       deferred_comp_rsp.rsp_resp     = rsp.rsp_resp;
-      deferred_comp_rsp.rsp_resp_err = rsp.rsp_resp_err;
+      deferred_comp_rsp.rsp_resp_err = completion_resp_err;
       deferred_comp_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C);
     end
 
@@ -1751,11 +1756,15 @@ class vip_chi_driver_snf #(
     int unsigned remaining_bytes;
     longint      first_row;
     longint      last_row;
+    vip_chi_resp_err_t completion_resp_err;
 
     req_addr       = addr_t'(req.addr);
     is_decerr      = this.decerr_check(req_addr);
     transfer_bytes = 1 << int'(req.size);
     beat_count     = vip_chi_types_pkg::chi_xfer_dat_beats(size_t'(req.size), CFG_P.DATA_BYTES_P);
+    completion_resp_err = is_decerr
+                        ? VIP_CHI_RESP_ERR_NONDATA_ERROR_E
+                        : VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
 
     if (!is_decerr) begin
       remaining_bytes = transfer_bytes;
@@ -1799,14 +1808,15 @@ class vip_chi_driver_snf #(
     rsp.dbid         = txn_id_t'(req.txnid);
     rsp.qos          = req.qos;
     rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
-    rsp.rsp_resp_err = is_decerr ? VIP_CHI_RESP_ERR_NONDATA_ERROR_E : VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
 
     if (!this.cfg.split_write_rsp) begin
+      rsp.rsp_resp_err = completion_resp_err;
       rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C);
       this.drive_rsp(rsp);
       return;
     end
 
+    rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
     rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_C);
     this.drive_rsp(rsp);
 
@@ -1817,7 +1827,7 @@ class vip_chi_driver_snf #(
     comp_rsp.txn_id       = txn_id_t'(req.txnid);
     comp_rsp.qos          = req.qos;
     comp_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
-    comp_rsp.rsp_resp_err = rsp.rsp_resp_err;
+    comp_rsp.rsp_resp_err = completion_resp_err;
     comp_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C);
     this.drive_rsp(comp_rsp);
   endtask
@@ -2093,6 +2103,7 @@ class vip_chi_driver_snf #(
     bit        is_derr;
     vip_chi_resp_t     resp_code;
     vip_chi_resp_err_t resp_err_code;
+    vip_chi_resp_err_t completion_resp_err;
 
     req_addr           = addr_t'(req.addr);
     req_txn_id         = txn_id_t'(req.txnid);
@@ -2113,6 +2124,9 @@ class vip_chi_driver_snf #(
     atomic_variant     = this.req_opcode_atomic_variant(req_opcode_t'(req.opcode));
     is_decerr          = this.decerr_check(req_addr);
     is_derr            = this.derr_check(req_addr);
+    completion_resp_err = is_decerr
+                        ? VIP_CHI_RESP_ERR_NONDATA_ERROR_E
+                        : VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
 
     grant_rsp              = new("auto_atomic_grant_rsp");
     grant_rsp.role         = VIP_CHI_ROLE_SNF_E;
@@ -2122,9 +2136,9 @@ class vip_chi_driver_snf #(
     grant_rsp.dbid         = req_txn_id;
     grant_rsp.qos          = req.qos;
     grant_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
-    grant_rsp.rsp_resp_err = is_decerr ? VIP_CHI_RESP_ERR_NONDATA_ERROR_E : VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
 
     if (returns_data) begin
+      grant_rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
       if ((CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) &&
           this.cfg.ordered_dbid_resp &&
           this.req_has_ordering(req)) begin
@@ -2135,6 +2149,7 @@ class vip_chi_driver_snf #(
       end
     end
     else if (this.cfg.split_write_rsp) begin
+      grant_rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
       if ((CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) &&
           this.cfg.ordered_dbid_resp &&
           this.req_has_ordering(req)) begin
@@ -2145,6 +2160,7 @@ class vip_chi_driver_snf #(
       end
     end
     else begin
+      grant_rsp.rsp_resp_err = completion_resp_err;
       grant_rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C);
     end
 
@@ -2297,7 +2313,7 @@ class vip_chi_driver_snf #(
       final_rsp.dbid         = req_txn_id;
       final_rsp.qos          = req.qos;
       final_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
-      final_rsp.rsp_resp_err = grant_rsp.rsp_resp_err;
+      final_rsp.rsp_resp_err = completion_resp_err;
       final_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C);
       this.drive_rsp(final_rsp);
     end

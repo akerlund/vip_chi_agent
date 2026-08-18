@@ -863,17 +863,19 @@ class vip_chi_driver_snf(uvm_driver):
     err = int(RespErr.NDERR) if is_decerr else int(RespErr.OKAY)
     split = self.cfg.split_write_rsp
     if split:
+      grant_err = int(RespErr.OKAY)
       if cfg.is_e and self.cfg.ordered_dbid_resp and self.req_has_ordering(req):
         grant_op = int(RspOpcode.DBID_RESP_ORD)
       else:
         grant_op = int(RspOpcode.DBID_RESP)
     else:
+      grant_err = err
       grant_op = int(RspOpcode.COMP_DBID_RESP)
 
     await self.drive_rsp({
       "opcode": grant_op, "srcid": req_tgt, "tgtid": req_src,
       "txnid": req_txn, "dbid": req_txn, "qos": req["qos"],
-      "resp": int(Resp.I), "resperr": err,
+      "resp": int(Resp.I), "resperr": grant_err,
     })
 
     write_data, write_be, write_tags = [], [], []
@@ -987,15 +989,15 @@ class vip_chi_driver_snf(uvm_driver):
     base = {
       "srcid": req["tgtid"], "tgtid": req["srcid"], "txnid": req["txnid"],
       "dbid": req["txnid"], "qos": req["qos"], "resp": int(Resp.I),
-      "resperr": int(RespErr.NDERR) if is_decerr else int(RespErr.OKAY),
     }
+    err = int(RespErr.NDERR) if is_decerr else int(RespErr.OKAY)
 
     if not self.cfg.split_write_rsp:
-      await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP_DBID_RESP)))
+      await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP_DBID_RESP), resperr=err))
       return
 
-    await self.drive_rsp(dict(base, opcode=int(RspOpcode.DBID_RESP)))
-    await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP)))
+    await self.drive_rsp(dict(base, opcode=int(RspOpcode.DBID_RESP), resperr=int(RespErr.OKAY)))
+    await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP), resperr=err))
 
   # The read completion is in three pieces so the interleaved emitter can reuse
   # two of them unchanged: the RSP prelude a read may owe before any data, the
@@ -1185,17 +1187,19 @@ class vip_chi_driver_snf(uvm_driver):
     # Returning-data atomics always split (DBID grant, then CompData); non-return
     # atomics split only when split_write_rsp is set, else combined CompDBIDResp.
     if returns_data or self.cfg.split_write_rsp:
+      grant_err = int(RespErr.OKAY)
       if cfg.is_e and self.cfg.ordered_dbid_resp and self.req_has_ordering(req):
         grant_op = int(RspOpcode.DBID_RESP_ORD)
       else:
         grant_op = int(RspOpcode.DBID_RESP)
     else:
+      grant_err = err
       grant_op = int(RspOpcode.COMP_DBID_RESP)
 
     await self.drive_rsp({
       "opcode": grant_op, "srcid": req_tgt, "tgtid": req_src,
       "txnid": req_txn, "dbid": req_txn, "qos": req["qos"],
-      "resp": int(Resp.I), "resperr": err,
+      "resp": int(Resp.I), "resperr": grant_err,
     })
 
     operand = []
