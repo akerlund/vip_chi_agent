@@ -1450,6 +1450,24 @@ module vip_chi_sva #(
         vif.check_fail_count[id] = 0;
       end
     end
+    // A rule the elaboration parameters switched off is not owned by this
+    // instance either. check_enabled doubles as ownership -- see vip_chi_if --
+    // and the tally CSV exports it as the `enabled` column, so leaving it set
+    // publishes a rule that CANNOT evaluate here as one that is enabled and
+    // simply never fired. That is the difference between "this link stands this
+    // check down on purpose" and "this check found no traffic", and a vacuity
+    // report cannot tell them apart from the outside.
+    //
+    // ENABLE_COMPLETION_TIMEOUT_P is the only parameter that gates a property,
+    // and it gates both p_rni_completion_follows_req and
+    // p_snf_completion_follows_req, which share one ID. The coherent binds pass
+    // it 1'b0 -- a request and its completion are not both visible on one
+    // coherent link -- so without this the four coherent binds each report
+    // CHI_COMPLETION_FOLLOWS_REQ as an unexercised enabled rule forever.
+    if (!ENABLE_COMPLETION_TIMEOUT_P) begin
+      vif.check_enabled[VIP_CHI_CHK_COMPLETION_FOLLOWS_REQ_E] = 1'b0;
+    end
+
     apply_check_plusarg("vip_chi_disable_check=%s", 1'b0);
     apply_check_plusarg("vip_chi_warn_check=%s", 1'b1);
   end

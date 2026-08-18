@@ -418,6 +418,18 @@ class bind_chi:
     # checker cannot see end to end -- a coherent RN-F link, where the HN-F may
     # answer from another RN-F's snoop data. Mirrors ENABLE_COMPLETION_TIMEOUT_P.
     self._enable_completion_timeout = enable_completion_timeout
+    # A rule this checker was constructed without is not enabled here either.
+    # check_enable is what the tally CSV exports as the `enabled` column, so
+    # leaving it True publishes a rule that CANNOT evaluate on this bind as one
+    # that is enabled and simply never fired -- the difference between "this
+    # link stands this check down on purpose" and "this check found no traffic",
+    # which a vacuity report cannot recover from the outside.
+    #
+    # Set here rather than in init_check_control, which runs before this
+    # attribute exists. Mirrors ENABLE_COMPLETION_TIMEOUT_P in the SV bind,
+    # which gates the same single rule.
+    if not enable_completion_timeout:
+      self.check_enable["CHI_COMPLETION_FOLLOWS_REQ"] = False
     self._timeout_cycles = timeout_cycles
     # Read live each cycle rather than latched at build, mirroring the SV top,
     # which re-reads tb_cfg every clock so a testcase can raise the knob before
@@ -512,6 +524,7 @@ class bind_chi:
     }
     self._lasm_state_seen = {st: 0 for st in LasmState}
     self._lasm_edge_seen = {edge: 0 for edge in _LASM_LEGAL_EDGES_C}
+
     self._apply_check_plusargs()
 
   @staticmethod
