@@ -235,8 +235,24 @@ driver can write a block and read it back for an end-to-end integrity check, or
 run both directions concurrently (`cfg.observed_peak_mixed_inflight` records the
 peak depth at which both were in flight). The `multi_outstanding_write` /
 `multi_outstanding_mixed` flags are retained for back-compat but no longer
-select distinct loops. Default off, so every serial test is byte-identical. The
-retry handshake runs on the serial path only.
+select distinct loops. Default off, so every serial test is byte-identical.
+
+The retry handshake runs on both paths. `tc_chi_d_retry` proves a bounced and
+re-issued write in isolation on the serial path;
+`tc_chi_d_multi_outstanding_retry` proves one *inside* the pipeline — the SN-F
+bounces only the first of N retryable writes, so that write sits as
+`retry_pending` awaiting its P-credit while writes 2..N are granted, driven and
+completed around it, and the test asserts a peak in-flight above one to show the
+re-issue really was concurrent rather than quiesced. Both exist in both ports.
+
+Both retry testcases are **CHI-D only**, and that is a gap in the tests rather
+than in the code: nothing on the retry path — `handle_retry`, the P-credit pool,
+the `RetryAck`/`PCrdGrant` handshake — is gated on `CFG_P.issue`, so a CHI-E link
+takes the same path untested.
+
+What is *not* covered is the retry handshake anywhere other than the
+point-to-point RN-I↔SN-F path: neither proxy topology drives it, and no test
+bounces more than one transaction at a time.
 
 ### SN-F Completer (Memory Responder)
 

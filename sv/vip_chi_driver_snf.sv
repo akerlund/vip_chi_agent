@@ -1148,8 +1148,11 @@ class vip_chi_driver_snf #(
 
   // ---------------------------------------------------------------------------
   // Identify the data-less zero-write opcode handled by the SN-F cut.
-  // WriteNoSnpZero carries no write data, so it completes with a single Comp
-  // and never opens a DBID / write-data phase.
+  // WriteNoSnpZero carries no write DATA, but it is still a write: it completes
+  // with CompDBIDResp, or with DBIDResp then Comp under cfg.split_write_rsp. The
+  // DBID looks pointless when no data will use the buffer, which is exactly the
+  // reasoning that produced a bare Comp here once -- but the completion form is
+  // normative whether or not the requester uses what it is granted.
   // ---------------------------------------------------------------------------
   protected function bit req_opcode_is_auto_write_zero(input req_opcode_t opcode);
     return (opcode == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C);
@@ -1799,9 +1802,11 @@ class vip_chi_driver_snf #(
   endtask
 
   // ---------------------------------------------------------------------------
-  // Auto-respond to one observed WriteNoSnpZero with a data-less Comp. No write
-  // data flit is expected; a successful request zeroes exactly the Size-selected
-  // byte range in backing memory before completion.
+  // Auto-respond to one observed WriteNoSnpZero. No write data flit is expected,
+  // and a successful request zeroes exactly the Size-selected byte range in
+  // backing memory before completion -- but the completion itself is an ordinary
+  // write completion: CompDBIDResp, or DBIDResp then Comp under
+  // cfg.split_write_rsp. See the note at the response site below.
   // ---------------------------------------------------------------------------
   protected task drive_auto_write_zero_comp(input req_flit_t req);
     item_t       rsp;

@@ -15,7 +15,9 @@
 #   * ReadNoSnp[Sep]        -> (ordered: ReadReceipt) + CompData/DataSepResp burst
 #   * WriteNoSnp{Full,Ptl}  -> CompDBIDResp (or split DBIDResp+Comp), collect the
 #                              DAT burst, commit into vip_mem, optional CompAck
-#   * WriteNoSnpZero        -> zero the byte range, Comp
+#   * WriteNoSnpZero        -> zero the byte range, then complete as any write
+#                              does: CompDBIDResp, or split DBIDResp+Comp. No DAT
+#                              burst, but the DBID is still granted
 # Address-range DECERR/DERR injection mirrors the SV completer. Atomics and the
 # separated-persist completions are Tier B and not dispatched here yet.
 #
