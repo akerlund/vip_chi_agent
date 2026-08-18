@@ -53,7 +53,7 @@ Everything below lives in [sv/tb/chi_tb_top.sv](sv/tb/chi_tb_top.sv).
 | `vip_chi_if` instances | **37** | 14 RN-I · 10 SN-F · 5 HN-I · 4 RN-F · 4 HN-F |
 | `chi_link_adapter` instances | **17** | joins 34 of those interfaces into links |
 | Unconnected interfaces | **3** | compile-coverage anchors, see below |
-| `vip_chi_sva` binds (REQ/RSP/DAT/link) | **8** | 4 of them behind `VIP_CHI_ENABLE_COH_REQ_DAT_SVA` |
+| `vip_chi_sva` binds (REQ/RSP/DAT/link) | **8** | 4 non-coherent + 4 coherent; all unconditional |
 | `vip_chi_snp_sva` binds (SNP channel) | **8** | 4 CHI-D + 4 CHI-E |
 | Environments | **4** | one per topology family |
 | Scoreboards | **3** | one instance per env that has one; the coherent env has none |

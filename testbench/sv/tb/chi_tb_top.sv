@@ -227,10 +227,28 @@ module chi_tb_top;
 
   // Coherent REQ/RSP/DAT checker binds. The SNP channel has a separate checker
   // below; the RN-F endpoint sees the full coherent REQ/RSP/DAT link traffic while
-  // avoiding duplicate HN-F-side assertion elaboration. These temporal/procedural
-  // SVA instances are compile-gated because VCS assertion elaboration can dominate
-  // default build time on the full example top.
-`ifdef VIP_CHI_ENABLE_COH_REQ_DAT_SVA
+  // avoiding duplicate HN-F-side assertion elaboration.
+  //
+  // These four used to sit behind `ifdef VIP_CHI_ENABLE_COH_REQ_DAT_SVA, on the
+  // grounds that "VCS assertion elaboration can dominate default build time on
+  // the full example top". Nothing in the repository ever defined it -- not a
+  // build script, not a .core target, not a Makefile, from the first commit
+  // onward -- so the guard was never paid for and never measured. Measured
+  // since, on this top with VCS X-2025.06: elaboration goes 0.155s -> 0.156s,
+  // compile 8.874s -> 9.119s. One millisecond of the cost the comment claimed,
+  // against 48 of the 54 registry rules that were unbound on every coherent
+  // link in every SV run ever made.
+  //
+  // Which was worse than a gap, because it reported as success: the tallies
+  // live on the interface, not in the bind, so chi_coherent_tb_env exported a
+  // full set of rows for an absent checker -- 3243 rows, zero passes, zero
+  // fails -- and check_vacuity.py joins on check NAME, so every rule was
+  // covered by rni_sva elsewhere and nothing came back NEVER. A coherent link
+  // with no checker on it looked exactly like a clean one.
+  //
+  // Unconditional now. If a future top does make this cost real, gate it on
+  // something the vacuity report can see, not on a define whose absence is
+  // indistinguishable from a pass.
   vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_rnf0_sva (.vif(coh_rnf0_if),
@@ -267,7 +285,6 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-`endif
 
   // SNP-channel protocol checker on the coherent RN-F / HN-F links. Role-agnostic:
   // the HN-F side exercises the txsnp send-credit shadow, the RN-F side the rxsnp

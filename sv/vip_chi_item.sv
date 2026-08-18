@@ -658,6 +658,19 @@ class vip_chi_item #(
       return (dir == VIP_CHI_DIR_WRITE_E) && (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E);
     end
 
+    // WriteEvictOrEvict and WriteUniqueZero sit in the same Opcode[6] = 1 half,
+    // so neither fits CHI-D's 6-bit REQ opcode field. Written as case items below
+    // they lose that top bit and alias onto ordinary CHI-D reads, answering for
+    // THOSE opcodes and declaring them illegal. Matched here at full width, where
+    // the encodings stay whatever vip_chi_types_pkg says they are.
+    if (wide == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C) begin
+      return (dir == VIP_CHI_DIR_WRITE_E) && (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E);
+    end
+
+    if (wide == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) begin
+      return (dir == VIP_CHI_DIR_WRITE_E) && (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E);
+    end
+
     case (dir)
       VIP_CHI_DIR_READ_E: begin
         case (value)
@@ -713,11 +726,7 @@ class vip_chi_item #(
           req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C): begin
             return 1'b1;
           end
-          req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C),
-          // Both sit in the Opcode[6] = 1 half of the REQ table, so neither fits
-          // CHI-D's 6-bit opcode field at all.
-          req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C),
-          req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C): begin
+          req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C): begin
             return (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E);
           end
           default: begin
@@ -767,7 +776,7 @@ class vip_chi_item #(
         // WriteEvictOrEvict carries a full line, but only when the home asks for
         // it. This is the payload the transfer WOULD carry; whether it is sent at
         // all is the home's choice, resolved on the wire by CompDBIDResp vs Comp.
-        (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C))) begin
+        (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
       return vip_chi_types_pkg::chi_xfer_dat_beats(size, DATA_BYTES_C);
     end
     return 0;
@@ -959,7 +968,7 @@ class vip_chi_item #(
              // WriteEvictOrEvict is a CopyBack too, and its CopyBackWrData is
              // treated as an IMPLICIT CompAck -- which is why it keeps the plain
              // opcode here even though ExpCompAck is always set.
-             (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C))) begin
+             (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(this.opcode) == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
       // Coherent writeback data travels as CopyBackWrData.
       this.dat_opcode = dat_opcode_t'(VIP_CHI_DAT_COPY_BACK_WR_DATA_C);
     end
@@ -1585,9 +1594,9 @@ class vip_chi_item #(
           // entry would put it into every random coherent write test. Disjunction
           // inside the one constraint, not a second `inside` -- constraints
           // conjoin, so a separate one would intersect to nothing.
-          req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C)
-        }) || (write_evict_or_evict_enable && opcode inside {
-          req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)
+          VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C)
+        }) || (write_evict_or_evict_enable && VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) inside {
+          VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C
         });
       }
     }
@@ -1622,7 +1631,7 @@ class vip_chi_item #(
            (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) ||
            // WriteUniqueZero carries no CompAck, exactly like the WriteNoSnpZero
            // it mirrors.
-           (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C)) ||
+           (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) ||
            // MakeUnique is modeled as a plain RSP-only Comp (no CompAck), so a free
            // randomize() must not draw ExpCompAck and wedge the RN-F waiting to ack
            // a completion the HN-F never expects (T1/T2 trap-hardening).
@@ -1636,7 +1645,7 @@ class vip_chi_item #(
     // requester acks -- so the bit is not optional the way it is on every other
     // write.
     if (!raw_override &&
-        (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C))) {
+        (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) {
       exp_comp_ack == 1'b1;
     }
   }

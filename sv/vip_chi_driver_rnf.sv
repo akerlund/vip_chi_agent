@@ -648,7 +648,7 @@ class vip_chi_driver_rnf #(
            (opcode == req_opcode_t'(VIP_CHI_REQ_EVICT_C)) ||
            // WriteEvictOrEvict gives the line up either way: with the data when
            // the home asks for it, and as a plain Evict when it does not.
-           (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C));
+           (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C);
   endfunction
 
   // ---------------------------------------------------------------------------

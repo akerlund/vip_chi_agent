@@ -98,11 +98,13 @@ class tc_chi_e_write_evict_or_evict extends
         "FATAL [%s] WriteEvictOrEvict produced no REQ flit", super.tc_name))
     end
 
-    if (req_item.opcode != item_t::req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
+    // Full width on both sides: item_t here is the CHI-D package typedef, whose
+    // 6-bit req_opcode_t would truncate this Opcode[6] = 1 encoding.
+    if (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(req_item.opcode) != VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C) begin
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] REQ opcode 0x%0h, expected 0x%0h",
         super.tc_name, req_item.opcode,
-        item_t::req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)))
+        VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C))
     end
 
     if (!req_item.exp_comp_ack) begin

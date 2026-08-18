@@ -793,7 +793,7 @@ class vip_chi_driver_rni #(
         send_write_data    = this.req_expects_write_data(req);
         wait_for_deferred_comp = 1'b0;
 
-        if (req.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
+        if (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(req.opcode) == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C) begin
 
           this.drive_write_evict_or_evict(req, req_src_id, req_tgt_id);
         end
@@ -831,7 +831,7 @@ class vip_chi_driver_rni #(
           else if ((req.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) ||
                    // WriteUniqueZero is the snoopable twin and completes the same
                    // two ways: DBIDResp* + Comp, or a combined CompDBIDResp.
-                   (req.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C))) begin
+                   (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(req.opcode) == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C)) begin
 
             this.collect_write_zero_completion(req);
           end
@@ -853,7 +853,7 @@ class vip_chi_driver_rni #(
         // already sent an explicit CompAck above. Either way a second one here
         // would be a CompAck the home never expects.
         if (req.exp_comp_ack &&
-            (req.opcode != req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C))) begin
+            (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(req.opcode) != VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
 
           this.drive_comp_ack(req.txn_id, req_src_id, req_tgt_id);
         end

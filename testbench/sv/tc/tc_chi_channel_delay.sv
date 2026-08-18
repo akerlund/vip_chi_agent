@@ -38,7 +38,15 @@
 
 class tc_chi_channel_delay extends chi_base_test;
 
-  typedef vip_chi_item #(CHI_D_CFG_C) item_t;
+  // item_t is the package typedef from chi_tb_pkg (vip_chi_item #(CHI_D_CFG_C)).
+  // Do NOT redeclare it at class scope here. An identical class-scoped typedef
+  // compiles and runs correctly, but the six `localparam item_t::addr_t X =
+  // item_t::addr_t'(...)` below then cast through the CLASS-scoped name, and VCS
+  // re-elaborates the parameterized specialization for each one: measured 12s ->
+  // >7min, i.e. the build never finishes in practice. Removing the redundant
+  // typedef alone takes it back to 12s. Sibling tests using this same localparam
+  // pattern (tc_chi_dat_interleave and friends) inherit the package typedef and
+  // are unaffected -- the hazard is the duplicate, not the pattern.
 
   `uvm_component_utils(tc_chi_channel_delay)
 
