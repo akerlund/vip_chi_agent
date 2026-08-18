@@ -634,6 +634,36 @@ def chi_xfer_dat_beats(size: int, data_bytes: int) -> int:
 # they are modeled.
 SNP_NO_DATA_OPCODES = frozenset({int(SnpOpcode.MAKE_INVALID)})
 
+# Snoops that leave the snoopee INVALID. IHI 0050 Chapter 4, Tables 4-9 and 4-11:
+# every response permitted to these carries the Invalid state, with or without
+# data. A snoopee that answers one still holding the line has not given up
+# ownership, so the requester about to take it Unique is not the only owner --
+# the single-writer invariant, broken without any flit looking wrong.
+SNP_INVALIDATING_OPCODES = frozenset({
+  int(SnpOpcode.UNIQUE), int(SnpOpcode.CLEAN_INVALID),
+  int(SnpOpcode.MAKE_INVALID), int(SnpOpcode.UNIQUE_FWD),
+})
+
+# Snoops that forbid the snoopee from RETAINING Unique. A shared snoop exists to
+# create a sharer, so Table 4-9's responses to SnpShared and SnpSharedFwd carry
+# Invalid or SharedClean and never a Unique state.
+#
+# SnpClean, SnpCleanShared and the remaining fwd forms are deliberately absent:
+# this VIP's home never originates them, so listing them would assert a reading
+# of Table 4-9 that no traffic here can confirm or refute. Add them with the
+# stimulus that exercises them.
+SNP_NO_RETAIN_UNIQUE_OPCODES = frozenset({
+  int(SnpOpcode.SHARED), int(SnpOpcode.SHARED_FWD),
+})
+
+
+def snp_opcode_invalidates(opcode: int) -> bool:
+  return int(opcode) in SNP_INVALIDATING_OPCODES
+
+
+def snp_opcode_forbids_retaining_unique(opcode: int) -> bool:
+  return int(opcode) in SNP_NO_RETAIN_UNIQUE_OPCODES
+
 
 def snp_opcode_returns_no_data(opcode: int) -> bool:
   return int(opcode) in SNP_NO_DATA_OPCODES

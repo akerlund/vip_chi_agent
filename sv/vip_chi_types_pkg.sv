@@ -746,6 +746,54 @@ package vip_chi_types_pkg;
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Return TRUE when the snoop leaves the snoopee INVALID. IHI 0050 Chapter 4,
+  // Tables 4-9 and 4-11: every response permitted to SnpUnique, SnpCleanInvalid,
+  // SnpMakeInvalid and SnpUniqueFwd carries the Invalid state, with or without
+  // data. A snoopee that answers one of these still holding the line has not
+  // given up ownership, so the requester about to take it Unique is not the only
+  // owner -- which is the single-writer invariant, broken quietly.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_snp_opcode_invalidates(input vip_chi_snp_opcode_t opcode);
+    case (opcode)
+      VIP_CHI_SNP_UNIQUE_E,
+      VIP_CHI_SNP_CLEAN_INVALID_E,
+      VIP_CHI_SNP_MAKE_INVALID_E,
+      VIP_CHI_SNP_UNIQUE_FWD_E: begin
+        return 1'b1;
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Return TRUE when the snoop forbids the snoopee from RETAINING Unique. A
+  // shared snoop exists to create a sharer, so the responses Table 4-9 permits
+  // to SnpShared and SnpSharedFwd carry Invalid or SharedClean and never a
+  // Unique state -- if the snoopee kept Unique there would be two Unique holders
+  // the moment the requester was granted Shared.
+  //
+  // SnpClean, SnpCleanShared and the remaining fwd forms are deliberately NOT
+  // listed. This VIP's home never originates them (see the HN-F snoop sites), so
+  // including them would assert a reading of Table 4-9 that no traffic here can
+  // confirm or refute. Add them with the stimulus that exercises them.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_snp_opcode_forbids_retaining_unique(
+    input vip_chi_snp_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_SNP_SHARED_E,
+      VIP_CHI_SNP_SHARED_FWD_E: begin
+        return 1'b1;
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Return TRUE when the snoop's response must NOT carry data. The snoopee
   // invalidates the line and DISCARDS any Dirty copy instead of passing it to
   // the Home: IHI 0050 Chapter 4 lists no SnpRespData form among the responses

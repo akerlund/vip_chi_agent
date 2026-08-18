@@ -175,6 +175,13 @@ class vip_chi_coherency_checker #(
   // occurred instead of reading a zero violation count out of a run that never
   // set it up -- which is the shape of the bug this check exists to catch.
   protected int n_snp_no_data_on_dirty;
+  protected int n_bad_snp_resp_state;
+  // How many snoop responses check_snp_resp_state judged. The rule can only run
+  // where a response is correlated to its snoop, so this is the honest measure of
+  // whether it saw anything -- and it is the first count of DATA-LESS SnpResp
+  // this checker has ever taken: before D5 it observed SnpRespData on DAT and was
+  // blind to the RSP half of the response space entirely.
+  protected int n_snp_resp_judged;
 
   // cg_excl samples (SC outcome x clear-cause), set at the obs_rsp resolution.
   protected bit                excl_result_sample;  // 1 = ExclOkay (won), 0 = fail
@@ -189,6 +196,85 @@ class vip_chi_coherency_checker #(
   protected item_t::snp_opcode_t ct_snp_opcode_sample;
   protected vip_chi_resp_t       ct_to_sample;
   protected int unsigned         occ_sharers_sample;
+
+  // cg_snp_resp_legality samples, set where a snoop response is matched back to
+  // the snoop it answers -- which is the only place the pairing exists. Nothing
+  // on a SnpResp or SnpRespData names the snoop, so no flit-level covergroup can
+  // reach this cross; that is why it lives here and not in vip_chi_coverage.
+  protected item_t::snp_opcode_t sr_snp_opcode_sample;
+  protected vip_chi_resp_t       sr_resp_state_sample;
+  protected bit                  sr_returned_data_sample;
+
+  // ---------------------------------------------------------------------------
+  // The snoop-response legality surface: snoop opcode x resulting state x whether
+  // data came back.
+  //
+  // Chapter 4 states the snoop rules PER OPCODE -- Tables 4-9 and 4-11 list the
+  // permitted responses for each one -- so a coverage model without the opcode in
+  // the cross cannot express those rules at all. Before this, the snoop opcode was
+  // crossed only with a direction and the response state only with pass-dirty, in
+  // two covergroups sampled at two unrelated call sites, so the pairing was not
+  // merely uncovered but structurally unreachable.
+  //
+  // The forbidden pairings are illegal_bins rather than uncovered bins, and that
+  // distinction is the whole point: F-CORR-014 was a snoopee answering
+  // SnpMakeInvalid with data, driven twice per run by a green test, recorded as
+  // covered because the to-state beside it was correct. An uncovered bin is not
+  // noticed; an illegal bin fails.
+  // ---------------------------------------------------------------------------
+  covergroup cg_snp_resp_legality;
+    option.per_instance = 1;
+
+    // The seven this home originates. The other five modeled snoops are left
+    // unbinned rather than listed-and-unreachable, the same convention
+    // cg_cache_transition uses below.
+    cp_snp: coverpoint this.sr_snp_opcode_sample {
+      bins snp_shared        = {VIP_CHI_SNP_SHARED_C};
+      bins snp_once          = {VIP_CHI_SNP_ONCE_C};
+      bins snp_unique        = {VIP_CHI_SNP_UNIQUE_C};
+      bins snp_clean_invalid = {VIP_CHI_SNP_CLEAN_INVALID_C};
+      bins snp_make_invalid  = {VIP_CHI_SNP_MAKE_INVALID_C};
+      bins snp_shared_fwd    = {VIP_CHI_SNP_SHARED_FWD_C};
+      bins snp_unique_fwd    = {VIP_CHI_SNP_UNIQUE_FWD_C};
+    }
+
+    cp_state: coverpoint this.sr_resp_state_sample {
+      bins inv = {VIP_CHI_RESP_STATE_I_E};
+      bins sc  = {VIP_CHI_RESP_STATE_SC_E};
+      bins uc  = {VIP_CHI_RESP_STATE_UC_E};
+      bins ud  = {VIP_CHI_RESP_STATE_UP_PD_DIRTY_E};
+      bins sd  = {VIP_CHI_RESP_STATE_SD_PD_DIRTY_E};
+    }
+
+    cp_data: coverpoint this.sr_returned_data_sample {
+      bins no_data   = {1'b0};
+      bins with_data = {1'b1};
+    }
+
+    cx_snp_state_data: cross cp_snp, cp_state, cp_data {
+      // An invalidating snoop must leave the snoopee Invalid. Every response
+      // Table 4-9 permits to these four carries the Invalid state; a snoopee
+      // still holding the line has not given up ownership, and the requester
+      // about to take it Unique is then not the only owner.
+      illegal_bins invalidating_must_end_invalid =
+        (binsof(cp_snp.snp_unique)        ||
+         binsof(cp_snp.snp_clean_invalid) ||
+         binsof(cp_snp.snp_make_invalid)  ||
+         binsof(cp_snp.snp_unique_fwd)) && !binsof(cp_state.inv);
+
+      // A shared snoop exists to create a sharer, so the snoopee may not keep
+      // Unique. Restricted to the two shared forms this home originates -- see
+      // vip_chi_snp_opcode_forbids_retaining_unique for why the rest are left out.
+      illegal_bins shared_must_not_keep_unique =
+        (binsof(cp_snp.snp_shared) || binsof(cp_snp.snp_shared_fwd)) &&
+        (binsof(cp_state.uc) || binsof(cp_state.ud));
+
+      // SnpMakeInvalid is defined by discarding its dirty copy: no SnpRespData
+      // form appears among its permitted responses.
+      illegal_bins make_invalid_returns_no_data =
+        binsof(cp_snp.snp_make_invalid) && binsof(cp_data.with_data);
+    }
+  endgroup
 
   covergroup cg_cache_transition;
     option.per_instance = 1;
@@ -335,6 +421,7 @@ class vip_chi_coherency_checker #(
     this.snf_req_cc  = new("snf_req_cc", this);
     this.snf_dat_cc  = new("snf_dat_cc", this);
     this.cg_cache_transition = new();
+    this.cg_snp_resp_legality = new();
     this.cg_directory_occupancy = new();
     this.cg_excl = new();
     this.cg_hnf_downstream = new();
@@ -371,6 +458,8 @@ class vip_chi_coherency_checker #(
     this.n_bad_make_unique        = 0;
     this.n_bad_snp_resp_form      = 0;
     this.n_snp_no_data_on_dirty   = 0;
+    this.n_bad_snp_resp_state     = 0;
+    this.n_snp_resp_judged        = 0;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -751,6 +840,11 @@ class vip_chi_coherency_checker #(
         // this. SnpRespData_I_PD is a legal row of Table 4-11 -- what is
         // prohibited is sending it IN ANSWER TO a snoop that returns no data.
         this.check_snp_resp_form(node, this.pending_snp_line[node], op);
+        this.check_snp_resp_state(
+          node, this.pending_snp_line[node],
+          (item.dat_resp.size() > 0) ? item.dat_resp[item.dat_resp.size() - 1]
+                                     : VIP_CHI_RESP_STATE_I_E,
+          1'b1);
         this.record_line_data(this.pending_snp_line[node], item);
         this.pending_snp_valid[node] = 1'b0;
       end
@@ -816,6 +910,58 @@ class vip_chi_coherency_checker #(
       node, this.pending_snp_opcode[node], line, op))
   endfunction
 
+  // ---------------------------------------------------------------------------
+  // Catalogue rule D5: the state a snoop response reports must be one Chapter 4
+  // permits for that snoop opcode. The channel half of this pairing is
+  // check_snp_resp_form above; this is the Resp-encoding half, and together they
+  // are the assertion twin of cg_snp_resp_legality.
+  //
+  // Two rules, both read off Tables 4-9 / 4-11 and both restricted to what this
+  // home originates:
+  //
+  //   * an invalidating snoop must leave the snoopee Invalid. Otherwise the
+  //     requester that is about to be granted Unique is not the only owner, and
+  //     the single-writer invariant is broken without any flit looking wrong.
+  //   * a shared snoop must not leave the snoopee Unique, for the same reason
+  //     one step earlier: the grant that follows creates a second holder.
+  //
+  // Judged from observed traffic and correlated through pending_snp_opcode, so it
+  // applies to a DUT snoopee exactly as it does to this VIP's own.
+  // ---------------------------------------------------------------------------
+  protected function void check_snp_resp_state(input int            node,
+                                               input longint        line,
+                                               input vip_chi_resp_t state,
+                                               input bit            with_data);
+    vip_chi_snp_opcode_t op;
+    op = this.pending_snp_opcode[node];
+
+    // Coverage first, and unconditionally: the cross has to see the legal
+    // pairings too, or its illegal bins would be the only thing it ever recorded.
+    this.sr_snp_opcode_sample    = item_t::snp_opcode_t'(op);
+    this.sr_resp_state_sample    = state;
+    this.sr_returned_data_sample = with_data;
+    this.cg_snp_resp_legality.sample();
+
+    if (vip_chi_snp_opcode_invalidates(op) && (state != VIP_CHI_RESP_STATE_I_E)) begin
+      this.n_bad_snp_resp_state++;
+      `uvm_error("VIP_CHI_COH", $sformatf(
+        "COHERENCY VIOLATION: node %0d answered invalidating snoop opcode 0x%0h on line 0x%0h reporting state 0x%0h, but every response Chapter 4 permits to it is Invalid",
+        node, op, line, state))
+    end
+    else if (vip_chi_snp_opcode_forbids_retaining_unique(op) &&
+             ((state == VIP_CHI_RESP_STATE_UC_E) ||
+              (state == VIP_CHI_RESP_STATE_UP_PD_DIRTY_E))) begin
+      this.n_bad_snp_resp_state++;
+      `uvm_error("VIP_CHI_COH", $sformatf(
+        "COHERENCY VIOLATION: node %0d answered shared snoop opcode 0x%0h on line 0x%0h still holding Unique (state 0x%0h); the grant that follows would create a second owner",
+        node, op, line, state))
+    end
+
+    // Non-vacuity: how many responses this rule actually had to judge. A zero
+    // violation count says nothing on its own -- see n_snp_no_data_on_dirty.
+    this.n_snp_resp_judged++;
+  endfunction
+
   protected function void obs_snp(input int node, input item_t item);
     longint        line;
     vip_chi_resp_t cur;
@@ -874,6 +1020,22 @@ class vip_chi_coherency_checker #(
     if (!this.enable) begin
       return;
     end
+    // A data-less snoop response. This checker watched SnpRespData on DAT and
+    // nothing on RSP, so until D5 it could not see the response form a clean
+    // snoopee actually sends -- which is most of them. Handled first and returned
+    // from: a SnpResp carries the SNOOP's TxnID, so letting it fall through to
+    // the completion correlation below would look it up against request tables it
+    // was never entered in.
+    if ((item.rsp_opcode === item_t::rsp_opcode_t'(VIP_CHI_RSP_SNP_RESP_C)) ||
+        (item.rsp_opcode === item_t::rsp_opcode_t'(VIP_CHI_RSP_SNP_RESP_FWDED_C))) begin
+      if (this.pending_snp_valid[node]) begin
+        this.check_snp_resp_state(node, this.pending_snp_line[node],
+                                  item.rsp_resp, 1'b0);
+        this.pending_snp_valid[node] = 1'b0;
+      end
+      return;
+    end
+
     // Release the line on a genuine completion (see hazard_release_rsp).
     if (this.hazard_release_rsp(item.rsp_opcode)) begin
       this.hazard_release(node, longint'(item.txn_id));
@@ -994,6 +1156,9 @@ class vip_chi_coherency_checker #(
   function int get_bad_make_unique_count(); return this.n_bad_make_unique; endfunction
   function int get_bad_snp_resp_form_count(); return this.n_bad_snp_resp_form; endfunction
   function int get_snp_no_data_on_dirty_count(); return this.n_snp_no_data_on_dirty; endfunction
+  function int get_bad_snp_resp_state_count(); return this.n_bad_snp_resp_state; endfunction
+  function int get_snp_resp_judged_count(); return this.n_snp_resp_judged; endfunction
+  function real get_snp_resp_legality_coverage(); return this.cg_snp_resp_legality.get_coverage(); endfunction
   function int get_line_hazard_count(); return this.n_line_hazard; endfunction
   // Clean claim/release pairs. A test asserts on this to show the hazard rule
   // actually evaluated, rather than reading a zero violation count from a run
@@ -1020,6 +1185,9 @@ class vip_chi_coherency_checker #(
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY SNP RESP FORM SUMMARY: no_data_snoops_on_dirty=%0d bad_snp_resp_form=%0d",
       this.n_snp_no_data_on_dirty, this.n_bad_snp_resp_form), UVM_LOW)
+    `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY SNP RESP STATE SUMMARY: snp_resp_judged=%0d bad_snp_resp_state=%0d",
+      this.n_snp_resp_judged, this.n_bad_snp_resp_state), UVM_LOW)
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY HAZARD SUMMARY: line_hazards=%0d line_claims_cleared=%0d",
       this.n_line_hazard, this.n_line_clear), UVM_LOW)

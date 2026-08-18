@@ -47,6 +47,11 @@ class chi_coh_transition_sweep_base_test #(
   // (MakeInvalid, MakeUnique) make the Home send SnpMakeInvalid, so the sweep
   // provokes the no-data-snoop rule exactly twice.
   localparam int MIN_NO_DATA_SNOOPS_ON_DIRTY_C = 2;
+  // The sweep drives 3 initial states x 7 opcodes and every snoop it provokes is
+  // answered, so D5 has plenty to judge. Ten is a floor well under that, chosen
+  // so the assertion catches the rule going dark rather than tracking an exact
+  // count that stimulus changes would keep breaking.
+  localparam int MIN_SNP_RESP_JUDGED_C = 10;
 
   function new(input string name, input uvm_component parent = null);
     super.new(name, parent);
@@ -169,6 +174,34 @@ class chi_coh_transition_sweep_base_test #(
         "FATAL [%s] only %0d no-data snoop(s) reached a dirty holder (< %0d) -- the response-form rule was never provoked",
         super.tc_name, super.tb_env.coh_checker.get_snp_no_data_on_dirty_count(),
         MIN_NO_DATA_SNOOPS_ON_DIRTY_C))
+    end
+
+    // Catalogue rule D5: the response STATE against the snoop opcode. Both
+    // halves again -- no violation, and evidence the rule had responses to
+    // judge. This sweep is where D5 gets its stimulus: every snoop opcode the
+    // home originates, against a primed cache state.
+    if (super.tb_env.coh_checker.get_bad_snp_resp_state_count() != 0) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] %0d snoop response(s) reported a state Chapter 4 does not permit for the snoop that asked",
+        super.tc_name, super.tb_env.coh_checker.get_bad_snp_resp_state_count()))
+    end
+
+    if (super.tb_env.coh_checker.get_snp_resp_judged_count() <
+        MIN_SNP_RESP_JUDGED_C) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] D5 judged only %0d snoop response(s) (< %0d); a zero violation count above means nothing if nothing reached the rule",
+        super.tc_name, super.tb_env.coh_checker.get_snp_resp_judged_count(),
+        MIN_SNP_RESP_JUDGED_C))
+    end
+
+    // Under a coverage build the legality cross should have spread across the
+    // surface, not merely fired. Gated on coverage actually being collected, the
+    // same way the cache-transition closure check above is.
+    if ((super.tb_env.coh_checker.get_snp_resp_legality_coverage() > 0.0) &&
+        (super.tb_env.coh_checker.get_snp_resp_legality_coverage() < 20.0)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] the snoop-response legality cross closed only %0.1f%% under a coverage build -- the sweep drives every snoop opcode the home originates, so it should reach far more of the surface",
+        super.tc_name, super.tb_env.coh_checker.get_snp_resp_legality_coverage()))
     end
 
     phase.drop_objection(this);

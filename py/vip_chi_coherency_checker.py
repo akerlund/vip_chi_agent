@@ -39,7 +39,8 @@ from pyuvm import uvm_component
 
 from vip_chi_types_pkg import (
   Resp, RespErr, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode, CACHE_LINE_BYTES,
-  snp_opcode_returns_no_data,
+  snp_opcode_returns_no_data, snp_opcode_invalidates,
+  snp_opcode_forbids_retaining_unique,
 )
 from vip_chi_analysis_imp import vip_chi_analysis_imp
 
@@ -164,6 +165,15 @@ class vip_chi_coherency_checker(uvm_component):
     # occurred instead of reading a zero violation count out of a run that never
     # set it up -- which is the shape of the bug this check exists to catch.
     self.n_snp_no_data_on_dirty = 0
+    self.n_bad_snp_resp_state = 0
+    # How many snoop responses check_snp_resp_state judged. The rule only runs
+    # where a response is correlated to its snoop, so this is the honest measure
+    # of whether it saw anything -- and it is the first count of DATA-LESS
+    # SnpResp this checker has taken: before D5 it observed SnpRespData on DAT
+    # and was blind to the RSP half of the response space entirely.
+    self.n_snp_resp_judged = 0
+    # cg_snp_resp_legality hit set: (snp_opcode, resp_state, with_data).
+    self._srl_hit = set()
     # cg_cache_transition hit sets (one per covergroup item; see accessor).
     self._ct_from_hit = set()
     self._ct_snp_hit = set()
@@ -432,6 +442,48 @@ class vip_chi_coherency_checker(uvm_component):
   # response paired: the snoop is on SNP and the offending flit is on DAT, with
   # no address and no field tying it back. Derived from observed traffic only,
   # so it catches a DUT snoopee as readily as this VIP's own.
+  # Catalogue rule D5: the state a snoop response reports must be one Chapter 4
+  # permits for that snoop opcode. check_snp_resp_form below is the CHANNEL half
+  # of the pairing; this is the Resp-encoding half.
+  #
+  # Two rules, both read off Tables 4-9 / 4-11 and both restricted to what this
+  # home originates:
+  #
+  #   * an invalidating snoop must leave the snoopee Invalid. Otherwise the
+  #     requester about to be granted Unique is not the only owner, and the
+  #     single-writer invariant breaks without any flit looking wrong.
+  #   * a shared snoop must not leave the snoopee Unique, for the same reason one
+  #     step earlier: the grant that follows creates a second holder.
+  #
+  # It also carries the coverage cross. Chapter 4 states the snoop rules PER
+  # OPCODE, so a model without the opcode in the cross cannot express them; the
+  # opcode was crossed only with a direction and the response state only with
+  # pass-dirty, in two covergroups at two unrelated call sites, so the pairing was
+  # structurally unreachable rather than merely uncovered.
+  def check_snp_resp_state(self, node, line, state, with_data):
+    op = _I(self.pending_snp_opcode[node])
+    state = _I(state)
+
+    # Sampled unconditionally, legal pairings included: a cross that only ever
+    # recorded its violations would say nothing about what was exercised.
+    self._srl_hit.add((op, state, bool(with_data)))
+
+    if snp_opcode_invalidates(op) and state != int(Resp.I):
+      self.n_bad_snp_resp_state += 1
+      self.logger.error(
+        f"COHERENCY VIOLATION: node {node} answered invalidating snoop opcode "
+        f"0x{op:x} on line 0x{line:x} reporting state 0x{state:x}, but every "
+        f"response Chapter 4 permits to it is Invalid")
+    elif (snp_opcode_forbids_retaining_unique(op)
+          and state in (int(Resp.UC), int(Resp.UD_PD))):
+      self.n_bad_snp_resp_state += 1
+      self.logger.error(
+        f"COHERENCY VIOLATION: node {node} answered shared snoop opcode "
+        f"0x{op:x} on line 0x{line:x} still holding Unique (state 0x{state:x}); "
+        f"the grant that follows would create a second owner")
+
+    self.n_snp_resp_judged += 1
+
   def check_snp_resp_form(self, node, line, op):
     if not snp_opcode_returns_no_data(self.pending_snp_opcode[node]):
       return
@@ -465,6 +517,20 @@ class vip_chi_coherency_checker(uvm_component):
     if not self.enable:
       return
     tid = _I(item.txn_id)
+
+    # A data-less snoop response. This checker watched SnpRespData on DAT and
+    # nothing on RSP, so until D5 it could not see the response form a clean
+    # snoopee actually sends -- which is most of them. Handled first and returned
+    # from: a SnpResp carries the SNOOP's TxnID, so letting it fall through to the
+    # completion correlation below would look it up against request tables it was
+    # never entered in.
+    if _I(item.rsp_opcode) in (int(RspOpcode.SNP_RESP),
+                               int(RspOpcode.SNP_RESP_FWDED)):
+      if self.pending_snp_valid[node]:
+        self.check_snp_resp_state(node, self.pending_snp_line[node],
+                                  item.rsp_resp, False)
+        self.pending_snp_valid[node] = False
+      return
 
     # Release the line on a genuine completion. DBIDResp and ReadReceipt are
     # deliberately NOT in this set: they grant a buffer and confirm ordering
@@ -549,6 +615,22 @@ class vip_chi_coherency_checker(uvm_component):
   def get_snp_no_data_on_dirty_count(self):
     return self.n_snp_no_data_on_dirty
 
+  def get_bad_snp_resp_state_count(self):
+    return self.n_bad_snp_resp_state
+
+  def get_snp_resp_judged_count(self):
+    return self.n_snp_resp_judged
+
+  def get_snp_resp_legality_tuples(self):
+    """The distinct (snoop opcode, resp state, with-data) triples observed.
+
+    The pyUVM port has no covergroup object, so the SV cross is kept here as the
+    hit set it would have filled. A test asserts on its size rather than on a
+    percentage, because the denominator -- which pairings are reachable -- is a
+    property of the stimulus and would have to be maintained by hand.
+    """
+    return set(self._srl_hit)
+
   def get_line_hazard_count(self):
     return self.n_line_hazard
 
@@ -572,7 +654,8 @@ class vip_chi_coherency_checker(uvm_component):
   def total_violations(self):
     return (self.n_multi_owner + self.n_coherent_data_mismatch +
             self.n_excl_violation + self.n_bad_make_unique +
-            self.n_bad_snp_resp_form + self.n_line_hazard)
+            self.n_bad_snp_resp_form + self.n_bad_snp_resp_state +
+            self.n_line_hazard)
 
   def handle_reset(self):
     self._init_shadow()
@@ -591,6 +674,10 @@ class vip_chi_coherency_checker(uvm_component):
       f"COHERENCY SNP RESP FORM SUMMARY: "
       f"no_data_snoops_on_dirty={self.n_snp_no_data_on_dirty} "
       f"bad_snp_resp_form={self.n_bad_snp_resp_form}")
+    self.logger.info(
+      f"COHERENCY SNP RESP STATE SUMMARY: "
+      f"snp_resp_judged={self.n_snp_resp_judged} "
+      f"bad_snp_resp_state={self.n_bad_snp_resp_state}")
     self.logger.info(
       f"COHERENCY HAZARD SUMMARY: line_hazards={self.n_line_hazard} "
       f"line_claims_cleared={self.n_line_clear}")

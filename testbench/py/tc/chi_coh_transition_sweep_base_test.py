@@ -27,6 +27,12 @@ _MIN_SNOOPS = 10
 # (MakeInvalid, MakeUnique) make the Home send SnpMakeInvalid, so the sweep
 # provokes the no-data-snoop rule exactly twice.
 _MIN_NO_DATA_SNOOPS_ON_DIRTY = 2
+# The sweep drives 3 initial states x 7 opcodes, and every snoop it provokes is
+# answered, so D5 has plenty to judge. Ten is a floor well under that, chosen so
+# the assertion catches the rule going dark rather than tracking the exact count.
+_MIN_SNP_RESP_JUDGED = 10
+# Distinct (snoop opcode, resp state, with-data) triples the cross should reach.
+_MIN_SNP_RESP_TRIPLES = 3
 _SEQ_BY_KIND = (
   vip_chi_readshared_seq, vip_chi_readclean_seq, vip_chi_readunique_seq,
   vip_chi_readonce_seq, vip_chi_cleaninvalid_seq, vip_chi_makeinvalid_seq,
@@ -92,6 +98,27 @@ class chi_coh_transition_sweep_base_test(chi_coherent_base_test):
       f"transition sweep drove only {provoked} no-data snoop(s) to a dirty " \
       f"holder (< {_MIN_NO_DATA_SNOOPS_ON_DIRTY}) -- the response-form rule was " \
       f"never provoked"
+
+    # Catalogue rule D5: the response STATE against the snoop opcode. Both halves
+    # again -- no violation, and evidence the rule had responses to judge. This
+    # sweep is where D5 gets its stimulus: every snoop opcode the home originates
+    # against a primed cache state.
+    bad_state = self.tb_env.coh_checker.get_bad_snp_resp_state_count()
+    assert bad_state == 0, \
+      f"transition sweep saw {bad_state} snoop response(s) reporting a state " \
+      f"Chapter 4 does not permit for the snoop that asked"
+
+    judged = self.tb_env.coh_checker.get_snp_resp_judged_count()
+    assert judged >= _MIN_SNP_RESP_JUDGED, \
+      f"D5 judged only {judged} snoop response(s) (< {_MIN_SNP_RESP_JUDGED}); a " \
+      f"zero violation count above means nothing if nothing reached the rule"
+
+    # ...and that the cross actually spread. One triple repeated N times would
+    # satisfy the count above while covering a single point of the surface.
+    triples = self.tb_env.coh_checker.get_snp_resp_legality_tuples()
+    assert len(triples) >= _MIN_SNP_RESP_TRIPLES, \
+      f"the snoop-response legality cross reached only {len(triples)} distinct " \
+      f"(opcode, state, with-data) triple(s) (< {_MIN_SNP_RESP_TRIPLES})"
 
     self.logger.info("Test (coh_transition_sweep) PASS")
     self.drop_objection()
