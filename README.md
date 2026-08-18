@@ -679,12 +679,30 @@ over a regression can. Both flows append per-rule tallies to a CSV, and
 VIP_CHI_CHECK_CSV=tallies.csv python3 testbench/py/scripts/run.py --all
 
 python3 scripts/check_vacuity.py tallies.csv
+
+# Label the sources to also find rules only one port ever evaluated
+python3 scripts/check_vacuity.py sv=sv_tallies.csv py=py_tallies.csv
 ```
 
 It reports `NEVER` (zero passes and zero fails in every run), `THIN` (exercised
 by one or two runs — alive, but one deleted testcase from becoming `NEVER`),
 `FAILING`, and `PROVOKED` (failures a negative control asked for, which are
 evidence the rule works rather than a bug). It exits non-zero on `NEVER`.
+
+Aggregation is on `(bind, check)`, not on the check name alone. A rule is a
+property of an interface: the same name is bound to more than a dozen of them
+and can be exercised on one and dead on the rest, so a join on the name reports
+the union and a checker that never elaborated reads as a clean link. `DEAD ON A
+BIND` lists the rules an interface is checking in name only. That list is not
+gated by default because it is untriaged — some of it is structural, since a
+request and its completion are not both visible on one coherent link — and
+`--fail-on-bind-gaps` turns it into an error once a bind-set has been worked
+through.
+
+`EVIDENCE FROM ONE SOURCE ONLY` needs the `LABEL=path` form above, and is
+suppressed without it: with a single CSV the question has no meaning. The four
+X/Z rules are excluded, because Verilator is 2-state and cannot evaluate them by
+construction — they are already reported as absent by design.
 
 ### Checking the encodings against the specification
 

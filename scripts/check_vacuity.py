@@ -15,13 +15,28 @@ Reads the CSV the checkers append to:
 covering BOTH registries -- the SVA binds' rules and the scoreboard's -- and
 reports, in order of how alarming it is:
 
-  NEVER   zero passes and zero fails in every run that evaluated it
-  THIN    exercised by only one or two runs -- alive, but one deleted testcase
-          away from silently becoming NEVER, which is the state this whole
-          mechanism exists to prevent recurring
-  FAILING any run recorded a failure
+  FAILING        any run recorded a failure
+  PROVOKED       a failure at OFF or WARNING -- a negative control proving its
+                 rule fires, which is evidence rather than a bug
+  NOT EXPORTED   in the registry, but no bind wrote a row for it
+  ONE SOURCE     exercised under one labelled source and never the rest
+  NEVER          zero passes and zero fails in every run that evaluated it
+  DEAD ON A BIND zero passes and zero fails on one INTERFACE while alive on
+                 another -- a rule that interface checks in name only
+  THIN           exercised by only one or two runs -- alive, but one deleted
+                 testcase away from silently becoming NEVER, which is the state
+                 this whole mechanism exists to prevent recurring
 
 Exits non-zero when anything is NEVER exercised, so a regression can gate on it.
+
+Aggregation happens on (bind, check), not on check alone. A rule is a property
+of an interface, not of the registry: one name is bound to every interface of a
+matching shape and can be exercised on one and dead on the rest. Joining on the
+name reports the union, so a checker that never elaborated reads as a clean link
+for as long as any other bind carries the same rule -- which is how a dead bind
+survived from the first commit until a human read the instantiation. The
+per-name verdicts are kept, because a rule dead EVERYWHERE is the more alarming
+state; DEAD ON A BIND is the state that was previously unreportable.
 """
 
 from __future__ import annotations
@@ -36,14 +51,39 @@ from collections import defaultdict
 THIN_RUN_THRESHOLD_C = 2
 
 
+def normalize_severity(raw: str) -> str:
+  """Return the bare severity name, whichever port wrote the row.
+
+  The two ports do not spell this column the same way: the Python checker writes
+  `ERROR`, the SV export writes the enum literal `VIP_CHI_CHK_SEV_ERROR_E`.
+  Comparing against a single spelling does not merely miss rows -- it inverts
+  their meaning. Every SV failure at ERROR would fall through to the branch that
+  files a failure as one a negative control asked for, so a real regression
+  would be reported under a heading saying it was intentional.
+
+  Normalizing on read rather than changing an exporter is deliberate: it keeps
+  CSVs already on disk readable, and it means neither port can break this by
+  choosing its own spelling later.
+  """
+  return raw.strip().removeprefix("VIP_CHI_CHK_SEV_").removesuffix("_E")
+
+
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__,
                                formatter_class=argparse.RawDescriptionHelpFormatter)
-  ap.add_argument("csv", nargs="+", help="check-tally CSV file(s) to aggregate")
+  ap.add_argument("csv", nargs="+",
+                  help="check-tally CSV file(s), optionally LABEL=path so that "
+                       "evidence found under only one label is reportable "
+                       "(e.g. sv=sv.csv py=py.csv)")
   ap.add_argument("--thin", type=int, default=THIN_RUN_THRESHOLD_C,
                   help=f"flag rules exercised by <= N runs (default {THIN_RUN_THRESHOLD_C})")
   ap.add_argument("--allow-never", action="store_true",
                   help="report but do not fail when a rule is never exercised")
+  ap.add_argument("--fail-on-bind-gaps", action="store_true",
+                  help="also fail when a rule is enabled on a bind, alive on "
+                       "another, and never evaluated there. Off by default "
+                       "because that list is untriaged: some of it is "
+                       "structural. Turn it on per bind-set as triage lands")
   args = ap.parse_args()
 
   passes = defaultdict(int)
@@ -53,7 +93,31 @@ def main() -> int:
   disabled_everywhere = defaultdict(lambda: True)
   known = []
 
-  for path in args.csv:
+  # The per-bind axis, keyed on (bind, check). A bind exports only the rules its
+  # own registry scope owns -- 7 for an SNP bind, 48 for a full one -- so this
+  # does not enumerate rules an interface was never meant to carry.
+  bind_evidence = defaultdict(int)
+  bind_enabled = defaultdict(bool)
+  binds_seen = set()
+
+  # Which labelled source exercised each rule. A rule the SV port checks and the
+  # Python port does not is exercised in the union and unchecked in half the
+  # product, and the union is what a reader sees. Labels are opt-in because with
+  # a single unlabelled CSV -- how the sweep calls this -- the question has no
+  # meaning and the section is suppressed rather than answered wrongly.
+  labels_exercising = defaultdict(set)
+  labels_seen = []
+
+  for spec in args.csv:
+    # LABEL=path, but only when LABEL is plausibly a label rather than the first
+    # half of a path that happens to contain "=". A bare path always wins the
+    # tie, because mislabelling a file is silent while a missing label only
+    # suppresses an optional section.
+    label, sep, path = spec.partition("=")
+    if not sep or "/" in label or not path:
+      label, path = "", spec
+    elif label not in labels_seen:
+      labels_seen.append(label)
     try:
       with open(path, newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
@@ -61,17 +125,23 @@ def main() -> int:
           if rule not in passes and rule not in fails:
             known.append(rule)
           p, f = int(row["passes"]), int(row["fails"])
+          bind = row["bind"]
+          binds_seen.add(bind)
+          bind_evidence[(bind, rule)] += p + f
+          if label and (p or f):
+            labels_exercising[rule].add(label)
           passes[rule] += p
           # A failure recorded at severity OFF or WARNING was provoked on
           # purpose -- that is how a negative control proves its rule fires --
           # so it counts as EXERCISED but not as a regression failure. Counting
           # it as one would make every negative control look like a bug.
-          if row["severity"] == "ERROR":
+          if normalize_severity(row["severity"]) == "ERROR":
             fails[rule] += f
           else:
             deliberate[rule] += f
           if row["enabled"] == "1":
             disabled_everywhere[rule] = False
+            bind_enabled[(bind, rule)] = True
           if p or f:
             runs_exercising[rule].add(row["run"])
     except FileNotFoundError:
@@ -111,9 +181,11 @@ def main() -> int:
   # were outside this mechanism entirely until they were given names, so one
   # could stop evaluating and nothing anywhere would say so.
   unexported, by_design = [], []
+  sv_only = {}
   try:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "py"))
     from vip_chi_types_pkg import CHECK_IDS, CHECK_IDS_SV_ONLY, CHECK_IDS_SB
+    sv_only = dict(CHECK_IDS_SV_ONLY)
     for rule in tuple(CHECK_IDS) + tuple(CHECK_IDS_SB):
       if rule in seen:
         continue
@@ -125,6 +197,35 @@ def main() -> int:
     print(f"warning: could not read the canonical registry ({exc}); "
           f"cannot tell an unexported rule from a missing one", file=sys.stderr)
 
+  # A rule is dead on a bind when that bind exported it, had it enabled, and
+  # recorded nothing. Only pairs whose rule is alive on some OTHER bind are
+  # collected: a rule dead on every bind is already reported as NEVER above, and
+  # listing it once per bind as well would bury the per-bind signal under the
+  # per-name one.
+  alive_rules = {rule for (_, rule), n in bind_evidence.items() if n}
+  dead_on_bind = defaultdict(list)
+  for (bind, rule), n in sorted(bind_evidence.items()):
+    if n == 0 and bind_enabled[(bind, rule)] and rule in alive_rules:
+      dead_on_bind[bind].append(rule)
+
+  # Rules exactly one labelled source ever exercised. A rule no source exercised
+  # has an empty set, not a single-element one, so it stays a NEVER rather than
+  # being re-reported here as lopsided.
+  #
+  # CHECK_IDS_SV_ONLY is excluded: those rules are one-source-only BY DESIGN --
+  # Verilator's 2-state model cannot evaluate an X/Z rule, which is why they are
+  # already reported under "absent by design". Listing them here too would put
+  # four permanent entries at the top of a section whose whole value is that it
+  # is normally empty, and a section that is never empty is never read.
+  one_label_only = []
+  if len(labels_seen) > 1:
+    for rule in rules:
+      if rule in sv_only:
+        continue
+      where = labels_exercising[rule]
+      if len(where) == 1:
+        one_label_only.append((rule, next(iter(where))))
+
   never, thin, failing = [], [], []
   for rule in rules:
     n_runs = len(runs_exercising[rule])
@@ -135,7 +236,7 @@ def main() -> int:
     elif n_runs <= args.thin:
       thin.append((rule, n_runs, sorted(runs_exercising[rule])))
 
-  print(f"checks: {len(rules)}   runs: "
+  print(f"checks: {len(rules)}   binds: {len(binds_seen)}   runs: "
         f"{len({r for s in runs_exercising.values() for r in s})}")
 
   if failing:
@@ -166,19 +267,46 @@ def main() -> int:
       why = "  (disabled in every run)" if was_disabled else ""
       print(f"  {rule}{why}")
 
+  if one_label_only:
+    print(f"\nEVIDENCE FROM ONE SOURCE ONLY ({len(one_label_only)}) -- "
+          f"exercised under one of {', '.join(labels_seen)},\n"
+          f"never under the rest, so the union above overstates them:")
+    for rule, where in one_label_only:
+      print(f"  {rule:<44s} {where} only")
+
+  if dead_on_bind:
+    n_pairs = sum(len(v) for v in dead_on_bind.values())
+    print(f"\nDEAD ON A BIND -- enabled on this interface, exercised on another,"
+          f" and never evaluated here ({n_pairs} pair(s) across "
+          f"{len(dead_on_bind)} bind(s)):")
+    print("  Each line is a rule this interface is checking in name only. Some "
+          "are\n  structural -- a request and its completion are not both "
+          "visible on one\n  coherent link -- and some are missing stimulus; "
+          "the report cannot tell\n  those apart, so it lists rather than "
+          "gates.")
+    for bind in sorted(dead_on_bind):
+      rules_here = dead_on_bind[bind]
+      print(f"\n  {bind}  ({len(rules_here)}):")
+      for rule in rules_here:
+        print(f"    {rule}")
+
   if thin:
     print(f"\nTHIN -- exercised by <= {args.thin} run(s) ({len(thin)}):")
     for rule, n, where in thin:
       print(f"  {rule:<44s} {n}: {', '.join(where)}")
 
-  if not never and not thin and not failing and not unexported:
+  if (not never and not thin and not failing and not unexported
+      and not dead_on_bind and not one_label_only):
     print("\nevery check in both registries was exported, exercised by more "
-          f"than {args.thin} run(s), and none failed")
+          f"than {args.thin} run(s) on every bind that enabled it, and none "
+          "failed")
 
   # A rule disabled in every run was not exercised BY REQUEST, so it is reported
   # but does not gate: failing on it would punish the user for using the feature.
   gating = [r for r, was_disabled in never if not was_disabled]
   if (gating or unexported) and not args.allow_never:
+    return 1
+  if dead_on_bind and args.fail_on_bind_gaps:
     return 1
   return 0
 
