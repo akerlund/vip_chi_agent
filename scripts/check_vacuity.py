@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fnmatch
 import sys
 from pathlib import Path
 from collections import defaultdict
@@ -79,11 +80,14 @@ def main() -> int:
                   help=f"flag rules exercised by <= N runs (default {THIN_RUN_THRESHOLD_C})")
   ap.add_argument("--allow-never", action="store_true",
                   help="report but do not fail when a rule is never exercised")
-  ap.add_argument("--fail-on-bind-gaps", action="store_true",
+  ap.add_argument("--fail-on-bind-gaps", nargs="?", const="*", metavar="GLOBS",
                   help="also fail when a rule is enabled on a bind, alive on "
-                       "another, and never evaluated there. Off by default "
-                       "because that list is untriaged: some of it is "
-                       "structural. Turn it on per bind-set as triage lands")
+                       "another, and never evaluated there. Takes a "
+                       "comma-separated list of bind globs (rni_*,snf_*) so "
+                       "one bind-set can start gating while the rest are still "
+                       "being triaged; the bare flag means every bind. Off by "
+                       "default because the list as a whole is untriaged and "
+                       "some of it is structural")
   args = ap.parse_args()
 
   passes = defaultdict(int)
@@ -208,6 +212,24 @@ def main() -> int:
     if n == 0 and bind_enabled[(bind, rule)] and rule in alive_rules:
       dead_on_bind[bind].append(rule)
 
+  # Gating on these gaps is opt-in PER BIND-SET, not all or nothing. The gaps
+  # are two kinds this report cannot separate: structural ones, where the rule
+  # belongs to a vantage this interface does not have and the fix is to stop
+  # the bind claiming it, and plain missing stimulus. A single switch therefore
+  # has to stay off until the last bind is clean, and a gate that cannot be
+  # turned on for years is one nobody turns on at all. Per bind-set, an
+  # interface starts gating the day its own triage lands and cannot quietly
+  # regress afterwards.
+  gap_globs = [g.strip() for g in (args.fail_on_bind_gaps or "").split(",")
+               if g.strip()]
+  gating_binds = {b for b in binds_seen
+                  if any(fnmatch.fnmatchcase(b, g) for g in gap_globs)}
+  # A glob that matches nothing is a typo, and a typo here is indistinguishable
+  # from a clean bind-set: the gate passes, and nothing on stdout says the
+  # bind-set it was asked to guard was never looked at.
+  unmatched_globs = [g for g in gap_globs
+                     if not any(fnmatch.fnmatchcase(b, g) for b in binds_seen)]
+
   # Rules exactly one labelled source ever exercised. A rule no source exercised
   # has an empty set, not a single-element one, so it stays a NEVER rather than
   # being re-reported here as lopsided.
@@ -282,11 +304,12 @@ def main() -> int:
     print("  Each line is a rule this interface is checking in name only. Some "
           "are\n  structural -- a request and its completion are not both "
           "visible on one\n  coherent link -- and some are missing stimulus; "
-          "the report cannot tell\n  those apart, so it lists rather than "
-          "gates.")
+          "the report cannot tell\n  those apart, so a bind only gates once "
+          "--fail-on-bind-gaps names it.")
     for bind in sorted(dead_on_bind):
       rules_here = dead_on_bind[bind]
-      print(f"\n  {bind}  ({len(rules_here)}):")
+      mark = "  [gating]" if bind in gating_binds else ""
+      print(f"\n  {bind}  ({len(rules_here)}):{mark}")
       for rule in rules_here:
         print(f"    {rule}")
 
@@ -306,7 +329,11 @@ def main() -> int:
   gating = [r for r, was_disabled in never if not was_disabled]
   if (gating or unexported) and not args.allow_never:
     return 1
-  if dead_on_bind and args.fail_on_bind_gaps:
+  if unmatched_globs:
+    print(f"\nERROR: --fail-on-bind-gaps matched no bind: "
+          f"{', '.join(unmatched_globs)}", file=sys.stderr)
+    return 2
+  if any(bind in gating_binds for bind in dead_on_bind):
     return 1
   return 0
 

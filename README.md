@@ -695,9 +695,24 @@ and can be exercised on one and dead on the rest, so a join on the name reports
 the union and a checker that never elaborated reads as a clean link. `DEAD ON A
 BIND` lists the rules an interface is checking in name only. That list is not
 gated by default because it is untriaged — some of it is structural, since a
-request and its completion are not both visible on one coherent link — and
-`--fail-on-bind-gaps` turns it into an error once a bind-set has been worked
-through.
+request and its completion are not both visible on one coherent link.
+
+`--fail-on-bind-gaps` turns that list into an error, and takes a comma-separated
+list of bind globs so a bind-set can start gating the day its own triage lands
+rather than waiting for the last one:
+
+```sh
+python3 scripts/check_vacuity.py sv=… py=… --fail-on-bind-gaps=scoreboard
+python3 scripts/check_vacuity.py sv=… py=… --fail-on-bind-gaps='rni_*,snf_*'
+python3 scripts/check_vacuity.py sv=… py=… --fail-on-bind-gaps   # every bind
+```
+
+Binds selected this way are marked `[gating]` in the report. A glob that matches
+no bind is an error (exit 2) rather than a silent pass, because a typo otherwise
+reads exactly like a bind-set with nothing left to fix. Quote globs so the shell
+does not expand them, and prefer the `--fail-on-bind-gaps=…` form: the bare flag
+takes an optional value, so a glob written after a space would be read as one of
+the CSV arguments.
 
 `EVIDENCE FROM ONE SOURCE ONLY` needs the `LABEL=path` form above, and is
 suppressed without it: with a single CSV the question has no meaning. The four
