@@ -252,7 +252,7 @@ module vip_chi_sva #(
     return ((opcode == req_opcode_t'(VIP_CHI_REQ_READ_SHARED_C)) ||
             (opcode == req_opcode_t'(VIP_CHI_REQ_READ_CLEAN_C)) ||
             (opcode == req_opcode_t'(VIP_CHI_REQ_READ_UNIQUE_C)) ||
-            (opcode == req_opcode_t'(VIP_CHI_REQ_MAKE_READ_UNIQUE_C)) ||
+            (opcode == VIP_CHI_REQ_MAKE_READ_UNIQUE_C) ||
             (opcode == req_opcode_t'(VIP_CHI_REQ_READ_ONCE_C)));
   endfunction
 
@@ -350,14 +350,14 @@ module vip_chi_sva #(
   int unsigned rxdat_beats_by_txn[TXN_ID_COUNT_C];
 
   function automatic bit req_has_modeled_completion(input req_opcode_t opcode);
-    case (opcode)
-      req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_C),
-      req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C),
-      req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C),
-      req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C): begin
+    case (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode))
+      VIP_CHI_REQ_READ_NO_SNP_C,
+      VIP_CHI_REQ_READ_NO_SNP_SEP_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C,
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C,
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C: begin
         return 1'b1;
       end
       default: begin
@@ -371,8 +371,8 @@ module vip_chi_sva #(
   endfunction
 
   function automatic bit req_completion_uses_dat(input req_opcode_t opcode);
-    return ((opcode == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_C)) ||
-            (opcode == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C)) ||
+    return ((opcode == VIP_CHI_REQ_READ_NO_SNP_C) ||
+            (opcode == VIP_CHI_REQ_READ_NO_SNP_SEP_C) ||
             req_opcode_is_coherent_read(opcode) ||
             vip_chi_types_pkg::vip_chi_req_opcode_is_atomic_returning_data(
               vip_chi_req_opcode_t'(opcode)));
@@ -473,7 +473,7 @@ module vip_chi_sva #(
   function automatic bit is_write_req_opcode(input req_opcode_t opcode);
     return ((opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C)) ||
             (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C)) ||
-            (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) ||
+            (opcode == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C) ||
             vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
               vip_chi_req_opcode_t'(opcode)) ||
             req_opcode_is_coherent_write_data(opcode) ||

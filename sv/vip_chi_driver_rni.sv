@@ -828,7 +828,7 @@ class vip_chi_driver_rni #(
 
             this.collect_persist_sep_completion(req);
           end
-          else if ((req.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) ||
+          else if ((req.opcode == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C) ||
                    // WriteUniqueZero is the snoopable twin and completes the same
                    // two ways: DBIDResp* + Comp, or a combined CompDBIDResp.
                    (req.opcode == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C)) begin
@@ -1609,7 +1609,7 @@ class vip_chi_driver_rni #(
 
     dat_flit_t flit;
 
-    if (req.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) begin
+    if (req.opcode == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C) begin
 
       return;
     end
@@ -2030,7 +2030,7 @@ class vip_chi_driver_rni #(
 
     this.wait_for_matching_rsp(req.txn_id, flit);
 
-    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_COMP_CMO_C)) begin
+    if (flit.opcode != VIP_CHI_RSP_COMP_CMO_C) begin
 
       `uvm_fatal(get_name(), $sformatf(
       "FATAL [%s] combined Write+CMO completion opcode 0x%0h was not CompCMO",

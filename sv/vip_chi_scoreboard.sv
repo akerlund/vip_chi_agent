@@ -597,37 +597,37 @@ class vip_chi_scoreboard #(
       return;
     end
 
-    case (opc)
-      req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_C),
-      req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C): begin
+    case (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opc))
+      VIP_CHI_REQ_READ_NO_SNP_C,
+      VIP_CHI_REQ_READ_NO_SNP_SEP_C: begin
         ctx.kind           = VIP_CHI_SB_READ;
         ctx.need_read_data = 1'b1;
         if (ctx.ordered) begin
           ctx.need_receipt = 1'b1;
         end
       end
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C): begin
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_C: begin
         ctx.kind            = VIP_CHI_SB_WRITE;
         ctx.need_grant      = 1'b1;
         ctx.need_write_data = 1'b1;
         ctx.need_comp       = 1'b1;
         ctx.need_compack    = ctx.exp_comp_ack;
       end
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C): begin
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C: begin
         ctx.kind      = VIP_CHI_SB_WRITE_NODATA;
         ctx.need_comp = 1'b1;
       end
-      req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C): begin
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C: begin
         ctx.kind      = VIP_CHI_SB_PERSIST;
         ctx.need_comp = 1'b1;
       end
-      req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C): begin
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C: begin
         ctx.kind         = VIP_CHI_SB_PERSIST_SEP;
         ctx.need_persist = 1'b1;
         ctx.need_comp    = 1'b1;
       end
-      req_opcode_t'(VIP_CHI_REQ_PREFETCH_TGT_C): begin
+      VIP_CHI_REQ_PREFETCH_TGT_C: begin
         ctx.kind = VIP_CHI_SB_PREFETCH;   // no completion
       end
       default: begin
@@ -882,38 +882,38 @@ class vip_chi_scoreboard #(
     this.chk_ok(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E);
     ctx = this.open_ctx[key];
 
-    case (opc)
-      rsp_opcode_t'(VIP_CHI_RSP_COMP_C): begin
+    case (VIP_CHI_MAX_RSP_OPCODE_WIDTH_C'(opc))
+      VIP_CHI_RSP_COMP_C: begin
         ctx.comp_seen = 1'b1;
         ctx.comp_err  = item.rsp_resp_err;
       end
-      rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C): begin
+      VIP_CHI_RSP_COMP_DBID_RESP_C: begin
         ctx.grant_seen = 1'b1;
         ctx.comp_seen  = 1'b1;
         ctx.comp_err   = item.rsp_resp_err;
         this.record_grant(ctx, item);
       end
-      rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_C),
-      rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_ORD_C): begin
+      VIP_CHI_RSP_DBID_RESP_C,
+      VIP_CHI_RSP_DBID_RESP_ORD_C: begin
         ctx.grant_seen = 1'b1;
         this.record_grant(ctx, item);
       end
-      rsp_opcode_t'(VIP_CHI_RSP_READ_RECEIPT_C): begin
+      VIP_CHI_RSP_READ_RECEIPT_C: begin
         ctx.receipt_seen = 1'b1;
       end
-      rsp_opcode_t'(VIP_CHI_RSP_RESP_SEP_DATA_C): begin
+      VIP_CHI_RSP_RESP_SEP_DATA_C: begin
         // Separated read's response leg. The read still retires on its
         // DataSepResp (read_data_seen); recording the response error here keeps
         // this legal opcode from being flagged as unmodeled.
         ctx.comp_err = item.rsp_resp_err;
       end
-      rsp_opcode_t'(VIP_CHI_RSP_COMP_CMO_C): begin
+      VIP_CHI_RSP_COMP_CMO_C: begin
         ctx.comp_cmo_seen = 1'b1;
       end
-      rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C): begin
+      VIP_CHI_RSP_PERSIST_C: begin
         ctx.persist_seen = 1'b1;
       end
-      rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C): begin
+      VIP_CHI_RSP_COMP_PERSIST_C: begin
         // Comp AND Persist in one flit, so it ticks both milestones. Ticking
         // only comp_seen would leave a separated persist answered by the legal
         // combined response permanently owing a Persist that is never coming,
@@ -922,7 +922,7 @@ class vip_chi_scoreboard #(
         ctx.persist_seen = 1'b1;
         ctx.comp_err     = item.rsp_resp_err;
       end
-      rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C): begin
+      VIP_CHI_RSP_RETRY_ACK_C: begin
         ctx.retry_seen = 1'b1;
         // Not an acknowledgement -- the request was refused, so it leaves its
         // ordered stream and rejoins at the tail when it is re-issued.
@@ -943,7 +943,7 @@ class vip_chi_scoreboard #(
     // Every branch above except the default and the RetryAck: a refusal is not a
     // completion opcode, so counting it here would inflate the rule with flits it
     // does not judge.
-    if (opc_modelled && (opc != rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C))) begin
+    if (opc_modelled && (opc != VIP_CHI_RSP_RETRY_ACK_C)) begin
       this.chk_ok(VIP_CHI_SB_CHK_COMPLETION_OPCODE_MODELLED_E);
     end
 

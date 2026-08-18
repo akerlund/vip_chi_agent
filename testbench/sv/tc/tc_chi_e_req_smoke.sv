@@ -60,7 +60,7 @@ class tc_chi_e_req_smoke extends chi_e_base_test;
     super.tb_env.rni_req_fifo.get(req_item);
     super.tb_env.rni_rsp_fifo.get(rsp_item);
 
-    if (req_item.opcode != item_t::req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) begin
+    if (req_item.opcode != VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C) begin
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] Monitor observed wrong REQ opcode 0x%0h",
         super.tc_name, req_item.opcode))

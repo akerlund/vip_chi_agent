@@ -590,14 +590,14 @@ class vip_chi_monitor #(
     if (vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(vip_chi_req_opcode_t'(opcode))) begin
       return VIP_CHI_DIR_WRITE_E;
     end
-    case (opcode)
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C): begin
+    case (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode))
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C,
+      VIP_CHI_REQ_WRITE_BACK_FULL_C,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_C,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_C,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_C: begin
         return VIP_CHI_DIR_WRITE_E;
       end
       default: begin

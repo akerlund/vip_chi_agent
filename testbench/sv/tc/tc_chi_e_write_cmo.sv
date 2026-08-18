@@ -232,24 +232,24 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
             super.tc_name, form, rsp_item.txn_id, req_item.txn_id))
         end
 
-        case (rsp_item.rsp_opcode)
-          item_t::rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_C): begin
+        case (VIP_CHI_MAX_RSP_OPCODE_WIDTH_C'(rsp_item.rsp_opcode))
+          VIP_CHI_RSP_DBID_RESP_C: begin
             // Buffer grant only; the completion is one of the two below.
           end
-          item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C),
-          item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C): begin
+          VIP_CHI_RSP_COMP_C,
+          VIP_CHI_RSP_COMP_DBID_RESP_C: begin
             write_comp_index = rsp_index;
           end
-          item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_CMO_C): begin
+          VIP_CHI_RSP_COMP_CMO_C: begin
             comp_cmo_index = rsp_index;
           end
-          item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C): begin
+          VIP_CHI_RSP_PERSIST_C: begin
             persist_index = rsp_index;
           end
           // The RN-I's own TX response. The monitor publishes both directions of
           // the RSP channel into this fifo, so its position here is the order the
           // two directions actually appeared on the link.
-          item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_ACK_C): begin
+          VIP_CHI_RSP_COMP_ACK_C: begin
             comp_ack_index = rsp_index;
           end
           default: begin

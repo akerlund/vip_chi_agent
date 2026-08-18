@@ -214,6 +214,11 @@ def _scan_narrow_casts(root: Path, sv: dict[str, dict[str, int]],
         name = const[len("VIP_CHI_"):]
         if not name.startswith(ch + "_"):
           continue
+        # A scope that names an Issue-E specialization outright
+        # (`vip_chi_item #(CHI_E_WIDE_CFG_C)::req_opcode_t`) is already the wide
+        # type; nothing truncates there.
+        if "CHI_E" in line[:line.index(const)]:
+          continue
         value = sv.get(ch, {}).get(name[len(ch) + 1:-2])
         if value is None:
           continue

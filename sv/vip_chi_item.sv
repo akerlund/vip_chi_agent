@@ -896,9 +896,9 @@ class vip_chi_item #(
       end
       else if ((this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C)) ||
                (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C)) ||
-               (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C)) ||
-               (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C)) ||
-               (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C))) begin
+               (this.opcode == VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C) ||
+               (this.opcode == VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C) ||
+               (this.opcode == VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C)) begin
         this.be[beat] = make_random_be();
       end
       else begin
@@ -1467,31 +1467,31 @@ class vip_chi_item #(
       }
       else {
         if (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) {
-          opcode inside {
-            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C),
-            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C),
-            req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_STORE_0_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_STORE_1_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_STORE_2_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_STORE_3_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_STORE_4_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_STORE_5_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_STORE_6_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_STORE_7_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_LOAD_0_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_LOAD_1_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_LOAD_2_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_LOAD_3_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_LOAD_4_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_LOAD_5_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_LOAD_6_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_LOAD_7_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_SWAP_C),
-            req_opcode_t'(VIP_CHI_REQ_ATOMIC_COMPARE_C),
-            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C),
-            req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C)
-          } || (combined_write_cmo_enable && opcode inside {
+          VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) inside {
+            VIP_CHI_REQ_WRITE_NO_SNP_PTL_C,
+            VIP_CHI_REQ_WRITE_NO_SNP_FULL_C,
+            VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C,
+            VIP_CHI_REQ_ATOMIC_STORE_0_C,
+            VIP_CHI_REQ_ATOMIC_STORE_1_C,
+            VIP_CHI_REQ_ATOMIC_STORE_2_C,
+            VIP_CHI_REQ_ATOMIC_STORE_3_C,
+            VIP_CHI_REQ_ATOMIC_STORE_4_C,
+            VIP_CHI_REQ_ATOMIC_STORE_5_C,
+            VIP_CHI_REQ_ATOMIC_STORE_6_C,
+            VIP_CHI_REQ_ATOMIC_STORE_7_C,
+            VIP_CHI_REQ_ATOMIC_LOAD_0_C,
+            VIP_CHI_REQ_ATOMIC_LOAD_1_C,
+            VIP_CHI_REQ_ATOMIC_LOAD_2_C,
+            VIP_CHI_REQ_ATOMIC_LOAD_3_C,
+            VIP_CHI_REQ_ATOMIC_LOAD_4_C,
+            VIP_CHI_REQ_ATOMIC_LOAD_5_C,
+            VIP_CHI_REQ_ATOMIC_LOAD_6_C,
+            VIP_CHI_REQ_ATOMIC_LOAD_7_C,
+            VIP_CHI_REQ_ATOMIC_SWAP_C,
+            VIP_CHI_REQ_ATOMIC_COMPARE_C,
+            VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C,
+            VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C
+          } || (combined_write_cmo_enable && VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) inside {
             // The combined Write + CMO forms join the legal set only when asked
             // for. They are ordinary writes as far as the solver is concerned,
             // so an unconditional pool entry would put them into every random
@@ -1499,12 +1499,12 @@ class vip_chi_item #(
             // the one constraint rather than a second `inside`: constraints
             // conjoin, so a separate constraint would INTERSECT with the set
             // above and leave nothing legal at all.
-            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C),
-            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C),
-            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C),
-            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C),
-            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C),
-            req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C)
+            VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C,
+            VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C,
+            VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C,
+            VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C,
+            VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C,
+            VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C
           });
         }
         else {
@@ -1628,7 +1628,7 @@ class vip_chi_item #(
            (opcode == req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C)) ||
            (opcode == req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C)) ||
            (opcode == req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C)) ||
-           (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) ||
+           (opcode == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C) ||
            // WriteUniqueZero carries no CompAck, exactly like the WriteNoSnpZero
            // it mirrors.
            (opcode == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) ||

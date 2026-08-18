@@ -1071,19 +1071,11 @@ class vip_chi_driver_snf #(
   // Identify a combined Write + CMO request (Issue E).
   // ---------------------------------------------------------------------------
   protected function bit req_opcode_is_combined_write_cmo(input req_opcode_t opcode);
-    case (opcode)
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C): begin
-        return 1'b1;
-      end
-      default: begin
-        return 1'b0;
-      end
-    endcase
+    // Widened, then answered by the package classifier rather than by a second
+    // copy of the list. Every combined form sits in the Opcode[6] = 1 half, so
+    // as case items they lose that bit and match ordinary CHI-D opcodes.
+    return vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+             vip_chi_req_opcode_t'(opcode));
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -1093,9 +1085,10 @@ class vip_chi_driver_snf #(
   // persist leg is the half a test can actually watch land in the wrong order.
   // ---------------------------------------------------------------------------
   protected function bit req_opcode_combined_cmo_is_persist(input req_opcode_t opcode);
-    case (opcode)
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C),
-      req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C): begin
+    // Compared at full width, for the reason given above.
+    case (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode))
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C: begin
         return 1'b1;
       end
       default: begin
@@ -1110,7 +1103,7 @@ class vip_chi_driver_snf #(
   // and never opens a DBID / write-data phase.
   // ---------------------------------------------------------------------------
   protected function bit req_opcode_is_auto_write_zero(input req_opcode_t opcode);
-    return (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C));
+    return (opcode == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C);
   endfunction
 
   // ---------------------------------------------------------------------------
