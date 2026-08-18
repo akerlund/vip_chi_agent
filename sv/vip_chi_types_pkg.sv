@@ -746,6 +746,56 @@ package vip_chi_types_pkg;
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Return TRUE when the snoop's response must NOT carry data. The snoopee
+  // invalidates the line and DISCARDS any Dirty copy instead of passing it to
+  // the Home: IHI 0050 Chapter 4 lists no SnpRespData form among the responses
+  // permitted to SnpMakeInvalid, only the data-less SnpResp_I (Tables 4-9 and
+  // 4-11).
+  //
+  // The rule is not a formality. SnpMakeInvalid is what a Home sends once the
+  // requester has committed to overwriting the WHOLE line -- MakeUnique, a full
+  // WriteUnique -- so the cached copy is about to be superseded and the Home
+  // wants it gone, not returned. A SnpRespData_I_PD there hands back beats the
+  // Home then owns as Dirty data it must write out, which can land the stale
+  // line in memory after the new one. A Home is also entitled to have allocated
+  // no buffer and no DBID for the beats, leaving the DAT flit unmatched.
+  //
+  // SnpCleanInvalid is the opcode that DOES want the Dirty copy back, and the
+  // two are otherwise identical in their effect on the snoopee. That is why
+  // deciding the response form from the held state alone looks correct
+  // everywhere else: only the opcode separates "invalidate and write back" from
+  // "invalidate and drop".
+  //
+  // Every modeled snoop opcode is listed rather than defaulted, so an opcode
+  // added later has to be classified here instead of silently inheriting the
+  // permissive answer. SnpMakeInvalidStash and the stash/query snoops belong on
+  // the TRUE side when they are modeled.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_snp_opcode_returns_no_data(input vip_chi_snp_opcode_t opcode);
+    case (opcode)
+      VIP_CHI_SNP_MAKE_INVALID_E: begin
+        return 1'b1;
+      end
+      VIP_CHI_SNP_SHARED_E,
+      VIP_CHI_SNP_CLEAN_E,
+      VIP_CHI_SNP_ONCE_E,
+      VIP_CHI_SNP_UNIQUE_E,
+      VIP_CHI_SNP_CLEAN_SHARED_E,
+      VIP_CHI_SNP_CLEAN_INVALID_E,
+      VIP_CHI_SNP_SHARED_FWD_E,
+      VIP_CHI_SNP_CLEAN_FWD_E,
+      VIP_CHI_SNP_ONCE_FWD_E,
+      VIP_CHI_SNP_NOT_SHARED_DIRTY_FWD_E,
+      VIP_CHI_SNP_UNIQUE_FWD_E: begin
+        return 1'b0;
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Return TRUE when the REQ opcode is one of the supported atomic variants.
   // ---------------------------------------------------------------------------
   function automatic bit vip_chi_req_opcode_is_atomic(input vip_chi_req_opcode_t opcode);

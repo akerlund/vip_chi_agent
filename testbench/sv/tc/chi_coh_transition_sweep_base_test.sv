@@ -43,6 +43,10 @@ class chi_coh_transition_sweep_base_test #(
   // information but not asserted here -- bin closure is confirmed offline by a
   // coverage-enabled FuseSoC/VCS build + URG).
   localparam int MIN_SNOOPS_C  = 10;
+  // Only the UD priming leaves a Dirty holder, and two of the seven opcodes
+  // (MakeInvalid, MakeUnique) make the Home send SnpMakeInvalid, so the sweep
+  // provokes the no-data-snoop rule exactly twice.
+  localparam int MIN_NO_DATA_SNOOPS_ON_DIRTY_C = 2;
 
   function new(input string name, input uvm_component parent = null);
     super.new(name, parent);
@@ -140,6 +144,31 @@ class chi_coh_transition_sweep_base_test #(
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] %0d coherency violations during the transition sweep",
         super.tc_name, super.tb_env.coh_checker.get_multi_owner_count()))
+    end
+
+    // Two of the seven opcodes make the Home send SnpMakeInvalid to a UD holder
+    // (MakeInvalid and MakeUnique), so this sweep is where a snoopee answering a
+    // no-data snoop on DAT shows up. Asserted here and not only in the checker
+    // because the to-state of that transition is correct either way -- which is
+    // exactly why cg_cache_transition recorded the tuple as covered while the
+    // response beside it was wrong.
+    if (super.tb_env.coh_checker.get_bad_snp_resp_form_count() != 0) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] %0d snoop responses carried data for a snoop that returns none",
+        super.tc_name, super.tb_env.coh_checker.get_bad_snp_resp_form_count()))
+    end
+
+    // ...and that the rule had something to judge. A zero above means nothing on
+    // its own: a clean holder answers on RSP whatever the opcode says, so only a
+    // no-data snoop reaching a Dirty holder can distinguish the fixed behaviour
+    // from the broken one. Without this the check goes silently vacuous the day
+    // the Home stops sending SnpMakeInvalid here.
+    if (super.tb_env.coh_checker.get_snp_no_data_on_dirty_count() <
+        MIN_NO_DATA_SNOOPS_ON_DIRTY_C) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] only %0d no-data snoop(s) reached a dirty holder (< %0d) -- the response-form rule was never provoked",
+        super.tc_name, super.tb_env.coh_checker.get_snp_no_data_on_dirty_count(),
+        MIN_NO_DATA_SNOOPS_ON_DIRTY_C))
     end
 
     phase.drop_objection(this);

@@ -23,6 +23,10 @@ _LINE_STRIDE = 0x40
 _N_STATES = 3
 _N_OPS = 7
 _MIN_SNOOPS = 10
+# Only the UD priming leaves a dirty holder, and two of the seven opcodes
+# (MakeInvalid, MakeUnique) make the Home send SnpMakeInvalid, so the sweep
+# provokes the no-data-snoop rule exactly twice.
+_MIN_NO_DATA_SNOOPS_ON_DIRTY = 2
 _SEQ_BY_KIND = (
   vip_chi_readshared_seq, vip_chi_readclean_seq, vip_chi_readunique_seq,
   vip_chi_readonce_seq, vip_chi_cleaninvalid_seq, vip_chi_makeinvalid_seq,
@@ -66,6 +70,28 @@ class chi_coh_transition_sweep_base_test(chi_coherent_base_test):
       f"transition sweep drove only {snoops} snoops (< {_MIN_SNOOPS})"
     assert not (0.0 < cov < 99.0), \
       f"transition sweep left cg_cache_transition at {cov:.1f}%"
+
+    # Two of the seven opcodes make the Home send SnpMakeInvalid to a UD holder
+    # (MakeInvalid and MakeUnique), so this sweep is where a snoopee answering a
+    # no-data snoop on DAT shows up. Asserted here and not only in the checker
+    # because the to-state of that transition is correct either way -- which is
+    # exactly why cg_cache_transition recorded the tuple as covered while the
+    # response beside it was wrong.
+    bad_form = self.tb_env.coh_checker.get_bad_snp_resp_form_count()
+    assert bad_form == 0, \
+      f"transition sweep saw {bad_form} snoop response(s) carrying data for a " \
+      f"snoop that returns none"
+
+    # ...and that the rule had something to judge. A zero above means nothing on
+    # its own: a clean holder answers on RSP whatever the opcode says, so only a
+    # no-data snoop reaching a dirty holder can distinguish the fixed behaviour
+    # from the broken one. Without this the check goes silently vacuous the day
+    # the Home stops sending SnpMakeInvalid here.
+    provoked = self.tb_env.coh_checker.get_snp_no_data_on_dirty_count()
+    assert provoked >= _MIN_NO_DATA_SNOOPS_ON_DIRTY, \
+      f"transition sweep drove only {provoked} no-data snoop(s) to a dirty " \
+      f"holder (< {_MIN_NO_DATA_SNOOPS_ON_DIRTY}) -- the response-form rule was " \
+      f"never provoked"
 
     self.logger.info("Test (coh_transition_sweep) PASS")
     self.drop_objection()

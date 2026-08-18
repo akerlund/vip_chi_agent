@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from vip_chi_types_pkg import (
   Role, Dir, Resp, RespErr, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode,
-  CACHE_LINE_BYTES, mask,
+  CACHE_LINE_BYTES, mask, snp_opcode_returns_no_data,
 )
 from vip_chi_driver_rni import vip_chi_driver_rni
 
@@ -242,9 +242,13 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     cur = self.cache_state.get(line, int(Resp.I))
     nxt = self.snoop_next_state(snp["opcode"], cur)
     was_dirty = self.state_is_dirty(cur)
+    no_data = snp_opcode_returns_no_data(snp["opcode"])
 
-    # Snapshot the beats to forward BEFORE mutating the model.
-    fwd_data = list(self.cache_data[line]) if (was_dirty and line in self.cache_data) else []
+    # Snapshot the beats to forward BEFORE mutating the model. A snoop that
+    # returns no data takes no snapshot: its dirty copy is discarded here rather
+    # than forwarded.
+    fwd_data = (list(self.cache_data[line])
+                if (was_dirty and not no_data and line in self.cache_data) else [])
 
     if nxt == int(Resp.I):
       self.cache_state.pop(line, None)
@@ -256,7 +260,10 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
       if was_dirty and not self.state_is_dirty(nxt) and line in self.cache_data:
         self.cache_data.pop(line, None)
 
-    if was_dirty and fwd_data:
+    # The opcode is part of this decision and not only the held state -- see
+    # vip_chi_types_pkg.snp_opcode_returns_no_data -- because a dirty holder
+    # snooped by SnpMakeInvalid still answers on RSP.
+    if not no_data and was_dirty and fwd_data:
       await self.drive_snp_resp_data(snp, nxt, fwd_data)
     else:
       await self.drive_snp_resp(snp, nxt)

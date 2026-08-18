@@ -385,6 +385,7 @@ class vip_chi_driver_rnf #(
     vip_chi_resp_t cur;
     vip_chi_resp_t nxt;
     bit            was_dirty;
+    bit            no_data;
     data_t         fwd_data [];
 
     // Forwarding (DCT) snoops take the dedicated fwd-response path.
@@ -397,10 +398,13 @@ class vip_chi_driver_rnf #(
     cur       = this.cache_state.exists(line) ? this.cache_state[line] : VIP_CHI_RESP_STATE_I_E;
     nxt       = this.snoop_next_state(snp_opcode_t'(snp.opcode), cur);
     was_dirty = this.state_is_dirty(cur);
+    no_data   = vip_chi_snp_opcode_returns_no_data(
+                  vip_chi_snp_opcode_t'(snp.opcode));
 
     // Snapshot the beats to forward BEFORE mutating the model, so the response
-    // carries the data held at snoop time.
-    if (was_dirty && this.cache_data.exists(line)) begin
+    // carries the data held at snoop time. A snoop that returns no data takes
+    // no snapshot: its dirty copy is discarded here rather than forwarded.
+    if (was_dirty && !no_data && this.cache_data.exists(line)) begin
       fwd_data = this.cache_data[line];
     end
 
@@ -423,8 +427,11 @@ class vip_chi_driver_rnf #(
     end
 
     // A dirty holder forwards its modified data to the home as SnpRespData
-    // (PassDirty); a clean holder answers with a no-data SnpResp on RSP.
-    if (was_dirty && (fwd_data.size() != 0)) begin
+    // (PassDirty); a clean holder answers with a no-data SnpResp on RSP. The
+    // opcode is part of this decision and not only the held state -- see
+    // vip_chi_snp_opcode_returns_no_data -- because a dirty holder snooped by
+    // SnpMakeInvalid still answers on RSP.
+    if (!no_data && was_dirty && (fwd_data.size() != 0)) begin
       this.drive_snp_resp_data(snp, nxt, fwd_data);
     end
     else begin

@@ -613,6 +613,32 @@ def chi_xfer_dat_beats(size: int, data_bytes: int) -> int:
   return (size_bytes + data_bytes - 1) // data_bytes
 
 
+# Snoops whose response must NOT carry data. The snoopee invalidates the line and
+# DISCARDS any Dirty copy instead of passing it to the Home: IHI 0050 Chapter 4
+# lists no SnpRespData form among the responses permitted to SnpMakeInvalid, only
+# the data-less SnpResp_I (Tables 4-9 and 4-11).
+#
+# The rule is not a formality. SnpMakeInvalid is what a Home sends once the
+# requester has committed to overwriting the WHOLE line -- MakeUnique, a full
+# WriteUnique -- so the cached copy is about to be superseded and the Home wants
+# it gone, not returned. A SnpRespData_I_PD there hands back beats the Home then
+# owns as Dirty data it must write out, which can land the stale line in memory
+# after the new one. A Home is also entitled to have allocated no buffer and no
+# DBID for the beats, leaving the DAT flit unmatched.
+#
+# SnpCleanInvalid is the opcode that DOES want the Dirty copy back, and the two
+# are otherwise identical in their effect on the snoopee. That is why deciding
+# the response form from the held state alone looks correct everywhere else:
+# only the opcode separates "invalidate and write back" from "invalidate and
+# drop". SnpMakeInvalidStash and the stash/query snoops belong in this set when
+# they are modeled.
+SNP_NO_DATA_OPCODES = frozenset({int(SnpOpcode.MAKE_INVALID)})
+
+
+def snp_opcode_returns_no_data(opcode: int) -> bool:
+  return int(opcode) in SNP_NO_DATA_OPCODES
+
+
 # Atomic REQ opcodes occupy the contiguous 0x28..0x39 range.
 ATOMIC_REQ_OPCODES = tuple(range(0x28, 0x3A))
 

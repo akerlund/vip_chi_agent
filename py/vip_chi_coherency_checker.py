@@ -18,6 +18,8 @@
 #   * n_excl_violation -- an SC reporting ExclOkay must have a continuously-valid
 #     self-derived reservation.
 #   * n_bad_make_unique -- MakeUnique must complete Comp / Unique-Dirty.
+#   * n_bad_snp_resp_form -- a snoop that returns no data (SnpMakeInvalid) must
+#     not be answered on DAT.
 #
 # Advisory: a self.logger.error() does NOT auto-fail pyUVM (verdicts come from
 # raised exceptions), so violations both log ("COHERENCY VIOLATION" / "EXCLUSIVE
@@ -37,6 +39,7 @@ from pyuvm import uvm_component
 
 from vip_chi_types_pkg import (
   Resp, RespErr, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode, CACHE_LINE_BYTES,
+  snp_opcode_returns_no_data,
 )
 from vip_chi_analysis_imp import vip_chi_analysis_imp
 
@@ -55,6 +58,7 @@ _COHERENT_READ_OPS = {
 }
 _UNIQUE_READ_OPS = {int(ReqOpcode.READ_UNIQUE), int(ReqOpcode.MAKE_READ_UNIQUE)}
 _UNIQUE_STATES = {int(Resp.UC), int(Resp.UD_PD)}
+_DIRTY_STATES = {int(Resp.UD_PD), int(Resp.SD_PD)}
 
 _SNP_TO_SHARED = {
   int(SnpOpcode.SHARED), int(SnpOpcode.CLEAN), int(SnpOpcode.CLEAN_SHARED),
@@ -126,9 +130,13 @@ class vip_chi_coherency_checker(uvm_component):
     self.line_state = {}
     # Data-integrity shadow (line -> authoritative beats), from observed writes.
     self.line_data = {}
-    # Snoop-data attribution (SnpRespData carries no address).
+    # Snoop-data attribution (SnpRespData carries no address)...
     self.pending_snp_line = [0] * N_NODES
     self.pending_snp_valid = [False] * N_NODES
+    # ...and the opcode that snoop carried, because the permitted RESPONSE FORM
+    # is a property of the opcode and nothing else on the DAT flit records which
+    # snoop it answers. See check_snp_resp_form.
+    self.pending_snp_opcode = [0] * N_NODES
     # Downstream SN-F read correlation (downstream TxnID -> line).
     self.dn_rd_line = {}
     # Exclusive (LL/SC) monitor shadow (per node: line -> bool / clear-cause).
@@ -147,6 +155,15 @@ class vip_chi_coherency_checker(uvm_component):
     self.n_coherent_data_mismatch = 0
     self.n_excl_violation = 0
     self.n_bad_make_unique = 0
+    self.n_bad_snp_resp_form = 0
+    # Non-vacuity evidence for check_snp_resp_form. The rule can only fire when a
+    # snoop that returns no data reaches a snoopee holding the line Dirty: a
+    # clean holder answers on RSP whatever the opcode says, so a run without that
+    # combination proves nothing about the rule. Counted from the observed snoop
+    # and the shadow state, so a test can assert the provoking condition actually
+    # occurred instead of reading a zero violation count out of a run that never
+    # set it up -- which is the shape of the bug this check exists to catch.
+    self.n_snp_no_data_on_dirty = 0
     # cg_cache_transition hit sets (one per covergroup item; see accessor).
     self._ct_from_hit = set()
     self._ct_snp_hit = set()
@@ -181,6 +198,9 @@ class vip_chi_coherency_checker(uvm_component):
 
   def state_is_unique(self, s):
     return _I(s) in _UNIQUE_STATES
+
+  def state_is_dirty(self, s):
+    return _I(s) in _DIRTY_STATES
 
   def _entry(self, line):
     return self.line_state.get(line, [int(Resp.I)] * N_NODES)
@@ -370,6 +390,12 @@ class vip_chi_coherency_checker(uvm_component):
       return
     if op in (int(DatOpcode.SNP_RESP_DATA), int(DatOpcode.SNP_RESP_DATA_FWDED)):
       if self.pending_snp_valid[node]:
+        # The response FORM is a property of the snoop opcode, and this is the
+        # only place the two are correlated: nothing on a DAT flit says which
+        # snoop it answers, so a rule written on encodings alone cannot see
+        # this. SnpRespData_I_PD is a legal row of Table 4-11 -- what is
+        # prohibited is sending it IN ANSWER TO a snoop that returns no data.
+        self.check_snp_resp_form(node, self.pending_snp_line[node], op)
         self.record_line_data(self.pending_snp_line[node], item)
         self.pending_snp_valid[node] = False
       return
@@ -397,6 +423,24 @@ class vip_chi_coherency_checker(uvm_component):
     self.check_multi_owner(line)
     self.check_line_data(line, item)
 
+  # A data-bearing snoop response answering a snoop that must not return data.
+  # IHI 0050 Chapter 4 defines SnpMakeInvalid by exactly this property -- the
+  # snoopee invalidates and DISCARDS its Dirty copy -- and Tables 4-9 / 4-11
+  # list no SnpRespData form among its permitted responses.
+  #
+  # Judged here rather than in an SVA bind because it needs the request and the
+  # response paired: the snoop is on SNP and the offending flit is on DAT, with
+  # no address and no field tying it back. Derived from observed traffic only,
+  # so it catches a DUT snoopee as readily as this VIP's own.
+  def check_snp_resp_form(self, node, line, op):
+    if not snp_opcode_returns_no_data(self.pending_snp_opcode[node]):
+      return
+    self.n_bad_snp_resp_form += 1
+    self.logger.error(
+      f"COHERENCY VIOLATION: node {node} answered snoop opcode "
+      f"0x{_I(self.pending_snp_opcode[node]):x} on line 0x{line:x} with DAT "
+      f"opcode 0x{op:x}; that snoop returns no data and discards its dirty copy")
+
   def obs_snp(self, node, item):
     if not self.enable or not item.is_snoop:
       return
@@ -410,8 +454,11 @@ class vip_chi_coherency_checker(uvm_component):
       if self.excl_ll_valid[node].get(line):
         self.excl_clear_cause[node][line] = _EXCL_CLEAR_SNOOP
         self.excl_ll_valid[node][line] = False
+    if snp_opcode_returns_no_data(item.snp_opcode) and self.state_is_dirty(cur):
+      self.n_snp_no_data_on_dirty += 1
     self.pending_snp_line[node] = line
     self.pending_snp_valid[node] = True
+    self.pending_snp_opcode[node] = _I(item.snp_opcode)
     self.n_snoops += 1
 
   def obs_rsp(self, node, item):
@@ -496,6 +543,12 @@ class vip_chi_coherency_checker(uvm_component):
   def get_bad_make_unique_count(self):
     return self.n_bad_make_unique
 
+  def get_bad_snp_resp_form_count(self):
+    return self.n_bad_snp_resp_form
+
+  def get_snp_no_data_on_dirty_count(self):
+    return self.n_snp_no_data_on_dirty
+
   def get_line_hazard_count(self):
     return self.n_line_hazard
 
@@ -519,7 +572,7 @@ class vip_chi_coherency_checker(uvm_component):
   def total_violations(self):
     return (self.n_multi_owner + self.n_coherent_data_mismatch +
             self.n_excl_violation + self.n_bad_make_unique +
-            self.n_line_hazard)
+            self.n_bad_snp_resp_form + self.n_line_hazard)
 
   def handle_reset(self):
     self._init_shadow()
@@ -533,7 +586,11 @@ class vip_chi_coherency_checker(uvm_component):
       f"bad_make_unique={self.n_bad_make_unique}")
     # Its own line, short enough never to be wrapped by a report server: the
     # tally has to stay greppable across a whole regression for the check to be
-    # provably non-vacuous.
+    # provably non-vacuous. Same reason for the snoop-response-form line below.
+    self.logger.info(
+      f"COHERENCY SNP RESP FORM SUMMARY: "
+      f"no_data_snoops_on_dirty={self.n_snp_no_data_on_dirty} "
+      f"bad_snp_resp_form={self.n_bad_snp_resp_form}")
     self.logger.info(
       f"COHERENCY HAZARD SUMMARY: line_hazards={self.n_line_hazard} "
       f"line_claims_cleared={self.n_line_clear}")

@@ -110,6 +110,10 @@ class vip_chi_coherency_checker #(
   protected longint open_wb_line   [N_NODES_C][longint];
   protected longint pending_snp_line [N_NODES_C];
   protected bit     pending_snp_valid [N_NODES_C];
+  // ...and the opcode that snoop carried, because the permitted RESPONSE FORM is
+  // a property of the opcode and nothing else on the DAT flit records which
+  // snoop it answers. See check_snp_resp_form.
+  protected vip_chi_snp_opcode_t pending_snp_opcode [N_NODES_C];
 
   // Downstream SN-F read correlation: a ReadNoSnp REQ (addr) -> its line, keyed by
   // the downstream TxnID, so the SN-F's later CompData establishes the line-data
@@ -162,6 +166,15 @@ class vip_chi_coherency_checker #(
   protected int n_coherent_data_mismatch;
   protected int n_excl_violation;
   protected int n_bad_make_unique;
+  protected int n_bad_snp_resp_form;
+  // Non-vacuity evidence for check_snp_resp_form. The rule can only fire when a
+  // snoop that returns no data reaches a snoopee holding the line Dirty: a clean
+  // holder answers on RSP whatever the opcode says, so a run without that
+  // combination proves nothing about the rule. Counted from the observed snoop
+  // and the shadow state, so a test can assert the provoking condition actually
+  // occurred instead of reading a zero violation count out of a run that never
+  // set it up -- which is the shape of the bug this check exists to catch.
+  protected int n_snp_no_data_on_dirty;
 
   // cg_excl samples (SC outcome x clear-cause), set at the obs_rsp resolution.
   protected bit                excl_result_sample;  // 1 = ExclOkay (won), 0 = fail
@@ -356,6 +369,8 @@ class vip_chi_coherency_checker #(
     this.n_coherent_data_mismatch = 0;
     this.n_excl_violation         = 0;
     this.n_bad_make_unique        = 0;
+    this.n_bad_snp_resp_form      = 0;
+    this.n_snp_no_data_on_dirty   = 0;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -387,6 +402,11 @@ class vip_chi_coherency_checker #(
 
   protected function bit state_is_unique(input vip_chi_resp_t s);
     return (s == VIP_CHI_RESP_STATE_UC_E) || (s == VIP_CHI_RESP_STATE_UP_PD_DIRTY_E);
+  endfunction
+
+  protected function bit state_is_dirty(input vip_chi_resp_t s);
+    return (s == VIP_CHI_RESP_STATE_UP_PD_DIRTY_E) ||
+           (s == VIP_CHI_RESP_STATE_SD_PD_DIRTY_E);
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -725,6 +745,12 @@ class vip_chi_coherency_checker #(
     if ((op == VIP_CHI_DAT_SNP_RESP_DATA_E) ||
         (op == VIP_CHI_DAT_SNP_RESP_DATA_FWDED_E)) begin
       if (this.pending_snp_valid[node]) begin
+        // The response FORM is a property of the snoop opcode, and this is the
+        // only place the two are correlated: nothing on a DAT flit says which
+        // snoop it answers, so a rule written on encodings alone cannot see
+        // this. SnpRespData_I_PD is a legal row of Table 4-11 -- what is
+        // prohibited is sending it IN ANSWER TO a snoop that returns no data.
+        this.check_snp_resp_form(node, this.pending_snp_line[node], op);
         this.record_line_data(this.pending_snp_line[node], item);
         this.pending_snp_valid[node] = 1'b0;
       end
@@ -767,6 +793,29 @@ class vip_chi_coherency_checker #(
     this.check_line_data(line, item);
   endfunction
 
+  // ---------------------------------------------------------------------------
+  // A data-bearing snoop response answering a snoop that must not return data.
+  // IHI 0050 Chapter 4 defines SnpMakeInvalid by exactly this property -- the
+  // snoopee invalidates and DISCARDS its Dirty copy -- and Tables 4-9 / 4-11
+  // list no SnpRespData form among its permitted responses.
+  //
+  // Judged here rather than in an SVA bind because it needs the request and the
+  // response paired: the snoop is on SNP and the offending flit is on DAT, with
+  // no address and no field tying it back. Derived from observed traffic only,
+  // so it catches a DUT snoopee as readily as this VIP's own.
+  // ---------------------------------------------------------------------------
+  protected function void check_snp_resp_form(input int                 node,
+                                              input longint             line,
+                                              input vip_chi_dat_opcode_t op);
+    if (!vip_chi_snp_opcode_returns_no_data(this.pending_snp_opcode[node])) begin
+      return;
+    end
+    this.n_bad_snp_resp_form++;
+    `uvm_error("VIP_CHI_COH", $sformatf(
+      "COHERENCY VIOLATION: node %0d answered snoop opcode 0x%0h on line 0x%0h with DAT opcode 0x%0h; that snoop returns no data and discards its dirty copy",
+      node, this.pending_snp_opcode[node], line, op))
+  endfunction
+
   protected function void obs_snp(input int node, input item_t item);
     longint        line;
     vip_chi_resp_t cur;
@@ -799,8 +848,13 @@ class vip_chi_coherency_checker #(
     // Remember the snooped line so a dirty node's SnpRespData (which carries no
     // address) can be attributed back to it. The HN-F engine is serial, so at
     // most one snoop is outstanding per node.
-    this.pending_snp_line[node]  = line;
-    this.pending_snp_valid[node] = 1'b1;
+    if (vip_chi_snp_opcode_returns_no_data(vip_chi_snp_opcode_t'(item.snp_opcode))
+        && this.state_is_dirty(cur)) begin
+      this.n_snp_no_data_on_dirty++;
+    end
+    this.pending_snp_line[node]   = line;
+    this.pending_snp_valid[node]  = 1'b1;
+    this.pending_snp_opcode[node] = vip_chi_snp_opcode_t'(item.snp_opcode);
     this.n_snoops++;
   endfunction
 
@@ -938,6 +992,8 @@ class vip_chi_coherency_checker #(
   function int get_coherent_data_mismatch_count(); return this.n_coherent_data_mismatch; endfunction
   function int get_excl_violation_count(); return this.n_excl_violation; endfunction
   function int get_bad_make_unique_count(); return this.n_bad_make_unique; endfunction
+  function int get_bad_snp_resp_form_count(); return this.n_bad_snp_resp_form; endfunction
+  function int get_snp_no_data_on_dirty_count(); return this.n_snp_no_data_on_dirty; endfunction
   function int get_line_hazard_count(); return this.n_line_hazard; endfunction
   // Clean claim/release pairs. A test asserts on this to show the hazard rule
   // actually evaluated, rather than reading a zero violation count from a run
@@ -960,7 +1016,10 @@ class vip_chi_coherency_checker #(
       this.n_completions, this.n_snoops, this.n_multi_owner, this.n_coherent_data_mismatch, this.n_excl_violation, this.n_bad_make_unique), UVM_LOW)
     // Its own line, short enough never to be wrapped by the report server: the
     // tally has to stay greppable across a whole regression for the check to be
-    // provably non-vacuous.
+    // provably non-vacuous. Same reason for the snoop-response-form line below.
+    `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY SNP RESP FORM SUMMARY: no_data_snoops_on_dirty=%0d bad_snp_resp_form=%0d",
+      this.n_snp_no_data_on_dirty, this.n_bad_snp_resp_form), UVM_LOW)
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY HAZARD SUMMARY: line_hazards=%0d line_claims_cleared=%0d",
       this.n_line_hazard, this.n_line_clear), UVM_LOW)
