@@ -100,6 +100,39 @@ endfunction
 // seven it had never been given, so a report covering two of fourteen binds read
 // as a report on all of them.
 // ---------------------------------------------------------------------------
+// Tags claimed so far in this run, keyed on run/tag/scope.
+//
+// The tag is the ONLY thing in an exported row that says which bind produced it,
+// so two binds sharing one tag do not lose rows -- they merge, and every
+// per-bind question the export exists to answer is then answered about the wrong
+// interface. That is a silent failure: the file is well formed, the row count is
+// right, and nothing in it says a name was reused.
+//
+// Keyed on scope as well as tag because one interface legitimately exports
+// twice, once for the main check range and once for the SNP range. Keyed on the
+// run because the aggregation is a union over a whole sweep, and the same tag
+// appearing in every run is the normal case, not a collision.
+bit chi_check_tag_claimed [string];
+
+// Claim one tag for this run, or report the collision. Called from the export
+// below before it looks at the plusarg, so the guard is armed on an ordinary run
+// and not only on a sweep that happens to be writing the CSV.
+function automatic void chi_check_claim_tag(
+  input string            run_name,
+  input string            tag,
+  input chi_check_scope_t scope
+);
+  string key;
+
+  key = $sformatf("%s/%s/%s", run_name, tag, scope.name());
+  if (chi_check_tag_claimed.exists(key)) begin
+    uvm_pkg::uvm_report_error("VIP_CHI_CHECK", $sformatf(
+      "check-tally tag '%s' was exported twice for scope %s in run %s: two binds under one name merge into one set of rows, and every per-bind question asked of the export afterwards is answered about the wrong interface",
+      tag, scope.name(), run_name));
+  end
+  chi_check_tag_claimed[key] = 1'b1;
+endfunction
+
 function automatic void chi_check_export_csv(
   input string                   tag,
   input chi_check_scope_t        scope,
@@ -112,12 +145,14 @@ function automatic void chi_check_export_csv(
   string run_name;
   int    fd;
 
+  run_name = "unknown";
+  void'($value$plusargs("UVM_TESTNAME=%s", run_name));
+
+  chi_check_claim_tag(run_name, tag, scope);
+
   if (!$value$plusargs("vip_chi_check_csv=%s", path)) begin
     return;
   end
-
-  run_name = "unknown";
-  void'($value$plusargs("UVM_TESTNAME=%s", run_name));
 
   // Append, and write the header only when the file is new -- the aggregation
   // script reads one file produced by a whole sweep.

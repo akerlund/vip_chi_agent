@@ -183,21 +183,34 @@ class chi_coherent_tb_env #(
   // binding. Takes the arrays rather than an interface handle because a virtual
   // vip_chi_if is typed by ROLE_P and these binds sit on RN-F and HN-F.
   // ---------------------------------------------------------------------------
+  // The export tag names the BIND that produced the row, and it is the only
+  // thing in the CSV that says WHERE a rule ran. This env is parameterized on
+  // the config and serves both coherent topologies, so the tag has to be derived
+  // from that parameter: written as a literal, the CHI-E instance exports the
+  // CHI-E interfaces' tallies under the CHI-D binds' names, and the question
+  // "was this rule ever exercised on CHI-E coherent traffic" becomes
+  // unanswerable from the artifact that exists to answer it.
+  //
+  // The prefixes match the bind instance names in chi_tb_top: coh_<x>_sva for
+  // the CHI-D coherent binds, coh_e_<x>_sva for the CHI-E ones.
+  localparam string BIND_PREFIX_C =
+    (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) ? "coh_e_" : "coh_";
+
   function void report_phase(input uvm_phase phase);
 
     super.report_phase(phase);
 
-    chi_check_export_csv("coh_rnf0_sva", CHI_CHECK_SCOPE_MAIN_E,
+    chi_check_export_csv({BIND_PREFIX_C, "rnf0_sva"}, CHI_CHECK_SCOPE_MAIN_E,
       this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
       this.hrnf0_agent.vif.check_pass_count, this.hrnf0_agent.vif.check_fail_count);
-    chi_check_export_csv("coh_rnf1_sva", CHI_CHECK_SCOPE_MAIN_E,
+    chi_check_export_csv({BIND_PREFIX_C, "rnf1_sva"}, CHI_CHECK_SCOPE_MAIN_E,
       this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
       this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
 
-    chi_check_report_tallies("coh_rnf0_sva", CHI_CHECK_SCOPE_MAIN_E,
+    chi_check_report_tallies({BIND_PREFIX_C, "rnf0_sva"}, CHI_CHECK_SCOPE_MAIN_E,
       this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
       this.hrnf0_agent.vif.check_pass_count, this.hrnf0_agent.vif.check_fail_count);
-    chi_check_report_tallies("coh_rnf1_sva", CHI_CHECK_SCOPE_MAIN_E,
+    chi_check_report_tallies({BIND_PREFIX_C, "rnf1_sva"}, CHI_CHECK_SCOPE_MAIN_E,
       this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
       this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
 
@@ -207,17 +220,17 @@ class chi_coherent_tb_env #(
     // interface. Exporting only the main scope from here therefore threw away
     // every SNP row the RN-F side produced -- and the RN-F is the end that
     // GRANTS snoop credits, so CHI_SNP_LCRDV_REQUIRES_LINK had no rows anywhere.
-    chi_check_export_csv("coh_rnf0_snp_sva", CHI_CHECK_SCOPE_SNP_E,
+    chi_check_export_csv({BIND_PREFIX_C, "rnf0_snp_sva"}, CHI_CHECK_SCOPE_SNP_E,
       this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
       this.hrnf0_agent.vif.check_pass_count, this.hrnf0_agent.vif.check_fail_count);
-    chi_check_export_csv("coh_rnf1_snp_sva", CHI_CHECK_SCOPE_SNP_E,
+    chi_check_export_csv({BIND_PREFIX_C, "rnf1_snp_sva"}, CHI_CHECK_SCOPE_SNP_E,
       this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
       this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
 
-    chi_check_report_tallies("coh_rnf0_snp_sva", CHI_CHECK_SCOPE_SNP_E,
+    chi_check_report_tallies({BIND_PREFIX_C, "rnf0_snp_sva"}, CHI_CHECK_SCOPE_SNP_E,
       this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
       this.hrnf0_agent.vif.check_pass_count, this.hrnf0_agent.vif.check_fail_count);
-    chi_check_report_tallies("coh_rnf1_snp_sva", CHI_CHECK_SCOPE_SNP_E,
+    chi_check_report_tallies({BIND_PREFIX_C, "rnf1_snp_sva"}, CHI_CHECK_SCOPE_SNP_E,
       this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
       this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
 
@@ -225,13 +238,13 @@ class chi_coherent_tb_env #(
     // the CSV export never carried, so the aggregation had no rows for them at
     // all and reported on the rest as though that were the whole registry.
     foreach (this.hnf_agent.rn_vif[i]) begin
-      chi_check_export_csv($sformatf("coh_hnf%0d_snp_sva", i),
+      chi_check_export_csv($sformatf("%shnf%0d_snp_sva", BIND_PREFIX_C, i),
         CHI_CHECK_SCOPE_SNP_E,
         this.hnf_agent.rn_vif[i].check_enabled,
         this.hnf_agent.rn_vif[i].check_severity,
         this.hnf_agent.rn_vif[i].check_pass_count,
         this.hnf_agent.rn_vif[i].check_fail_count);
-      chi_check_report_tallies($sformatf("coh_hnf%0d_snp_sva", i),
+      chi_check_report_tallies($sformatf("%shnf%0d_snp_sva", BIND_PREFIX_C, i),
         CHI_CHECK_SCOPE_SNP_E,
         this.hnf_agent.rn_vif[i].check_enabled,
         this.hnf_agent.rn_vif[i].check_severity,

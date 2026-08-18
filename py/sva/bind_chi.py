@@ -357,6 +357,30 @@ def _flit_slices(cfg):
   return out
 
 
+# Export tags claimed so far, keyed on (run, tag).
+#
+# The tag is the ONLY thing in an exported row that says which bind produced it,
+# so two binds sharing one tag do not lose rows -- they merge, and every per-bind
+# question the export exists to answer is then answered about the wrong
+# interface. That is a silent failure: the file is well formed, the row count is
+# right, and nothing in it says a name was reused.
+#
+# Keyed on the run, not the tag alone, for two reasons: the aggregation is a
+# union over a whole sweep, so the same tag in every run is the normal case; and
+# this flow runs the entire regression in ONE process, so a registry that did not
+# reset per run would report a collision on the second test.
+_EXPORT_TAGS_CLAIMED: set[tuple[str, str]] = set()
+
+
+def claim_export_tag(run_name: str, tag: str) -> bool:
+  """Claim `tag` for `run_name`. False if some other bind already took it."""
+  key = (run_name, tag)
+  if key in _EXPORT_TAGS_CLAIMED:
+    return False
+  _EXPORT_TAGS_CLAIMED.add(key)
+  return True
+
+
 class bind_chi:
   """CHI link-layer protocol checker for one interface.
 
@@ -558,6 +582,14 @@ class bind_chi:
     rule exercised by exactly one testcase can be traced back to it -- which is
     the question you actually ask when a check turns out to be near-vacuous.
     """
+    if not claim_export_tag(run_name, self.log.name):
+      self.errors += 1
+      self.log.error(
+        f"check-tally tag '{self.log.name}' was exported twice in run "
+        f"{run_name}: two binds under one name merge into one set of rows, and "
+        f"every per-bind question asked of the export afterwards is answered "
+        f"about the wrong interface")
+
     new = not os.path.exists(path)
     with open(path, "a", encoding="utf-8") as fh:
       if new:

@@ -29,6 +29,8 @@ import os
 
 from cocotb.triggers import RisingEdge
 
+from sva.bind_chi import claim_export_tag
+
 from vip_chi_types_pkg import (
   LasmState, lasm, CheckSeverity, CHECK_IDS_SNP, CHECK_IDS_SV_ONLY,
 )
@@ -127,6 +129,14 @@ class bind_chi_snp:
     nothing about the ones it was never given -- which reads as a clean report
     rather than as a hole in the measurement.
     """
+    if not claim_export_tag(run_name, self.log.name):
+      self.errors += 1
+      self.log.error(
+        f"check-tally tag '{self.log.name}' was exported twice in run "
+        f"{run_name}: two binds under one name merge into one set of rows, and "
+        f"every per-bind question asked of the export afterwards is answered "
+        f"about the wrong interface")
+
     new = not os.path.exists(path)
     with open(path, "a", encoding="utf-8") as fh:
       if new:

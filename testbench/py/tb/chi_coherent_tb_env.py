@@ -104,18 +104,27 @@ class chi_coherent_tb_env(uvm_env):
     # binds: an HN-F may complete a request from another RN-F's snoop data, so a
     # request and its completion are not both visible on any one link and a
     # timeout would fire on correct traffic.
+    #
+    # The checker's name becomes the `bind` column of the exported tallies, and
+    # that column is the only thing saying WHERE a rule ran. This env serves both
+    # coherent topologies -- the CHI-E harness publishes the wide bus to the same
+    # class -- so a literal name would export the CHI-E interfaces' tallies under
+    # the CHI-D names, and "was this rule ever exercised on CHI-E coherent
+    # traffic" would be unanswerable from the artifact that exists to answer it.
+    # Derive the prefix from the bus's own config instead.
+    pfx = "e_" if hrnf0_vif.cfg.is_e else ""
     self.rnf_sva = [
-      bind_chi(hrnf0_vif, "hrnf0_sva", enable_completion_timeout=False),
-      bind_chi(hrnf1_vif, "hrnf1_sva", enable_completion_timeout=False),
+      bind_chi(hrnf0_vif, f"{pfx}hrnf0_sva", enable_completion_timeout=False),
+      bind_chi(hrnf1_vif, f"{pfx}hrnf1_sva", enable_completion_timeout=False),
     ]
     # SNP is watched from BOTH ends, because each end exercises a different half
     # of the channel: the HN-F side drives snoops and its txsnp send-credit
     # shadow, the RN-F side receives them and shadows rxsnp.
     self.snp_sva = [
-      bind_chi_snp(hnfr0_vif, "hnfr0_snp_sva"),
-      bind_chi_snp(hnfr1_vif, "hnfr1_snp_sva"),
-      bind_chi_snp(hrnf0_vif, "hrnf0_snp_sva"),
-      bind_chi_snp(hrnf1_vif, "hrnf1_snp_sva"),
+      bind_chi_snp(hnfr0_vif, f"{pfx}hnfr0_snp_sva"),
+      bind_chi_snp(hnfr1_vif, f"{pfx}hnfr1_snp_sva"),
+      bind_chi_snp(hrnf0_vif, f"{pfx}hrnf0_snp_sva"),
+      bind_chi_snp(hrnf1_vif, f"{pfx}hrnf1_snp_sva"),
     ]
 
     self.hrnf0_req_fifo = uvm_tlm_analysis_fifo("hrnf0_req_fifo", self)
