@@ -776,7 +776,7 @@ class vip_chi_item #(
         // WriteEvictOrEvict carries a full line, but only when the home asks for
         // it. This is the payload the transfer WOULD carry; whether it is sent at
         // all is the home's choice, resolved on the wire by CompDBIDResp vs Comp.
-        (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
+        (opcode == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
       return vip_chi_types_pkg::chi_xfer_dat_beats(size, DATA_BYTES_C);
     end
     return 0;
@@ -968,7 +968,7 @@ class vip_chi_item #(
              // WriteEvictOrEvict is a CopyBack too, and its CopyBackWrData is
              // treated as an IMPLICIT CompAck -- which is why it keeps the plain
              // opcode here even though ExpCompAck is always set.
-             (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(this.opcode) == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
+             (this.opcode == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
       // Coherent writeback data travels as CopyBackWrData.
       this.dat_opcode = dat_opcode_t'(VIP_CHI_DAT_COPY_BACK_WR_DATA_C);
     end
@@ -1594,8 +1594,8 @@ class vip_chi_item #(
           // entry would put it into every random coherent write test. Disjunction
           // inside the one constraint, not a second `inside` -- constraints
           // conjoin, so a separate one would intersect to nothing.
-          VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C)
-        }) || (write_evict_or_evict_enable && VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) inside {
+          VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C
+        }) || (write_evict_or_evict_enable && opcode inside {
           VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C
         });
       }
@@ -1631,7 +1631,7 @@ class vip_chi_item #(
            (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C)) ||
            // WriteUniqueZero carries no CompAck, exactly like the WriteNoSnpZero
            // it mirrors.
-           (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) ||
+           (opcode == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) ||
            // MakeUnique is modeled as a plain RSP-only Comp (no CompAck), so a free
            // randomize() must not draw ExpCompAck and wedge the RN-F waiting to ack
            // a completion the HN-F never expects (T1/T2 trap-hardening).
@@ -1645,7 +1645,7 @@ class vip_chi_item #(
     // requester acks -- so the bit is not optional the way it is on every other
     // write.
     if (!raw_override &&
-        (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) {
+        (opcode == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) {
       exp_comp_ack == 1'b1;
     }
   }

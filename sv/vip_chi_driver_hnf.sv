@@ -911,10 +911,10 @@ class vip_chi_driver_hnf #(
              (op == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C))) begin
       this.service_write_unique(p, req);
     end
-    else if (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(op) == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) begin
+    else if (op == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) begin
       this.service_write_unique_zero(p, req);
     end
-    else if (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(op) == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C) begin
+    else if (op == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C) begin
       this.service_write_evict_or_evict(p, req);
     end
     else if (op == req_opcode_t'(VIP_CHI_REQ_CLEAN_UNIQUE_C)) begin

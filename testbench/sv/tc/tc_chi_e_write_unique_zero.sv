@@ -89,7 +89,7 @@ class tc_chi_e_write_unique_zero extends
 
     // Full width on both sides: item_t here is the CHI-D package typedef, whose
     // 6-bit req_opcode_t would truncate this Opcode[6] = 1 encoding.
-    if (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(req_item.opcode) != VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) begin
+    if (req_item.opcode != VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) begin
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] REQ opcode 0x%0h, expected 0x%0h",
         super.tc_name, req_item.opcode,

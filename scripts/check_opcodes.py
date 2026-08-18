@@ -162,6 +162,77 @@ def _lookup(spec: dict[str, int], channel: str, name: str):
   return spec.get(prefixed)
 
 
+# The CHI-D width of each channel's opcode field, read from the SV package's own
+# width functions so this can never drift from them.
+_SV_WIDTH_FN_C = re.compile(
+  r"function automatic int chi_(req|rsp|dat|snp)_opcode_width.*?"
+  r"VIP_CHI_ISSUE_D_E\s*(?:,\s*VIP_CHI_ISSUE_E_E\s*)?:\s*return\s*(\d+)",
+  re.DOTALL)
+
+# A cast of an opcode constant through an ISSUE-PARAMETERIZED opcode type, with
+# or without a class scope ("req_opcode_t'(X)", "item_t::req_opcode_t'(X)").
+# `vip_chi_req_opcode_t` -- the full-width package enum -- is deliberately NOT
+# matched: the lookbehind rejects it, because widening is the safe direction.
+_NARROW_CAST_C = re.compile(
+  r"(?<![\w])((?:\w+::)?)(req|rsp|dat|snp)_opcode_t'\(\s*(VIP_CHI_(?:REQ|RSP|SNP|DAT)_\w+_C)\s*\)")
+
+
+def _parse_d_widths(path: Path) -> dict[str, int]:
+  """Each channel's CHI-D opcode field width, from the SV width functions."""
+  text = path.read_text(encoding="utf-8")
+  return {ch.upper(): int(w) for ch, w in _SV_WIDTH_FN_C.findall(text)}
+
+
+def _scan_narrow_casts(root: Path, sv: dict[str, dict[str, int]],
+                       d_widths: dict[str, int]) -> list[tuple]:
+  """Opcode constants cast through a type too narrow to hold them in CHI-D.
+
+  The trap this exists for: `req_opcode_t` is 6 bits in CHI-D, so writing
+  `req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)` -- an Opcode[6] = 1
+  encoding -- silently drops the top bit and produces ReadClean. The comparison
+  still compiles, still reads correctly, and now answers for a DIFFERENT,
+  perfectly ordinary opcode. `docs/FUTURE_WORK.md` records the first time this
+  was caught by hand; every occurrence since has been caught the same way.
+
+  Widening is safe and needs no cast at all: `==` extends both operands to the
+  wider one, so a bare comparison against the full-width constant is correct in
+  either issue. Only `case` items genuinely need the narrow form, and those must
+  be hoisted into a full-width guard instead (see req_opcode_is_legal).
+  """
+  hits = []
+  # Source only. rundir/ and build/ hold FuseSoC's copies of these same files;
+  # counting them reports each hit twice and pins the count to whatever was last
+  # built rather than to what is checked in.
+  files = sorted(list((root / "sv").rglob("*.sv"))
+                 + list((root / "testbench" / "sv").rglob("*.sv")))
+  files = [f for f in files
+           if not any(part in ("rundir", "build") for part in f.parts)]
+  for path in files:
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+      for scope, channel, const in _NARROW_CAST_C.findall(line):
+        ch = channel.upper()
+        name = const[len("VIP_CHI_"):]
+        if not name.startswith(ch + "_"):
+          continue
+        value = sv.get(ch, {}).get(name[len(ch) + 1:-2])
+        if value is None:
+          continue
+        width = d_widths.get(ch)
+        if width is None or value < (1 << width):
+          continue
+        # Which shape it is decides whether it can lie. In a comparison the
+        # truncated constant silently EQUALS a different, ordinary opcode, and
+        # the code then answers for that one. In an assignment it merely narrows
+        # a value that fits the issue the code runs under, so it is advisory.
+        stripped = line.strip()
+        compares = ("==" in line or "!=" in line or "inside" in line
+                    or stripped.endswith(",") or stripped.endswith(":")
+                    or stripped.endswith(": begin"))
+        hits.append((path.relative_to(root), lineno, scope + channel + "_opcode_t",
+                     const, value, width, "compare" if compares else "assign"))
+  return hits
+
+
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__,
                                formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -197,7 +268,27 @@ def main() -> int:
       if name not in py_names:
         ports.append((channel, name, None, value))
 
+  d_widths = _parse_d_widths(root / "sv" / "vip_chi_types_pkg.sv")
+  narrow = _scan_narrow_casts(root, sv, d_widths)
+
   print(f"opcodes compared between the SV and Python ports: {sv_checked}")
+  widths_s = ", ".join(f"{c} {w}" for c, w in sorted(d_widths.items()))
+  print(f"opcode casts scanned for CHI-D truncation; CHI-D widths: {widths_s}")
+  cmp_hits = [h for h in narrow if h[6] == "compare"]
+  asn_hits = [h for h in narrow if h[6] == "assign"]
+  print(f"opcode casts that truncate in CHI-D: {len(cmp_hits)} comparing, "
+        f"{len(asn_hits)} assigning")
+  if cmp_hits:
+    print(f"\nNARROW COMPARE ({len(cmp_hits)}) -- truncated constant matches a "
+          f"DIFFERENT CHI-D opcode:")
+    for rel, lineno, typename, const, value, width, _ in cmp_hits:
+      print(f"  {rel}:{lineno}: {typename}'({const}) = 0x{value:02X} -> "
+            f"0x{value & ((1 << width) - 1):02X} in {width}-bit CHI-D")
+  if asn_hits:
+    print(f"\nNARROW ASSIGN ({len(asn_hits)}) -- advisory; narrows on write, "
+          f"does not silently match another opcode:")
+    for rel, lineno, typename, const, value, width, _ in asn_hits:
+      print(f"  {rel}:{lineno}: {typename}'({const}) = 0x{value:02X}")
   if ports:
     print(f"\nPORT DIVERGENCE ({len(ports)}) -- the two ports do not agree:")
     for channel, name, py, sv_value in ports:
@@ -210,7 +301,7 @@ def main() -> int:
           "checked against it.")
     print("The Arm document is not in this repository and must not be; point "
           "this at your own conversion of it.")
-    return 1 if ports else 0
+    return 1 if (ports or cmp_hits) else 0
   if not Path(args.spec_e).is_file():
     print(f"error: no such file: {args.spec_e}", file=sys.stderr)
     return 2

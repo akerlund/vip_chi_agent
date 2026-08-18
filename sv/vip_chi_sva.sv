@@ -263,7 +263,7 @@ module vip_chi_sva #(
             (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C)) ||
             // WriteEvictOrEvict is a CopyBack whose data is CONDITIONAL: the home asks for it with CompDBIDResp or declines with a bare Comp.
             // Listing it here is still right, and the conditionality takes care of itself -- the burst-length check arms only when a DBID is granted, which is exactly the leg that carries data.
-            (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C));
+            (opcode == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C));
   endfunction
 
   function automatic bit req_opcode_is_coherent_rsp_only(input req_opcode_t opcode);
