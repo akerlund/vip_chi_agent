@@ -240,6 +240,9 @@ class bind_chi_snp:
   async def run(self) -> None:
     bus = self.bus
     prev_rst = int(bus.rst_n.value)
+    # The previous sample, for the one rule that reaches back a cycle. See
+    # CHI_SNP_VALID_REQUIRES_PEND below.
+    prev = None
 
     while True:
       await RisingEdge(bus.clk)
@@ -262,7 +265,7 @@ class bind_chi_snp:
             "section 13.4",
           )
         self._lcrd = {"txsnp": 0, "rxsnp": 0}
-        prev_rst = rst
+        prev, prev_rst = cur, rst
         continue
 
       if self._link_is_active(cur):
@@ -280,14 +283,18 @@ class bind_chi_snp:
             "CHI_SNP_LCRDV_REQUIRES_LINK", self._link_is_active(cur),
             "txsnplcrdv asserted before link activation", "section 13.7",
           )
-        if cur["txsnpflitpend"]:
+        # FLITPEND announces a flit one cycle ahead; the obligation runs from
+        # the flit backwards. See bind_chi._check_valid_requires_pend for why
+        # this is one rule and not the two bullets the section lists.
+        if cur["txsnpflitv"] and prev is not None:
           self._chk(
-            "CHI_SNP_PEND_REQUIRES_VALID", bool(cur["txsnpflitv"]),
-            "txsnpflitpend asserted without txsnpflitv", "section 13.3",
+            "CHI_SNP_VALID_REQUIRES_PEND", bool(prev["txsnpflitpend"]),
+            "txsnpflitv sent without txsnpflitpend in the preceding cycle",
+            "E section 14.4 / D section 13.4",
           )
         self._check_lcrd(cur)
 
-      prev_rst = rst
+      prev, prev_rst = cur, rst
 
   # ---------------------------------------------------------------------------
   def _check_lcrd(self, s: dict) -> None:

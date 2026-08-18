@@ -548,6 +548,14 @@ class vip_chi_driver_hni #(
   // ---------------------------------------------------------------------------
   // Credit acquire helpers.
   // ---------------------------------------------------------------------------
+  // Which channel the announce tasks are announcing on. Local to the drivers:
+  // it names a clocking-block member to assign, not anything on the wire.
+  typedef enum {
+    ANNOUNCE_REQ_E,
+    ANNOUNCE_RSP_E,
+    ANNOUNCE_DAT_E
+  } announce_ch_t;
+
   protected task wait_rn_send_credit(input int p, input vip_chi_lcrd_mgr mgr);
 
     forever begin
@@ -564,6 +572,34 @@ class vip_chi_driver_hni #(
   // ---------------------------------------------------------------------------
   //
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Raise FLITPEND for the cycle before a relayed flit goes out.
+  //
+  // IHI 0050 E §14.4 / D §13.4: the signal is asserted exactly one cycle before
+  // a flit is sent. The proxy relays the FLITPEND it received ALONGSIDE the flit
+  // -- that value carries the burst's "more beats follow" meaning to the far
+  // side -- and this is the separate one-cycle lead in front of it, which the
+  // received stream cannot supply because the relay re-times every flit.
+  // ---------------------------------------------------------------------------
+  protected task announce_sn_flit(input int s, input announce_ch_t ch);
+    @(this.vif_sn[s].g_drv.rni_cb);
+    case (ch)
+      ANNOUNCE_REQ_E: this.vif_sn[s].g_drv.rni_cb.txreqflitpend <= 1'b1;
+      ANNOUNCE_RSP_E: this.vif_sn[s].g_drv.rni_cb.txrspflitpend <= 1'b1;
+      default:        this.vif_sn[s].g_drv.rni_cb.txdatflitpend <= 1'b1;
+    endcase
+  endtask
+
+  protected task announce_rn_flit(input int p, input announce_ch_t ch);
+    @(this.vif_rn[p].g_drv.hni_cb);
+    if (ch == ANNOUNCE_RSP_E) begin
+      this.vif_rn[p].g_drv.hni_cb.txrspflitpend <= 1'b1;
+    end
+    else begin
+      this.vif_rn[p].g_drv.hni_cb.txdatflitpend <= 1'b1;
+    end
+  endtask
+
   protected task wait_sn_send_credit(input int s, input vip_chi_lcrd_mgr mgr);
 
     forever begin
@@ -895,6 +931,7 @@ class vip_chi_driver_hni #(
       this.wait_sn_channel_delay(s, this.cfg.draw_req_valid_delay());
       this.wait_sn_send_credit(s, this.sn_req_send_mgr[s]);
 
+      this.announce_sn_flit(s, ANNOUNCE_REQ_E);
       @(this.vif_sn[s].g_drv.rni_cb);
       this.vif_sn[s].g_drv.rni_cb.txreqflitpend <= 1'b0;
       this.vif_sn[s].g_drv.rni_cb.txreqflit     <= flit;
@@ -944,6 +981,7 @@ class vip_chi_driver_hni #(
       this.wait_sn_channel_delay(s, this.cfg.draw_rsp_valid_delay());
       this.wait_sn_send_credit(s, this.sn_rsp_send_mgr[s]);
 
+      this.announce_sn_flit(s, ANNOUNCE_RSP_E);
       @(this.vif_sn[s].g_drv.rni_cb);
       this.vif_sn[s].g_drv.rni_cb.txrspflitpend <= pend;
       this.vif_sn[s].g_drv.rni_cb.txrspflit     <= flit;
@@ -993,6 +1031,7 @@ class vip_chi_driver_hni #(
         this.wait_sn_channel_delay(s, this.cfg.draw_dat_valid_delay());
         this.wait_sn_send_credit(s, this.sn_dat_send_mgr[s]);
 
+        this.announce_sn_flit(s, ANNOUNCE_DAT_E);
         @(this.vif_sn[s].g_drv.rni_cb);
         this.vif_sn[s].g_drv.rni_cb.txdatflitpend <= pend;
         this.vif_sn[s].g_drv.rni_cb.txdatflit     <= flit;
@@ -1058,6 +1097,7 @@ class vip_chi_driver_hni #(
       this.wait_rn_channel_delay(p, this.cfg.draw_rsp_valid_delay());
       this.wait_rn_send_credit(p, this.rn_rsp_send_mgr[p]);
 
+      this.announce_rn_flit(p, ANNOUNCE_RSP_E);
       @(this.vif_rn[p].g_drv.hni_cb);
       this.vif_rn[p].g_drv.hni_cb.txrspflitpend <= pend;
       this.vif_rn[p].g_drv.hni_cb.txrspflit     <= flit;
@@ -1143,6 +1183,7 @@ class vip_chi_driver_hni #(
         this.wait_rn_channel_delay(p, this.cfg.draw_dat_valid_delay());
         this.wait_rn_send_credit(p, this.rn_dat_send_mgr[p]);
 
+        this.announce_rn_flit(p, ANNOUNCE_DAT_E);
         @(this.vif_rn[p].g_drv.hni_cb);
         this.vif_rn[p].g_drv.hni_cb.txdatflitpend <= pend;
         this.vif_rn[p].g_drv.hni_cb.txdatflit     <= flit;

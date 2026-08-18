@@ -319,7 +319,7 @@ class vip_chi_driver_hnf(uvm_component):
     """Raise SNP FLITPEND for one cycle with no snoop behind it.
 
     The SNP twin of the REQ/RSP pulse in the requester driver, and it exists for
-    the same reason: CHI_SNP_PEND_REQUIRES_VALID had never once been evaluated
+    the same reason: CHI_SNP_VALID_REQUIRES_PEND had never once been evaluated
     anywhere, because nothing raises SNP FLITPEND -- the home pairs it with the
     snoop it belongs to. A rule that has never run is indistinguishable from one
     that does not work.
@@ -445,6 +445,7 @@ class vip_chi_driver_hnf(uvm_component):
       "tgtid": _I(self.cfg.hnf_downstream_snf_id),
     }
     await self.wait_sn_req_send_credit(s)
+    await self.announce_sn_flit(s, "req")
     await sn.rising()
     sn.drive(txreqflitpend=0, txreqflitv=1)
     sn.drive_flit("req", fields)
@@ -468,6 +469,7 @@ class vip_chi_driver_hnf(uvm_component):
       "tgtid": _I(self.cfg.hnf_downstream_snf_id),
     }
     await self.wait_sn_req_send_credit(s)
+    await self.announce_sn_flit(s, "req")
     await sn.rising()
     sn.drive(txreqflitpend=0, txreqflitv=1)
     sn.drive_flit("req", req_fields)
@@ -489,6 +491,7 @@ class vip_chi_driver_hnf(uvm_component):
         "tgtid": _I(self.cfg.hnf_downstream_snf_id),
       }
       await self.wait_sn_dat_send_credit(s)
+      await self.announce_sn_flit(s, "dat")
       await sn.rising()
       sn.drive(txdatflitpend=1 if i != (n_beats - 1) else 0, txdatflitv=1)
       sn.drive_flit("dat", dat_fields)
@@ -499,6 +502,27 @@ class vip_chi_driver_hnf(uvm_component):
   # ==========================================================================
   # RN-facing send-credit waits.
   # ==========================================================================
+  async def announce_rn_flit(self, p, channel):
+    """Raise FLITPEND for the cycle before a flit goes out on an RN port.
+
+    E section 14.4 / D section 13.4 require the signal asserted exactly one
+    cycle before a flit is sent -- a look-ahead a receiver uses to ungate its
+    capture path. Every beat of a burst is announced, not only the first: the
+    gap cycle after each beat drops FLITPEND, so nothing carries the lead
+    across. The value driven WITH each beat keeps its burst meaning (more beats
+    follow), which is what the snoopee and the monitor read to find the last one.
+    """
+    rn = self.rn_buses[p]
+    await rn.rising()
+    self.drive_rn_idle_sideband(p)
+    rn.drive(**{"txsactive": 1, f"tx{channel}flitpend": 1})
+
+  async def announce_sn_flit(self, s, channel):
+    """The downstream twin of announce_rn_flit."""
+    sn = self.sn_buses[s]
+    await sn.rising()
+    sn.drive(**{f"tx{channel}flitpend": 1})
+
   async def wait_rn_rsp_send_credit(self, p):
     rn = self.rn_buses[p]
     # The credit loop below keeps the sideband driven every cycle it waits, so
@@ -901,6 +925,7 @@ class vip_chi_driver_hnf(uvm_component):
       "resperr": resperr, "srcid": src_id, "tgtid": tgt_id, "qos": 0,
     }
     await self.wait_rn_rsp_send_credit(p)
+    await self.announce_rn_flit(p, "rsp")
     await rn.rising()
     self.drive_rn_idle_sideband(p)
     rn.drive(txsactive=1, txrspflitpend=0, txrspflitv=1)
@@ -980,6 +1005,7 @@ class vip_chi_driver_hnf(uvm_component):
       "fwdnid": fwd_nid, "fwdtxnid": fwd_txn,
     }
     await self.wait_rn_snp_send_credit(k)
+    await self.announce_rn_flit(k, "snp")
     await rn.rising()
     self.drive_rn_idle_sideband(k)
     rn.drive(txsactive=1, txsnpflitpend=0, txsnpflitv=1)
@@ -1086,6 +1112,7 @@ class vip_chi_driver_hnf(uvm_component):
         "srcid": req_tgt, "tgtid": req_src, "qos": _I(req["qos"]),
       }
       await self.wait_rn_dat_send_credit(p)
+      await self.announce_rn_flit(p, "dat")
       await rn.rising()
       self.drive_rn_idle_sideband(p)
       rn.drive(txsactive=1, txdatflitpend=1 if beat_index != (beat_count - 1) else 0,
@@ -1179,6 +1206,7 @@ class vip_chi_driver_hnf(uvm_component):
         "srcid": req_tgt, "tgtid": req_src, "qos": _I(req["qos"]),
       }
       await self.wait_rn_dat_send_credit(p)
+      await self.announce_rn_flit(p, "dat")
       await rn.rising()
       self.drive_rn_idle_sideband(p)
       rn.drive(txsactive=1, txdatflitpend=1 if beat_index != (beat_count - 1) else 0,

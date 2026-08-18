@@ -265,6 +265,19 @@ class vip_chi_driver_hni(uvm_component):
     self.sn_dat_lcrdv_pending[s] += 1
     self.sn_link_up[s] = True
 
+  async def announce_flit(self, bus, channel):
+    """Raise FLITPEND for the cycle before a relayed flit goes out.
+
+    E section 14.4 / D section 13.4 require the signal asserted exactly one
+    cycle before a flit is sent. The proxy relays the FLITPEND it received
+    ALONGSIDE the flit -- that value carries the burst's "more beats follow"
+    meaning to the far side -- and this is the separate one-cycle lead in front
+    of it, which the received stream cannot supply because the relay re-times
+    every flit.
+    """
+    await bus.rising()
+    bus.drive(**{f"tx{channel}flitpend": 1})
+
   async def wait_rn_send_credit(self, p, mgr):
     rn = self.rn_buses[p]
     while not mgr.try_acquire_credit():
@@ -411,6 +424,7 @@ class vip_chi_driver_hni(uvm_component):
       await self.wait_sn_channel_delay(s, self.cfg.draw_req_valid_delay())
       await self.wait_sn_send_credit(s, self.sn_req_send[s])
 
+      await self.announce_flit(sn, "req")
       await sn.rising()
       sn.drive(txreqflitpend=0, txreqflitv=1)
       sn.sig["txreqflit"].value = raw
@@ -447,6 +461,7 @@ class vip_chi_driver_hni(uvm_component):
       await self.wait_sn_channel_delay(s, self.cfg.draw_rsp_valid_delay())
       await self.wait_sn_send_credit(s, self.sn_rsp_send[s])
 
+      await self.announce_flit(sn, "rsp")
       await sn.rising()
       sn.drive(txrspflitpend=pend, txrspflitv=1)
       sn.sig["txrspflit"].value = raw
@@ -481,6 +496,7 @@ class vip_chi_driver_hni(uvm_component):
         await self.wait_sn_channel_delay(s, self.cfg.draw_dat_valid_delay())
         await self.wait_sn_send_credit(s, self.sn_dat_send[s])
 
+        await self.announce_flit(sn, "dat")
         await sn.rising()
         sn.drive(txdatflitpend=pend, txdatflitv=1)
         sn.sig["txdatflit"].value = raw
@@ -518,6 +534,7 @@ class vip_chi_driver_hni(uvm_component):
       await self.wait_rn_channel_delay(p, self.cfg.draw_rsp_valid_delay())
       await self.wait_rn_send_credit(p, self.rn_rsp_send[p])
 
+      await self.announce_flit(rn, "rsp")
       await rn.rising()
       rn.drive(txrspflitpend=pend, txrspflitv=1)
       rn.sig["txrspflit"].value = raw
@@ -572,6 +589,7 @@ class vip_chi_driver_hni(uvm_component):
         await self.wait_rn_channel_delay(p, self.cfg.draw_dat_valid_delay())
         await self.wait_rn_send_credit(p, self.rn_dat_send[p])
 
+        await self.announce_flit(rn, "dat")
         await rn.rising()
         rn.drive(txdatflitpend=pend, txdatflitv=1)
         rn.sig["txdatflit"].value = raw

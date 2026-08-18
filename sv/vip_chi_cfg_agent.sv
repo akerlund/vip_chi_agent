@@ -255,21 +255,32 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0 keeps bring-up a clean STOP -> ACTIVATE -> RUN.
   bit lasm_abort_activation = 1'b0;
 
-  // Negative-control knob for the FLITPEND rules: when set, the requester pulses
+  // POSITIVE-control knob for the FLITPEND rule: when set, the requester pulses
   // txreqflitpend and txrspflitpend for one cycle with no flit behind them,
   // once, after the link is up.
   //
-  // What this polices is a VIP EMISSION CONVENTION, not a CHI mandate, and the
-  // distinction matters. CHI's FLITPEND is a one-cycle-ahead hint that a flit
-  // MIGHT follow, and a transmitter is permitted to assert it and then not send
-  // -- discouraged, but legal. This VIP instead emits FLITPEND alongside the
-  // flit it belongs to (the DAT driver raises it on every beat but the last, to
-  // mean "more beats coming"), so a lone FLITPEND here means a driver has lost
-  // track of its own burst. Same standing as the DataID-ordering rules, which
-  // hold this VIP's in-order emission convention rather than a CHI requirement.
+  // IHI 0050 E §14.4 / D §13.4 permit exactly this -- "a transmitter is
+  // permitted to assert and then deassert this signal without sending a flit" --
+  // and also permit holding it permanently asserted, and asserting it while
+  // holding no L-Credit. The obligation runs the other way, from the flit
+  // backwards, so a lone FLITPEND owes nothing and nothing may be reported.
   //
-  // Default 0 keeps every flit's FLITPEND paired with its FLITV.
+  // It was a NEGATIVE control until CHI_*_VALID_REQUIRES_PEND replaced the
+  // inverted rule it was built for. The old rule read `flitpend |-> flitv` and
+  // this pulse was written to trip it, which made the suite assert that legal
+  // CHI traffic must be reported as a violation. The stimulus was right and the
+  // expectation was backwards, so the knob is kept and the verdict inverted.
+  //
+  // Default 0 keeps the link quiet between flits.
   bit flitpend_without_valid = 1'b0;
+
+  // Negative-control knob for the FLITPEND rule: when set, the requester drops
+  // the one-cycle announcement in front of exactly one flit, so it goes out with
+  // FLITPEND low in the cycle before it. One-shot -- see announce_flit -- because
+  // the point is to prove the rule fires, and every later flit stays legal.
+  //
+  // Default 0 announces every flit.
+  bit flit_without_flitpend = 1'b0;
 
   // ---------------------------------------------------------------------------
   // Graceful link deactivation.
@@ -936,7 +947,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
         this.snf_corrupt_tag ||
-        this.lasm_abort_activation || this.flitpend_without_valid ||
+        this.lasm_abort_activation || this.flit_without_flitpend ||
         this.lasm_reactivate_during_deactivate) begin
       if (!silent) begin
         `uvm_warning("VIP_CHI_CFG", $sformatf(
@@ -966,6 +977,17 @@ class vip_chi_cfg_agent extends uvm_object;
     // The requester pulses REQ+RSP FLITPEND; the home pulses SNP FLITPEND. Both
     // run the control, and between them they cover all three rules. Any other
     // role would set a flag nothing reads.
+    // Implemented in the RN-I announce path, which RN-F inherits. On any other
+    // role it would set a flag nothing reads.
+    if (this.flit_without_flitpend &&
+        (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_RNF_E)) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG",
+          "flit_without_flitpend is set on a role whose driver does not run the control: the announcement it suppresses lives in the RN-I send path, which only the requester roles use")
+      end
+      is_valid = 1'b0;
+    end
+
     if (this.flitpend_without_valid &&
         (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_RNF_E) &&
         (this.role != VIP_CHI_ROLE_HNF_E)) begin

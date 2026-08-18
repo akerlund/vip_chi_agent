@@ -135,6 +135,7 @@ class vip_chi_driver_snf #(
   // ---------------------------------------------------------------------------
   function new(input string name, input uvm_component parent);
     super.new(name, parent);
+    this.tx_flit_arb = new(1);
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -178,6 +179,31 @@ class vip_chi_driver_snf #(
   // So DEACTIVATE is held -- ack high, request low -- for exactly as long as the
   // drain takes. cfg.lasm_stall_deactivation_cycles then holds it longer still,
   // which is the negative control for the deactivation timeout.
+  // Serialises the transmit path across every thread that drives it.
+  //
+  // The completer drives from more than one place at once: the auto-responder,
+  // the L-credit return loop, and the raw-injection path all reach the same
+  // txrsp*/txdat* signals. Without this they can drive in the SAME cycle, and
+  // the last nonblocking assignment wins silently -- the earlier flit is not
+  // delayed, it never reaches the wire at all. That is how a CompDBIDResp was
+  // lost behind a raw-injected PCrdGrant, leaving the requester waiting forever
+  // for a grant that had been driven and then overwritten.
+  //
+  // The requester has had this since it was written (tx_flit_arb in
+  // vip_chi_driver_rni); the completer never did, and only missed the collision
+  // by the accident of its own timing.
+  //
+  // Acquired in announce_flit -- after every credit wait, so it is never held
+  // across one -- and released once the flit has been torn down.
+  protected semaphore tx_flit_arb;
+
+  // Which channel announce_flit() is announcing on. Local to the drivers: it
+  // names a clocking-block member to assign, not anything on the wire.
+  typedef enum {
+    ANNOUNCE_RSP_E,
+    ANNOUNCE_DAT_E
+  } announce_ch_t;
+
   protected task drive_idle_sideband();
     if (this.vif_snf.g_drv.snf_cb.rxlinkactivereq) begin
       // cfg.lasm_stall_activation_cycles withholds the acknowledge, leaving the
@@ -615,6 +641,7 @@ class vip_chi_driver_snf #(
     flit        = '0;
     flit.opcode = rsp_opcode_t'(VIP_CHI_RSP_LCRD_RETURN_C);
 
+    this.announce_flit(ANNOUNCE_RSP_E);
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txrspflitpend <= 1'b0;
@@ -625,6 +652,7 @@ class vip_chi_driver_snf #(
     this.drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txrspflitv <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txrspflit  <= '0;
+    this.tx_flit_arb.put(1);
   endtask
 
   protected task drive_dat_lcrd_return();
@@ -634,6 +662,7 @@ class vip_chi_driver_snf #(
     flit        = '0;
     flit.opcode = dat_opcode_t'(VIP_CHI_DAT_LCRD_RETURN_C);
 
+    this.announce_flit(ANNOUNCE_DAT_E);
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txdatflitpend <= 1'b0;
@@ -644,6 +673,7 @@ class vip_chi_driver_snf #(
     this.drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txdatflitv <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txdatflit  <= '0;
+    this.tx_flit_arb.put(1);
   endtask
 
   // ---------------------------------------------------------------------------
@@ -733,6 +763,25 @@ class vip_chi_driver_snf #(
   protected task wait_dat_credit();
     this.wait_channel_delay(this.cfg.draw_dat_valid_delay());
     this.wait_for_credit(this.dat_lcrd_mgr);
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Raise FLITPEND for the cycle before a flit goes out. The completer twin of
+  // vip_chi_driver_rni::announce_flit -- the two drivers share no base class, so
+  // the rule is stated in both. IHI 0050 E §14.4 / D §13.4: the signal is
+  // asserted exactly one cycle before a flit is sent, and every beat of a burst
+  // is announced because the gap cycle after each beat drops it.
+  // ---------------------------------------------------------------------------
+  protected task announce_flit(input announce_ch_t ch);
+    this.tx_flit_arb.get(1);
+    @(this.vif_snf.g_drv.snf_cb);
+    this.drive_idle_sideband();
+    if (ch == ANNOUNCE_RSP_E) begin
+      this.vif_snf.g_drv.snf_cb.txrspflitpend <= 1'b1;
+    end
+    else begin
+      this.vif_snf.g_drv.snf_cb.txdatflitpend <= 1'b1;
+    end
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1269,6 +1318,7 @@ class vip_chi_driver_snf #(
 
     this.wait_rsp_credit();
 
+    this.announce_flit(ANNOUNCE_RSP_E);
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txrspflitpend   <= 1'b0;
@@ -1279,6 +1329,7 @@ class vip_chi_driver_snf #(
     this.drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txrspflitv      <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txrspflit       <= '0;
+    this.tx_flit_arb.put(1);
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1396,6 +1447,9 @@ class vip_chi_driver_snf #(
 
     this.wait_rsp_credit();
 
+    // Announced like any other flit; a raw item chooses only the bit pattern and
+    // the FLITPEND driven WITH the flit. See vip_chi_driver_rni.
+    this.announce_flit(ANNOUNCE_RSP_E);
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txrspflitpend   <= item.raw_flitpend;
@@ -1407,6 +1461,7 @@ class vip_chi_driver_snf #(
     this.vif_snf.g_drv.snf_cb.txrspflitpend   <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txrspflitv      <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txrspflit       <= '0;
+    this.tx_flit_arb.put(1);
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1495,6 +1550,7 @@ class vip_chi_driver_snf #(
 
     this.wait_dat_credit();
 
+    this.announce_flit(ANNOUNCE_DAT_E);
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txdatflitpend   <= item.raw_flitpend;
@@ -1506,6 +1562,7 @@ class vip_chi_driver_snf #(
     this.vif_snf.g_drv.snf_cb.txdatflitpend   <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txdatflit       <= '0;
+    this.tx_flit_arb.put(1);
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1532,6 +1589,7 @@ class vip_chi_driver_snf #(
 
       this.wait_dat_credit();
 
+      this.announce_flit(ANNOUNCE_DAT_E);
       @(this.vif_snf.g_drv.snf_cb);
       this.drive_idle_sideband();
       this.vif_snf.g_drv.snf_cb.txdatflitpend   <= (i != (rsp.data.size() - 1));
@@ -1543,6 +1601,7 @@ class vip_chi_driver_snf #(
       this.vif_snf.g_drv.snf_cb.txdatflitpend   <= 1'b0;
       this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b0;
       this.vif_snf.g_drv.snf_cb.txdatflit       <= '0;
+      this.tx_flit_arb.put(1);
     end
 
     @(this.vif_snf.g_drv.snf_cb);
@@ -1964,6 +2023,7 @@ class vip_chi_driver_snf #(
     this.dat_beat_txn_log.push_back(txn_id_t'(flit.txnid));
     this.wait_dat_credit();
 
+    this.announce_flit(ANNOUNCE_DAT_E);
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
     this.vif_snf.g_drv.snf_cb.txdatflitpend   <= more_to_come;
@@ -1975,6 +2035,7 @@ class vip_chi_driver_snf #(
     this.vif_snf.g_drv.snf_cb.txdatflitpend   <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txdatflitv      <= 1'b0;
     this.vif_snf.g_drv.snf_cb.txdatflit       <= '0;
+    this.tx_flit_arb.put(1);
   endtask
 
   protected task drive_auto_read_compdata(input req_flit_t req);

@@ -1590,19 +1590,35 @@ module vip_chi_sva #(
       vif.txdatlcrdv |-> link_is_active();
   endproperty
 
-  property p_req_pend_requires_valid;
+  // ---------------------------------------------------------------------------
+  // FLITPEND announces a flit one cycle ahead. The obligation runs FROM THE FLIT
+  // BACKWARDS: IHI 0050 E §14.4 / D §13.4 require that the signal is asserted
+  // exactly one cycle before a flit is sent, and that a deasserted FLITPEND
+  // forbids a flit in the next cycle. Those two are one statement read from
+  // either end -- flitv(t) |-> flitpend(t-1) is the contrapositive of
+  // !flitpend(t-1) |=> !flitv(t) -- so this is one property per channel and not
+  // two. A second ID could never fail without the first, and a rule that cannot
+  // fail independently reports coverage it does not have.
+  //
+  // Nothing constrains FLITPEND when no flit follows. The same section PERMITS a
+  // transmitter to hold it permanently asserted, to assert it while holding no
+  // L-Credit, and to assert and then deassert it without sending a flit. The
+  // rule this replaced tested `flitpend |-> flitv`, which reports all three as
+  // violations.
+  // ---------------------------------------------------------------------------
+  property p_req_valid_requires_pend;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txreqflitpend |-> vif.txreqflitv;
+      vif.txreqflitv |-> $past(vif.txreqflitpend);
   endproperty
 
-  property p_rsp_pend_requires_valid;
+  property p_rsp_valid_requires_pend;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txrspflitpend |-> vif.txrspflitv;
+      vif.txrspflitv |-> $past(vif.txrspflitpend);
   endproperty
 
-  property p_dat_pend_requires_valid;
+  property p_dat_valid_requires_pend;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txdatflitpend |-> vif.txdatflitv;
+      vif.txdatflitv |-> $past(vif.txdatflitpend);
   endproperty
 
   property p_req_known_when_valid;
@@ -1985,20 +2001,20 @@ module vip_chi_sva #(
   else
     chk_miss(VIP_CHI_CHK_DAT_LCRDV_REQUIRES_LINK_E, $sformatf("txdatlcrdv asserted before link activation"));
 
-  assert property (p_req_pend_requires_valid)
-    chk_hit(VIP_CHI_CHK_REQ_PEND_REQUIRES_VALID_E);
+  assert property (p_req_valid_requires_pend)
+    chk_hit(VIP_CHI_CHK_REQ_VALID_REQUIRES_PEND_E);
   else
-    chk_miss(VIP_CHI_CHK_REQ_PEND_REQUIRES_VALID_E, $sformatf("txreqflitpend asserted without txreqflitv"));
+    chk_miss(VIP_CHI_CHK_REQ_VALID_REQUIRES_PEND_E, $sformatf("txreqflitv sent without txreqflitpend in the preceding cycle"));
 
-  assert property (p_rsp_pend_requires_valid)
-    chk_hit(VIP_CHI_CHK_RSP_PEND_REQUIRES_VALID_E);
+  assert property (p_rsp_valid_requires_pend)
+    chk_hit(VIP_CHI_CHK_RSP_VALID_REQUIRES_PEND_E);
   else
-    chk_miss(VIP_CHI_CHK_RSP_PEND_REQUIRES_VALID_E, $sformatf("txrspflitpend asserted without txrspflitv"));
+    chk_miss(VIP_CHI_CHK_RSP_VALID_REQUIRES_PEND_E, $sformatf("txrspflitv sent without txrspflitpend in the preceding cycle"));
 
-  assert property (p_dat_pend_requires_valid)
-    chk_hit(VIP_CHI_CHK_DAT_PEND_REQUIRES_VALID_E);
+  assert property (p_dat_valid_requires_pend)
+    chk_hit(VIP_CHI_CHK_DAT_VALID_REQUIRES_PEND_E);
   else
-    chk_miss(VIP_CHI_CHK_DAT_PEND_REQUIRES_VALID_E, $sformatf("txdatflitpend asserted without txdatflitv"));
+    chk_miss(VIP_CHI_CHK_DAT_VALID_REQUIRES_PEND_E, $sformatf("txdatflitv sent without txdatflitpend in the preceding cycle"));
 
   assert property (p_req_known_when_valid)
     chk_hit(VIP_CHI_CHK_REQ_KNOWN_WHEN_VALID_E);

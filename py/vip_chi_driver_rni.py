@@ -174,6 +174,10 @@ class vip_chi_driver_rni(uvm_driver):
     # silently losing it.
     self.lasm_abort_done = False
 
+    # One-shot latch for cfg.flit_without_flitpend: the control drops the
+    # FLITPEND announcement in front of one flit and then stops, so the rest of
+    # the run stays legal and the rule is proved to fire rather than jammed.
+    self.flit_without_pend_done = False
     # One-shot latch for cfg.flitpend_without_valid, same reasoning as the abort
     # above: the control fires once so the count a test asserts on is
     # unambiguous.
@@ -295,6 +299,7 @@ class vip_chi_driver_rni(uvm_driver):
     self._tx_active_extend = 0
     self.lasm_abort_done = False
     self.flitpend_negctl_done = False
+    self.flit_without_pend_done = False
     self.lasm_race_done = False
     # A reset takes the link down by force, which is not the graceful path: the
     # published "done" would otherwise survive as a claim about a drain that
@@ -378,6 +383,32 @@ class vip_chi_driver_rni(uvm_driver):
 
   def release_tx_flit(self):
     self._tx_flit_locked = False
+
+  async def announce_flit(self, channel):
+    """Raise FLITPEND for the cycle before a flit goes out.
+
+    E section 14.4 / D section 13.4 require the signal asserted exactly one
+    cycle before a flit is sent -- it is a look-ahead a receiver uses to ungate
+    its capture path, so a flit that arrives without it can be missed entirely
+    by a conformant DUT.
+
+    Called after every wait the send performs (credit, tx-flit lock) and never
+    before one: anything that can block between the announcement and the flit
+    would leave FLITPEND asserted over cycles that carry nothing. That is legal
+    -- the same section permits asserting and then deasserting without sending
+    -- but it would stop this being the one-cycle lead the rule is about.
+    """
+    bus = self.bus
+    await bus.rising()
+    self.drive_idle_sideband()
+    # Negative control (cfg.flit_without_flitpend): skip the announcement once,
+    # so exactly one flit goes out with FLITPEND low in the cycle before it and
+    # CHI_*_VALID_REQUIRES_PEND has a real violation to catch. Returning without
+    # driving leaves FLITPEND at the 0 the previous send cleared it to.
+    if self.cfg.flit_without_flitpend and not self.flit_without_pend_done:
+      self.flit_without_pend_done = True
+      return
+    bus.drive(**{f"tx{channel}flitpend": 1})
 
   # Forked alongside credit_loop; RN-F starts its SNP receive-credit loop +
   # snoop responder here. No-op in RN-I.
@@ -788,6 +819,7 @@ class vip_chi_driver_rni(uvm_driver):
     """
     bus = self.bus
     await self.acquire_tx_flit()
+    await self.announce_flit(channel)
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(**{f"tx{channel}flitpend": 0, f"tx{channel}flitv": 1})
@@ -954,6 +986,7 @@ class vip_chi_driver_rni(uvm_driver):
     await self.wait_req_credit()
 
     await self.acquire_tx_flit()
+    await self.announce_flit("req")
     await bus.rising()
     self.drive_idle_sideband()
     # alloc_id is exactly "this is a fresh transaction", so it is also the right
@@ -998,6 +1031,7 @@ class vip_chi_driver_rni(uvm_driver):
 
         await self.wait_req_credit()
         await self.acquire_tx_flit()
+        await self.announce_flit("req")
         await bus.rising()
         self.drive_idle_sideband()
         bus.drive(txreqflitpend=0, txreqflitv=1)
@@ -1041,6 +1075,11 @@ class vip_chi_driver_rni(uvm_driver):
         fields["tu"] = _I(req.tu[i]) if i < len(req.tu) else 0
       await self.wait_dat_credit()
 
+      # Every beat, not only the first: the gap cycle after each beat drops
+      # FLITPEND, so nothing carries the lead across to the next one. The value
+      # driven WITH the beat keeps its established burst meaning (more beats
+      # follow), which is what every receiver here reads to find the last beat.
+      await self.announce_flit("dat")
       await bus.rising()
       self.drive_idle_sideband()
       bus.drive(txdatflitpend=1 if i != (n - 1) else 0, txdatflitv=1)
@@ -1059,6 +1098,7 @@ class vip_chi_driver_rni(uvm_driver):
     await self.wait_rsp_credit()
 
     await self.acquire_tx_flit()
+    await self.announce_flit("rsp")
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(txrspflitpend=0, txrspflitv=1)
@@ -1468,6 +1508,12 @@ class vip_chi_driver_rni(uvm_driver):
            "dat": self.wait_dat_credit}[channel]()
 
     await self.acquire_tx_flit()
+    # Announced like any other flit. A raw item chooses the bit pattern and the
+    # FLITPEND driven WITH the flit; the lead in front of it is the link-layer
+    # obligation, and dropping it here would make every raw-injection test fail
+    # a rule it is not about. The negative control that DOES want it dropped is
+    # cfg.flit_without_flitpend, handled inside announce_flit.
+    await self.announce_flit(channel)
     await bus.rising()
     self.drive_idle_sideband()
     # A raw flit is a single injected packet with no completion to wait for, but

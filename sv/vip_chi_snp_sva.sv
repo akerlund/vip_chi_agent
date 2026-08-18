@@ -222,9 +222,12 @@ module vip_chi_snp_sva #(
       vif.txsnplcrdv |-> link_is_active();
   endproperty
 
-  property p_snp_pend_requires_valid;
+  // FLITPEND announces a flit one cycle ahead; the obligation runs from the flit
+  // backwards (IHI 0050 E §14.4 / D §13.4). See vip_chi_sva for why this is one
+  // property and not the two bullets the section states.
+  property p_snp_valid_requires_pend;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txsnpflitpend |-> vif.txsnpflitv;
+      vif.txsnpflitv |-> $past(vif.txsnpflitpend);
   endproperty
 
   property p_snp_known_when_valid;
@@ -259,10 +262,10 @@ module vip_chi_snp_sva #(
   else
     chk_miss(VIP_CHI_CHK_SNP_LCRDV_REQUIRES_LINK_E, $sformatf("txsnplcrdv asserted before link activation"));
 
-  assert property (p_snp_pend_requires_valid)
-    chk_hit(VIP_CHI_CHK_SNP_PEND_REQUIRES_VALID_E);
+  assert property (p_snp_valid_requires_pend)
+    chk_hit(VIP_CHI_CHK_SNP_VALID_REQUIRES_PEND_E);
   else
-    chk_miss(VIP_CHI_CHK_SNP_PEND_REQUIRES_VALID_E, $sformatf("txsnpflitpend asserted without txsnpflitv"));
+    chk_miss(VIP_CHI_CHK_SNP_VALID_REQUIRES_PEND_E, $sformatf("txsnpflitv sent without txsnpflitpend in the preceding cycle"));
 
   assert property (p_snp_known_when_valid)
     chk_hit(VIP_CHI_CHK_SNP_KNOWN_WHEN_VALID_E);

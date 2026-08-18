@@ -150,6 +150,19 @@ class vip_chi_driver_rni #(
   // One-shot latch for cfg.flitpend_without_valid, same reasoning as the abort
   // above: the control fires once so the count a test asserts on is unambiguous.
   protected bit flitpend_negctl_done;
+  // One-shot latch for cfg.flit_without_flitpend: the control drops the FLITPEND
+  // announcement in front of one flit and then stops, so the rest of the run
+  // stays legal and the rule is proved to fire rather than jammed.
+  protected bit flit_without_pend_done;
+
+  // Which channel announce_flit() is announcing on. Local to the drivers: it
+  // names a clocking-block member to assign, not anything on the wire, so it
+  // does not belong in the shared type package.
+  typedef enum {
+    ANNOUNCE_REQ_E,
+    ANNOUNCE_RSP_E,
+    ANNOUNCE_DAT_E
+  } announce_ch_t;
 
   // One-shot latch for cfg.lasm_reactivate_during_deactivate, same reasoning as
   // the other controls: it fires once so the count a test asserts on is
@@ -471,6 +484,7 @@ class vip_chi_driver_rni #(
     this.tx_active_extend = 0;
     this.lasm_abort_done = 1'b0;
     this.flitpend_negctl_done = 1'b0;
+    this.flit_without_pend_done = 1'b0;
     this.lasm_race_done = 1'b0;
     // A reset takes the link down by force, which is not the graceful path: the
     // published "done" would otherwise survive as a claim about a drain that
@@ -750,6 +764,44 @@ class vip_chi_driver_rni #(
   protected function void release_tx_flit();
     this.tx_flit_arb.put(1);
   endfunction
+
+  // ---------------------------------------------------------------------------
+  // Raise FLITPEND for the cycle before a flit goes out.
+  //
+  // IHI 0050 E §14.4 / D §13.4 require the signal asserted exactly one cycle
+  // before a flit is sent -- it is a look-ahead a receiver uses to ungate its
+  // capture path, so a flit arriving without it can be missed entirely by a
+  // conformant DUT that gates on it.
+  //
+  // Called after every wait the send performs (credit, channel delay, tx-flit
+  // lock) and never before one: anything that can block between the
+  // announcement and the flit would leave FLITPEND asserted over cycles that
+  // carry nothing. That is legal -- the same section permits asserting and then
+  // deasserting without sending -- but it would stop this being the one-cycle
+  // lead the rule is about.
+  //
+  // Every beat of a burst is announced, not only the first: the gap cycle after
+  // each beat drops FLITPEND, so nothing carries the lead across. The value
+  // driven WITH each beat keeps its established burst meaning (more beats
+  // follow), which is what every receiver here reads to find the last beat.
+  // ---------------------------------------------------------------------------
+  protected task announce_flit(input announce_ch_t ch);
+    @(this.vif_rni.g_drv.rni_cb);
+    this.drive_idle_sideband();
+    // Negative control (cfg.flit_without_flitpend): skip the announcement once,
+    // so exactly one flit goes out with FLITPEND low in the cycle before it and
+    // CHI_*_VALID_REQUIRES_PEND has a real violation to catch. Returning without
+    // driving leaves FLITPEND at the 0 the previous send cleared it to.
+    if (this.cfg.flit_without_flitpend && !this.flit_without_pend_done) begin
+      this.flit_without_pend_done = 1'b1;
+      return;
+    end
+    case (ch)
+      ANNOUNCE_REQ_E: this.vif_rni.g_drv.rni_cb.txreqflitpend <= 1'b1;
+      ANNOUNCE_RSP_E: this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b1;
+      default:        this.vif_rni.g_drv.rni_cb.txdatflitpend <= 1'b1;
+    endcase
+  endtask
 
   // ---------------------------------------------------------------------------
   // Main RN-I request-driving loop after link activation.
@@ -1205,6 +1257,7 @@ class vip_chi_driver_rni #(
     flit.opcode = req_opcode_t'(VIP_CHI_REQ_LCRD_RETURN_C);
 
     this.acquire_tx_flit();
+    this.announce_flit(ANNOUNCE_REQ_E);
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
     this.vif_rni.g_drv.rni_cb.txreqflitpend <= 1'b0;
@@ -1253,6 +1306,7 @@ class vip_chi_driver_rni #(
 
         this.wait_req_credit();
         this.acquire_tx_flit();
+        this.announce_flit(ANNOUNCE_REQ_E);
         @(this.vif_rni.g_drv.rni_cb);
         this.drive_idle_sideband();
         this.vif_rni.g_drv.rni_cb.txreqflitpend <= 1'b0;
@@ -1279,6 +1333,7 @@ class vip_chi_driver_rni #(
     flit.opcode = rsp_opcode_t'(VIP_CHI_RSP_LCRD_RETURN_C);
 
     this.acquire_tx_flit();
+    this.announce_flit(ANNOUNCE_RSP_E);
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
     this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b0;
@@ -1300,6 +1355,7 @@ class vip_chi_driver_rni #(
     flit.opcode = dat_opcode_t'(VIP_CHI_DAT_LCRD_RETURN_C);
 
     this.acquire_tx_flit();
+    this.announce_flit(ANNOUNCE_DAT_E);
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
     this.vif_rni.g_drv.rni_cb.txdatflitpend <= 1'b0;
@@ -1355,6 +1411,7 @@ class vip_chi_driver_rni #(
     this.wait_req_credit();
 
     this.acquire_tx_flit();
+    this.announce_flit(ANNOUNCE_REQ_E);
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
     // alloc_id is exactly "this is a fresh transaction", so it is also the right
@@ -1444,6 +1501,12 @@ class vip_chi_driver_rni #(
     this.wait_req_credit();
 
     this.acquire_tx_flit();
+    // Announced like any other flit. A raw item chooses the bit pattern and the
+    // FLITPEND driven WITH the flit; the lead in front of it is the link-layer
+    // obligation, and dropping it here would make every raw-injection test fail
+    // a rule it is not about. The negative control that DOES want it dropped is
+    // cfg.flit_without_flitpend, handled inside announce_flit.
+    this.announce_flit(ANNOUNCE_REQ_E);
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
     // A raw flit is a single injected packet with no completion to wait
@@ -1487,6 +1550,7 @@ class vip_chi_driver_rni #(
     this.wait_rsp_credit();
 
     this.acquire_tx_flit();
+    this.announce_flit(ANNOUNCE_RSP_E);
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
     // A raw flit is a single injected packet with no completion to wait
@@ -1536,6 +1600,7 @@ class vip_chi_driver_rni #(
     this.wait_dat_credit();
 
     this.acquire_tx_flit();
+    this.announce_flit(ANNOUNCE_DAT_E);
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
     // A raw flit is a single injected packet with no completion to wait
@@ -1641,6 +1706,7 @@ class vip_chi_driver_rni #(
       this.apply_dat_issue_specific_fields(flit, req, i);
       this.wait_dat_credit();
 
+      this.announce_flit(ANNOUNCE_DAT_E);
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
       this.vif_rni.g_drv.rni_cb.txdatflitpend <= (i != (req.data.size() - 1));
@@ -2208,6 +2274,7 @@ class vip_chi_driver_rni #(
     this.wait_rsp_credit();
 
     this.acquire_tx_flit();
+    this.announce_flit(ANNOUNCE_RSP_E);
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
     this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b0;

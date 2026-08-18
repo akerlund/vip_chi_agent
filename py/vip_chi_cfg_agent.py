@@ -208,20 +208,25 @@ class VipChiCfgAgent:
     # sequence. It fires once per activation; the link then comes up normally.
     self.lasm_abort_activation = False
 
-    # Negative control for the FLITPEND rules: the requester pulses
-    # txreqflitpend and txrspflitpend for one cycle with no flit behind them,
-    # once, after the link is up.
+    # POSITIVE control for the FLITPEND rule: the requester pulses txreqflitpend
+    # and txrspflitpend for one cycle with no flit behind them, once, after the
+    # link is up. E section 14.4 / D section 13.4 permit exactly this -- "a
+    # transmitter is permitted to assert and then deassert this signal without
+    # sending a flit" -- so nothing may fire, and a test that runs this proves
+    # the rule does not reject legal traffic.
     #
-    # What this polices is a VIP EMISSION CONVENTION, not a CHI mandate, and the
-    # distinction matters. CHI's FLITPEND is a one-cycle-ahead hint that a flit
-    # MIGHT follow, and a transmitter is permitted to assert it and then not
-    # send -- discouraged, but legal. This VIP instead emits FLITPEND alongside
-    # the flit it belongs to (the DAT driver raises it on every beat but the
-    # last, to mean "more beats coming"), so a lone FLITPEND here means a driver
-    # has lost track of its own burst. Same standing as the DataID-ordering
-    # rules, which hold this VIP's in-order emission convention rather than a
-    # CHI requirement.
+    # It was a NEGATIVE control until CHI_*_VALID_REQUIRES_PEND replaced the
+    # inverted rule it was built for. The old rule read `flitpend |-> flitv` and
+    # this pulse was written to trip it, which made the suite assert that legal
+    # CHI traffic must be reported as a violation. The stimulus was right and the
+    # expectation was backwards, so the knob is kept and the verdict inverted.
     self.flitpend_without_valid = False
+
+    # Negative control for the FLITPEND rule: drop the one-cycle announcement in
+    # front of exactly one flit, so it goes out with FLITPEND low in the cycle
+    # before it. One-shot per driver -- see announce_flit -- because the point is
+    # to prove the rule fires, and every later flit should still be legal.
+    self.flit_without_flitpend = False
 
     # -- Graceful link deactivation -------------------------------------------
     # Raised by a test, not by the driver: there is no such thing as an idle
@@ -469,6 +474,13 @@ class VipChiCfgAgent:
 
     # The requester pulses REQ+RSP FLITPEND; the home pulses SNP FLITPEND. Both
     # run the control, and between them they cover all three rules.
+    # Implemented in the RN-I announce path, which RN-F inherits. On any other
+    # role it would set a flag nothing reads.
+    if self.flit_without_flitpend and self.role not in (Role.RNI, Role.RNF):
+      err("flit_without_flitpend is set on a role whose driver does not run the "
+          "control: the announcement it suppresses lives in the RN-I send path, "
+          "which only the requester roles use")
+
     if self.flitpend_without_valid and self.role not in (Role.RNI, Role.RNF,
                                                          Role.HNF):
       err("flitpend_without_valid is set on a role whose driver does not run "
@@ -561,7 +573,7 @@ class VipChiCfgAgent:
       "snf_reorder_ordered_service": self.snf_reorder_ordered_service,
       "lasm_abort_activation": self.lasm_abort_activation,
       "lasm_reactivate_during_deactivate": self.lasm_reactivate_during_deactivate,
-      "flitpend_without_valid": self.flitpend_without_valid,
+      "flit_without_flitpend": self.flit_without_flitpend,
     }
     on = [k for k, v in negctl.items() if v]
     if on:

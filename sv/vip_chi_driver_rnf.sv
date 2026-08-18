@@ -512,6 +512,7 @@ class vip_chi_driver_rnf #(
     // across the two beat edges (never a completion wait), so it can never
     // wedge against a writeback DAT burst on the request thread (M4).
     this.acquire_tx_flit();
+    this.announce_flit(ANNOUNCE_RSP_E);
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
     this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b0;
@@ -567,6 +568,7 @@ class vip_chi_driver_rnf #(
 
       this.wait_dat_credit();
 
+      this.announce_flit(ANNOUNCE_DAT_E);
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
       this.vif_rni.g_drv.rni_cb.txdatflitpend <= (i != (n_beats - 1));

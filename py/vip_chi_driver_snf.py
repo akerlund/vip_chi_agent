@@ -118,6 +118,9 @@ class vip_chi_driver_snf(uvm_driver):
     # that asserts "the payload reassembled correctly" passes just as happily
     # when no interleaving ever happened.
     self.dat_beat_txn_log = []
+    # Held while any coroutine is driving a flit; see acquire_tx_flit. A reset
+    # frees it, because whoever was mid-send has been torn down with the link.
+    self._tx_flit_locked = False
     self.n_dat_stream_switches = 0
 
     self._driver_tasks = []
@@ -259,6 +262,9 @@ class vip_chi_driver_snf(uvm_driver):
     self.captured_reqs = []
     self.ordered_swap_done = False
     self.dat_beat_txn_log = []
+    # Held while any coroutine is driving a flit; see acquire_tx_flit. A reset
+    # frees it, because whoever was mid-send has been torn down with the link.
+    self._tx_flit_locked = False
     self.n_dat_stream_switches = 0
     self.tx_active_count = 0
     self._tx_active_extend = 0
@@ -483,6 +489,50 @@ class vip_chi_driver_snf(uvm_driver):
     await self.wait_channel_delay(self.cfg.draw_dat_valid_delay())
     await self.wait_for_credit(self.dat_lcrd)
 
+  async def acquire_tx_flit(self):
+    """Serialise the transmit path across every coroutine that drives it.
+
+    The completer drives from more than one place at once: the auto-responder,
+    the L-credit return loop, and the raw-injection path all reach the same
+    txrsp*/txdat* signals. Without this they can drive in the SAME cycle, and the
+    last write wins silently -- the earlier flit is not delayed, it never reaches
+    the wire at all. That is how a CompDBIDResp was lost behind a raw-injected
+    PCrdGrant, leaving the requester waiting forever for a grant that had been
+    driven and then overwritten.
+
+    The requester has had this since it was written (tx_flit_arb in
+    vip_chi_driver_rni); the completer never did, and only missed the collision
+    by the accident of its own timing.
+    """
+    while self._tx_flit_locked:
+      await self.bus.rising()
+      self.drive_idle_sideband()
+    self._tx_flit_locked = True
+
+  def release_tx_flit(self):
+    self._tx_flit_locked = False
+
+  async def announce_flit(self, channel):
+    """Raise FLITPEND for the cycle before a flit goes out.
+
+    E section 14.4 / D section 13.4 require the signal asserted exactly one
+    cycle before a flit is sent -- it is a look-ahead a receiver uses to ungate
+    its capture path, so a flit arriving without it can be missed entirely by a
+    conformant DUT. The twin of vip_chi_driver_rni.announce_flit; the two
+    drivers share no base class, so the rule is stated in both.
+
+    Called after every wait the send performs and never before one: anything
+    that can block in between would leave FLITPEND asserted over cycles carrying
+    nothing. That is legal -- the section permits asserting and then deasserting
+    without sending -- but it would stop this being the one-cycle lead the rule
+    is about.
+    """
+    await self.acquire_tx_flit()
+    bus = self.bus
+    await bus.rising()
+    self.drive_idle_sideband()
+    bus.drive(**{f"tx{channel}flitpend": 1})
+
   # --------------------------------------------------------------------------
   async def activate_link(self):
     bus = self.bus
@@ -570,6 +620,7 @@ class vip_chi_driver_snf(uvm_driver):
     address, no TxnID and no data.
     """
     bus = self.bus
+    await self.announce_flit(channel)
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(**{f"tx{channel}flitpend": 0, f"tx{channel}flitv": 1})
@@ -578,6 +629,7 @@ class vip_chi_driver_snf(uvm_driver):
     self.drive_idle_sideband()
     bus.drive(**{f"tx{channel}flitv": 0})
     bus.drive_flit(channel, {})
+    self.release_tx_flit()
 
   # ==========================================================================
   # Main serial responder loop (auto-responder path).
@@ -781,6 +833,7 @@ class vip_chi_driver_snf(uvm_driver):
   async def drive_rsp(self, fields):
     bus = self.bus
     await self.wait_rsp_credit()
+    await self.announce_flit("rsp")
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(txrspflitpend=0, txrspflitv=1)
@@ -789,6 +842,7 @@ class vip_chi_driver_snf(uvm_driver):
     self.drive_idle_sideband()
     bus.drive(txrspflitv=0)
     bus.drive_flit("rsp", {})
+    self.release_tx_flit()
 
   async def drive_rsp_item(self, rsp):
     fields = {
@@ -817,6 +871,7 @@ class vip_chi_driver_snf(uvm_driver):
         fields["tag"] = _I(rsp.tag[i]) if i < len(rsp.tag) else 0
         fields["tu"] = _I(rsp.tu[i]) if i < len(rsp.tu) else 0
       await self.wait_dat_credit()
+      await self.announce_flit("dat")
       await bus.rising()
       self.drive_idle_sideband()
       bus.drive(txdatflitpend=1 if i != (n - 1) else 0, txdatflitv=1)
@@ -825,6 +880,7 @@ class vip_chi_driver_snf(uvm_driver):
       self.drive_idle_sideband()
       bus.drive(txdatflitpend=0, txdatflitv=0)
       bus.drive_flit("dat", {})
+      self.release_tx_flit()
     await bus.rising()
     self.drive_idle_sideband()
 
@@ -1077,6 +1133,7 @@ class vip_chi_driver_snf(uvm_driver):
     bus = self.bus
     self.dat_beat_txn_log.append(fields.get("txnid", 0))
     await self.wait_dat_credit()
+    await self.announce_flit("dat")
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(txdatflitpend=1 if more_to_come else 0, txdatflitv=1)
@@ -1085,6 +1142,7 @@ class vip_chi_driver_snf(uvm_driver):
     self.drive_idle_sideband()
     bus.drive(txdatflitpend=0, txdatflitv=0)
     bus.drive_flit("dat", {})
+    self.release_tx_flit()
 
   def _read_resp_codes(self, req):
     if self.decerr_check(req["addr"]):
@@ -1256,6 +1314,7 @@ class vip_chi_driver_snf(uvm_driver):
           "txnid": req_txn, "srcid": req_tgt, "tgtid": req_src, "qos": req["qos"],
         }
         await self.wait_dat_credit()
+        await self.announce_flit("dat")
         await bus.rising()
         self.drive_idle_sideband()
         bus.drive(txdatflitpend=1 if b != (granule - 1) else 0, txdatflitv=1)
@@ -1264,6 +1323,7 @@ class vip_chi_driver_snf(uvm_driver):
         self.drive_idle_sideband()
         bus.drive(txdatflitpend=0, txdatflitv=0)
         bus.drive_flit("dat", {})
+        self.release_tx_flit()
       await bus.rising()
       self.drive_idle_sideband()
     elif self.cfg.split_write_rsp:
@@ -1317,11 +1377,18 @@ class vip_chi_driver_snf(uvm_driver):
         f"[{self.get_name()}] SN-F raw_override only supports RSP or DAT")
     flitpend = 1 if getattr(item, "raw_flitpend", False) else 0
     await (self.wait_rsp_credit() if channel == "rsp" else self.wait_dat_credit())
+    # Announced like any other flit. A raw item chooses the bit pattern and the
+    # FLITPEND driven WITH the flit; the lead in front of it is the link-layer
+    # obligation, and dropping it here would make every raw-injection test fail
+    # a rule it is not about. The negative control that DOES want it dropped is
+    # cfg.flit_without_flitpend, handled inside announce_flit.
+    await self.announce_flit(channel)
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(**{f"tx{channel}flitpend": flitpend, f"tx{channel}flitv": 1})
     bus.sig[f"tx{channel}flit"].value = int(raw_value)
     await bus.rising()
     self.drive_idle_sideband()
+    self.release_tx_flit()
     bus.drive(**{f"tx{channel}flitpend": 0, f"tx{channel}flitv": 0})
     bus.drive_flit(channel, {})

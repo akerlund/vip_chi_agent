@@ -304,6 +304,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     await self.wait_rsp_credit()
 
     await self.acquire_tx_flit()
+    await self.announce_flit("rsp")
     await bus.rising()
     self.drive_idle_sideband()
     bus.drive(txrspflitpend=0, txrspflitv=1)
@@ -336,6 +337,9 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
       }
       await self.wait_dat_credit()
 
+      # Every beat: the gap cycle after each one drops FLITPEND, so nothing
+      # carries the lead across. See vip_chi_driver_rni.announce_flit.
+      await self.announce_flit("dat")
       await bus.rising()
       self.drive_idle_sideband()
       bus.drive(txdatflitpend=1 if i != (n_beats - 1) else 0, txdatflitv=1)

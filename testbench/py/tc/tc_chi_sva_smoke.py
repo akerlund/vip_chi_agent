@@ -4,7 +4,7 @@
 #
 # Negative control for py/sva/bind_chi.py: one deliberate violation per check
 # family, asserting the checker REPORTS it. Without this the checkers could be
-# silently vacuous -- every one of the 159 regression testcases passes with them
+# silently vacuous -- every one of the 160 regression testcases passes with them
 # enabled, and a checker that can never fire passes exactly as loudly as one
 # that works.
 #
@@ -163,7 +163,10 @@ def _feed(checker: bind_chi, samples: list[dict]) -> None:
   prev = None
   for s in samples:
     checker._check_link_gating(s)
-    checker._check_pend_requires_valid(s)
+    # The FLITPEND rule reaches back a cycle, so it takes the previous sample as
+    # well as this one. It self-suppresses on the first sample of a feed, which
+    # is why every FLITPEND case below drives at least two.
+    checker._check_valid_requires_pend(prev, s)
     checker._check_lcrd(s)
     if prev is not None:
       checker._check_deactivate_idle(prev, s)
@@ -184,11 +187,27 @@ class tc_chi_sva_smoke(uvm_test):
   async def run_phase(self):
     self.raise_objection()
 
-    # ---- FLITPEND without FLITV ------------------------------------------
+    # ---- A flit with no FLITPEND in front of it ---------------------------
+    # The obligation runs from the flit backwards (E section 14.4 / D section
+    # 13.4), so this is the shape that must fire: FLITV with the preceding cycle
+    # showing FLITPEND low.
     c = _checker()
-    _feed(c, [_sample(_RUN, txreqflitpend=1)])
-    assert self._fired(c, "CHI_REQ_PEND_REQUIRES_VALID") == 1, (
-      "flitpend without flitv was not reported")
+    _feed(c, [_sample(_RUN), _sample(_RUN, txreqflitv=1)])
+    assert self._fired(c, "CHI_REQ_VALID_REQUIRES_PEND") == 1, (
+      "a flit sent with no FLITPEND in the cycle before it was not reported")
+
+    # ---- ...and the three shapes section 14.4 PERMITS ---------------------
+    # A lone FLITPEND that never becomes a flit, an announced flit, and FLITPEND
+    # held across an idle cycle. None of these owes anything, and the rule this
+    # one replaced reported all three.
+    c = _checker()
+    _feed(c, [_sample(_RUN, txreqflitpend=1),
+              _sample(_RUN),
+              _sample(_RUN, txreqflitpend=1),
+              _sample(_RUN, txreqflitpend=1, txreqflitv=1)])
+    assert self._fired(c, "CHI_REQ_VALID_REQUIRES_PEND") == 0, (
+      "legal FLITPEND use was reported: a lone pulse, a held assertion and an "
+      "announced flit are all permitted")
 
     # ---- Flit sent before the link is RUN ---------------------------------
     # One-sided ACTIVATING: a request with no acknowledge yet. This is the case

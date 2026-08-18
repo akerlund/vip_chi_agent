@@ -953,7 +953,7 @@ class bind_chi:
           self._check_deactivate_idle(prev, cur)
 
       if enabled:
-        self._check_pend_requires_valid(cur)
+        self._check_valid_requires_pend(prev, cur)
         self._check_transactions(cur)
       else:
         # The SV always_ff clears its state whenever checks_enable is low, so a
@@ -1091,15 +1091,29 @@ class bind_chi:
     return flit is not None and int(flit.get("opcode", -1)) == 0
 
   # ---------------------------------------------------------------------------
-  # FLITPEND is a look-ahead for a flit that must actually arrive.
+  # FLITPEND announces a flit one cycle ahead. The obligation runs FROM THE FLIT
+  # BACKWARDS: E section 14.4 / D section 13.4 require that the signal is
+  # asserted exactly one cycle before a flit is sent, and that a deasserted
+  # FLITPEND forbids a flit in the next cycle. Those two are one statement read
+  # from either end -- flitv(t) -> flitpend(t-1) is the contrapositive of
+  # !flitpend(t-1) -> !flitv(t) -- so there is one check here and not two. A
+  # second ID could never fail without the first, which is the kind of rule that
+  # reports coverage it does not have.
+  #
+  # Nothing constrains FLITPEND when no flit follows. The same section PERMITS a
+  # transmitter to hold it permanently asserted, to assert it without an
+  # L-Credit, and to assert then deassert it without ever sending a flit. The
+  # rule this replaced tested `flitpend |-> flitv`, which fails all three.
   # ---------------------------------------------------------------------------
-  def _check_pend_requires_valid(self, s: dict) -> None:
+  def _check_valid_requires_pend(self, prev: dict, s: dict) -> None:
+    if prev is None:
+      return
     for ch in _CHANNELS_C:
-      if s[f"tx{ch}flitpend"]:
+      if s[f"tx{ch}flitv"]:
         self._chk(
-          f"CHI_{ch.upper()}_PEND_REQUIRES_VALID", bool(s[f"tx{ch}flitv"]),
-          f"tx{ch}flitpend asserted without tx{ch}flitv",
-          "section 13.3",
+          f"CHI_{ch.upper()}_VALID_REQUIRES_PEND", bool(prev[f"tx{ch}flitpend"]),
+          f"tx{ch}flitv sent without tx{ch}flitpend in the preceding cycle",
+          "E section 14.4 / D section 13.4",
         )
 
   # ---------------------------------------------------------------------------

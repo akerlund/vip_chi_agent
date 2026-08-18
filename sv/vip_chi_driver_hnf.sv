@@ -274,6 +274,15 @@ class vip_chi_driver_hnf #(
   // ---------------------------------------------------------------------------
   // Idle sideband (mirror the RN-F's link-activation request onto our ack).
   // ---------------------------------------------------------------------------
+  // Which channel the announce tasks are announcing on. Local to the drivers:
+  // it names a clocking-block member to assign, not anything on the wire.
+  typedef enum {
+    ANNOUNCE_REQ_E,
+    ANNOUNCE_RSP_E,
+    ANNOUNCE_DAT_E,
+    ANNOUNCE_SNP_E
+  } announce_ch_t;
+
   protected task drive_rn_idle_sideband(input int p);
     this.vif_rn[p].g_drv.hnf_cb.txlinkactiveack <= this.vif_rn[p].g_drv.hnf_cb.rxlinkactivereq;
   endtask
@@ -550,7 +559,7 @@ class vip_chi_driver_hnf #(
   // cycle with no snoop behind it.
   //
   // The SNP twin of the REQ/RSP pulse in the requester driver, and it exists for
-  // the same reason: CHI_SNP_PEND_REQUIRES_VALID had never once been evaluated
+  // the same reason: CHI_SNP_VALID_REQUIRES_PEND had never once been evaluated
   // anywhere, because nothing raises SNP FLITPEND -- the home pairs it with the
   // snoop it belongs to. A rule that has never run is indistinguishable from one
   // that does not work.
@@ -740,6 +749,7 @@ class vip_chi_driver_hnf #(
     flit.tgtid  = node_id_t'(this.cfg.hnf_downstream_snf_id);   // SN-F target
 
     this.wait_sn_req_send_credit(s);
+    this.announce_sn_flit(s, ANNOUNCE_REQ_E);
     @(this.vif_sn[s].g_drv.rni_cb);
     this.vif_sn[s].g_drv.rni_cb.txreqflitpend <= 1'b0;
     this.vif_sn[s].g_drv.rni_cb.txreqflit     <= flit;
@@ -794,6 +804,7 @@ class vip_chi_driver_hnf #(
     req_flit.tgtid  = node_id_t'(this.cfg.hnf_downstream_snf_id);
 
     this.wait_sn_req_send_credit(s);
+    this.announce_sn_flit(s, ANNOUNCE_REQ_E);
     @(this.vif_sn[s].g_drv.rni_cb);
     this.vif_sn[s].g_drv.rni_cb.txreqflitpend <= 1'b0;
     this.vif_sn[s].g_drv.rni_cb.txreqflit     <= req_flit;
@@ -822,6 +833,7 @@ class vip_chi_driver_hnf #(
       dat_flit.tgtid  = node_id_t'(this.cfg.hnf_downstream_snf_id);
 
       this.wait_sn_dat_send_credit(s);
+      this.announce_sn_flit(s, ANNOUNCE_DAT_E);
       @(this.vif_sn[s].g_drv.rni_cb);
       this.vif_sn[s].g_drv.rni_cb.txdatflitpend <= (i != (n_beats - 1));
       this.vif_sn[s].g_drv.rni_cb.txdatflit     <= dat_flit;
@@ -1568,6 +1580,35 @@ class vip_chi_driver_hnf #(
   // ---------------------------------------------------------------------------
   // Acquire one outbound send credit for the RN-facing RSP channel.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Raise FLITPEND for the cycle before a flit goes out. IHI 0050 E §14.4 /
+  // D §13.4: asserted exactly one cycle before a flit is sent. Every beat of a
+  // burst is announced, not only the first, because the gap cycle after each
+  // beat drops it; the value driven WITH each beat keeps its burst meaning
+  // (more beats follow), which is what the snoopee and the monitor read to find
+  // the last one.
+  // ---------------------------------------------------------------------------
+  protected task announce_rn_flit(input int p, input announce_ch_t ch);
+    @(this.vif_rn[p].g_drv.hnf_cb);
+    this.drive_rn_idle_sideband(p);
+    this.vif_rn[p].g_drv.hnf_cb.txsactive <= 1'b1;
+    case (ch)
+      ANNOUNCE_RSP_E: this.vif_rn[p].g_drv.hnf_cb.txrspflitpend <= 1'b1;
+      ANNOUNCE_SNP_E: this.vif_rn[p].g_drv.hnf_cb.txsnpflitpend <= 1'b1;
+      default:        this.vif_rn[p].g_drv.hnf_cb.txdatflitpend <= 1'b1;
+    endcase
+  endtask
+
+  protected task announce_sn_flit(input int s, input announce_ch_t ch);
+    @(this.vif_sn[s].g_drv.rni_cb);
+    if (ch == ANNOUNCE_REQ_E) begin
+      this.vif_sn[s].g_drv.rni_cb.txreqflitpend <= 1'b1;
+    end
+    else begin
+      this.vif_sn[s].g_drv.rni_cb.txdatflitpend <= 1'b1;
+    end
+  endtask
+
   protected task wait_rn_rsp_send_credit(input int p);
     // The credit loop below keeps the sideband driven every cycle it waits, so
     // the delay has to as well -- otherwise a delayed RSP stops this port's
@@ -1613,6 +1654,7 @@ class vip_chi_driver_hnf #(
 
     this.wait_rn_rsp_send_credit(p);
 
+    this.announce_rn_flit(p, ANNOUNCE_RSP_E);
     @(this.vif_rn[p].g_drv.hnf_cb);
     this.drive_rn_idle_sideband(p);
     this.vif_rn[p].g_drv.hnf_cb.txsactive     <= 1'b1;
@@ -1765,6 +1807,7 @@ class vip_chi_driver_hnf #(
 
     this.wait_rn_snp_send_credit(k);
 
+    this.announce_rn_flit(k, ANNOUNCE_SNP_E);
     @(this.vif_rn[k].g_drv.hnf_cb);
     this.drive_rn_idle_sideband(k);
     this.vif_rn[k].g_drv.hnf_cb.txsactive     <= 1'b1;
@@ -1971,6 +2014,7 @@ class vip_chi_driver_hnf #(
 
       this.wait_rn_dat_send_credit(p);
 
+      this.announce_rn_flit(p, ANNOUNCE_DAT_E);
       @(this.vif_rn[p].g_drv.hnf_cb);
       this.drive_rn_idle_sideband(p);
       this.vif_rn[p].g_drv.hnf_cb.txsactive     <= 1'b1;
@@ -2157,6 +2201,7 @@ class vip_chi_driver_hnf #(
 
       this.wait_rn_dat_send_credit(p);
 
+      this.announce_rn_flit(p, ANNOUNCE_DAT_E);
       @(this.vif_rn[p].g_drv.hnf_cb);
       this.drive_rn_idle_sideband(p);
       this.vif_rn[p].g_drv.hnf_cb.txsactive     <= 1'b1;
