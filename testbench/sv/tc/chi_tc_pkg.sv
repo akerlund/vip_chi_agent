@@ -212,5 +212,6 @@ package chi_tc_pkg;
   `include "tc_chi_e_write_evict_or_evict.sv"
   `include "tc_chi_pcrd_leak.sv"
   `include "tc_chi_pcrd_return.sv"
+  `include "tc_chi_rsp_field_zero_negctl.sv"
 
 endpackage

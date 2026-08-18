@@ -135,7 +135,7 @@ _COMPLETER_ROLES_C = (Role.SNF, Role.HNF)
 # bit `data` field through a big-int shift for a checker that never looks at it.
 _FLIT_FIELDS_C = {
   "req": ("opcode", "txnid", "returntxnid", "size", "expcompack", "order"),
-  "rsp": ("opcode", "txnid", "dbid"),
+  "rsp": ("opcode", "txnid", "dbid", "resperr", "resp"),
   "dat": ("opcode", "txnid", "dbid", "dataid"),
 }
 
@@ -164,6 +164,12 @@ _MODELED_COMPLETION_OPCODES_C = frozenset({
   int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL),
   int(ReqOpcode.WRITE_NO_SNP_ZERO), int(ReqOpcode.CLEAN_SHARED_PERSIST),
   int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP),
+  # WriteUniqueZero is the snoopable twin of WriteNoSnpZero and completes the
+  # same way, with a bare Comp. Naming only one of the pair left every rule
+  # gated on this set standing down for the other -- TxnID reuse and the
+  # completion timeout, in both ports -- for an opcode that ships with its own
+  # sequence, testcase and completer service routine.
+  int(ReqOpcode.WRITE_UNIQUE_ZERO),
 })
 _NON_COHERENT_WRITE_OPCODES_C = frozenset({
   int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL),
@@ -187,6 +193,79 @@ _DBID_GRANT_OPCODES_C = frozenset({
 _PLAIN_COMPLETION_RSP_OPCODES_C = frozenset({
   int(RspOpcode.COMP), int(RspOpcode.COMP_DBID_RESP),
 })
+
+# --------------------------------------------------------------------------- #
+# Appendix A Table A-4 field legality, for the fields the table marks zero.
+#
+# Table A-1 gives the vocabulary and the distinction that matters here:
+#
+#   0     the field is applicable but must be set to zero
+#   0 a   the field is INAPPLICABLE to this message and must be set to zero
+#   Y     applicable, carries a value -- nothing to assert
+#   -     not applicable, and NOT required to be zero -- asserting on it is a
+#         false positive waiting for stimulus
+#   X     don't care -- likewise not assertable
+#
+# Only `0` and `0 a` are assertable and they impose the same obligation, so the
+# three sets below merge them. `-` and `X` are deliberately absent: that is why
+# Persist.DBID, which A-4 marks `-`, is not checked even though the driver copies
+# the request's TxnID into it.
+#
+# Source: IHI0050E_a, Table A-4 Response message field mappings, page A-469.
+#
+# Two opcodes A-4 also marks are absent because this VIP does not model them:
+#   StashDone  TxnID = 0 a   Stash is excluded from this VIP by declaration
+#   TagMatch   TxnID = 0 a   Add RspOpcode.TAG_MATCH (0x0A) to the TxnID set
+#                            when it is introduced. TagMatch is a response to a
+#                            request and so is naturally built by copying the
+#                            request's TxnID, which this rule forbids.
+# --------------------------------------------------------------------------- #
+_A4_TXNID_ZERO_RSP_OPCODES_C = frozenset({
+  int(RspOpcode.PERSIST), int(RspOpcode.PCRD_GRANT),
+})
+# A-4's RespErr column reads `0` for exactly these six: none carries error
+# status. The completion that DOES carry it for a write is CompDBIDResp
+# (RespErr = Y), which is why a completer must not copy its buffer grant's
+# RespErr onto the completion, or the reverse.
+_A4_RESPERR_ZERO_RSP_OPCODES_C = frozenset({
+  int(RspOpcode.COMP_ACK), int(RspOpcode.RETRY_ACK),
+  int(RspOpcode.PCRD_GRANT), int(RspOpcode.READ_RECEIPT),
+  int(RspOpcode.DBID_RESP), int(RspOpcode.DBID_RESP_ORD),
+})
+# Everything above, plus two. CompDBIDResp is the one A-4 marks plain `0` rather
+# than `0 a`, and section 4 says why in words: "The Resp field of a Comp or
+# CompDBIDResp response must be set to zero for a Write transaction completion"
+# -- cache state travels on the WriteData, not on the completion. Persist is
+# `0 a`. Comp is NOT here: A-4 gives it Resp = Y, because the same opcode
+# completes reads and dataless transactions where the field carries cache state.
+_A4_RESP_ZERO_RSP_OPCODES_C = frozenset(
+  _A4_RESPERR_ZERO_RSP_OPCODES_C
+  | {int(RspOpcode.COMP_DBID_RESP), int(RspOpcode.PERSIST)}
+)
+# A-4 lists DBID, TagGroupID, StashGroupID and PGroupID as four NAMES over one
+# shared group of packet bits; the table header brackets them under a single `CF`
+# (combined field) marker. Most rows mark each name separately. PCrdGrant instead
+# carries one `0 a` spanning the whole group, which marks the shared field as a
+# whole inapplicable and required to be zero.
+#
+# Only DBID is checked: it is the only one of the four names this VIP models on
+# the RSP flit. Persist is deliberately absent -- A-4 gives Persist DBID `-`, not
+# applicable and NOT required to be zero, which is why the driver may legally put
+# the request's TxnID there.
+_A4_DBID_ZERO_RSP_OPCODES_C = frozenset({int(RspOpcode.PCRD_GRANT)})
+# The rule's ANTECEDENT: opcodes for which A-4 marks at least one field zero.
+# Kept separate from the three sets above, and used as an enclosing guard rather
+# than folded into the check, because _chk counts a pass on every call. Fold it
+# in and every Comp, DBID grant and SnpResp on the link counts as a pass for a
+# rule that never applied to it -- the tally reports thousands of hits, the
+# vacuity report calls the rule exercised, and the opcodes it actually governs
+# may never have been driven at all.
+_A4_ZERO_FIELD_RSP_OPCODES_C = frozenset(
+  _A4_TXNID_ZERO_RSP_OPCODES_C
+  | _A4_RESPERR_ZERO_RSP_OPCODES_C
+  | _A4_RESP_ZERO_RSP_OPCODES_C
+  | _A4_DBID_ZERO_RSP_OPCODES_C
+)
 
 
 def _req_opcode_is_coherent_read(opcode: int) -> bool:
@@ -217,7 +296,15 @@ def _is_write_req_opcode(opcode: int) -> bool:
   had never asked for.
   """
   op = int(opcode)
+  # WriteUniqueZero is listed on its own rather than folded into
+  # _NON_COHERENT_WRITE_OPCODES_C, because it is snoopable and that name would
+  # then be wrong. Both Zero opcodes belong here for a reason that is not about
+  # data: neither carries a write burst, but this function decides whether
+  # ExpCompAck is RECORDED for the TxnID, and a slot that is never written keeps
+  # the previous transaction's value. _req_write_payload_beats answers the data
+  # question separately, and correctly returns 0 for both.
   return (op in _NON_COHERENT_WRITE_OPCODES_C
+          or op == int(ReqOpcode.WRITE_UNIQUE_ZERO)
           or op in _COHERENT_WRITE_DATA_OPCODES_C
           or req_opcode_is_combined_write_cmo(op)
           or req_opcode_is_atomic(op))
@@ -1175,6 +1262,7 @@ class bind_chi:
 
     for d in ("tx", "rx"):
       self._check_dat_burst(s, d)
+      self._check_rsp_field_zero(s, d)
 
     self._check_completion_timeout(s)
     self._check_atomic_dat_completion(s)
@@ -1415,6 +1503,40 @@ class bind_chi:
 
     self._post(self._req_exp_comp_ack, txn, False)
     self._post(self._write_completion_seen, txn, False)
+
+  # ---------------------------------------------------------------------------
+  # Table A-4 zero-field legality, checked from both vantages of the link.
+  #
+  # One rule, two directions, one check ID. It is not decoration: which vantage
+  # sees a given opcode depends on which end of the link this bind sits on. A
+  # PCrdGrant is txrsp at the completer and rxrsp at the requester, and a link
+  # may carry a bind at only one end, so a single-direction check would be
+  # silently one-sided -- the shape of defect this rule was written after.
+  #
+  # Unlike its SystemVerilog twin this needs no X guard: Verilator is 2-state,
+  # so a field cannot hold X here. That asymmetry is the reason the SV side
+  # carries a guard the Python side does not, and it is not a parity defect.
+  # ---------------------------------------------------------------------------
+  def _check_rsp_field_zero(self, s: dict, d: str) -> None:
+    if not s[f"{d}rspflitv"]:
+      return
+    f = s[f"{d}rspflit"]
+    opcode = int(f["opcode"])
+    if opcode not in _A4_ZERO_FIELD_RSP_OPCODES_C:
+      return
+
+    bad = ((opcode in _A4_TXNID_ZERO_RSP_OPCODES_C and int(f["txnid"]) != 0)
+           or (opcode in _A4_RESPERR_ZERO_RSP_OPCODES_C
+               and int(f["resperr"]) != 0)
+           or (opcode in _A4_RESP_ZERO_RSP_OPCODES_C and int(f["resp"]) != 0)
+           or (opcode in _A4_DBID_ZERO_RSP_OPCODES_C and int(f["dbid"]) != 0))
+
+    self._chk("CHI_RSP_FIELD_ZERO", not bad,
+              f"{d}rsp opcode 0x{opcode:x} drove a Table A-4 zero-marked field "
+              f"non-zero (TxnID=0x{int(f['txnid']):x} "
+              f"RespErr=0x{int(f['resperr']):x} Resp=0x{int(f['resp']):x} "
+              f"DBID=0x{int(f['dbid']):x})",
+              "Table A-4")
 
   # ---------------------------------------------------------------------------
   # DAT bursts: beat placement, TxnID stability, and the closing beat count.

@@ -118,6 +118,16 @@ python3 "$ROOT/scripts/check_opcodes.py" >> "$SUMMARY" 2>&1 || true
 python3 "$ROOT/scripts/check_type_parity.py" >> "$SUMMARY" 2>&1 || true
 python3 "$ROOT/scripts/check_cfg_parity.py" >> "$SUMMARY" 2>&1 || true
 
+# Opcode CLASSIFIER coverage. The checks above compare what the two ports SAY;
+# this one asks which opcodes each port's checker actually applies its rules to.
+# A classifier that forgets an opcode family switches every rule it gates off for
+# that family silently -- no failure, and healthy-looking tally rows from the
+# opcodes it did not forget, so check_vacuity.py cannot see it. That is how the
+# combined Write + CMO family stood the write-burst checks down for six opcodes,
+# and how WriteUniqueZero arrived two commits later with TxnID reuse and the
+# completion timeout not applying to it. Needs no simulator and no specification.
+python3 "$ROOT/scripts/check_classifier_coverage.py" >> "$SUMMARY" 2>&1 || true
+
 # The regression sizes quoted in prose, against the testcases that exist. The
 # sweep is the only place that knows both numbers at once.
 python3 "$ROOT/scripts/check_test_counts.py" >> "$SUMMARY" 2>&1 || true

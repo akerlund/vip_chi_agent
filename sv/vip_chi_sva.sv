@@ -356,6 +356,12 @@ module vip_chi_sva #(
       VIP_CHI_REQ_WRITE_NO_SNP_PTL_C,
       VIP_CHI_REQ_WRITE_NO_SNP_FULL_C,
       VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C,
+      // WriteUniqueZero is the snoopable twin of WriteNoSnpZero and completes
+      // the same way, with a bare Comp. Naming only one of the pair left every
+      // rule gated on this function standing down for the other -- TxnID reuse
+      // and the completion timeout, in both ports -- for an opcode that ships
+      // with its own sequence, testcase and completer service routine.
+      VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C,
       VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C,
       VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C: begin
         return 1'b1;
@@ -474,6 +480,14 @@ module vip_chi_sva #(
     return ((opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C)) ||
             (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C)) ||
             (opcode == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C) ||
+            // Both Zero opcodes belong here, and for a reason that is not about
+            // data: neither carries a write burst, but this function decides
+            // whether ExpCompAck is RECORDED for the TxnID. Leave one out and
+            // its slot keeps the previous transaction's value, so a spurious
+            // CompAck on a WriteUniqueZero is measured against stale state.
+            // req_write_payload_beats() answers the data question separately,
+            // and correctly returns 0 for both.
+            (opcode == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) ||
             vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
               vip_chi_req_opcode_t'(opcode)) ||
             req_opcode_is_coherent_write_data(opcode) ||
@@ -485,6 +499,120 @@ module vip_chi_sva #(
     return ((opcode == dat_opcode_t'(VIP_CHI_DAT_NON_COPY_BACK_WR_DATA_C)) ||
             (opcode == dat_opcode_t'(VIP_CHI_DAT_NCB_WR_DATA_COMP_ACK_C)) ||
             (opcode == dat_opcode_t'(VIP_CHI_DAT_COPY_BACK_WR_DATA_C)));
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Appendix A Table A-4 field legality, for the fields the table marks zero.
+  //
+  // Table A-1 gives the vocabulary and the distinction that matters here:
+  //
+  //   0     the field is applicable but must be set to zero
+  //   0 a   the field is INAPPLICABLE to this message and must be set to zero
+  //   Y     applicable, carries a value -- nothing to assert
+  //   -     not applicable, and NOT required to be zero -- asserting on it is a
+  //         false positive waiting for stimulus
+  //   X     don't care -- likewise not assertable
+  //
+  // Only `0` and `0 a` are assertable, and they impose the same obligation, so
+  // the three lists below merge them. `-` and `X` are deliberately absent: that
+  // is why Persist.DBID, which A-4 marks `-`, is not checked even though the
+  // driver copies the request's TxnID into it.
+  //
+  // Source: IHI0050E_a, Table A-4 Response message field mappings, page A-469.
+  //
+  // Two opcodes A-4 also marks are absent below because this VIP does not model
+  // them, and a rule may not name an opcode that has no constant:
+  //
+  //   StashDone  TxnID = 0 a   Stash is excluded from this VIP by declaration
+  //   TagMatch   TxnID = 0 a   Add to rsp_a4_txnid_is_zero_field below when
+  //                            VIP_CHI_RSP_TAG_MATCH_C (5'h0A) is introduced.
+  //                            TagMatch is a response to a request and so is
+  //                            naturally built by copying the request's TxnID,
+  //                            which this rule forbids.
+  // ---------------------------------------------------------------------------
+  function automatic bit rsp_a4_txnid_is_zero_field(input rsp_opcode_t opcode);
+    return ((opcode == VIP_CHI_RSP_PERSIST_C) ||
+            (opcode == VIP_CHI_RSP_PCRD_GRANT_C));
+  endfunction
+
+  function automatic bit rsp_a4_resperr_is_zero_field(input rsp_opcode_t opcode);
+    // A-4's RespErr column reads `0` for exactly these six: none of them carries
+    // error status. The completion that DOES carry it for a write is
+    // CompDBIDResp (RespErr = Y), which is why a completer must not copy its
+    // buffer grant's RespErr onto the completion, or the reverse.
+    return ((opcode == VIP_CHI_RSP_COMP_ACK_C)     ||
+            (opcode == VIP_CHI_RSP_RETRY_ACK_C)    ||
+            (opcode == VIP_CHI_RSP_PCRD_GRANT_C)   ||
+            (opcode == VIP_CHI_RSP_READ_RECEIPT_C) ||
+            (opcode == VIP_CHI_RSP_DBID_RESP_C)    ||
+            (opcode == VIP_CHI_RSP_DBID_RESP_ORD_C));
+  endfunction
+
+  // A-4 lists DBID, TagGroupID, StashGroupID and PGroupID as four NAMES over one
+  // shared group of packet bits; the table header brackets them under a single
+  // `CF` (combined field) marker. Most rows mark each name separately. PCrdGrant
+  // instead carries one `0 a` spanning the whole group, which marks the shared
+  // field as a whole inapplicable and required to be zero.
+  //
+  // Only DBID is asserted here: it is the only one of the four names this VIP
+  // models on the RSP flit. Persist is deliberately absent -- A-4 gives Persist
+  // DBID `-`, not applicable and NOT required to be zero, which is why the
+  // driver may legally put the request's TxnID there.
+  function automatic bit rsp_a4_dbid_is_zero_field(input rsp_opcode_t opcode);
+    return (opcode == VIP_CHI_RSP_PCRD_GRANT_C);
+  endfunction
+
+  function automatic bit rsp_a4_resp_is_zero_field(input rsp_opcode_t opcode);
+    // Everything in the RespErr set above, plus two more. CompDBIDResp is the
+    // one A-4 marks plain `0` rather than `0 a`, and section 4 says why in
+    // words: "The Resp field of a Comp or CompDBIDResp response must be set to
+    // zero for a Write transaction completion" -- cache state travels on the
+    // WriteData, not on the completion. Persist is `0 a`.
+    //
+    // Comp is NOT here. A-4 gives it Resp = Y, because the same opcode completes
+    // reads and dataless transactions where the field carries cache state.
+    return (rsp_a4_resperr_is_zero_field(opcode) ||
+            (opcode == VIP_CHI_RSP_COMP_DBID_RESP_C) ||
+            (opcode == VIP_CHI_RSP_PERSIST_C));
+  endfunction
+
+  // Does A-4 mark ANY field zero for this opcode? This is the rule's antecedent
+  // and must stay out of its body. Folded into the consequent instead, every
+  // Comp, CompData grant and SnpResp on the link would count as a pass for a
+  // rule that never applied to it: the tally would report thousands of hits and
+  // the vacuity report would call the rule exercised, while the opcodes it
+  // actually governs might never have been driven.
+  function automatic bit rsp_a4_has_zero_field(input rsp_opcode_t opcode);
+    return (rsp_a4_txnid_is_zero_field(opcode)   ||
+            rsp_a4_resperr_is_zero_field(opcode) ||
+            rsp_a4_resp_is_zero_field(opcode)    ||
+            rsp_a4_dbid_is_zero_field(opcode));
+  endfunction
+
+  // The opcode constants are compared BARE, with no cast down to rsp_opcode_t.
+  // That type is 4 bits in CHI-D and 5 in CHI-E, so a cast would silently alias
+  // any constant above 0x0F onto another opcode -- CompCMO (5'h14) becomes
+  // Comp (4'h4). Everything named here happens to fit in four bits today, which
+  // is exactly why a cast would look correct until TagMatch or CompCMO joined
+  // the list. Bare comparison zero-extends the narrower operand and is right in
+  // both issues, permanently.
+  function automatic bit rsp_a4_zero_fields_legal(
+    input rsp_opcode_t opcode,
+    input txn_id_t     txnid,
+    input logic [1:0]  resperr,
+    input logic [2:0]  resp,
+    input txn_id_t     dbid
+  );
+    // X is not this rule's business. p_rsp_known_when_valid already fails an
+    // unknown flit under its own ID; without this guard an X in any of the four
+    // fields would fail here too, reporting a field-legality defect for what is
+    // really an X-propagation one and charging it to the wrong check.
+    if ($isunknown({opcode, txnid, resperr, resp, dbid})) return 1'b1;
+    if (rsp_a4_txnid_is_zero_field(opcode)   && (txnid   !== '0)) return 1'b0;
+    if (rsp_a4_resperr_is_zero_field(opcode) && (resperr !== '0)) return 1'b0;
+    if (rsp_a4_resp_is_zero_field(opcode)    && (resp    !== '0)) return 1'b0;
+    if (rsp_a4_dbid_is_zero_field(opcode)    && (dbid    !== '0)) return 1'b0;
+    return 1'b1;
   endfunction
 
   function automatic int unsigned req_write_payload_beats(
@@ -1474,6 +1602,40 @@ module vip_chi_sva #(
       vif.txdatflitv |-> !$isunknown(vif.txdatflit);
   endproperty
 
+  // Table A-4 zero-field legality, asserted from both vantages of the link.
+  //
+  // One rule, two antecedents, one check ID -- the pattern the check registry
+  // documents. It is not decoration: which of the two sees a given opcode
+  // depends on which end of the link this bind sits on. A PCrdGrant is txrsp at
+  // the completer and rxrsp at the requester, and a link may carry a bind at
+  // only one end. Checking a single direction would leave the rule silently
+  // one-sided on any link instrumented at one end only.
+  //
+  // Both directions are gated on checks_enable rather than link_ever_active:
+  // these are flit-content rules, and a flit that is on the wire at all has
+  // already passed the activation rules above under their own IDs.
+  property p_tx_rsp_field_zero;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      (vif.txrspflitv &&
+       rsp_a4_has_zero_field(rsp_opcode_t'(vif.txrspflit.opcode)))
+      |-> rsp_a4_zero_fields_legal(rsp_opcode_t'(vif.txrspflit.opcode),
+                                   txn_id_t'(vif.txrspflit.txnid),
+                                   vif.txrspflit.resperr,
+                                   vif.txrspflit.resp,
+                                   txn_id_t'(vif.txrspflit.dbid));
+  endproperty
+
+  property p_rx_rsp_field_zero;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      (vif.rxrspflitv &&
+       rsp_a4_has_zero_field(rsp_opcode_t'(vif.rxrspflit.opcode)))
+      |-> rsp_a4_zero_fields_legal(rsp_opcode_t'(vif.rxrspflit.opcode),
+                                   txn_id_t'(vif.rxrspflit.txnid),
+                                   vif.rxrspflit.resperr,
+                                   vif.rxrspflit.resp,
+                                   txn_id_t'(vif.rxrspflit.dbid));
+  endproperty
+
   // The four reset-idle rules are gated on link_ever_active, NOT on
   // checks_enable, and the sideband one below shows why in the sharpest form
   // this codebase has produced:
@@ -1834,6 +1996,29 @@ module vip_chi_sva #(
     chk_hit(VIP_CHI_CHK_DAT_KNOWN_WHEN_VALID_E);
   else
     chk_miss(VIP_CHI_CHK_DAT_KNOWN_WHEN_VALID_E, $sformatf("txdatflit contains X/Z while valid"));
+
+  // These two are the first chk_miss messages in this file to report VALUES
+  // rather than a constant string, so they are also the first to meet the
+  // action block's sampling problem: it runs in the Reactive region, where the
+  // wire may already carry the next flit. $sampled() returns what the assertion
+  // actually judged. A message naming the wrong flit is worse than no message.
+  assert property (p_tx_rsp_field_zero)
+    chk_hit(VIP_CHI_CHK_RSP_FIELD_ZERO_E);
+  else
+    chk_miss(VIP_CHI_CHK_RSP_FIELD_ZERO_E, $sformatf(
+      "txrsp opcode 0x%0h drove a Table A-4 zero-marked field non-zero (TxnID=0x%0h RespErr=0x%0h Resp=0x%0h DBID=0x%0h)",
+      $sampled(vif.txrspflit.opcode), $sampled(vif.txrspflit.txnid),
+      $sampled(vif.txrspflit.resperr), $sampled(vif.txrspflit.resp),
+      $sampled(vif.txrspflit.dbid)));
+
+  assert property (p_rx_rsp_field_zero)
+    chk_hit(VIP_CHI_CHK_RSP_FIELD_ZERO_E);
+  else
+    chk_miss(VIP_CHI_CHK_RSP_FIELD_ZERO_E, $sformatf(
+      "rxrsp opcode 0x%0h drove a Table A-4 zero-marked field non-zero (TxnID=0x%0h RespErr=0x%0h Resp=0x%0h DBID=0x%0h)",
+      $sampled(vif.rxrspflit.opcode), $sampled(vif.rxrspflit.txnid),
+      $sampled(vif.rxrspflit.resperr), $sampled(vif.rxrspflit.resp),
+      $sampled(vif.rxrspflit.dbid)));
 
   assert property (p_link_sideband_idle_during_reset)
     chk_hit(VIP_CHI_CHK_LINK_SIDEBAND_IDLE_IN_RESET_E);

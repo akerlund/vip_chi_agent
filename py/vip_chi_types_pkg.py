@@ -281,6 +281,12 @@ CHECK_IDS = (
   # range test still answers false for them and bind_chi keeps ownership.
   "CHI_LASM_ACTIVATION_TIMEOUT",
   "CHI_LASM_DEACTIVATION_TIMEOUT",
+  # RSP field legality, appended for the same append-only reason. One ID for one
+  # rule: Appendix A Table A-4 marks certain RSP fields `0` or `0 a` for certain
+  # opcodes, and both markings mean the field must be driven zero. TxnID, RespErr
+  # and Resp are checked together because they are three columns of one table,
+  # not three rules.
+  "CHI_RSP_FIELD_ZERO",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept

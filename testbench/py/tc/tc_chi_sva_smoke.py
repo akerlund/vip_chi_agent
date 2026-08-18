@@ -4,7 +4,7 @@
 #
 # Negative control for py/sva/bind_chi.py: one deliberate violation per check
 # family, asserting the checker REPORTS it. Without this the checkers could be
-# silently vacuous -- every one of the 158 regression testcases passes with them
+# silently vacuous -- every one of the 159 regression testcases passes with them
 # enabled, and a checker that can never fire passes exactly as loudly as one
 # that works.
 #
@@ -29,7 +29,8 @@ import logging
 
 from pyuvm import uvm_test
 
-from sva.bind_chi import bind_chi, _flit_slices, _LINK_ACT_WINDOW_C
+from sva.bind_chi import (bind_chi, _flit_slices, _FLIT_FIELDS_C,
+                          _LINK_ACT_WINDOW_C)
 from vip_chi_types_pkg import ChiCfg, DatOpcode, ReqOpcode, ReqOrder, Role, RspOpcode
 
 # The standalone topology's CHI-D datapath: 16 bytes, so a size-6 (64-byte)
@@ -67,12 +68,19 @@ def _sample(base: dict, **over) -> dict:
 
 # Every field the checker slices out of a flit, so a hand-built one is never
 # short a key the real sampler would always have supplied.
+#
+# DERIVED from the checker's own field list rather than written out here. It was
+# written out here, and it drifted: a rule that read a newly sampled field found
+# the key missing and every test in this file died on a KeyError far from the
+# cause. The list is the checker's to define, so let the checker define it -- a
+# field added to _FLIT_FIELDS_C now appears here on the next import, defaulted to
+# zero, which is what a hand-built flit wants for a field it does not care about.
 _FLIT_DEFAULTS = {
-  "req": {"opcode": 0, "txnid": 0, "returntxnid": 0, "size": 0,
-          "expcompack": 0, "order": int(ReqOrder.NONE)},
-  "rsp": {"opcode": 0, "txnid": 0, "dbid": 0},
-  "dat": {"opcode": 0, "txnid": 0, "dbid": 0, "dataid": 0},
+  ch: dict.fromkeys(fields, 0) for ch, fields in _FLIT_FIELDS_C.items()
 }
+# The one field whose "unset" value is not zero: NONE is the no-ordering
+# encoding, and it is not 0 on every cut.
+_FLIT_DEFAULTS["req"]["order"] = int(ReqOrder.NONE)
 
 
 def _flit(d: str, ch: str, pend: int = 0, **fields) -> dict:

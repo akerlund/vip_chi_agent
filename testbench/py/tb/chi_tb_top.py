@@ -859,6 +859,13 @@ async def tc_chi_pcrd_return(dut) -> None:
   await _run_d_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_rsp_field_zero_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_rsp_field_zero_negctl(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_rsp_field_zero_negctl"
+  await _run_d_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_d_decerr_smoke", timeout_time=20, timeout_unit="ms")
 async def tc_chi_d_decerr_smoke(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""

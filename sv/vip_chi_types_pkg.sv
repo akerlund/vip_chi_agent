@@ -458,6 +458,13 @@ package vip_chi_types_pkg;
     // them and vip_chi_sva keeps ownership.
     VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E,
     VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E,
+    // RSP field legality, appended for the same append-only reason. One ID for
+    // one rule: Appendix A Table A-4 marks certain RSP fields `0` or `0 a` for
+    // certain opcodes, and both markings mean the field must be driven zero.
+    // TxnID, RespErr and Resp are asserted together because they are three
+    // columns of one table, not three rules -- standing this down means "stop
+    // checking A-4's zero-marked RSP fields", which is a coherent thing to want.
+    VIP_CHI_CHK_RSP_FIELD_ZERO_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
