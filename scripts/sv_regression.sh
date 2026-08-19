@@ -168,4 +168,19 @@ python3 "$ROOT/scripts/check_test_counts.py" >> "$SUMMARY" 2>&1 || true
 # failure of this one.
 python3 "$ROOT/scripts/check_counter_parity.py" >> "$SUMMARY" 2>&1 || true
 
-exit $(( fail > 0 ))
+# Every live link carries a checker, and every checker reports somewhere. This is
+# the one check above that reads the HARNESS first and the rows second, and that
+# order is the whole point: check_vacuity.py aggregates over exported rows, and an
+# aggregation over rows cannot report the absence of rows. Sixteen HN-I proxy
+# interfaces carried no bind at all across twelve testcases, exporting nothing,
+# and every report that existed read as a report on the whole testbench.
+#
+# It is a GATE, not advisory. Unlike the parity checks above it needs no second
+# flow and no specification -- the top and this sweep's own CSV are both present
+# by definition -- so there is nothing for it to be inconclusive about, and a new
+# topology added without a checker should stop the sweep rather than be noted in
+# a file someone reads later.
+python3 "$ROOT/scripts/check_bind_coverage.py" --csv "$OUT_DIR/check_tallies.csv" \
+  >> "$SUMMARY" 2>&1 || bind_gap=1
+
+exit $(( fail > 0 || ${bind_gap:-0} > 0 ))

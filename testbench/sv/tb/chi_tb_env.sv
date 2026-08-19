@@ -198,6 +198,61 @@ class chi_tb_env extends uvm_env;
       this.snf_agent.vif.check_enabled, this.snf_agent.vif.check_severity,
       this.snf_agent.vif.check_pass_count, this.snf_agent.vif.check_fail_count);
 
+    // The HN-I proxy topology's eight binds, added with box 0.3. Until then this
+    // env exported two rows and owned ten interfaces, and an aggregation over
+    // rows cannot report the absence of rows -- so the proxy links read as
+    // covered by the two that were there. chi_check_report.svh's own header
+    // records this lesson from an earlier occurrence one level down, at the bind
+    // rather than at the env.
+    chi_check_export_csv("hni_rni0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hrni0_agent.vif.check_enabled, this.hrni0_agent.vif.check_severity,
+      this.hrni0_agent.vif.check_pass_count, this.hrni0_agent.vif.check_fail_count);
+    chi_check_report_tallies("hni_rni0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hrni0_agent.vif.check_enabled, this.hrni0_agent.vif.check_severity,
+      this.hrni0_agent.vif.check_pass_count, this.hrni0_agent.vif.check_fail_count);
+    chi_check_export_csv("hni_rn0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.rn_vif[0].check_enabled, this.hni_agent.rn_vif[0].check_severity,
+      this.hni_agent.rn_vif[0].check_pass_count, this.hni_agent.rn_vif[0].check_fail_count);
+    chi_check_report_tallies("hni_rn0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.rn_vif[0].check_enabled, this.hni_agent.rn_vif[0].check_severity,
+      this.hni_agent.rn_vif[0].check_pass_count, this.hni_agent.rn_vif[0].check_fail_count);
+    chi_check_export_csv("hni_sn0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.sn_vif[0].check_enabled, this.hni_agent.sn_vif[0].check_severity,
+      this.hni_agent.sn_vif[0].check_pass_count, this.hni_agent.sn_vif[0].check_fail_count);
+    chi_check_report_tallies("hni_sn0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.sn_vif[0].check_enabled, this.hni_agent.sn_vif[0].check_severity,
+      this.hni_agent.sn_vif[0].check_pass_count, this.hni_agent.sn_vif[0].check_fail_count);
+    chi_check_export_csv("hni_snf0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hsnf0_agent.vif.check_enabled, this.hsnf0_agent.vif.check_severity,
+      this.hsnf0_agent.vif.check_pass_count, this.hsnf0_agent.vif.check_fail_count);
+    chi_check_report_tallies("hni_snf0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hsnf0_agent.vif.check_enabled, this.hsnf0_agent.vif.check_severity,
+      this.hsnf0_agent.vif.check_pass_count, this.hsnf0_agent.vif.check_fail_count);
+    chi_check_export_csv("hni_rni1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hrni1_agent.vif.check_enabled, this.hrni1_agent.vif.check_severity,
+      this.hrni1_agent.vif.check_pass_count, this.hrni1_agent.vif.check_fail_count);
+    chi_check_report_tallies("hni_rni1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hrni1_agent.vif.check_enabled, this.hrni1_agent.vif.check_severity,
+      this.hrni1_agent.vif.check_pass_count, this.hrni1_agent.vif.check_fail_count);
+    chi_check_export_csv("hni_rn1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.rn_vif[1].check_enabled, this.hni_agent.rn_vif[1].check_severity,
+      this.hni_agent.rn_vif[1].check_pass_count, this.hni_agent.rn_vif[1].check_fail_count);
+    chi_check_report_tallies("hni_rn1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.rn_vif[1].check_enabled, this.hni_agent.rn_vif[1].check_severity,
+      this.hni_agent.rn_vif[1].check_pass_count, this.hni_agent.rn_vif[1].check_fail_count);
+    chi_check_export_csv("hni_sn1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.sn_vif[1].check_enabled, this.hni_agent.sn_vif[1].check_severity,
+      this.hni_agent.sn_vif[1].check_pass_count, this.hni_agent.sn_vif[1].check_fail_count);
+    chi_check_report_tallies("hni_sn1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.sn_vif[1].check_enabled, this.hni_agent.sn_vif[1].check_severity,
+      this.hni_agent.sn_vif[1].check_pass_count, this.hni_agent.sn_vif[1].check_fail_count);
+    chi_check_export_csv("hni_snf1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hsnf1_agent.vif.check_enabled, this.hsnf1_agent.vif.check_severity,
+      this.hsnf1_agent.vif.check_pass_count, this.hsnf1_agent.vif.check_fail_count);
+    chi_check_report_tallies("hni_snf1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hsnf1_agent.vif.check_enabled, this.hsnf1_agent.vif.check_severity,
+      this.hsnf1_agent.vif.check_pass_count, this.hsnf1_agent.vif.check_fail_count);
+
     // The scoreboard's rules go into the SAME export, under its own bind name.
     // They were outside the mechanism entirely until now, which meant a
     // scoreboard check could stop evaluating and no report anywhere would say

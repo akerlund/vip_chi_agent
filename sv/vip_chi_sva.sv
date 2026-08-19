@@ -32,6 +32,34 @@ module vip_chi_sva #(
   parameter vip_chi_role_t ROLE_P       = VIP_CHI_ROLE_MONITOR_E,
   parameter int            TIMEOUT_CYCLES_P = 1024,
   parameter bit            ENABLE_COMPLETION_TIMEOUT_P = 1'b1,
+  // More than one requester's traffic converges on this link. The TxnID-reuse
+  // shadow is indexed by TxnID alone, so it cannot hold two sources' claims on
+  // the same value at once -- and IHI 0050 E section 2.5 makes that a legal
+  // situation ("unique for a given Requester. The Requester is identified by the
+  // SrcID"). Scoping the rule by SrcID, done below, removes the systematic false
+  // report; what remains is that the shadow is lossy, so on a genuinely
+  // multi-source link the rule stands down and says so through enabled=0 rather
+  // than reporting on state it cannot keep. See F-CHK-018 for the rework.
+  parameter bit            MULTI_SOURCE_LINK_P         = 1'b0,
+  // This endpoint drives TXSACTIVE from link-up rather than from its outstanding
+  // window, so the sideband is a constant for as long as the link is up. That is
+  // legal -- section 14.7.2's obligation is a lower bound and "may have" is
+  // permissive -- but it is exactly what TXSACTIVE_DEASSERT_BOUNDED exists to
+  // report, so the rule would fire on every run rather than on a defect. The
+  // driver behavior is F-CORR-005 (box 1.6); until that lands, the binds on such
+  // an endpoint stand the rule down explicitly.
+  parameter bit            TXSACTIVE_FROM_LINK_UP_P    = 1'b0,
+  // This link is driven by a testcase directly, without the driver's credit and
+  // FLITPEND machinery -- the A0 smoke link, whose whole job is to prove the
+  // interface and the adapter carry a flit verbatim at a third geometry. It
+  // raises FLITV with no preceding FLITPEND, consumes credit that was never
+  // granted, and never retires the transaction it starts, so the flit-protocol
+  // rules report facts about the testcase rather than about the VIP. They stand
+  // down here; LASM, reset-idle, known-when-valid, link gating and the sideband
+  // rules stay live, and those are the ones a third geometry is worth checking
+  // for. This is the "bind or explicitly waive" choice of F-CHK-004, resolved as
+  // a partial bind with the waived rules named.
+  parameter bit            HAND_DRIVEN_LINK_P          = 1'b0,
   // Cycles allowed after reset release for the link to begin re-activating.
   // Must comfortably exceed cfg_agent.link_act_delay_max (default 4) plus the
   // req->ack handshake, or p_link_restarts_after_reset_release false-fails.
@@ -84,15 +112,30 @@ module vip_chi_sva #(
   typedef vip_chi_types #(CFG_P)::rsp_opcode_t rsp_opcode_t;
   typedef vip_chi_types #(CFG_P)::dat_opcode_t dat_opcode_t;
   typedef vip_chi_types #(CFG_P)::size_t       size_t;
+  typedef vip_chi_types #(CFG_P)::node_id_t    node_id_t;
 
   localparam int TXN_ID_COUNT_C = 2 ** $bits(txn_id_t);
   localparam int unsigned REQ_SEND_CAP_C = 64;
   localparam int unsigned RSP_SEND_CAP_C = 64;
   localparam int unsigned DAT_SEND_CAP_C = 64;
+  // Which end of a link this bind sits on, which is what decides whether a
+  // request arrives on rxreq or leaves on txreq. Every transaction-level rule
+  // below is gated on one of these two, so a role in NEITHER set leaves a bind
+  // checking the structural rules only -- enabled, reporting, and silent on
+  // everything that needs a transaction.
+  //
+  // HN-I is a completer, and the interface says so in as many words: its
+  // RN-facing clocking block "mirrors snf_cb verbatim" because "a home node sits
+  // between an RN and an SN, so on the link that faces the RN it plays the
+  // completer/subordinate role". Its SN-FACING ports are separate interfaces
+  // declared ROLE_P=RNI, so they land in the requester set on their own. Leaving
+  // HN-I out of both sets is what made the proxy topology's RN-facing binds
+  // structural-only when they were first added.
   localparam bit ROLE_IS_REQUESTER_C =
     (ROLE_P == VIP_CHI_ROLE_RNI_E) || (ROLE_P == VIP_CHI_ROLE_RNF_E);
   localparam bit ROLE_IS_COMPLETER_C =
-    (ROLE_P == VIP_CHI_ROLE_SNF_E) || (ROLE_P == VIP_CHI_ROLE_HNF_E);
+    (ROLE_P == VIP_CHI_ROLE_SNF_E) || (ROLE_P == VIP_CHI_ROLE_HNF_E) ||
+    (ROLE_P == VIP_CHI_ROLE_HNI_E);
 
   // Idle cycles a sender may keep TXSACTIVE up past the close of its
   // outstanding window before p_txsactive_deassert_bounded calls it stuck.
@@ -704,6 +747,22 @@ module vip_chi_sva #(
   int unsigned rxrsp_lcrd_count;
   int unsigned rxdat_lcrd_count;
   bit req_inflight_by_txn[TXN_ID_COUNT_C];
+  // Which SrcID owns the TxnID currently occupying each slot.
+  //
+  // IHI 0050 E section 2.5 scopes the uniqueness rule to a source and says so
+  // twice over: "It is required that the TxnID, except for PrefetchTgt, must be
+  // unique for a given Requester. The Requester is identified by the SrcID."
+  // Two requests carrying the same TxnID from DIFFERENT SrcIDs are therefore
+  // legal and ordinary -- and unavoidable on a link where more than one
+  // requester's traffic converges, because each allocates from its own pool.
+  //
+  // Without this the reuse rules read the spec as "unique per link", which is a
+  // stricter rule than the one written. It went unnoticed because no bind sat on
+  // a fan-in link: the integrated topology is one requester to one completer, and
+  // the coherent binds sit at the RN-F ends, one source each. The proxy's
+  // SN-facing links, bound for the first time by box 0.3, carry two.
+  node_id_t req_src_by_txn[TXN_ID_COUNT_C];
+  bit       req_src_valid_by_txn[TXN_ID_COUNT_C];
 
   // Running population count of req_inflight_by_txn. Maintained alongside the
   // array rather than reduced from it: the TxnID space is 1024 entries on CHI-D
@@ -793,6 +852,8 @@ module vip_chi_sva #(
         txdat_beats_by_txn[txn_i] <= 0;
         rxdat_beats_by_txn[txn_i] <= 0;
         req_inflight_by_txn[txn_i] <= 1'b0;
+        req_src_valid_by_txn[txn_i] <= 1'b0;
+        req_src_by_txn[txn_i]       <= '0;
         dat_completion_req_valid_by_txn[txn_i] <= 1'b0;
         dat_completion_req_txn_by_txn[txn_i] <= '0;
       end
@@ -825,7 +886,12 @@ module vip_chi_sva #(
           req_opcode = req_opcode_t'(vif.txreqflit.opcode);
           txn_idx = txn_id_to_index(txn_id_t'(vif.txreqflit.txnid));
           if (req_has_modeled_completion(req_opcode)) begin
-            if (req_inflight_by_txn[txn_idx]) begin
+            // Same SrcID reusing a live slot is the violation. A DIFFERENT SrcID
+            // landing on the same slot is a pass, not a decline: section 2.5's
+            // rule is satisfied outright, because the two requests are
+            // distinguishable by the field the spec names.
+            if (req_inflight_by_txn[txn_idx] && req_src_valid_by_txn[txn_idx] &&
+                (req_src_by_txn[txn_idx] === node_id_t'(vif.txreqflit.srcid))) begin
               chk_miss(VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E, $sformatf("requester reused a TxnID while the earlier request was still in flight"));
             end
             else begin
@@ -834,7 +900,9 @@ module vip_chi_sva #(
             if (!req_inflight_by_txn[txn_idx]) begin
               req_outstanding_delta++;
             end
-            req_inflight_by_txn[txn_idx] <= 1'b1;
+            req_inflight_by_txn[txn_idx]  <= 1'b1;
+            req_src_by_txn[txn_idx]       <= node_id_t'(vif.txreqflit.srcid);
+            req_src_valid_by_txn[txn_idx] <= 1'b1;
           end
           expected_write_beats_by_txn[txn_idx] <= req_write_payload_beats(
             req_opcode, size_t'(vif.txreqflit.size));
@@ -1018,7 +1086,12 @@ module vip_chi_sva #(
           end
 
           if (req_has_modeled_completion(req_opcode)) begin
-            if (req_inflight_by_txn[txn_idx]) begin
+            // Same SrcID reusing a live slot is the violation. A DIFFERENT SrcID
+            // landing on the same slot is a pass, not a decline: section 2.5's
+            // rule is satisfied outright, because the two requests are
+            // distinguishable by the field the spec names.
+            if (req_inflight_by_txn[txn_idx] && req_src_valid_by_txn[txn_idx] &&
+                (req_src_by_txn[txn_idx] === node_id_t'(vif.rxreqflit.srcid))) begin
               chk_miss(VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E, $sformatf("completer observed a reused request TxnID while the earlier request was still in flight"));
             end
             else begin
@@ -1027,7 +1100,9 @@ module vip_chi_sva #(
             if (!req_inflight_by_txn[txn_idx]) begin
               req_outstanding_delta++;
             end
-            req_inflight_by_txn[txn_idx] <= 1'b1;
+            req_inflight_by_txn[txn_idx]  <= 1'b1;
+            req_src_by_txn[txn_idx]       <= node_id_t'(vif.rxreqflit.srcid);
+            req_src_valid_by_txn[txn_idx] <= 1'b1;
           end
           expected_write_beats_by_txn[txn_idx] <= req_write_payload_beats(
             req_opcode, size_t'(vif.rxreqflit.size));
@@ -1511,6 +1586,28 @@ module vip_chi_sva #(
     // CHI_COMPLETION_FOLLOWS_REQ as an unexercised enabled rule forever.
     if (!ENABLE_COMPLETION_TIMEOUT_P) begin
       vif.check_enabled[VIP_CHI_CHK_COMPLETION_FOLLOWS_REQ_E] = 1'b0;
+    end
+
+    if (MULTI_SOURCE_LINK_P) begin
+      vif.check_enabled[VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E] = 1'b0;
+      vif.check_enabled[VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E] = 1'b0;
+    end
+
+    if (TXSACTIVE_FROM_LINK_UP_P) begin
+      vif.check_enabled[VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E] = 1'b0;
+    end
+
+    if (HAND_DRIVEN_LINK_P) begin
+      vif.check_enabled[VIP_CHI_CHK_REQ_VALID_REQUIRES_PEND_E] = 1'b0;
+      vif.check_enabled[VIP_CHI_CHK_RSP_VALID_REQUIRES_PEND_E] = 1'b0;
+      vif.check_enabled[VIP_CHI_CHK_DAT_VALID_REQUIRES_PEND_E] = 1'b0;
+      vif.check_enabled[VIP_CHI_CHK_LCRD_OVERFLOW_E]           = 1'b0;
+      vif.check_enabled[VIP_CHI_CHK_LCRD_UNDERFLOW_E]          = 1'b0;
+      vif.check_enabled[VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E]  = 1'b0;
+      vif.check_enabled[VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E]   = 1'b0;
+      vif.check_enabled[VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E]   = 1'b0;
+      vif.check_enabled[VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E] = 1'b0;
+      vif.check_enabled[VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E]   = 1'b0;
     end
 
     apply_check_plusarg("vip_chi_disable_check=%s", 1'b0);

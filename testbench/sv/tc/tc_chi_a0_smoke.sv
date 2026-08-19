@@ -143,4 +143,35 @@ class tc_chi_a0_smoke extends uvm_test;
     phase.drop_objection(this);
   endtask
 
+  // ---------------------------------------------------------------------------
+  // This test owns the A0 link outright -- no env -- so it is also the only place
+  // that can export its two binds' tallies. Box 0.3 bound the link; exporting
+  // from here is what makes the bind visible to the vacuity aggregation, and
+  // without it the bind would be exactly the defect that box exists to fix: a
+  // checker that runs and reports nowhere.
+  //
+  // The A0 link raises a REQ flit by hand and never completes it, so most of the
+  // registry is legitimately unexercised here. That is a statement about this
+  // testcase, and it is the aggregation's job to say so across the sweep -- which
+  // it can only do if these rows exist.
+  // ---------------------------------------------------------------------------
+  function void report_phase(input uvm_phase phase);
+
+    super.report_phase(phase);
+
+    chi_check_export_csv("a0_rni_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.rn_vif.check_enabled, this.rn_vif.check_severity,
+      this.rn_vif.check_pass_count, this.rn_vif.check_fail_count);
+    chi_check_export_csv("a0_snf_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.sn_vif.check_enabled, this.sn_vif.check_severity,
+      this.sn_vif.check_pass_count, this.sn_vif.check_fail_count);
+
+    chi_check_report_tallies("a0_rni_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.rn_vif.check_enabled, this.rn_vif.check_severity,
+      this.rn_vif.check_pass_count, this.rn_vif.check_fail_count);
+    chi_check_report_tallies("a0_snf_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.sn_vif.check_enabled, this.sn_vif.check_severity,
+      this.sn_vif.check_pass_count, this.sn_vif.check_fail_count);
+  endfunction
+
 endclass

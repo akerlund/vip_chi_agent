@@ -316,6 +316,261 @@ module chi_tb_top;
     coh_e_rnf1_snp_sva (.vif(coh_e_rnf1_if),
       .checks_enable((coh_e_rnf1_if.txlinkactivereq === 1'b1) || (coh_e_rnf1_if.rxlinkactivereq === 1'b1)));
 
+
+  // ---------------------------------------------------------------------------
+  // HN-I proxy topology: both ends of all four links, per issue.
+  //
+  // These sixteen interfaces carried no checker at all until box 0.3 -- not a
+  // disabled one, none -- across twelve testcases including hni_backpressure and
+  // hni_reset, which are testcases ABOUT credit and reset behavior running on
+  // links where no credit or reset rule was checked. (F-CHK-004.)
+  //
+  // Both ends of each link, not one, and that is a decision rather than a copy of
+  // the integrated pair above. A link's two interfaces are two views of the same
+  // wires with opposite polarity, so a single bind would look like full coverage
+  // while leaving half the registry unevaluated: the direction-split rules --
+  // TX/RX DAT burst shape and DataID ordering, TXNID_REUSE_REQUESTER against
+  // _COMPLETER, the requester-side CompAck rules against the completer-side ones
+  // -- each only run at one end. The coherent links bind one end for the opposite
+  // reason, stated where they are declared: there the peer's SNP range is the
+  // part that needs the second bind, and the main range is fully visible from the
+  // RN-F.
+  //
+  // Roles follow the interfaces, which already have this right: the proxy's
+  // RN-facing ports are declared HN-I (a completer, whose clocking block mirrors
+  // snf_cb verbatim) and its SN-facing ports RN-I (a requester). The endpoints
+  // are the agents' own RN-I and SN-F views.
+  //
+  // The completion timeout stays ENABLED here, unlike on the coherent links. It
+  // is off there because a request and its completion are not both visible on one
+  // interface; on a proxy link they are -- the RN-I's request is answered on the
+  // same link it arrived on, and the proxy's downstream request likewise. If
+  // backpressure makes it fire, that is a measurement worth having rather than a
+  // reason to switch it off in advance.
+  // ---------------------------------------------------------------------------
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+    hni_rni0_sva (.vif(hni_rni0_if),
+      .checks_enable((hni_rni0_if.txlinkactivereq === 1'b1) || (hni_rni0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+    hni_rn0_sva (.vif(hni_rn0_if),
+      .checks_enable((hni_rn0_if.txlinkactivereq === 1'b1) || (hni_rn0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1), .MULTI_SOURCE_LINK_P(1'b1))
+    hni_sn0_sva (.vif(hni_sn0_if),
+      .checks_enable((hni_sn0_if.txlinkactivereq === 1'b1) || (hni_sn0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E),
+                .MULTI_SOURCE_LINK_P(1'b1))
+    hni_snf0_sva (.vif(hni_snf0_if),
+      .checks_enable((hni_snf0_if.txlinkactivereq === 1'b1) || (hni_snf0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+    hni_rni1_sva (.vif(hni_rni1_if),
+      .checks_enable((hni_rni1_if.txlinkactivereq === 1'b1) || (hni_rni1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+    hni_rn1_sva (.vif(hni_rn1_if),
+      .checks_enable((hni_rn1_if.txlinkactivereq === 1'b1) || (hni_rn1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1), .MULTI_SOURCE_LINK_P(1'b1))
+    hni_sn1_sva (.vif(hni_sn1_if),
+      .checks_enable((hni_sn1_if.txlinkactivereq === 1'b1) || (hni_sn1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E),
+                .MULTI_SOURCE_LINK_P(1'b1))
+    hni_snf1_sva (.vif(hni_snf1_if),
+      .checks_enable((hni_snf1_if.txlinkactivereq === 1'b1) || (hni_snf1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+    e_hni_rni0_sva (.vif(e_hni_rni0_if),
+      .checks_enable((e_hni_rni0_if.txlinkactivereq === 1'b1) || (e_hni_rni0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+    e_hni_rn0_sva (.vif(e_hni_rn0_if),
+      .checks_enable((e_hni_rn0_if.txlinkactivereq === 1'b1) || (e_hni_rn0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1), .MULTI_SOURCE_LINK_P(1'b1))
+    e_hni_sn0_sva (.vif(e_hni_sn0_if),
+      .checks_enable((e_hni_sn0_if.txlinkactivereq === 1'b1) || (e_hni_sn0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E),
+                .MULTI_SOURCE_LINK_P(1'b1))
+    e_hni_snf0_sva (.vif(e_hni_snf0_if),
+      .checks_enable((e_hni_snf0_if.txlinkactivereq === 1'b1) || (e_hni_snf0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+    e_hni_rni1_sva (.vif(e_hni_rni1_if),
+      .checks_enable((e_hni_rni1_if.txlinkactivereq === 1'b1) || (e_hni_rni1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+    e_hni_rn1_sva (.vif(e_hni_rn1_if),
+      .checks_enable((e_hni_rn1_if.txlinkactivereq === 1'b1) || (e_hni_rn1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1), .MULTI_SOURCE_LINK_P(1'b1))
+    e_hni_sn1_sva (.vif(e_hni_sn1_if),
+      .checks_enable((e_hni_sn1_if.txlinkactivereq === 1'b1) || (e_hni_sn1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E),
+                .MULTI_SOURCE_LINK_P(1'b1))
+    e_hni_snf1_sva (.vif(e_hni_snf1_if),
+      .checks_enable((e_hni_snf1_if.txlinkactivereq === 1'b1) || (e_hni_snf1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+
+  // ---------------------------------------------------------------------------
+  // The SN-F behind each coherent HN-F, and the HN-F's own SN-facing port.
+  //
+  // This link carries the memory traffic of every coherent read miss and was
+  // checked by nothing. Both ends again, for the reason above. The completion
+  // timeout is enabled: unlike the RN-F links, a downstream ReadNoSnp and its
+  // CompData are both visible here.
+  //
+  // The HN-F's SN-facing port drives TXSACTIVE from sn_link_up, the same shape
+  // the HN-I uses on both its sides, so the same stand-down applies. Both are
+  // F-CORR-005 (box 1.6), which named HN-F and HN-I together and had no evidence
+  // for either because neither endpoint was bound.
+  // ---------------------------------------------------------------------------
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+    coh_hnf0_sn_sva (.vif(coh_hnf0_sn_if),
+      .checks_enable((coh_hnf0_sn_if.txlinkactivereq === 1'b1) || (coh_hnf0_sn_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
+    coh_dsnf0_sva (.vif(coh_dsnf0_if),
+      .checks_enable((coh_dsnf0_if.txlinkactivereq === 1'b1) || (coh_dsnf0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+    coh_e_hnf0_sn_sva (.vif(coh_e_hnf0_sn_if),
+      .checks_enable((coh_e_hnf0_sn_if.txlinkactivereq === 1'b1) || (coh_e_hnf0_sn_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
+    coh_e_dsnf0_sva (.vif(coh_e_dsnf0_if),
+      .checks_enable((coh_e_dsnf0_if.txlinkactivereq === 1'b1) || (coh_e_dsnf0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+
+  // ---------------------------------------------------------------------------
+  // The A0 link. Bound rather than waived: it is a live RN-I <-> SN-F pair with
+  // an adapter joining it, so every structural and link rule applies to it
+  // exactly as to the integrated pair, and a waiver would have to argue that
+  // nothing on it is worth checking.
+  //
+  // CHI_A0_CFG_C, not CHI_D_CFG_C -- and that is not a detail elaboration would
+  // have caught. vip_chi_sva takes `vip_chi_if vif` as a GENERIC interface port,
+  // so the flit shape comes from the module's own CFG_P and FLIT_TYPES_T with no
+  // check that they match the interface the bind names. Get it wrong and the
+  // checker reads every flit field at the wrong offsets, silently, and reports
+  // violations that are artifacts of the mismatch. A0 is a third geometry --
+  // 7-bit node IDs, 32-byte data bus -- so it is the one link here where the
+  // mistake is easy to make.
+  // ---------------------------------------------------------------------------
+  vip_chi_sva #(.CFG_P(CHI_A0_CFG_C), .FLIT_TYPES_T(chi_a0_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .HAND_DRIVEN_LINK_P(1'b1))
+    a0_rni_sva (.vif(a0_rni_if),
+      .checks_enable((a0_rni_if.txlinkactivereq === 1'b1) || (a0_rni_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_A0_CFG_C), .FLIT_TYPES_T(chi_a0_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E),
+                .HAND_DRIVEN_LINK_P(1'b1))
+    a0_snf_sva (.vif(a0_snf_if),
+      .checks_enable((a0_snf_if.txlinkactivereq === 1'b1) || (a0_snf_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+
   // --- Clock and reset (incl. the test-requestable mid-run reset pulse) -------
   initial begin
     clk = 1'b0;

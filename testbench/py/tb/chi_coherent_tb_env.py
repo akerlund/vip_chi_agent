@@ -116,6 +116,25 @@ class chi_coherent_tb_env(uvm_env):
     self.rnf_sva = [
       bind_chi(hrnf0_vif, f"{pfx}hrnf0_sva", enable_completion_timeout=False),
       bind_chi(hrnf1_vif, f"{pfx}hrnf1_sva", enable_completion_timeout=False),
+      # The downstream SN-F link, added with box 0.3: the HN-F's SN-facing port
+      # and the SN-F endpoint behind it. It carries the memory traffic of every
+      # coherent read miss and was checked by nothing, in either port.
+      #
+      # Both ends, because a link's two views are the same wires at opposite
+      # polarity and the direction-split rules each run at only one of them --
+      # TX/RX DAT burst shape and DataID ordering, requester-side TxnID reuse
+      # against completer-side.
+      #
+      # The completion timeout stays ON here, unlike the RN-F links above. It is
+      # off there because the HN-F may answer from another RN-F's snoop data, so
+      # a completion is not visible end to end on one interface. Downstream it is:
+      # the HN-F's ReadNoSnp and the SN-F's CompData are both on this link.
+      # The HN-F's SN-facing port drives TXSACTIVE from sn_link_up, the same
+      # shape the HN-I uses, so the same stand-down applies -- F-CORR-005
+      # (box 1.6), which named HN-F and HN-I together and had no evidence for
+      # either because neither endpoint was bound.
+      bind_chi(hnfs0_vif, f"{pfx}hnf0_sn_sva", txsactive_from_link_up=True),
+      bind_chi(dsnf0_vif, f"{pfx}dsnf0_sva"),
     ]
     # SNP is watched from BOTH ends, because each end exercises a different half
     # of the channel: the HN-F side drives snoops and its txsnp send-credit

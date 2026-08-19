@@ -180,6 +180,59 @@ class chi_e_proxy_tb_env extends uvm_env;
     super.report_phase(phase);
 
     this.scoreboard.report_checks();
+
+    // The eight SVA binds this env owns, added with box 0.3. Before it, a grep
+    // for chi_check_export_csv in this file returned zero: not a disabled
+    // checker, no checker and no rows, on twelve testcases' worth of links.
+    chi_check_export_csv("e_hni_rni0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hrni0_agent.vif.check_enabled, this.hrni0_agent.vif.check_severity,
+      this.hrni0_agent.vif.check_pass_count, this.hrni0_agent.vif.check_fail_count);
+    chi_check_report_tallies("e_hni_rni0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hrni0_agent.vif.check_enabled, this.hrni0_agent.vif.check_severity,
+      this.hrni0_agent.vif.check_pass_count, this.hrni0_agent.vif.check_fail_count);
+    chi_check_export_csv("e_hni_rn0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.rn_vif[0].check_enabled, this.hni_agent.rn_vif[0].check_severity,
+      this.hni_agent.rn_vif[0].check_pass_count, this.hni_agent.rn_vif[0].check_fail_count);
+    chi_check_report_tallies("e_hni_rn0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.rn_vif[0].check_enabled, this.hni_agent.rn_vif[0].check_severity,
+      this.hni_agent.rn_vif[0].check_pass_count, this.hni_agent.rn_vif[0].check_fail_count);
+    chi_check_export_csv("e_hni_sn0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.sn_vif[0].check_enabled, this.hni_agent.sn_vif[0].check_severity,
+      this.hni_agent.sn_vif[0].check_pass_count, this.hni_agent.sn_vif[0].check_fail_count);
+    chi_check_report_tallies("e_hni_sn0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.sn_vif[0].check_enabled, this.hni_agent.sn_vif[0].check_severity,
+      this.hni_agent.sn_vif[0].check_pass_count, this.hni_agent.sn_vif[0].check_fail_count);
+    chi_check_export_csv("e_hni_snf0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hsnf0_agent.vif.check_enabled, this.hsnf0_agent.vif.check_severity,
+      this.hsnf0_agent.vif.check_pass_count, this.hsnf0_agent.vif.check_fail_count);
+    chi_check_report_tallies("e_hni_snf0_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hsnf0_agent.vif.check_enabled, this.hsnf0_agent.vif.check_severity,
+      this.hsnf0_agent.vif.check_pass_count, this.hsnf0_agent.vif.check_fail_count);
+    chi_check_export_csv("e_hni_rni1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hrni1_agent.vif.check_enabled, this.hrni1_agent.vif.check_severity,
+      this.hrni1_agent.vif.check_pass_count, this.hrni1_agent.vif.check_fail_count);
+    chi_check_report_tallies("e_hni_rni1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hrni1_agent.vif.check_enabled, this.hrni1_agent.vif.check_severity,
+      this.hrni1_agent.vif.check_pass_count, this.hrni1_agent.vif.check_fail_count);
+    chi_check_export_csv("e_hni_rn1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.rn_vif[1].check_enabled, this.hni_agent.rn_vif[1].check_severity,
+      this.hni_agent.rn_vif[1].check_pass_count, this.hni_agent.rn_vif[1].check_fail_count);
+    chi_check_report_tallies("e_hni_rn1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.rn_vif[1].check_enabled, this.hni_agent.rn_vif[1].check_severity,
+      this.hni_agent.rn_vif[1].check_pass_count, this.hni_agent.rn_vif[1].check_fail_count);
+    chi_check_export_csv("e_hni_sn1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.sn_vif[1].check_enabled, this.hni_agent.sn_vif[1].check_severity,
+      this.hni_agent.sn_vif[1].check_pass_count, this.hni_agent.sn_vif[1].check_fail_count);
+    chi_check_report_tallies("e_hni_sn1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hni_agent.sn_vif[1].check_enabled, this.hni_agent.sn_vif[1].check_severity,
+      this.hni_agent.sn_vif[1].check_pass_count, this.hni_agent.sn_vif[1].check_fail_count);
+    chi_check_export_csv("e_hni_snf1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hsnf1_agent.vif.check_enabled, this.hsnf1_agent.vif.check_severity,
+      this.hsnf1_agent.vif.check_pass_count, this.hsnf1_agent.vif.check_fail_count);
+    chi_check_report_tallies("e_hni_snf1_sva", CHI_CHECK_SCOPE_MAIN_E,
+      this.hsnf1_agent.vif.check_enabled, this.hsnf1_agent.vif.check_severity,
+      this.hsnf1_agent.vif.check_pass_count, this.hsnf1_agent.vif.check_fail_count);
+
     this.scoreboard.export_check_csv();
   endfunction
 endclass

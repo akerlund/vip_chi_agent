@@ -214,6 +214,29 @@ class chi_coherent_tb_env #(
       this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
       this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
 
+    // The downstream SN-F link, added with box 0.3: the HN-F's SN-facing port and
+    // the SN-F endpoint behind it. It carries the memory traffic of every
+    // coherent read miss and was checked by nothing, in either port. Both ends,
+    // because the direction-split rules each run at only one of them.
+    //
+    // hnf_agent.sn_vif exists whether or not the two-level hierarchy is enabled,
+    // and the checker's own checks_enable gate keeps a link that never activates
+    // silent -- so exporting unconditionally is right: a run that did not use the
+    // downstream link should say "enabled, zero passes" rather than say nothing.
+    chi_check_export_csv({BIND_PREFIX_C, "hnf0_sn_sva"}, CHI_CHECK_SCOPE_MAIN_E,
+      this.hnf_agent.sn_vif[0].check_enabled, this.hnf_agent.sn_vif[0].check_severity,
+      this.hnf_agent.sn_vif[0].check_pass_count, this.hnf_agent.sn_vif[0].check_fail_count);
+    chi_check_export_csv({BIND_PREFIX_C, "dsnf0_sva"}, CHI_CHECK_SCOPE_MAIN_E,
+      this.dsnf0_agent.vif.check_enabled, this.dsnf0_agent.vif.check_severity,
+      this.dsnf0_agent.vif.check_pass_count, this.dsnf0_agent.vif.check_fail_count);
+
+    chi_check_report_tallies({BIND_PREFIX_C, "hnf0_sn_sva"}, CHI_CHECK_SCOPE_MAIN_E,
+      this.hnf_agent.sn_vif[0].check_enabled, this.hnf_agent.sn_vif[0].check_severity,
+      this.hnf_agent.sn_vif[0].check_pass_count, this.hnf_agent.sn_vif[0].check_fail_count);
+    chi_check_report_tallies({BIND_PREFIX_C, "dsnf0_sva"}, CHI_CHECK_SCOPE_MAIN_E,
+      this.dsnf0_agent.vif.check_enabled, this.dsnf0_agent.vif.check_severity,
+      this.dsnf0_agent.vif.check_pass_count, this.dsnf0_agent.vif.check_fail_count);
+
     // The RN-F endpoints carry BOTH binds: coh_rnf<i>_sva judges the main range
     // on that interface and coh_rnf<i>_snp_sva the SNP range, and both write
     // their tallies into the SAME arrays, because the tallies live on the

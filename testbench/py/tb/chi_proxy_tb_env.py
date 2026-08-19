@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 
+import cocotb
 from cocotb.triggers import FallingEdge
 
 from pyuvm import uvm_env, uvm_tlm_analysis_fifo, ConfigDB
@@ -32,6 +33,7 @@ from pyuvm import uvm_env, uvm_tlm_analysis_fifo, ConfigDB
 from vip_chi_types_pkg import Role
 from vip_chi_agent import vip_chi_agent
 from vip_chi_hni_agent import vip_chi_hni_agent
+from sva.bind_chi import bind_chi
 from vip_chi_cfg_agent import VipChiCfgAgent
 from chi_virtual_sequencer import chi_virtual_sequencer
 from vip_chi_scoreboard import vip_chi_scoreboard
@@ -61,6 +63,7 @@ class chi_proxy_tb_env(uvm_env):
     self.hrni1_dat_fifo = None
     self.hsnf0_req_fifo = None
     self.hsnf1_req_fifo = None
+    self.hni_sva = []
 
   def build_phase(self):
     rni0_vif = ConfigDB().get(self, "", "rni0_vif")
@@ -87,6 +90,30 @@ class chi_proxy_tb_env(uvm_env):
     self.hsnf1_agent = vip_chi_agent("hsnf1_agent", self)
 
     self.hni_agent = vip_chi_hni_agent("hni", self)
+
+    # The HN-I proxy topology's binds, added with box 0.3. Before it, a grep for
+    # bind_chi in this file returned zero: not a disabled checker, no checker at
+    # all, on every testcase that runs this topology. The scoreboard ran; the link
+    # and protocol layer -- LASM, L-credit accounting, reset idle, TXSACTIVE,
+    # FLITPEND, DAT beat counts, DataID ordering, TxnID reuse, CompAck -- did not.
+    #
+    # Both ends of each link, matching the SV harness and for the same stated
+    # reason: a link's two views are the same wires at opposite polarity, and the
+    # direction-split rules each run at only one of them. The roles come off the
+    # buses, which already have them right -- the proxy's RN-facing ports are
+    # HN-I (a completer) and its SN-facing ports RN-I (a requester).
+    self.hni_sva = [
+      bind_chi(rni0_vif, "hni_rni0_sva"),
+      bind_chi(hrn0_vif, "hni_rn0_sva", txsactive_from_link_up=True),
+      bind_chi(hsn0_vif, "hni_sn0_sva", txsactive_from_link_up=True,
+               multi_source_link=True),
+      bind_chi(snf0_vif, "hni_snf0_sva", multi_source_link=True),
+      bind_chi(rni1_vif, "hni_rni1_sva"),
+      bind_chi(hrn1_vif, "hni_rn1_sva", txsactive_from_link_up=True),
+      bind_chi(hsn1_vif, "hni_sn1_sva", txsactive_from_link_up=True,
+               multi_source_link=True),
+      bind_chi(snf1_vif, "hni_snf1_sva", multi_source_link=True),
+    ]
     self._rn_buses = [hrn0_vif, hrn1_vif]
     self._sn_buses = [hsn0_vif, hsn1_vif]
     try:
@@ -168,6 +195,11 @@ class chi_proxy_tb_env(uvm_env):
       len(self._sn_buses), self.hni.sn_addr_lsb, self.hni.sam)
 
   async def run_phase(self):
+    # The protocol checkers watch nets continuously and own their own reset
+    # handling, so they are started once here rather than restarted below.
+    for checker in self.hni_sva:
+      cocotb.start_soon(checker.run())
+
     bus = self.hrni0_agent.vif
     while True:
       await FallingEdge(bus.rst_n)
@@ -183,6 +215,14 @@ class chi_proxy_tb_env(uvm_env):
     self.scoreboard.report_checks(self.logger)
     if csv_path:
       self.scoreboard.export_check_csv(csv_path, run_name)
+    for checker in self.hni_sva:
+      checker.report(self.logger)
+      if csv_path:
+        checker.export_check_csv(csv_path, run_name)
+    total = sum(checker.errors for checker in self.hni_sva)
+    assert total == 0, (
+      "protocol checker reported violations on the HN-I proxy links: "
+      + " ".join(f"{c.log.name}={c.errors}" for c in self.hni_sva if c.errors))
 
   def handle_reset(self):
     self.scoreboard.handle_reset()

@@ -128,8 +128,18 @@ _TIMEOUT_CYCLES_C = 1024
 # cfg.txsactive_extend_max_cycles is what a test tightens or extends.
 _TXSACTIVE_SETTLE_CYCLES_C = 16
 
+# Which end of a link a bind sits on, which is what decides whether a request
+# arrives on rxreq or leaves on txreq. Every transaction-level rule is gated on
+# one of these two, so a role in NEITHER leaves a bind checking the structural
+# rules only -- enabled, reporting, and silent on everything that needs a
+# transaction.
+#
+# HN-I is a completer, and the SV interface says so in as many words: its
+# RN-facing clocking block mirrors snf_cb verbatim because a home node, on the
+# link that faces the RN, plays the completer role. Its SN-facing ports are
+# separate interfaces declared RNI and land in the requester set on their own.
 _REQUESTER_ROLES_C = (Role.RNI, Role.RNF)
-_COMPLETER_ROLES_C = (Role.SNF, Role.HNF)
+_COMPLETER_ROLES_C = (Role.SNF, Role.HNF, Role.HNI)
 
 # Flit fields this checker reads, per channel. Only these are sliced out of the
 # raw flit: unpacking the whole DAT flit every beat would drag the multi-hundred
@@ -381,6 +391,9 @@ class bind_chi:
   def __init__(self, bus, name: str = "bind_chi",
                checks_enable: bool | None = None,
                enable_completion_timeout: bool = True,
+               multi_source_link: bool = False,
+               txsactive_from_link_up: bool = False,
+               hand_driven_link: bool = False,
                timeout_cycles: int = _TIMEOUT_CYCLES_C,
                tb_cfg=None):
     self.bus = bus
@@ -418,6 +431,42 @@ class bind_chi:
     # which gates the same single rule.
     if not enable_completion_timeout:
       self.check_enable["CHI_COMPLETION_FOLLOWS_REQ"] = False
+
+    # More than one requester's traffic converges on this link. The TxnID-reuse
+    # shadow is keyed by TxnID alone, so it cannot hold two sources' claims on
+    # the same value at once -- and section 2.5 makes that a legal situation.
+    # Scoping the rule by SrcID (below) removes the systematic false report; what
+    # remains is that the shadow is lossy, so on a genuinely multi-source link the
+    # rule stands down and says so through enabled=0. See F-CHK-018.
+    if multi_source_link:
+      self.check_enable["CHI_TXNID_REUSE_REQUESTER"] = False
+      self.check_enable["CHI_TXNID_REUSE_COMPLETER"] = False
+
+    # This endpoint drives TXSACTIVE from link-up rather than from its
+    # outstanding window, so the sideband is a constant while the link is up.
+    # Legal -- section 14.7.2's obligation is a lower bound -- but exactly what
+    # TXSACTIVE_DEASSERT_BOUNDED exists to report, so it would fire on every run
+    # rather than on a defect. The driver behavior is F-CORR-005 (box 1.6).
+    if txsactive_from_link_up:
+      self.check_enable["CHI_TXSACTIVE_DEASSERT_BOUNDED"] = False
+
+    # This link is driven by a testcase directly, without the driver's credit and
+    # FLITPEND machinery. It raises FLITV with no preceding FLITPEND, consumes
+    # credit that was never granted, and never retires the transaction it starts,
+    # so the flit-protocol rules report facts about the testcase rather than about
+    # the VIP. LASM, reset-idle, known-when-valid and link gating stay live.
+    #
+    # Only the SV harness has such a link today (the A0 smoke pair). The keyword
+    # exists here so the two ports' checker APIs stay the same shape, which is
+    # what stops the next hand-driven link from being bound in one port only.
+    if hand_driven_link:
+      for _rule in ("CHI_REQ_VALID_REQUIRES_PEND", "CHI_RSP_VALID_REQUIRES_PEND",
+                    "CHI_DAT_VALID_REQUIRES_PEND", "CHI_LCRD_OVERFLOW",
+                    "CHI_LCRD_UNDERFLOW", "CHI_LCRD_QUIESCENT_IN_STOP",
+                    "CHI_TXNID_REUSE_REQUESTER", "CHI_TXNID_REUSE_COMPLETER",
+                    "CHI_TXSACTIVE_COVERS_OUTSTANDING",
+                    "CHI_TXSACTIVE_DEASSERT_BOUNDED"):
+        self.check_enable[_rule] = False
     self._timeout_cycles = timeout_cycles
     # Read live each cycle rather than latched at build, mirroring the SV top,
     # which re-reads tb_cfg every clock so a testcase can raise the knob before
@@ -721,6 +770,19 @@ class bind_chi:
     # space and clears them on reset; a dict with a zero default is the same
     # thing without allocating the whole space up front.
     self._req_inflight = {}
+    # Which SrcID owns the TxnID currently occupying each slot.
+    #
+    # IHI 0050 E section 2.5 scopes the uniqueness rule to a source and says so
+    # twice over: "It is required that the TxnID, except for PrefetchTgt, must be
+    # unique for a given Requester. The Requester is identified by the SrcID."
+    # Two requests carrying the same TxnID from DIFFERENT SrcIDs are therefore
+    # legal and ordinary -- and unavoidable on a link where more than one
+    # requester's traffic converges, because each allocates from its own pool.
+    #
+    # Without this the reuse rules read the spec as "unique per link", a stricter
+    # rule than the one written. It went unnoticed because no bind sat on a fan-in
+    # link until box 0.3 bound the HN-I proxy's SN-facing ports.
+    self._req_src = {}
     self._req_exp_comp_ack = {}
     self._completion_seen = {}
     self._write_grant_seen_by_dbid = {}
@@ -1406,9 +1468,17 @@ class bind_chi:
       # A TxnID identifies an outstanding transaction. Reusing one before its
       # first use retires makes the two indistinguishable to every downstream
       # tracker, including this checker.
-      self._chk(reuse_rule, not self._req_inflight.get(txn, False),
-                reuse_msg, "section 2.3")
+      # Same SrcID reusing a live slot is the violation. A DIFFERENT SrcID
+      # landing on the same slot is a pass, not a decline: section 2.5's rule is
+      # satisfied outright, because the two requests are distinguishable by the
+      # field the spec names.
+      src = int(f["srcid"]) if "srcid" in f else None
+      live = self._req_inflight.get(txn, False)
+      self._chk(reuse_rule,
+                not (live and self._req_src.get(txn) == src),
+                reuse_msg, "section 2.5")
       self._post(self._req_inflight, txn, True)
+      self._post(self._req_src, txn, src)
       self._arm_completion(s, f)
 
     self._post(self._expected_write_beats_by_txn, txn,

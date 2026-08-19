@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 
+import cocotb
 from cocotb.triggers import FallingEdge
 
 from pyuvm import uvm_env, uvm_tlm_analysis_fifo, ConfigDB
@@ -27,6 +28,7 @@ from pyuvm import uvm_env, uvm_tlm_analysis_fifo, ConfigDB
 from vip_chi_types_pkg import Role
 from vip_chi_agent import vip_chi_agent
 from vip_chi_hni_agent import vip_chi_hni_agent
+from sva.bind_chi import bind_chi
 from vip_chi_cfg_agent import VipChiCfgAgent
 from vip_chi_coverage import vip_chi_coverage
 from vip_chi_scoreboard import vip_chi_scoreboard
@@ -50,6 +52,7 @@ class chi_e_proxy_tb_env(uvm_env):
     self.hrni0_rsp_fifo = None
     self.hrni0_dat_fifo = None
     self.hsnf0_req_fifo = None
+    self.hni_sva = []
 
   def build_phase(self):
     rni_vif = ConfigDB().get(self, "", "rni_vif")
@@ -71,6 +74,28 @@ class chi_e_proxy_tb_env(uvm_env):
     self.hni_agent = vip_chi_hni_agent("hni", self)
     self._rn_buses = [hrn_vif]
     self._sn_buses = [hsn_vif]
+
+    # The HN-I proxy topology's binds, added with box 0.3. Before it, a grep for
+    # bind_chi in this file returned zero: not a disabled checker, no checker at
+    # all. The scoreboard ran; the link and protocol layer did not.
+    #
+    # Both ends of each link, matching the SV harness and for the same stated
+    # reason: a link's two views are the same wires at opposite polarity, and the
+    # direction-split rules each run at only one of them. Roles come off the
+    # buses, which already have them right -- the proxy's RN-facing port is HN-I
+    # (a completer) and its SN-facing port RN-I (a requester).
+    #
+    # FOUR binds here against the SV harness's eight, and that is a topology
+    # difference rather than a parity gap: this port's CHI-E proxy is 1x1 where
+    # SV's is 2x2, so ports rni1/rn1/sn1/snf1 do not exist to bind. The names
+    # match SV's port-0 set exactly, so the aggregation joins them.
+    self.hni_sva = [
+      bind_chi(rni_vif, "e_hni_rni0_sva"),
+      bind_chi(hrn_vif, "e_hni_rn0_sva", txsactive_from_link_up=True),
+      bind_chi(hsn_vif, "e_hni_sn0_sva", txsactive_from_link_up=True,
+               multi_source_link=True),
+      bind_chi(snf_vif, "e_hni_snf0_sva", multi_source_link=True),
+    ]
     try:
       self.hni_agent.cfg = ConfigDB().get(self, "", "hni_cfg")
     except Exception:
@@ -136,6 +161,11 @@ class chi_e_proxy_tb_env(uvm_env):
       len(self._sn_buses), self.hni.sn_addr_lsb, self.hni.sam)
 
   async def run_phase(self):
+    # The protocol checkers watch nets continuously and own their own reset
+    # handling, so they are started once here rather than restarted below.
+    for checker in self.hni_sva:
+      cocotb.start_soon(checker.run())
+
     bus = self.hrni0_agent.vif
     while True:
       await FallingEdge(bus.rst_n)
@@ -147,6 +177,14 @@ class chi_e_proxy_tb_env(uvm_env):
     self.scoreboard.report_checks(self.logger)
     if csv_path:
       self.scoreboard.export_check_csv(csv_path, run_name)
+    for checker in self.hni_sva:
+      checker.report(self.logger)
+      if csv_path:
+        checker.export_check_csv(csv_path, run_name)
+    total = sum(checker.errors for checker in self.hni_sva)
+    assert total == 0, (
+      f"CHI protocol checkers reported {total} violation(s) on the HN-I proxy "
+      "links: " + " ".join(f"{c.log.name}={c.errors}" for c in self.hni_sva if c.errors))
 
   def handle_reset(self):
     self.coverage.handle_reset()
