@@ -403,6 +403,29 @@ class VipChiCfgAgent:
     # fires on the forwarding half and stays quiet on the other. Default False
     # keeps the home on the table.
     self.hnf_snoop_shared_for_read_clean = False
+
+    # Negative control for catalogue rule D9. With this set, the home sends one
+    # SnpOnce to the requester's own port, for the line it has just completed,
+    # BEFORE collecting that request's CompAck -- straight into the window IHI
+    # 0050 E section 2.8.3 rule 2 reserves ("An HN-F, except in the case of
+    # ReadOnce*, waits for CompAck before sending a subsequent snoop to the same
+    # address"), and the same window the requester-facing wording of the rule
+    # promises will stay empty.
+    #
+    # SnpOnce is deliberate. It leaves the snoopee's state and its data exactly
+    # as they were, and section 4.4 lets a home snoop spontaneously, so nothing
+    # about the flit is wrong except WHEN it was sent. That isolates the one
+    # property under test. ReadOnce is skipped because the section names it as
+    # the exception.
+    self.hnf_snoop_before_comp_ack = False
+
+    # Negative control for CHI_EXPCOMPACK_REQUIRED_BUT_ZERO. The requester drops
+    # the ExpCompAck bit on a request whose opcode requires it -- IHI 0050 E
+    # Table 2-9 / D Table 2-8 marks ReadClean, ReadShared, ReadUnique,
+    # MakeReadUnique, CleanUnique, MakeUnique and WriteEvictOrEvict "Yes" for an
+    # RN-F -- and then behaves consistently with the zero it sent, so the
+    # required-but-zero rule is the only one that can fire.
+    self.rn_drop_required_exp_comp_ack = False
     self.exclusives_enabled = True
     self.hnf_force_excl_success = False
     self.hnf_enable_snoop_fwd = False
@@ -592,6 +615,8 @@ class VipChiCfgAgent:
       "hnf_corrupt_dirty_merge": self.hnf_corrupt_dirty_merge,
       "rnf_req_final_state_verbatim": self.rnf_req_final_state_verbatim,
       "hnf_snoop_shared_for_read_clean": self.hnf_snoop_shared_for_read_clean,
+      "hnf_snoop_before_comp_ack": self.hnf_snoop_before_comp_ack,
+      "rn_drop_required_exp_comp_ack": self.rn_drop_required_exp_comp_ack,
       "hnf_force_excl_success": self.hnf_force_excl_success,
       "hnf_corrupt_fwd_data": self.hnf_corrupt_fwd_data,
       "hnf_downstream_corrupt_data": self.hnf_downstream_corrupt_data,

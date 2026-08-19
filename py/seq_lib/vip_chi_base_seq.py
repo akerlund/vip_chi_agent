@@ -33,6 +33,7 @@ from pyuvm import uvm_sequence
 
 from vip_chi_types_pkg import (
   ChiCfg, VIP_CHI_DEFAULT_CFG, Dir, Role, DataType, ReqOpcode,
+  exp_comp_ack_required,
 )
 from vip_chi_item import vip_chi_item
 from vip_chi_cfg_item import VipChiCfgItem
@@ -72,7 +73,16 @@ class vip_chi_base_seq(uvm_sequence):
     self.order_val = 0
     self.mem_attr_val = 0
     self.allow_retry_val = 1
+    # ExpCompAck is not a plain stamped field like the ones around it: IHI 0050
+    # E Table 2-9 / D Table 2-8 makes it required on some opcodes, optional on
+    # others and forbidden on the rest, so "the value the sequence stamps" is
+    # only meaningful once the opcode is known. exp_comp_ack_val therefore holds
+    # an OVERRIDE, and exp_comp_ack_forced says whether anyone asked for one.
+    # Left alone, the sequence reads the answer off the table for the opcode it
+    # just chose. This is what stops a plain coherent-read sequence from stamping
+    # the zero that the item constraint now (correctly) refuses.
     self.exp_comp_ack_val = 0
+    self.exp_comp_ack_forced = 0
     self.excl_val = 0
     self.pcrd_type_val = 0
     self.src_id_val = 0
@@ -171,7 +181,9 @@ class vip_chi_base_seq(uvm_sequence):
   def set_order(self, order): self.order_val = int(order)
   def set_mem_attr(self, mem_attr): self.mem_attr_val = int(mem_attr)
   def set_allow_retry(self, allow_retry): self.allow_retry_val = int(allow_retry)
-  def set_exp_comp_ack(self, exp_comp_ack): self.exp_comp_ack_val = int(exp_comp_ack)
+  def set_exp_comp_ack(self, exp_comp_ack):
+    self.exp_comp_ack_val = int(exp_comp_ack)
+    self.exp_comp_ack_forced = 1
   def set_excl(self, excl): self.excl_val = int(excl)
   def set_pcrd_type(self, pcrd_type): self.pcrd_type_val = int(pcrd_type)
   def set_sep_read(self, enabled): self.sep_read_enabled = bool(enabled)
@@ -258,6 +270,16 @@ class vip_chi_base_seq(uvm_sequence):
     opcode_val = int(self._choose_opcode())
     role_val = int(self._role_val())
 
+    # Has to come after _choose_opcode(): the table is indexed by opcode, and
+    # asking it before the opcode exists is how the field ended up being stamped
+    # from a per-sequence constant in the first place. An explicit
+    # set_exp_comp_ack() still wins -- including a deliberate zero, which the
+    # item constraint will then reject if the opcode requires the bit, and that
+    # rejection is the point.
+    exp_comp_ack_eff = (self.exp_comp_ack_val if self.exp_comp_ack_forced
+                        else int(exp_comp_ack_required(opcode_val,
+                                                       role_val == int(Role.RNF))))
+
     with req.randomize_with() as x:
       x.direction == direction_val
       x.role == role_val
@@ -278,7 +300,7 @@ class vip_chi_base_seq(uvm_sequence):
       x.order == self.order_val
       x.mem_attr == self.mem_attr_val
       x.allow_retry == self.allow_retry_val
-      x.exp_comp_ack == self.exp_comp_ack_val
+      x.exp_comp_ack == exp_comp_ack_eff
       x.excl == self.excl_val
       x.pcrd_type == self.pcrd_type_val
 

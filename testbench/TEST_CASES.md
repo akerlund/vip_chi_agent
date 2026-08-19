@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **167 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **168 pyUVM/cocotb**
+The shared regression currently runs **173 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **174 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -228,6 +228,9 @@ forwarding (`SnpRespData` + PassDirty), and eviction (`WriteBackFull` /
 | `tc_chi_coh_d_req_final_state_negctl` | COH | negative control for the above: `rnf_req_final_state_verbatim` puts RN-F1 back on the granted `Resp` verbatim, so its dirty copy is lost and the following snoop is answered with no data. Catalogue rule D7 must flag it (`snp_dirty_lost` rises); the induced error is caught and demoted. |
 | `tc_chi_coh_d_read_clean_snoop` | COH | request->snoop correspondence (IHI 0050 E Table 4-5 / D Table 4-3): a `ReadClean` must be snooped with `SnpClean` on the ordinary path and `SnpCleanFwd` on the Direct Cache Transfer path. Drives both, asserting the observed snoop opcode each time, and that catalogue rule D8 judged at least one snoop against its request with no mismatch. Before Table 4-5 was modeled both were `SnpShared`/`SnpSharedFwd`. |
 | `tc_chi_coh_d_snoop_match_negctl` | COH | negative control for the above: `hnf_snoop_shared_for_read_clean` puts the home back on the single `is_unique` bit. The same knob then yields `SnpShared` (which the bullet under Table 4-5 PERMITS for `ReadClean`, so D8 must stay silent) and `SnpSharedFwd` (which no bullet reaches, so D8 must fire). Asserts both halves; the induced error is caught and demoted. |
+| `tc_chi_coh_d_comp_ack_read` | COH | the read half of `CompAck` (IHI 0050 E Table 2-9 / D Table 2-8, section 2.8.3): an RN-F `ReadShared` must carry `ExpCompAck` and answer its `CompData` with a `CompAck`. Asserts the acknowledgement window opened and closed, then has the other RN-F read the same line and asserts the resulting snoop fell OUTSIDE that window -- section 2.8.3 rule 2, judged by catalogue rule D9. Before Table 2-9 was modeled the item constraint forced `ExpCompAck` to zero on every read. |
+| `tc_chi_coh_d_comp_ack_window_negctl` | COH | negative control for D9: `hnf_snoop_before_comp_ack` makes the home send one `SnpOnce` into the window between `CompData` and `CompAck`, with the requester's RSP delayed so the window is unambiguously open. `SnpOnce` perturbs neither state nor data, so only the timing rule can fire. Asserts the in-window snoop count moved; the induced error is caught and demoted. |
+| `tc_chi_coh_d_expcompack_negctl` | COH | negative control for `CHI_EXPCOMPACK_REQUIRED_BUT_ZERO`: `rn_drop_required_exp_comp_ack` clears the bit on a `ReadShared`, which Table 2-9 marks required. The item field is cleared, not just the flit, so the requester also sends no `CompAck` -- asserted, so exactly one rule fires. Also asserts no D9 window opened, i.e. the rule arms off the wire bit. |
 | `tc_chi_coh_d_writeback_evict` | COH | both eviction paths: RN-F0 `WriteBackFull` (DBID grant → `CopyBackWrData` → memory commit) and RN-F1 `Evict` (RSP-only `Comp`). Both directory ports and both RN-F cache states return to Invalid. |
 | `tc_chi_coh_d_read_after_writeback` | COH | writeback data integrity: RN-F0 writes a fresh payload back, then RN-F1 `ReadShared` returns exactly the written-back data (and it differs from the original image — a no-op writeback would fail). |
 | `tc_chi_coh_d_write_unique_ptl` | COH | `WriteUniquePtl` data integrity: RN-F1 writes 16 byte-enabled bytes at offset 16, the HN-F invalidates RN-F0 and commits at the request address, and a full-line readback proves only the enabled lanes changed. |

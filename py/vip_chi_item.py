@@ -39,6 +39,7 @@ from vip_chi_types_pkg import (
   ChiCfg, VIP_CHI_DEFAULT_CFG, Dir, Role, DataType, ReqOpcode, DatOpcode,
   RspOpcode, Resp, RespErr, Issue, RawChannel, mask, clog2, chi_xfer_dat_beats,
   req_opcode_is_atomic, req_opcode_is_atomic_compare,
+  exp_comp_ack_required, exp_comp_ack_prohibited,
 )
 
 _RO = ReqOpcode  # brevity in the opcode-set tables below
@@ -97,12 +98,18 @@ _PARTIAL_WRITE_OPCODES = {
   int(_RO.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
 }
 
-# Opcodes that must never carry ExpCompAck (con_exp_comp_ack_legal).
-_NO_EXP_COMP_ACK_OPCODES = [
-  _RO.PREFETCH_TGT, _RO.PCRD_RETURN, _RO.CLEAN_SHARED_PERSIST,
-  _RO.CLEAN_SHARED_PERSIST_SEP, _RO.WRITE_NO_SNP_ZERO, _RO.MAKE_UNIQUE,
-  _RO.WRITE_UNIQUE_ZERO,
-] + list(range(0x28, 0x3A))
+# ExpCompAck legality per IHI 0050 E Table 2-9 / D Table 2-8, enumerated from
+# the types-package classifier so the table is written once. Two sets per
+# requester column: the opcodes REQUIRED to carry the bit, and the opcodes
+# ALLOWED to (required plus optional). Anything outside ALLOWED is prohibited,
+# including an encoding no ReqOpcode member names -- which is the same answer
+# the SystemVerilog function's default gives.
+_COMPACK_REQUIRED_RNF = tuple(sorted(
+  int(o) for o in _RO if exp_comp_ack_required(int(o), True)))
+_COMPACK_ALLOWED_RNF = tuple(sorted(
+  int(o) for o in _RO if not exp_comp_ack_prohibited(int(o), True)))
+_COMPACK_ALLOWED_NON_RNF = tuple(sorted(
+  int(o) for o in _RO if not exp_comp_ack_prohibited(int(o), False)))
 
 
 @vsc.randobj
@@ -569,18 +576,48 @@ class vip_chi_item(uvm_sequence_item):
 
   @vsc.constraint
   def con_exp_comp_ack_legal(self):
+    # IHI 0050 E Table 2-9 / D Table 2-8, "Requester CompAck requirement".
+    #
+    # The table has three answers per opcode -- Yes, Optional, No -- and this
+    # constraint has three cases to match. It used to have one: every read was
+    # forced to zero, which is the opposite of what the table says for the four
+    # coherent reads an RN-F can issue, and CleanUnique/MakeUnique escaped
+    # through the write side of the same rule.
+    #
+    # Both edges are hard, and only the middle is soft. Required and prohibited
+    # are protocol; the zero on an OPTIONAL opcode is this VIP's policy, and a
+    # sequence that wants Ordered Write Observation on a WriteNoSnp -- or an
+    # RN-F that wants to acknowledge a ReadOnce -- overrides it by asking, which
+    # is what soft is for.
+    #
+    # Where SV calls vip_chi_exp_comp_ack_{required,prohibited} from inside the
+    # constraint, this side cannot: pyvsc would hand the function a solver
+    # expression rather than an opcode. The sets are enumerated from the same
+    # types-package function at import time instead, so the table is still
+    # written once and the two ports cannot classify an opcode differently.
     with vsc.if_then(self.s_raw_override == 0):
-      with vsc.if_then(self.direction == int(Dir.READ)):
-        self.exp_comp_ack == 0
-      with vsc.if_then(self.opcode.inside(
-          vsc.rangelist(*[int(o) for o in _NO_EXP_COMP_ACK_OPCODES]))):
-        self.exp_comp_ack == 0
-      # The one opcode that REQUIRES it. WriteEvictOrEvict lets the home decline
-      # the data and answer with a bare Comp, and that leg completes only when
-      # the requester acks -- so the bit is not optional the way it is on every
-      # other write.
-      with vsc.if_then(self.opcode == int(_RO.WRITE_EVICT_OR_EVICT)):
-        self.exp_comp_ack == 1
+      with vsc.if_then(self.role == int(Role.RNF)):
+        with vsc.if_then(self.opcode.inside(
+            vsc.rangelist(*_COMPACK_REQUIRED_RNF))):
+          self.exp_comp_ack == 1
+        with vsc.if_then(~self.opcode.inside(
+            vsc.rangelist(*_COMPACK_ALLOWED_RNF))):
+          self.exp_comp_ack == 0
+      with vsc.else_then:
+        with vsc.if_then(~self.opcode.inside(
+            vsc.rangelist(*_COMPACK_ALLOWED_NON_RNF))):
+          self.exp_comp_ack == 0
+      # The soft has to be guarded away from the REQUIRED opcodes, or it stops
+      # being about ExpCompAck at all: the solver is free to choose the opcode
+      # too, so an unguarded "prefer zero" is satisfiable by never drawing a
+      # request that requires a one. Left unguarded, an RN-F read randomizes to
+      # ReadOnce every single time -- the only read in the pool whose bit may be
+      # zero -- and ReadShared/ReadClean/ReadUnique/MakeReadUnique disappear from
+      # the stimulus. A policy default that silently deletes four opcodes is a
+      # worse defect than the one this constraint was rewritten to fix.
+      with vsc.if_then(~self.opcode.inside(
+          vsc.rangelist(*_COMPACK_REQUIRED_RNF))):
+        vsc.soft(self.exp_comp_ack == 0)
 
   @vsc.constraint
   def con_issue_gated_fields(self):

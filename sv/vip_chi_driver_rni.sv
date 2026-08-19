@@ -936,6 +936,18 @@ class vip_chi_driver_rni #(
           end
 
           this.collect_read_completion(req);
+
+          // IHI 0050 E section 2.8.3 rule 1: "An RN-F sends a CompAck after
+          // receiving Comp, RespSepData or CompData". This is the read half of
+          // the acknowledgement, and until Table 2-9 was implemented in the item
+          // constraint it was unreachable -- ExpCompAck was forced to zero on
+          // every read, so the branch had nothing to send and was never written.
+          // The completer half of the same rule (wait for CompAck before
+          // snooping the line again) lives in the HN-F.
+          if (req.exp_comp_ack) begin
+
+            this.drive_comp_ack(req.txn_id, req.src_id, req.tgt_id);
+          end
         end
         else begin
 
@@ -1375,6 +1387,18 @@ class vip_chi_driver_rni #(
   protected task drive_req(input item_t req, input bit alloc_id = 1'b1);
 
     req_flit_t flit;
+
+    // Negative control for CHI_EXPCOMPACK_REQUIRED_BUT_ZERO. The item field is
+    // cleared, not just the flit field, and that is the whole point: the
+    // requester then stays self-consistent -- it puts a zero on the wire AND
+    // does not send the CompAck -- so exactly one rule can fire. Zeroing only
+    // the outgoing field would also trip COMPACK_WITHOUT_EXPCOMPACK a few cycles
+    // later, and a control that breaks two rules at once cannot show which of
+    // them is being exercised.
+    if (this.cfg.rn_drop_required_exp_comp_ack && req.exp_comp_ack) begin
+
+      req.exp_comp_ack = 1'b0;
+    end
 
     // A retry re-issue keeps the original TxnID (alloc_id = 0); a fresh request
     // allocates one from the in-flight pool.
@@ -2707,6 +2731,18 @@ class vip_chi_driver_rni #(
           idx = i;
           break;
         end
+        // A read owes the same acknowledgement, minus the data leg it has no
+        // send side for. Only the pipelined opcodes reach here -- plain,
+        // non-ordered ReadNoSnp, which Table 2-9 marks Optional -- so this fires
+        // only when a test asks for the bit. It is written anyway because the
+        // alternative is a context that never satisfies retire_mixed().
+        if ((this.mx_ctx[i].kind == TXN_KIND_READ) &&
+            this.mx_ctx[i].item.exp_comp_ack &&
+            this.mx_ctx[i].read_done &&
+            !this.mx_ctx[i].compack_sent) begin
+          idx = i;
+          break;
+        end
       end
       if (idx >= 0) begin
         this.drive_comp_ack(this.mx_ctx[idx].item.txn_id,
@@ -2775,7 +2811,8 @@ class vip_chi_driver_rni #(
         // also have seen its ReadReceipt.
         done = this.mx_ctx[i].read_done &&
                ((vip_chi_req_order_t'(this.mx_ctx[i].item.order) == VIP_CHI_ORDER_NONE_E) ||
-                this.mx_ctx[i].receipt_seen);
+                this.mx_ctx[i].receipt_seen) &&
+               (!this.mx_ctx[i].item.exp_comp_ack || this.mx_ctx[i].compack_sent);
       end
       else if (this.mx_ctx[i].kind == TXN_KIND_ATOMIC) begin
         // An atomic is done once its operand is sent and its completion arrives:

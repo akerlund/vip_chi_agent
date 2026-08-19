@@ -38,7 +38,11 @@ PAIRS = [
     ("req_opcode_is_coherent_rsp_only", "_COHERENT_RSP_ONLY_OPCODES_C"),
     ("req_has_modeled_completion", "_req_has_modeled_completion"),
     ("req_completion_uses_dat", "_req_completion_uses_dat"),
-    ("is_write_req_opcode", "_is_write_req_opcode"),
+    # is_write_req_opcode / _is_write_req_opcode were removed with box 3.5. The
+    # pair existed to gate the ExpCompAck bookkeeping onto write opcodes, and
+    # that gate is gone: Table 2-9 makes the bit a property of the opcode, not
+    # of the direction, so every request is now recorded and the classifier had
+    # no remaining caller in either port.
 ]
 
 # REQ opcodes deliberately claimed by no classifier, each with the reason.

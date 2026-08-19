@@ -465,6 +465,14 @@ package vip_chi_types_pkg;
     // columns of one table, not three rules -- standing this down means "stop
     // checking A-4's zero-marked RSP fields", which is a coherent thing to want.
     VIP_CHI_CHK_RSP_FIELD_ZERO_E,
+    // ExpCompAck legality, appended for the same append-only reason. The
+    // converse -- a CompAck arriving for a request that never asked for one --
+    // has been checked since the first cut as COMPACK_WITHOUT_EXPCOMPACK; this is
+    // the direction nobody was watching, because the item constraint made it
+    // unreachable. IHI 0050 E Table 2-9 / D Table 2-8 marks six RN-F opcodes
+    // "Yes", and a zero in that field is a request that can never be
+    // acknowledged.
+    VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -1191,6 +1199,142 @@ package vip_chi_types_pkg;
         return VIP_CHI_SNP_ONCE_E;
       end
     endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Three-valued because Table 2-9 is: "Yes", "Optional" and "No" are three
+  // different obligations, and collapsing them to a boolean is what produced a
+  // legality constraint that forced the bit to zero on the rows marked "Yes".
+  // ---------------------------------------------------------------------------
+  typedef enum int {
+    VIP_CHI_COMPACK_PROHIBITED_E = 0,
+    VIP_CHI_COMPACK_OPTIONAL_E   = 1,
+    VIP_CHI_COMPACK_REQUIRED_E   = 2
+  } vip_chi_compack_req_t;
+
+  // ---------------------------------------------------------------------------
+  // Whether a request must, may, or must not carry ExpCompAck -- and therefore
+  // whether the requester owes a CompAck once the completion arrives.
+  //
+  // IHI 0050 E Table 2-9 / D Table 2-8, "Requester CompAck requirement". The
+  // table has two columns, RN-F and RN-D/RN-I, and they do not agree: every
+  // coherent read is "Yes" for an RN-F and "-" for an RN-I (which cannot issue
+  // one at all), while ReadNoSnp is "Optional" for both. That is why the
+  // requester role is an argument here rather than being read off the opcode --
+  // the opcode alone does not determine the answer.
+  //
+  // The table is backed by prose in the same section, and the prose is where the
+  // "-" cells acquire meaning:
+  //
+  //   * "An RN-F must include a CompAck response in all Read transactions except
+  //     ReadNoSnp and ReadOnce*."
+  //   * "Although not required, an RN-F is permitted to include a CompAck
+  //     response in ReadNoSnp and ReadOnce* transactions."
+  //   * "An RN-F must not include a CompAck response in StashOnce*, CMO, Atomic
+  //     or Evict transactions."
+  //   * "An RN-I or RN-D is permitted, but not required, to include a CompAck
+  //     response in Read transactions."
+  //   * "An RN-I or RN-D must not include a CompAck response in Dataless or
+  //     Atomic transactions."
+  //
+  // Note which way the asymmetry runs. CleanUnique and MakeUnique are Dataless
+  // requests, and Dataless is exactly the class an RN-I "must not" acknowledge --
+  // yet both are "Yes" in the RN-F column. They are not CMOs (CleanShared,
+  // CleanInvalid, MakeInvalid and the Persist forms are), so the RN-F "must not"
+  // bullet does not reach them either. An implementation that classified by
+  // request CLASS rather than by opcode would get both of them wrong, in
+  // opposite directions depending on which bullet it reached for.
+  //
+  // REQUIRED is a two-sided obligation: the requester sets the bit and sends the
+  // CompAck, and the completer waits for it before snooping the line again
+  // (section 2.8.3 rule 2). PROHIBITED is one-sided -- the bit must be zero.
+  // OPTIONAL means the protocol permits either, and the VIP's own policy of
+  // leaving it off by default lives in the item constraint, not here.
+  //
+  // Every REQ opcode this VIP models is listed. The default is PROHIBITED
+  // because that is the only answer that cannot put an illegal flit on the wire
+  // for an opcode nobody has classified yet: it drives the bit to zero, which is
+  // legal for every row except the "Yes" ones, and all of those are named above.
+  // An opcode added later still has to be classified here -- ReadNotSharedDirty
+  // and ReadPreferUnique are "Yes" rows this VIP does not yet model, and each
+  // would be silently wrong under the default.
+  // ---------------------------------------------------------------------------
+  function automatic vip_chi_compack_req_t vip_chi_exp_comp_ack_requirement(
+    input vip_chi_req_opcode_t req_op,
+    input bit                  requester_is_rnf
+  );
+
+    // Optional for BOTH columns of the table: the two read forms an RN-F may
+    // decline to acknowledge, and the two writes that use CompAck only when they
+    // want Ordered Write Observation ("For Write transactions, CompAck can only
+    // be used for WriteUnique and WriteNoSnp transactions when they require
+    // Ordered Write Observation guarantees").
+    case (req_op)
+      VIP_CHI_REQ_READ_NO_SNP_E,
+      VIP_CHI_REQ_READ_NO_SNP_SEP_E,
+      VIP_CHI_REQ_READ_ONCE_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_E: begin
+        return VIP_CHI_COMPACK_OPTIONAL_E;
+      end
+      default: begin
+      end
+    endcase
+
+    // "In a Combined Write transaction, the CompAck requirement is the same as
+    // the CompAck requirement for the type of Write in the Combined Write
+    // transaction." Every combined form this VIP models is a WriteNoSnp, so they
+    // inherit Optional -- NOT the "No" of the CMO half bolted onto them.
+    if (vip_chi_req_opcode_is_combined_write_cmo(req_op)) begin
+      return VIP_CHI_COMPACK_OPTIONAL_E;
+    end
+
+    // The "Yes" rows. All of them are RN-F only; the same opcodes reaching this
+    // function with requester_is_rnf low are requests an RN-I cannot issue, and
+    // falling through to PROHIBITED is the right answer for a bit it must not
+    // set.
+    if (requester_is_rnf) begin
+      case (req_op)
+        VIP_CHI_REQ_READ_CLEAN_E,
+        VIP_CHI_REQ_READ_SHARED_E,
+        VIP_CHI_REQ_READ_UNIQUE_E,
+        VIP_CHI_REQ_MAKE_READ_UNIQUE_E,
+        VIP_CHI_REQ_CLEAN_UNIQUE_E,
+        VIP_CHI_REQ_MAKE_UNIQUE_E,
+        // WriteEvictOrEvict lets the home decline the data and answer with a
+        // bare Comp, and that leg completes only when the requester acks -- so
+        // the bit is not optional the way it is on every other write.
+        VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_E: begin
+          return VIP_CHI_COMPACK_REQUIRED_E;
+        end
+        default: begin
+        end
+      endcase
+    end
+
+    return VIP_CHI_COMPACK_PROHIBITED_E;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Shorthand for the two edges of the rule above, so a caller that only needs
+  // one of them does not have to name the enum.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_exp_comp_ack_required(
+    input vip_chi_req_opcode_t req_op,
+    input bit                  requester_is_rnf
+  );
+    return (vip_chi_exp_comp_ack_requirement(req_op, requester_is_rnf) ==
+            VIP_CHI_COMPACK_REQUIRED_E);
+  endfunction
+
+  function automatic bit vip_chi_exp_comp_ack_prohibited(
+    input vip_chi_req_opcode_t req_op,
+    input bit                  requester_is_rnf
+  );
+    return (vip_chi_exp_comp_ack_requirement(req_op, requester_is_rnf) ==
+            VIP_CHI_COMPACK_PROHIBITED_E);
   endfunction
 
   // ---------------------------------------------------------------------------

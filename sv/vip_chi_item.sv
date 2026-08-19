@@ -1617,36 +1617,47 @@ class vip_chi_item #(
   }
 
   // ---------------------------------------------------------------------------
-  // Constraints: ExpCompAck is limited to write flows that can legally use it.
+  // Constraints: ExpCompAck follows IHI 0050 E Table 2-9 / D Table 2-8,
+  // "Requester CompAck requirement".
+  //
+  // The table has three answers per opcode -- Yes, Optional, No -- and this
+  // constraint has three cases to match. It used to have one: every read was
+  // forced to zero, which is the opposite of what the table says for the four
+  // coherent reads an RN-F can issue, and CleanUnique/MakeUnique escaped through
+  // the write side of the same rule.
+  //
+  // Both edges are hard, and only the middle is soft. Required and prohibited
+  // are protocol; the zero on an OPTIONAL opcode is this VIP's policy, and a
+  // sequence that wants Ordered Write Observation on a WriteNoSnp -- or an RN-F
+  // that wants to acknowledge a ReadOnce -- overrides it by asking, which is
+  // what soft is for. Writing the policy as a hard constraint is how the
+  // protocol rule got lost inside it the first time.
+  //
+  // The classification is a function call rather than an opcode list so the
+  // table lives in exactly one place. Both arguments are solved before it, and
+  // neither depends on exp_comp_ack, so there is no ordering cycle.
   // ---------------------------------------------------------------------------
   constraint con_exp_comp_ack_legal {
-    if (!raw_override && (direction == VIP_CHI_DIR_READ_E)) {
-      exp_comp_ack == 1'b0;
-    }
-    if (!raw_override &&
-        ((opcode == req_opcode_t'(VIP_CHI_REQ_PREFETCH_TGT_C)) ||
-           (opcode == req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C)) ||
-           (opcode == req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C)) ||
-           (opcode == req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C)) ||
-           (opcode == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C) ||
-           // WriteUniqueZero carries no CompAck, exactly like the WriteNoSnpZero
-           // it mirrors.
-           (opcode == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) ||
-           // MakeUnique is modeled as a plain RSP-only Comp (no CompAck), so a free
-           // randomize() must not draw ExpCompAck and wedge the RN-F waiting to ack
-           // a completion the HN-F never expects (T1/T2 trap-hardening).
-           (opcode == req_opcode_t'(VIP_CHI_REQ_MAKE_UNIQUE_C)) ||
-           vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(vip_chi_req_opcode_t'(opcode)))) {
-      exp_comp_ack == 1'b0;
-    }
-
-    // The one opcode that REQUIRES it. WriteEvictOrEvict lets the home decline
-    // the data and answer with a bare Comp, and that leg completes only when the
-    // requester acks -- so the bit is not optional the way it is on every other
-    // write.
-    if (!raw_override &&
-        (opcode == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) {
-      exp_comp_ack == 1'b1;
+    if (!raw_override) {
+      if (vip_chi_types_pkg::vip_chi_exp_comp_ack_prohibited(
+            vip_chi_req_opcode_t'(opcode), (role == VIP_CHI_ROLE_RNF_E))) {
+        exp_comp_ack == 1'b0;
+      }
+      if (vip_chi_types_pkg::vip_chi_exp_comp_ack_required(
+            vip_chi_req_opcode_t'(opcode), (role == VIP_CHI_ROLE_RNF_E))) {
+        exp_comp_ack == 1'b1;
+      }
+      // The soft has to be guarded away from the REQUIRED opcodes, or it stops
+      // being about ExpCompAck at all: the solver is free to choose the opcode
+      // too, so an unguarded "prefer zero" is satisfiable by never drawing a
+      // request that requires a one. Left unguarded, an RN-F read randomizes to
+      // ReadOnce every single time -- the only read in the pool whose bit may be
+      // zero -- and ReadShared/ReadClean/ReadUnique/MakeReadUnique disappear from
+      // the stimulus. A policy default that silently deletes four opcodes is a
+      // worse defect than the one this constraint was rewritten to fix.
+      else {
+        soft exp_comp_ack == 1'b0;
+      }
     }
   }
 

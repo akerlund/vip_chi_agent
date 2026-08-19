@@ -506,6 +506,35 @@ class vip_chi_cfg_agent extends uvm_object;
   // home on the table.
   bit hnf_snoop_shared_for_read_clean = 1'b0;
 
+  // Negative control for catalogue rule D9. With this set, the home sends one
+  // SnpOnce to the requester's own port, for the line it has just completed,
+  // BEFORE collecting that request's CompAck -- straight into the window IHI
+  // 0050 E section 2.8.3 rule 2 reserves ("An HN-F, except in the case of
+  // ReadOnce*, waits for CompAck before sending a subsequent snoop to the same
+  // address"), and the same window the requester-facing wording of the rule
+  // promises will stay empty: "it is guaranteed not to receive a Snoop request
+  // to the same address between the point that it receives Comp and the point
+  // that it sends CompAck".
+  //
+  // SnpOnce is deliberate. It leaves the snoopee's state and its data exactly as
+  // they were, and section 4.4 lets a home snoop spontaneously, so nothing about
+  // the flit is wrong except WHEN it was sent. That isolates the one property
+  // under test: no state check, no data check and no other rule can be what
+  // fires. ReadOnce is skipped because the section names it as the exception.
+  //
+  // tc_chi_coh_{d,e}_comp_ack_window_negctl uses it. Default 0.
+  bit hnf_snoop_before_comp_ack = 1'b0;
+
+  // Negative control for CHI_EXPCOMPACK_REQUIRED_BUT_ZERO. The requester drops
+  // the ExpCompAck bit on a request whose opcode requires it -- IHI 0050 E
+  // Table 2-9 / D Table 2-8 marks ReadClean, ReadShared, ReadUnique,
+  // MakeReadUnique, CleanUnique, MakeUnique and WriteEvictOrEvict "Yes" for an
+  // RN-F -- and then behaves consistently with the zero it sent, so the
+  // required-but-zero rule is the only one that can fire.
+  //
+  // tc_chi_coh_{d,e}_expcompack_negctl uses it. Default 0.
+  bit rn_drop_required_exp_comp_ack = 1'b0;
+
   // Master enable for exclusive (LL/SC) monitor modeling on the HN-F. When 0 the
   // home ignores req.excl entirely (no monitor set, every completion NormalOkay),
   // so a bench that never uses exclusives is byte-unaffected. Default 1: the home
@@ -973,6 +1002,8 @@ class vip_chi_cfg_agent extends uvm_object;
     if (this.hnf_suppress_snoops || this.hnf_corrupt_dirty_merge ||
         this.rnf_req_final_state_verbatim ||
         this.hnf_snoop_shared_for_read_clean ||
+        this.hnf_snoop_before_comp_ack ||
+        this.rn_drop_required_exp_comp_ack ||
         this.hnf_force_excl_success || this.hnf_corrupt_fwd_data ||
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||

@@ -948,6 +948,17 @@ class vip_chi_driver_rni(uvm_driver):
           if _I(req.opcode) == int(ReqOpcode.READ_NO_SNP_SEP):
             await self.collect_resp_sep_data(req)
           await self.collect_read_completion(req)
+
+          # IHI 0050 E section 2.8.3 rule 1: "An RN-F sends a CompAck after
+          # receiving Comp, RespSepData or CompData". This is the read half of
+          # the acknowledgement, and until Table 2-9 was implemented in the item
+          # constraint it was unreachable -- ExpCompAck was forced to zero on
+          # every read, so the branch had nothing to send and was never written.
+          # The completer half of the same rule (wait for CompAck before
+          # snooping the line again) lives in the HN-F.
+          if _I(req.exp_comp_ack):
+            await self.drive_comp_ack(_I(req.txn_id), _I(req.src_id),
+                                      _I(req.tgt_id))
         else:
           await bus.rising()
           self.drive_idle_sideband()
@@ -979,6 +990,15 @@ class vip_chi_driver_rni(uvm_driver):
 
   async def drive_req(self, req, alloc_id=True):
     bus = self.bus
+    # Negative control for CHI_EXPCOMPACK_REQUIRED_BUT_ZERO. The item field is
+    # cleared, not just the flit field, and that is the whole point: the
+    # requester then stays self-consistent -- it puts a zero on the wire AND does
+    # not send the CompAck -- so exactly one rule can fire. Zeroing only the
+    # outgoing field would also trip COMPACK_WITHOUT_EXPCOMPACK a few cycles
+    # later, and a control that breaks two rules at once cannot show which of
+    # them is being exercised.
+    if self.cfg.rn_drop_required_exp_comp_ack and _I(req.exp_comp_ack):
+      req.exp_comp_ack = 0
     if alloc_id:
       req.txn_id = self.alloc_txn_id()
     fields = self._req_fields(req)
@@ -1614,7 +1634,8 @@ class vip_chi_driver_rni(uvm_driver):
     while i < len(self.mx_ctx):
       c = self.mx_ctx[i]
       if c.kind == _KIND_READ:
-        done = c.read_done and (_I(c.item.order) == 0 or c.receipt_seen)
+        done = (c.read_done and (_I(c.item.order) == 0 or c.receipt_seen) and
+                (not _I(c.item.exp_comp_ack) or c.compack_sent))
       elif c.kind == _KIND_ATOMIC:
         if self.req_expects_atomic_data_completion(c.item):
           done = c.data_sent and c.read_done
@@ -1722,6 +1743,15 @@ class vip_chi_driver_rni(uvm_driver):
       for i, c in enumerate(self.mx_ctx):
         if (c.kind in (_KIND_WRITE, _KIND_ATOMIC) and _I(c.item.exp_comp_ack) and
             c.data_sent and (c.comp_seen or c.read_done) and not c.compack_sent):
+          idx = i
+          break
+        # A read owes the same acknowledgement, minus the data leg it has no
+        # send side for. Only the pipelined opcodes reach here -- plain,
+        # non-ordered ReadNoSnp, which Table 2-9 marks Optional -- so this fires
+        # only when a test asks for the bit. It is written anyway because the
+        # alternative is a context that never satisfies retire_mixed().
+        if (c.kind == _KIND_READ and _I(c.item.exp_comp_ack) and
+            c.read_done and not c.compack_sent):
           idx = i
           break
       if idx >= 0:

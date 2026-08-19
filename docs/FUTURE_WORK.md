@@ -5,10 +5,10 @@ Checker D, coherent coverage, HN-I proxy, scoreboard, perf counters, exclusives,
 CMO, DCT forwarding, SN-F-behind-HN-F, MakeUnique, bounded-cache eviction) is
 **complete and tested** — every charter item has a named testcase in
 [../testbench/TEST_CASES.md](../testbench/TEST_CASES.md). The regression is
-**167 SV + 168 PY** — the same list on both flows apart from one documented
+**173 SV + 174 PY** — the same list on both flows apart from one documented
 exception, `tc_chi_sva_smoke`, which is Python-only (see
 [../testbench/TEST_CASES.md](../testbench/TEST_CASES.md)) — last verified green
-in full on branch `dev` (2026-08-16). Those counts are not maintained by hand:
+in full on branch `dev` (2026-08-19). Those counts are not maintained by hand:
 `scripts/check_test_counts.py` compares them with the tree on every sweep,
 because this sentence had gone stale by twenty-odd testcases before anyone
 noticed, and a stale count makes the green verdict it supports unattributable to

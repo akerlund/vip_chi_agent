@@ -165,6 +165,13 @@ class vip_chi_driver_hnf #(
   protected bit               dn_dat_valid;       // a full CompData burst captured
   protected rsp_flit_t        dn_rsp_q [$];       // captured downstream RSP flits
 
+  // A CompAck taken off the RSP channel by collect_snp_response before
+  // collect_comp_ack got to it. One slot per port is enough: an RN-F runs its
+  // coherent transactions serially, so it never owes two acknowledgements at
+  // once, and the home never leaves more than one outstanding either.
+  protected bit      comp_ack_seen_early [N_RNF_PORTS];
+  protected txn_id_t comp_ack_early_txn  [N_RNF_PORTS];
+
   // Captured-REQ work queue drained by the single response engine.
   typedef struct {
     int        port;
@@ -346,6 +353,10 @@ class vip_chi_driver_hnf #(
   function void handle_reset();
     this.reset_credit_state();
     this.reset_outputs();
+    for (int p = 0; p < N_RNF_PORTS; p++) begin
+      this.comp_ack_seen_early[p] = 1'b0;
+      this.comp_ack_early_txn[p]  = txn_id_t'(0);
+    end
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -1029,6 +1040,7 @@ class vip_chi_driver_hnf #(
                       txn_id_t'(req.txnid), txn_id_t'(0),
                       VIP_CHI_RESP_STATE_UC_E,
                       node_id_t'(req.tgtid), node_id_t'(req.srcid));
+    this.await_comp_ack(p, req, line);
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1100,6 +1112,7 @@ class vip_chi_driver_hnf #(
                             node_id_t'(req.srcid),
                             node_id_t'(req.tgtid),
                             "WriteUnique");
+    this.await_comp_ack(p, req, line);
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1139,6 +1152,7 @@ class vip_chi_driver_hnf #(
     end
 
     this.drive_coherent_read_compdata(p, req, VIP_CHI_RESP_STATE_I_E);
+    this.await_comp_ack(p, req, line);
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1265,6 +1279,7 @@ class vip_chi_driver_hnf #(
                       VIP_CHI_RESP_STATE_UC_E,
                       node_id_t'(req.tgtid), node_id_t'(req.srcid),
                       rerr);
+    this.await_comp_ack(p, req, line);
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1309,6 +1324,7 @@ class vip_chi_driver_hnf #(
       end
       if (fwd_holders == 1) begin
         this.service_coherent_read_fwd(p, req, line, fwd_k, is_unique, entry);
+        this.await_comp_ack(p, req, line);
         return;
       end
     end
@@ -1407,6 +1423,7 @@ class vip_chi_driver_hnf #(
     end
 
     this.drive_coherent_read_compdata(p, req, granted, is_excl_ll);
+    this.await_comp_ack(p, req, line);
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1601,6 +1618,16 @@ class vip_chi_driver_hnf #(
   protected task collect_comp_ack(input int p, input txn_id_t txn);
     rsp_flit_t rflit;
 
+    // The ack may already have been taken off the wire by collect_snp_response:
+    // once the home is permitted to snoop while an acknowledgement is still
+    // outstanding -- which is exactly the window section 2.8.3 rule 2 is about --
+    // the two collectors are both live on the same RSP channel, and whichever
+    // reaches the flit first has to keep it.
+    if (this.comp_ack_seen_early[p] && (this.comp_ack_early_txn[p] == txn)) begin
+      this.comp_ack_seen_early[p] = 1'b0;
+      return;
+    end
+
     forever begin
       if (this.vif_rn[p].g_drv.hnf_cb.rxrspflitv) begin
         rflit = this.vif_rn[p].g_drv.hnf_cb.rxrspflit;
@@ -1621,6 +1648,47 @@ class vip_chi_driver_hnf #(
       @(this.vif_rn[p].g_drv.hnf_cb);
       this.drive_rn_idle_sideband(p);
     end
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Close a completion by waiting for the CompAck the requester owes it.
+  //
+  // IHI 0050 E section 2.8.3 rule 2: "An HN-F, except in the case of ReadOnce*,
+  // waits for CompAck before sending a subsequent snoop to the same address."
+  // This home satisfies that rule the simplest way there is -- it does not start
+  // the next request at all until the acknowledgement is in. Waiting longer than
+  // required is always legal for a completer, and it costs nothing here because
+  // the response engine is serial anyway.
+  //
+  // The rule itself is NOT enforced by this task, and deliberately so. Satisfying
+  // an ordering requirement by construction is not the same as checking it, and a
+  // VIP whose only statement of the rule is the code that happens to obey it
+  // cannot tell you when a peer breaks it. The judgement lives in the coherency
+  // checker (rule D9), which reads the snoop and the acknowledgement off the wire
+  // and knows nothing about how either got there.
+  //
+  // ReadOnce is the exception the section names, so the negative control below
+  // must not fire for it: a snoop inside a ReadOnce's acknowledgement window is
+  // permitted, and injecting one there would make D9 look wrong rather than make
+  // it fail.
+  // ---------------------------------------------------------------------------
+  protected task await_comp_ack(input int p, input req_flit_t req, input addr_t line);
+
+    if (!req.expcompack) begin
+      return;
+    end
+
+    // Negative control for rule D9: put one snoop inside the window the rule
+    // protects. SnpOnce is chosen because it leaves the snoopee's state and data
+    // exactly as they were -- the only thing wrong with this snoop is WHEN it is
+    // sent, which is the one property under test. Section 4.4 permits a home to
+    // snoop spontaneously, so nothing else about the flit is illegal.
+    if (this.cfg.hnf_snoop_before_comp_ack &&
+        (req_opcode_t'(req.opcode) != req_opcode_t'(VIP_CHI_REQ_READ_ONCE_C))) begin
+      this.drive_snoop(p, line, snp_opcode_t'(VIP_CHI_SNP_ONCE_C));
+    end
+
+    this.collect_comp_ack(p, txn_id_t'(req.txnid));
   endtask
 
   protected task service_evict(input int p, input req_flit_t req);
@@ -1940,6 +2008,22 @@ class vip_chi_driver_hnf #(
           @(this.vif_rn[k].g_drv.hnf_cb);
           this.drive_rn_idle_sideband(k);
           break;
+        end
+
+        // A CompAck for an earlier completion is not a concurrency defect: it is
+        // the acknowledgement this home is about to wait for, arriving while a
+        // snoop it should not have sent yet is still outstanding. Stash it for
+        // collect_comp_ack instead of fataling -- the fatal below is for flits
+        // that genuinely have nowhere to go. Reachable only under the
+        // hnf_snoop_before_comp_ack negative control, which is the point: the
+        // rule is judged from the wire, so the wire has to survive breaking it.
+        if (vip_chi_rsp_opcode_t'(rflit.opcode) ==
+            vip_chi_rsp_opcode_t'(VIP_CHI_RSP_COMP_ACK_C)) begin
+          this.comp_ack_seen_early[k] = 1'b1;
+          this.comp_ack_early_txn[k]  = txn_id_t'(rflit.txnid);
+          @(this.vif_rn[k].g_drv.hnf_cb);
+          this.drive_rn_idle_sideband(k);
+          continue;
         end
 
         // Non-matching RSP on the RN-facing channel while awaiting SnpResp. As on

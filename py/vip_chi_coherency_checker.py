@@ -77,6 +77,14 @@ _HAZARD_RELEASE_RSP_OPS = {
   int(RspOpcode.COMP_PERSIST), int(RspOpcode.RETRY_ACK),
 }
 
+# The completions a CompAck may acknowledge (section 2.8.3): the read's
+# CompData is handled in obs_dat, and these are the data-less forms. RetryAck is
+# deliberately absent -- see open_comp_ack_window's caller.
+_COMP_ACK_COMPLETION_RSP_OPS = frozenset({
+  int(RspOpcode.COMP), int(RspOpcode.COMP_DBID_RESP),
+  int(RspOpcode.COMP_PERSIST),
+})
+
 _SNP_TO_INVALID = {
   int(SnpOpcode.UNIQUE), int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.MAKE_INVALID),
   int(SnpOpcode.UNIQUE_FWD),
@@ -223,6 +231,22 @@ class vip_chi_coherency_checker(uvm_component):
     self.n_snp_req_judged = 0
     self.n_snp_req_mismatch = 0
     self.n_snp_req_uncorrelated = 0
+    # Catalogue rule D9 -- the CompAck ordering window. One slot per node is
+    # enough because an RN-F runs its coherent transactions serially, so it never
+    # has two acknowledgements outstanding at once.
+    #
+    # req_eca_line records, at the request, which line a CompAck will eventually
+    # be owed for. The window itself does NOT open there: the snoops this very
+    # request causes go out before its completion, and a window opened at the
+    # request would flag exactly the snoops the protocol requires. It opens at
+    # the completion, which is where section 2.8.3 puts it.
+    self.req_eca_line = [{} for _ in range(N_NODES)]
+    self.eca_open = [False] * N_NODES
+    self.eca_line = [0] * N_NODES
+    self.eca_txn = [0] * N_NODES
+    self.n_eca_windows = 0
+    self.n_eca_window_snoops = 0
+    self.n_eca_windows_unclosed = 0
     self.n_multi_owner = 0
     self.n_completions = 0
     self.n_snoops = 0
@@ -583,6 +607,11 @@ class vip_chi_coherency_checker(uvm_component):
     # overlapping itself, which does not depend on what the request does.
     self.hazard_claim(node, line, _I(item.txn_id), wop)
     self.req_track_claim(node, line, _I(item.txn_id), wop)
+    # Rule D9's arming step. ReadOnce is excluded here rather than at the
+    # judgement, because section 2.8.3 names it as the request for which the home
+    # need not wait -- the exception belongs to the transaction.
+    if _I(item.exp_comp_ack) and wop != int(ReqOpcode.READ_ONCE):
+      self.req_eca_line[node][_I(item.txn_id)] = line
     is_read, _uniq = self.is_coherent_read(item)
     if is_read:
       tid = _I(item.txn_id)
@@ -619,7 +648,19 @@ class vip_chi_coherency_checker(uvm_component):
       self.hazard_release(node, tid)
       self.req_track_release(node, tid)
 
+    # Rule D9: on a CopyBack there is no CompAck flit to wait for, and section
+    # 2.8.3 says so in as many words -- "For CopyBack transactions, WriteData
+    # acts as an implicit CompAck and an HN-F must wait for WriteData before
+    # sending a snoop to the same address." Same window, same guarantee, closed
+    # by a DAT flit instead of an RSP one.
+    #
+    # WriteEvictOrEvict is the only opcode this reaches today: Table 2-9 marks it
+    # required, and its data leg answers CompDBIDResp with CopyBackWrData and
+    # nothing else. Closing the window on the explicit CompAck alone left that
+    # leg's window open forever -- visible as compack_windows_unclosed=1 in
+    # tc_chi_{d,e}_write_evict_or_evict, which is what found this.
     if op == int(DatOpcode.COPY_BACK_WR_DATA):
+      self.close_comp_ack_window(node, tid)
       if tid in self.open_wb_line[node]:
         self.record_line_data(self.open_wb_line[node][tid], item)
         del self.open_wb_line[node][tid]
@@ -667,6 +708,7 @@ class vip_chi_coherency_checker(uvm_component):
     self.open_rd_op[node].pop(tid, None)
     self.open_rd_excl[node].pop(tid, None)
     self.n_completions += 1
+    self.open_comp_ack_window(node, tid)
     self.check_multi_owner(line)
     self.check_line_data(line, item)
 
@@ -820,6 +862,59 @@ class vip_chi_coherency_checker(uvm_component):
       f"0x{_I(self.pending_snp_opcode[node]):x} on line 0x{line:x} with DAT "
       f"opcode 0x{op:x}; that snoop returns no data and discards its dirty copy")
 
+  # Catalogue rule D9 -- SNOOP_OUTSIDE_COMPACK_WINDOW.
+  #
+  # IHI 0050 E section 2.8.3 (D section 2.8.3), rule 2 of the completion
+  # sequence: "An HN-F, except in the case of ReadOnce*, waits for CompAck
+  # before sending a subsequent snoop to the same address." The same paragraph
+  # states the guarantee from the requester's side, which is the form this rule
+  # judges because it is the form that is visible on one node's wires:
+  #
+  #   "When an RN-F has a transaction in progress that uses CompAck, except for
+  #    ReadNoSnp and ReadOnce*, then it is guaranteed not to receive a Snoop
+  #    request to the same address between the point that it receives Comp and
+  #    the point that it sends CompAck."
+  #
+  # This is the ordering guarantee CompAck exists to provide, and it is what
+  # makes the acknowledgement worth sending at all. Without it the requester can
+  # be snooped for a line it has been granted but not yet taken responsibility
+  # for, and the completion and the snoop can be observed by the two ends in
+  # opposite orders -- the precise outcome section 2.8.3 opens by ruling out.
+  #
+  # The window is deliberately checked across ALL nodes, not just the snooped
+  # one. The home-side wording forbids the snoop outright ("a subsequent snoop to
+  # the same address"), whoever it is addressed to, and a snoop sent to a third
+  # node in that window is the same ordering hazard seen from a different seat.
+  def open_comp_ack_window(self, node, txn_id):
+    line = self.req_eca_line[node].pop(txn_id, None)
+    if line is None:
+      return
+    # A window still open here means the previous acknowledgement was never
+    # observed. Counted rather than reported: it is a gap in what this checker
+    # saw, not a protocol violation, and a summary that says so is what tells a
+    # reader whether the zero beside it means "clean" or "never looked".
+    if self.eca_open[node]:
+      self.n_eca_windows_unclosed += 1
+    self.eca_open[node] = True
+    self.eca_line[node] = line
+    self.eca_txn[node] = txn_id
+    self.n_eca_windows += 1
+
+  def close_comp_ack_window(self, node, txn_id):
+    if self.eca_open[node] and self.eca_txn[node] == txn_id:
+      self.eca_open[node] = False
+
+  def check_snoop_outside_comp_ack_window(self, snooped, line):
+    for k in range(N_NODES):
+      if not self.eca_open[k] or self.eca_line[k] != line:
+        continue
+      self.n_eca_window_snoops += 1
+      self.logger.error(
+        f"COHERENCY VIOLATION: snoop to line 0x{line:x} (node {snooped}) "
+        f"arrived inside node {k}'s CompAck window for TxnID "
+        f"0x{self.eca_txn[k]:x} -- section 2.8.3 requires the home to wait for "
+        f"CompAck before snooping the same address")
+
   def obs_snp(self, node, item):
     if not self.enable or not item.is_snoop:
       return
@@ -843,6 +938,9 @@ class vip_chi_coherency_checker(uvm_component):
     # Rule D8 runs on the request set outstanding at the moment the snoop
     # arrives.
     self.check_snoop_matches_request(node, line, item.snp_opcode)
+    # D9 alongside D8, and for the same reason: both judge the snoop as it
+    # arrives, against state that the bookkeeping below is about to change.
+    self.check_snoop_outside_comp_ack_window(node, line)
     self.pending_snp_line[node] = line
     self.pending_snp_valid[node] = True
     self.pending_snp_opcode[node] = _I(item.snp_opcode)
@@ -869,6 +967,23 @@ class vip_chi_coherency_checker(uvm_component):
                                   item.rsp_resp, False)
         self.pending_snp_valid[node] = False
       return
+
+    # A CompAck closes rule D9's window and is not a completion of anything --
+    # handled first and returned from, exactly like SnpResp above, so it cannot
+    # fall through into the correlation tables it was never entered in.
+    if _I(item.rsp_opcode) == int(RspOpcode.COMP_ACK):
+      self.close_comp_ack_window(node, tid)
+      return
+
+    # A data-less completion (CleanUnique, MakeUnique, WriteUnique) opens the
+    # window that CompData opens for a read. NOT _HAZARD_RELEASE_RSP_OPS: that
+    # set includes RetryAck, which releases the line without completing
+    # anything. Opening a window on a bounced request would leave one hanging
+    # that no CompAck can ever close -- the re-issue completes under the same
+    # TxnID and opens its own -- and every snoop to that line in between would be
+    # reported against a transaction the completer had refused outright.
+    if _I(item.rsp_opcode) in _COMP_ACK_COMPLETION_RSP_OPS:
+      self.open_comp_ack_window(node, tid)
 
     # Release the line on a genuine completion. DBIDResp and ReadReceipt are
     # deliberately NOT in this set: they grant a buffer and confirm ordering
@@ -1010,6 +1125,15 @@ class vip_chi_coherency_checker(uvm_component):
   def get_snp_req_uncorrelated_count(self):
     return self.n_snp_req_uncorrelated
 
+  def get_comp_ack_window_count(self):
+    return self.n_eca_windows
+
+  def get_comp_ack_window_snoop_count(self):
+    return self.n_eca_window_snoops
+
+  def get_comp_ack_window_unclosed_count(self):
+    return self.n_eca_windows_unclosed
+
   def get_snp_resp_legality_tuples(self):
     """The distinct (snoop opcode, resp state, with-data) triples observed.
 
@@ -1057,7 +1181,8 @@ class vip_chi_coherency_checker(uvm_component):
             self.n_excl_violation + self.n_bad_make_unique +
             self.n_bad_snp_resp_form + self.n_bad_snp_resp_state +
             self.n_bad_dataless_resp + self.n_snp_dirty_lost +
-            self.n_snp_req_mismatch + self.n_line_hazard)
+            self.n_snp_req_mismatch + self.n_eca_window_snoops +
+            self.n_line_hazard)
 
   def handle_reset(self):
     self._init_shadow()
@@ -1097,6 +1222,11 @@ class vip_chi_coherency_checker(uvm_component):
       f"req_final_retained={self.n_req_final_retained} "
       f"bad_dataless_resp={self.n_bad_dataless_resp}")
     # Its own line for the same reason as the four above.
+    self.logger.info(
+      f"COHERENCY COMPACK WINDOW SUMMARY: "
+      f"compack_windows={self.n_eca_windows} "
+      f"compack_window_snoops={self.n_eca_window_snoops} "
+      f"compack_windows_unclosed={self.n_eca_windows_unclosed}")
     self.logger.info(
       f"COHERENCY SNP REQ MATCH SUMMARY: "
       f"snp_req_judged={self.n_snp_req_judged} "

@@ -287,6 +287,12 @@ CHECK_IDS = (
   # and Resp are checked together because they are three columns of one table,
   # not three rules.
   "CHI_RSP_FIELD_ZERO",
+  # ExpCompAck legality, appended for the same append-only reason. The converse
+  # -- a CompAck arriving for a request that never asked for one -- has been
+  # checked since the first cut as COMPACK_WITHOUT_EXPCOMPACK; this is the
+  # direction nobody was watching, because the item constraint made it
+  # unreachable.
+  "CHI_EXPCOMPACK_REQUIRED_BUT_ZERO",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -1057,6 +1063,84 @@ def req_opcode_is_combined_write_cmo(opcode: int) -> bool:
   are writes first and anything classifying writes has to say so.
   """
   return int(opcode) in _COMBINED_WRITE_CMO_OPCODES
+
+
+class CompAckReq(IntEnum):
+  """Three-valued because Table 2-9 is.
+
+  "Yes", "Optional" and "No" are three different obligations, and collapsing
+  them to a boolean is what produced a legality constraint that forced the bit
+  to zero on the rows marked "Yes".
+  """
+
+  PROHIBITED = 0
+  OPTIONAL = 1
+  REQUIRED = 2
+
+
+# Optional for BOTH columns of the table: the two read forms an RN-F may decline
+# to acknowledge, and the two writes that use CompAck only when they want
+# Ordered Write Observation.
+_COMPACK_OPTIONAL_OPCODES = frozenset({
+  int(ReqOpcode.READ_NO_SNP),
+  int(ReqOpcode.READ_NO_SNP_SEP),
+  int(ReqOpcode.READ_ONCE),
+  int(ReqOpcode.WRITE_UNIQUE_FULL),
+  int(ReqOpcode.WRITE_UNIQUE_PTL),
+  int(ReqOpcode.WRITE_NO_SNP_FULL),
+  int(ReqOpcode.WRITE_NO_SNP_PTL),
+}) | _COMBINED_WRITE_CMO_OPCODES
+
+# The "Yes" rows. All of them are RN-F only.
+_COMPACK_REQUIRED_RNF_OPCODES = frozenset({
+  int(ReqOpcode.READ_CLEAN),
+  int(ReqOpcode.READ_SHARED),
+  int(ReqOpcode.READ_UNIQUE),
+  int(ReqOpcode.MAKE_READ_UNIQUE),
+  int(ReqOpcode.CLEAN_UNIQUE),
+  int(ReqOpcode.MAKE_UNIQUE),
+  int(ReqOpcode.WRITE_EVICT_OR_EVICT),
+})
+
+
+def exp_comp_ack_requirement(req_op: int, requester_is_rnf: bool) -> int:
+  """Whether `req_op` must, may, or must not carry ExpCompAck.
+
+  IHI 0050 E Table 2-9 / D Table 2-8, "Requester CompAck requirement", and the
+  prose beside it. The table has two columns, RN-F and RN-D/RN-I, and they do
+  not agree: every coherent read is "Yes" for an RN-F and "-" for an RN-I
+  (which cannot issue one at all), while ReadNoSnp is "Optional" for both. That
+  is why the requester role is an argument here rather than being read off the
+  opcode -- the opcode alone does not determine the answer.
+
+  Note which way the asymmetry runs. CleanUnique and MakeUnique are Dataless
+  requests, and Dataless is exactly the class an RN-I "must not" acknowledge --
+  yet both are "Yes" in the RN-F column. They are not CMOs (CleanShared,
+  CleanInvalid, MakeInvalid and the Persist forms are), so the RN-F "must not"
+  bullet does not reach them either. An implementation that classified by
+  request CLASS rather than by opcode would get both of them wrong, in opposite
+  directions depending on which bullet it reached for.
+
+  The twin of vip_chi_exp_comp_ack_requirement in the SystemVerilog types
+  package. PROHIBITED is the default for the same reason it is there: it is the
+  only answer that cannot put an illegal flit on the wire for an opcode nobody
+  has classified yet. ReadNotSharedDirty and ReadPreferUnique are "Yes" rows
+  this VIP does not yet model, and each would be silently wrong under it.
+  """
+  op = int(req_op)
+  if op in _COMPACK_OPTIONAL_OPCODES:
+    return int(CompAckReq.OPTIONAL)
+  if requester_is_rnf and op in _COMPACK_REQUIRED_RNF_OPCODES:
+    return int(CompAckReq.REQUIRED)
+  return int(CompAckReq.PROHIBITED)
+
+
+def exp_comp_ack_required(req_op: int, requester_is_rnf: bool) -> bool:
+  return exp_comp_ack_requirement(req_op, requester_is_rnf) == int(CompAckReq.REQUIRED)
+
+
+def exp_comp_ack_prohibited(req_op: int, requester_is_rnf: bool) -> bool:
+  return exp_comp_ack_requirement(req_op, requester_is_rnf) == int(CompAckReq.PROHIBITED)
 
 
 def req_opcode_atomic_variant(opcode: int) -> int:

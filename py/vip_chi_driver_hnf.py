@@ -117,6 +117,13 @@ class vip_chi_driver_hnf(uvm_component):
     self.excl_monitor = {}    # line -> [per-port bool]
     self.snp_txn_ctr = 0
     self.dn_txn_ctr = 0
+    # A CompAck taken off the RSP channel by collect_snp_response before
+    # collect_comp_ack got to it. One slot per port is enough: an RN-F runs its
+    # coherent transactions serially, so it never owes two acknowledgements at
+    # once, and the home never leaves more than one outstanding either.
+    self.comp_ack_seen_early = [False] * n_rn
+    self.comp_ack_early_txn = [0] * n_rn
+
     self.work_q = []          # (port, req_fields dict)
 
     self.dn_dat_beats = []
@@ -158,6 +165,8 @@ class vip_chi_driver_hnf(uvm_component):
   def handle_reset(self):
     self.reset_credit_state()
     self.reset_outputs()
+    self.comp_ack_seen_early = [False] * len(self.rn_buses)
+    self.comp_ack_early_txn = [0] * len(self.rn_buses)
 
   def drive_rn_idle_sideband(self, p):
     rn = self.rn_buses[p]
@@ -646,6 +655,7 @@ class vip_chi_driver_hnf(uvm_component):
     # driving a Resp value the issue it implements has no meaning for.
     await self.drive_rn_rsp(p, int(RspOpcode.COMP), _I(req["txnid"]), 0,
                             int(Resp.UC), _I(req["tgtid"]), _I(req["srcid"]))
+    await self.await_comp_ack(p, req, line)
 
   # ==========================================================================
   # WriteUnique(Full/Ptl): non-allocating coherent write. SnpCleanInvalid every
@@ -678,6 +688,7 @@ class vip_chi_driver_hnf(uvm_component):
     await self.collect_write_data(p, _I(req["txnid"]), write_addr, expected_beats,
                                   expected_dat, _I(req["srcid"]), _I(req["tgtid"]),
                                   "WriteUnique")
+    await self.await_comp_ack(p, req, line)
 
   # ==========================================================================
   # ReadOnce: non-allocating snapshot read. SnpOnce any holder (dirty forwards
@@ -692,6 +703,7 @@ class vip_chi_driver_hnf(uvm_component):
       if entry[k] != int(Resp.I):
         await self.drive_snoop(k, line, self.snoop_for(req["opcode"]))
     await self.drive_coherent_read_compdata(p, req, int(Resp.I))
+    await self.await_comp_ack(p, req, line)
 
   # ==========================================================================
   # CleanInvalid / MakeInvalid CMO: invalidate at the point of coherence. Snoop
@@ -744,6 +756,7 @@ class vip_chi_driver_hnf(uvm_component):
     rerr = int(RespErr.EXOKAY) if (is_excl and won) else int(RespErr.OKAY)
     await self.drive_rn_rsp(p, int(RspOpcode.COMP), _I(req["txnid"]), 0,
                             int(Resp.UC), _I(req["tgtid"]), _I(req["srcid"]), rerr)
+    await self.await_comp_ack(p, req, line)
 
   # ==========================================================================
   # Coherent read: snoop the other holders as the request demands, grant the
@@ -768,6 +781,7 @@ class vip_chi_driver_hnf(uvm_component):
           fwd_holders += 1
       if fwd_holders == 1:
         await self.service_coherent_read_fwd(p, req, line, fwd_k, is_unique, entry)
+        await self.await_comp_ack(p, req, line)
         return
 
     for k in range(len(self.rn_buses)):
@@ -822,6 +836,7 @@ class vip_chi_driver_hnf(uvm_component):
         self._mark_row(line + i * db)
 
     await self.drive_coherent_read_compdata(p, req, granted, is_excl_ll)
+    await self.await_comp_ack(p, req, line)
 
   # ==========================================================================
   # WriteBackFull / WriteCleanFull: grant CompDBIDResp, collect CopyBackWrData
@@ -947,6 +962,14 @@ class vip_chi_driver_hnf(uvm_component):
   # without per-TxnID routing, so it is an error rather than silently dropped.
   # ==========================================================================
   async def collect_comp_ack(self, p, txn):
+    # The ack may already have been taken off the wire by collect_snp_response:
+    # once the home is permitted to snoop while an acknowledgement is still
+    # outstanding -- which is exactly the window section 2.8.3 rule 2 is about --
+    # the two collectors are both live on the same RSP channel, and whichever
+    # reaches the flit first has to keep it.
+    if self.comp_ack_seen_early[p] and self.comp_ack_early_txn[p] == _I(txn):
+      self.comp_ack_seen_early[p] = False
+      return
     rn = self.rn_buses[p]
     while True:
       if rn.get("rxrspflitv"):
@@ -963,6 +986,38 @@ class vip_chi_driver_hnf(uvm_component):
           f"CompAck for TxnID 0x{_I(txn):x}")
       await rn.rising()
       self.drive_rn_idle_sideband(p)
+
+  async def await_comp_ack(self, p, req, line):
+    """Close a completion by waiting for the CompAck the requester owes it.
+
+    IHI 0050 E section 2.8.3 rule 2: "An HN-F, except in the case of ReadOnce*,
+    waits for CompAck before sending a subsequent snoop to the same address."
+    This home satisfies that rule the simplest way there is -- it does not start
+    the next request at all until the acknowledgement is in. Waiting longer than
+    required is always legal for a completer, and it costs nothing here because
+    the response engine is serial anyway.
+
+    The rule itself is NOT enforced by this coroutine, and deliberately so.
+    Satisfying an ordering requirement by construction is not the same as
+    checking it, and a VIP whose only statement of the rule is the code that
+    happens to obey it cannot tell you when a peer breaks it. The judgement
+    lives in the coherency checker (rule D9), which reads the snoop and the
+    acknowledgement off the wire and knows nothing about how either got there.
+    """
+    if not _I(req["expcompack"]):
+      return
+
+    # Negative control for rule D9: put one snoop inside the window the rule
+    # protects. SnpOnce is chosen because it leaves the snoopee's state and data
+    # exactly as they were -- the only thing wrong with this snoop is WHEN it is
+    # sent, which is the one property under test. Section 4.4 permits a home to
+    # snoop spontaneously, so nothing else about the flit is illegal. ReadOnce is
+    # skipped because the section names it as the exception.
+    if (self.cfg.hnf_snoop_before_comp_ack
+        and _I(req["opcode"]) != int(ReqOpcode.READ_ONCE)):
+      await self.drive_snoop(p, line, int(SnpOpcode.ONCE))
+
+    await self.collect_comp_ack(p, _I(req["txnid"]))
 
   async def service_evict(self, p, req):
     line = self.line_addr(req["addr"])
@@ -1102,6 +1157,21 @@ class vip_chi_driver_hnf(uvm_component):
           await rn.rising()
           self.drive_rn_idle_sideband(k)
           break
+
+        # A CompAck for an earlier completion is not a concurrency defect: it is
+        # the acknowledgement this home is about to wait for, arriving while a
+        # snoop it should not have sent yet is still outstanding. Stash it for
+        # collect_comp_ack instead of raising -- the raise below is for flits
+        # that genuinely have nowhere to go. Reachable only under the
+        # hnf_snoop_before_comp_ack negative control, which is the point: the
+        # rule is judged from the wire, so the wire has to survive breaking it.
+        if _I(rflit["opcode"]) == int(RspOpcode.COMP_ACK):
+          self.comp_ack_seen_early[k] = True
+          self.comp_ack_early_txn[k] = _I(rflit["txnid"])
+          await rn.rising()
+          self.drive_rn_idle_sideband(k)
+          continue
+
         raise AssertionError(
           f"[{self.get_name()}] port {k}: unexpected RSP (opcode "
           f"0x{_I(rflit['opcode']):x} TxnID 0x{_I(rflit['txnid']):x}) while "

@@ -208,6 +208,23 @@ class vip_chi_coherency_checker #(
   protected int n_snp_req_judged;
   protected int n_snp_req_mismatch;
   protected int n_snp_req_uncorrelated;
+
+  // Catalogue rule D9 -- the CompAck ordering window. One slot per node is
+  // enough because an RN-F runs its coherent transactions serially, so it never
+  // has two acknowledgements outstanding at once.
+  //
+  // req_eca_line records, at the request, which line a CompAck will eventually
+  // be owed for. The window itself does NOT open there: the snoops this very
+  // request causes go out before its completion, and a window opened at the
+  // request would flag exactly the snoops the protocol requires. It opens at the
+  // completion, which is where section 2.8.3 puts it.
+  protected longint        req_eca_line [N_NODES_C][longint];
+  protected bit            eca_open     [N_NODES_C];
+  protected longint        eca_line     [N_NODES_C];
+  protected longint        eca_txn      [N_NODES_C];
+  protected int n_eca_windows;
+  protected int n_eca_window_snoops;
+  protected int n_eca_windows_unclosed;
   protected int n_multi_owner;
   protected int n_completions;
   protected int n_snoops;
@@ -640,6 +657,10 @@ class vip_chi_coherency_checker #(
       this.hazard_by_txn[n].delete();
       this.req_op_by_line[n].delete();
       this.req_line_by_txn[n].delete();
+      this.req_eca_line[n].delete();
+      this.eca_open[n] = 1'b0;
+      this.eca_line[n] = 0;
+      this.eca_txn[n]  = 0;
       this.pending_snp_valid[n] = 1'b0;
       this.pending_snp_from[n]  = VIP_CHI_RESP_STATE_I_E;
     end
@@ -648,6 +669,9 @@ class vip_chi_coherency_checker #(
     this.n_snp_req_judged       = 0;
     this.n_snp_req_mismatch     = 0;
     this.n_snp_req_uncorrelated = 0;
+    this.n_eca_windows          = 0;
+    this.n_eca_window_snoops    = 0;
+    this.n_eca_windows_unclosed = 0;
     this.line_state.delete();
     this.line_data.delete();
     this.dn_rd_line.delete();
@@ -1062,6 +1086,12 @@ class vip_chi_coherency_checker #(
     // overlapping itself, which does not depend on what the request does.
     this.hazard_claim(node, line, longint'(item.txn_id), longint'(wop));
     this.req_track_claim(node, line, longint'(item.txn_id), wop);
+    // Rule D9's arming step. ReadOnce is excluded here rather than at the
+    // judgement, because section 2.8.3 names it as the request for which the
+    // home need not wait -- the exception belongs to the transaction.
+    if (item.exp_comp_ack && (wop != VIP_CHI_REQ_READ_ONCE_E)) begin
+      this.req_eca_line[node][longint'(item.txn_id)] = line;
+    end
     if (this.is_coherent_read(item, uniq)) begin
       this.open_rd_line[node][longint'(item.txn_id)] = line;
       this.open_rd_uniq[node][longint'(item.txn_id)] = uniq;
@@ -1179,6 +1209,21 @@ class vip_chi_coherency_checker #(
       this.req_track_release(node, longint'(item.txn_id));
     end
 
+    // Rule D9: on a CopyBack there is no CompAck flit to wait for, and section
+    // 2.8.3 says so in as many words -- "For CopyBack transactions, WriteData
+    // acts as an implicit CompAck and an HN-F must wait for WriteData before
+    // sending a snoop to the same address." Same window, same guarantee, closed
+    // by a DAT flit instead of an RSP one.
+    //
+    // WriteEvictOrEvict is the only opcode this reaches today: Table 2-9 marks
+    // it required, and its data leg answers CompDBIDResp with CopyBackWrData and
+    // nothing else. Closing the window on the explicit CompAck alone left that
+    // leg's window open forever -- visible as compack_windows_unclosed=1 in
+    // tc_chi_{d,e}_write_evict_or_evict, which is what found this.
+    if (op == VIP_CHI_DAT_COPY_BACK_WR_DATA_E) begin
+      this.close_comp_ack_window(node, longint'(item.txn_id));
+    end
+
     // Authoritative writes to the home establish the expected line data.
     if (op == VIP_CHI_DAT_COPY_BACK_WR_DATA_E) begin
       if (this.open_wb_line[node].exists(longint'(item.txn_id))) begin
@@ -1248,9 +1293,78 @@ class vip_chi_coherency_checker #(
     this.open_rd_op[node].delete(longint'(item.txn_id));
     this.open_rd_excl[node].delete(longint'(item.txn_id));
     this.n_completions++;
+    this.open_comp_ack_window(node, longint'(item.txn_id));
     this.check_multi_owner(line);
     // A read of a line with known (written/forwarded) data must return it.
     this.check_line_data(line, item);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Catalogue rule D9 -- SNOOP_OUTSIDE_COMPACK_WINDOW.
+  //
+  // IHI 0050 E section 2.8.3 (D section 2.8.3), rule 2 of the completion
+  // sequence: "An HN-F, except in the case of ReadOnce*, waits for CompAck
+  // before sending a subsequent snoop to the same address." The same paragraph
+  // states the guarantee from the requester's side, which is the form this rule
+  // judges because it is the form that is visible on one node's wires:
+  //
+  //   "When an RN-F has a transaction in progress that uses CompAck, except for
+  //    ReadNoSnp and ReadOnce*, then it is guaranteed not to receive a Snoop
+  //    request to the same address between the point that it receives Comp and
+  //    the point that it sends CompAck."
+  //
+  // This is the ordering guarantee CompAck exists to provide, and it is what
+  // makes the acknowledgement worth sending at all. Without it the requester can
+  // be snooped for a line it has been granted but not yet taken responsibility
+  // for, and the completion and the snoop can be observed by the two ends in
+  // opposite orders -- the precise outcome section 2.8.3 opens by ruling out.
+  //
+  // The window is deliberately checked across ALL nodes, not just the snooped
+  // one. The home-side wording forbids the snoop outright ("a subsequent snoop
+  // to the same address"), whoever it is addressed to, and a snoop sent to a
+  // third node in that window is the same ordering hazard seen from a different
+  // seat.
+  //
+  // ReadOnce is excluded when the window is opened rather than when it is
+  // judged, because the exception is a property of the request, not of the
+  // snoop: section 2.8.3 names ReadOnce* as the transaction for which the home
+  // need not wait.
+  // ---------------------------------------------------------------------------
+  protected function void open_comp_ack_window(input int node, input longint txn_id);
+    if (!this.req_eca_line[node].exists(txn_id)) begin
+      return;
+    end
+    // A window still open here means the previous acknowledgement was never
+    // observed. Counted rather than reported: it is a gap in what this checker
+    // saw, not a protocol violation, and a summary that says so is what tells a
+    // reader whether the zero beside it means "clean" or "never looked".
+    if (this.eca_open[node]) begin
+      this.n_eca_windows_unclosed++;
+    end
+    this.eca_open[node] = 1'b1;
+    this.eca_line[node] = this.req_eca_line[node][txn_id];
+    this.eca_txn[node]  = txn_id;
+    this.req_eca_line[node].delete(txn_id);
+    this.n_eca_windows++;
+  endfunction
+
+  protected function void close_comp_ack_window(input int node, input longint txn_id);
+    if (this.eca_open[node] && (this.eca_txn[node] == txn_id)) begin
+      this.eca_open[node] = 1'b0;
+    end
+  endfunction
+
+  protected function void check_snoop_outside_comp_ack_window(input int     snooped,
+                                                              input longint line);
+    for (int k = 0; k < N_NODES_C; k++) begin
+      if (!this.eca_open[k] || (this.eca_line[k] != line)) begin
+        continue;
+      end
+      this.n_eca_window_snoops++;
+      `uvm_error("VIP_CHI_COH", $sformatf(
+        "COHERENCY VIOLATION: snoop to line 0x%0h (node %0d) arrived inside node %0d's CompAck window for TxnID 0x%0h -- section 2.8.3 requires the home to wait for CompAck before snooping the same address",
+        line, snooped, k, this.eca_txn[k]))
+    end
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -1468,6 +1582,9 @@ class vip_chi_coherency_checker #(
     // Rule D8 runs before the shadow bookkeeping below so it judges the snoop as
     // it arrives, on the request set outstanding at that moment.
     this.check_snoop_matches_request(node, line, vip_chi_snp_opcode_t'(item.snp_opcode));
+    // D9 alongside D8, and for the same reason: both judge the snoop as it
+    // arrives, against state that the bookkeeping below is about to change.
+    this.check_snoop_outside_comp_ack_window(node, line);
     this.pending_snp_line[node]   = line;
     this.pending_snp_valid[node]  = 1'b1;
     this.pending_snp_opcode[node] = vip_chi_snp_opcode_t'(item.snp_opcode);
@@ -1507,6 +1624,27 @@ class vip_chi_coherency_checker #(
         this.pending_snp_valid[node] = 1'b0;
       end
       return;
+    end
+
+    // A CompAck closes rule D9's window and is not a completion of anything --
+    // handled first and returned from, exactly like SnpResp above, so it cannot
+    // fall through into the correlation tables it was never entered in.
+    if (item.rsp_opcode === item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_ACK_C)) begin
+      this.close_comp_ack_window(node, longint'(item.txn_id));
+      return;
+    end
+
+    // A data-less completion (CleanUnique, MakeUnique, WriteUnique) opens the
+    // window that CompData opens for a read. NOT hazard_release_rsp: that set
+    // includes RetryAck, which releases the line without completing anything.
+    // Opening a window on a bounced request would leave one hanging that no
+    // CompAck can ever close -- the re-issue completes under the same TxnID and
+    // opens its own -- and every snoop to that line in between would be reported
+    // against a transaction the completer had refused outright.
+    if ((item.rsp_opcode === item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) ||
+        (item.rsp_opcode === item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)) ||
+        (item.rsp_opcode === item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C))) begin
+      this.open_comp_ack_window(node, longint'(item.txn_id));
     end
 
     // Release the line on a genuine completion (see hazard_release_rsp).
@@ -1657,6 +1795,9 @@ class vip_chi_coherency_checker #(
   function int get_snp_req_judged_count();       return this.n_snp_req_judged;       endfunction
   function int get_snp_req_mismatch_count();     return this.n_snp_req_mismatch;     endfunction
   function int get_snp_req_uncorrelated_count(); return this.n_snp_req_uncorrelated; endfunction
+  function int get_comp_ack_window_count();          return this.n_eca_windows;          endfunction
+  function int get_comp_ack_window_snoop_count();    return this.n_eca_window_snoops;    endfunction
+  function int get_comp_ack_window_unclosed_count(); return this.n_eca_windows_unclosed; endfunction
   function real get_snp_resp_legality_coverage(); return this.cg_snp_resp_legality.get_coverage(); endfunction
   function int get_line_hazard_count(); return this.n_line_hazard; endfunction
   // Clean claim/release pairs. A test asserts on this to show the hazard rule
@@ -1700,6 +1841,9 @@ class vip_chi_coherency_checker #(
       this.n_req_final_judged, this.n_req_final_retained, this.n_bad_dataless_resp), UVM_LOW)
     // Its own line for the same reason as the four above.
     `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY COMPACK WINDOW SUMMARY: compack_windows=%0d compack_window_snoops=%0d compack_windows_unclosed=%0d",
+      this.n_eca_windows, this.n_eca_window_snoops, this.n_eca_windows_unclosed), UVM_LOW)
+    `uvm_info(get_name(), $sformatf(
       "COHERENCY SNP REQ MATCH SUMMARY: snp_req_judged=%0d snp_req_mismatch=%0d snp_req_uncorrelated=%0d",
       this.n_snp_req_judged, this.n_snp_req_mismatch, this.n_snp_req_uncorrelated), UVM_LOW)
     `uvm_info("VIP_CHI_COH", $sformatf(

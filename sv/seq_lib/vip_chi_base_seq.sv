@@ -60,7 +60,16 @@ class vip_chi_base_seq #(
   protected logic [1:0] order_val        = VIP_CHI_ORDER_NONE_E;
   protected logic [3:0] mem_attr_val     = 4'b0;
   protected logic       allow_retry_val  = 1'b1;
-  protected logic       exp_comp_ack_val = 1'b0;
+  // ExpCompAck is not a plain stamped field like the ones around it: IHI 0050 E
+  // Table 2-9 / D Table 2-8 makes it required on some opcodes, optional on
+  // others and forbidden on the rest, so "the value the sequence stamps" is only
+  // meaningful once the opcode is known. exp_comp_ack_val therefore holds an
+  // OVERRIDE, and exp_comp_ack_forced says whether anyone asked for one. Left
+  // alone, the sequence reads the answer off the table for the opcode it just
+  // chose. This is what stops a plain coherent-read sequence from stamping the
+  // zero that the item constraint now (correctly) refuses.
+  protected logic       exp_comp_ack_val    = 1'b0;
+  protected bit         exp_comp_ack_forced = 1'b0;
   protected logic       excl_val         = 1'b0;
   protected logic [3:0] pcrd_type_val    = 4'b0;
   protected node_id_t   src_id_val       = '0;
@@ -121,6 +130,7 @@ class vip_chi_base_seq #(
     this.mem_attr_val       = 4'b0;
     this.allow_retry_val    = 1'b1;
     this.exp_comp_ack_val   = 1'b0;
+    this.exp_comp_ack_forced = 1'b0;
     this.excl_val           = 1'b0;
     this.pcrd_type_val      = 4'b0;
     this.src_id_val         = '0;
@@ -467,7 +477,8 @@ class vip_chi_base_seq #(
   // Control whether generated writes expect a later CompAck.
   // ---------------------------------------------------------------------------
   function void set_exp_comp_ack(input logic exp_comp_ack);
-    this.exp_comp_ack_val = exp_comp_ack;
+    this.exp_comp_ack_val    = exp_comp_ack;
+    this.exp_comp_ack_forced = 1'b1;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -564,6 +575,7 @@ class vip_chi_base_seq #(
     vip_chi_dir_t  direction_val;
     req_opcode_t   opcode_val;
     vip_chi_role_t role_val_v;
+    logic          exp_comp_ack_eff;
 
     req = new($sformatf("req_%0d", request_idx));
     req.set_config(CFG_P);
@@ -591,7 +603,6 @@ class vip_chi_base_seq #(
     req.set_order(this.order_val);
     req.set_mem_attr(this.mem_attr_val);
     req.set_allow_retry(this.allow_retry_val);
-    req.set_exp_comp_ack(this.exp_comp_ack_val);
     req.set_excl(this.excl_val);
     req.set_pcrd_type(this.pcrd_type_val);
     this.counter_iter.configure_item(req);
@@ -599,6 +610,18 @@ class vip_chi_base_seq #(
     direction_val = this.item_cfg.direction;
     opcode_val    = this.choose_opcode();
     role_val_v    = this.role_val();
+
+    // Has to come after choose_opcode(): the table is indexed by opcode, and
+    // asking it before the opcode exists is how the field ended up being stamped
+    // from a per-sequence constant in the first place. An explicit
+    // set_exp_comp_ack() still wins -- including a deliberate zero, which the
+    // item constraint will then reject if the opcode requires the bit, and that
+    // rejection is the point.
+    exp_comp_ack_eff = this.exp_comp_ack_forced ? this.exp_comp_ack_val
+                     : vip_chi_types_pkg::vip_chi_exp_comp_ack_required(
+                         vip_chi_req_opcode_t'(opcode_val),
+                         (role_val_v == VIP_CHI_ROLE_RNF_E));
+    req.set_exp_comp_ack(exp_comp_ack_eff);
     if (!req.randomize() with {
       direction     == direction_val;
       role          == local::role_val_v;
@@ -619,7 +642,7 @@ class vip_chi_base_seq #(
       order         == local::this.order_val;
       mem_attr      == local::this.mem_attr_val;
       allow_retry   == local::this.allow_retry_val;
-      exp_comp_ack  == local::this.exp_comp_ack_val;
+      exp_comp_ack  == local::exp_comp_ack_eff;
       excl          == local::this.excl_val;
       pcrd_type     == local::this.pcrd_type_val;
     }) begin

@@ -75,6 +75,7 @@ from vip_chi_types_pkg import (
   Role,
   RspOpcode,
   chi_xfer_dat_beats,
+  exp_comp_ack_required,
   flit_layout,
   lasm,
   lasm_legal_step,
@@ -274,10 +275,19 @@ def _req_opcode_is_coherent_read(opcode: int) -> bool:
 
 def _req_has_modeled_completion(opcode: int) -> bool:
   op = int(opcode)
+  # The combined Write + CMO family completes exactly as its plain write half
+  # does, and it ships with sequences, a testcase and a completer service
+  # routine -- so leaving it out stood the TxnID-reuse rules and the completion
+  # timeout down for six opcodes the regression drives. The same omission the
+  # WriteUniqueZero comment above records, for a family rather than for one
+  # opcode. It stayed invisible because check_classifier_coverage saw the six
+  # claimed by _is_write_req_opcode, a classifier that answered a question about
+  # ExpCompAck and nothing about completions.
   return (op in _MODELED_COMPLETION_OPCODES_C
           or op in _COHERENT_READ_OPCODES_C
           or op in _COHERENT_WRITE_DATA_OPCODES_C
           or op in _COHERENT_RSP_ONLY_OPCODES_C
+          or req_opcode_is_combined_write_cmo(op)
           or req_opcode_is_atomic(op))
 
 
@@ -286,28 +296,6 @@ def _req_completion_uses_dat(opcode: int) -> bool:
   return (op in (int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP))
           or op in _COHERENT_READ_OPCODES_C
           or req_opcode_is_atomic_returning_data(op))
-
-
-def _is_write_req_opcode(opcode: int) -> bool:
-  """A combined Write + CMO is a write request here, exactly as its plain form
-  is. Leaving the family out made this function quietly answer "not a write" for
-  six legal write opcodes, which switched off the ExpCompAck bookkeeping: a
-  combined write that set ExpCompAck was then reported as sending a CompAck it
-  had never asked for.
-  """
-  op = int(opcode)
-  # WriteUniqueZero is listed on its own rather than folded into
-  # _NON_COHERENT_WRITE_OPCODES_C, because it is snoopable and that name would
-  # then be wrong. Both Zero opcodes belong here for a reason that is not about
-  # data: neither carries a write burst, but this function decides whether
-  # ExpCompAck is RECORDED for the TxnID, and a slot that is never written keeps
-  # the previous transaction's value. _req_write_payload_beats answers the data
-  # question separately, and correctly returns 0 for both.
-  return (op in _NON_COHERENT_WRITE_OPCODES_C
-          or op == int(ReqOpcode.WRITE_UNIQUE_ZERO)
-          or op in _COHERENT_WRITE_DATA_OPCODES_C
-          or req_opcode_is_combined_write_cmo(op)
-          or req_opcode_is_atomic(op))
 
 
 def _is_final_rsp_completion(opcode: int, rsp_opcode: int) -> bool:
@@ -734,7 +722,7 @@ class bind_chi:
     # thing without allocating the whole space up front.
     self._req_inflight = {}
     self._req_exp_comp_ack = {}
-    self._write_completion_seen = {}
+    self._completion_seen = {}
     self._write_grant_seen_by_dbid = {}
     self._expected_write_beats_by_txn = {}
     self._expected_write_beats_by_dbid = {}
@@ -1436,9 +1424,26 @@ class bind_chi:
       self._post(self._dat_completion_req_valid_by_txn, completion_txn, True)
       self._post(self._dat_completion_req_txn_by_txn, completion_txn, txn)
 
-    if _is_write_req_opcode(opcode):
-      self._post(self._req_exp_comp_ack, txn, bool(f["expcompack"]))
-      self._post(self._write_completion_seen, txn, False)
+    # Every request, not only writes. The write-only gate was correct for
+    # exactly as long as ExpCompAck was unreachable on a read: the moment
+    # Table 2-9 was implemented and the four coherent reads started setting the
+    # bit, a read's CompAck would have arrived against a tracker that had
+    # recorded nothing -- and COMPACK_WITHOUT_EXPCOMPACK would have fired on
+    # every conformant coherent read in the regression.
+    self._post(self._req_exp_comp_ack, txn, bool(f["expcompack"]))
+    self._post(self._completion_seen, txn, False)
+
+    # IHI 0050 E Table 2-9 / D Table 2-8, the "Yes" column. The role argument is
+    # a constant one: every opcode the table marks required is an opcode only an
+    # RN-F may issue at all, so no role test is needed here -- a non-RN-F sending
+    # one of them is a different violation, of the opcode legality rule rather
+    # than of this one. Judged from whichever vantage this bind sits at, for the
+    # same reason CHI_RSP_FIELD_ZERO is: a link may carry a bind at only one end.
+    self._chk("CHI_EXPCOMPACK_REQUIRED_BUT_ZERO",
+              not (exp_comp_ack_required(opcode, True)
+                   and not int(f["expcompack"])),
+              "a request whose opcode requires CompAck was issued with "
+              "ExpCompAck = 0", "section 2.8.3")
 
   def _arm_completion(self, s: dict, f: dict) -> None:
     """Start the temporal attempts a request opens."""
@@ -1473,7 +1478,7 @@ class bind_chi:
     if opcode in _DBID_GRANT_OPCODES_C:
       self._record_write_grant(f, mark_grant_seen=True)
     if opcode in _PLAIN_COMPLETION_RSP_OPCODES_C:
-      self._post(self._write_completion_seen, txn, True)
+      self._post(self._completion_seen, txn, True)
       self._post(self._req_inflight, txn, False)
     elif opcode == int(RspOpcode.COMP_PERSIST):
       self._post(self._req_inflight, txn, False)
@@ -1552,8 +1557,8 @@ class bind_chi:
 
     txn = f["txnid"]
     self._chk("CHI_COMPACK_BEFORE_COMPLETION",
-              self._write_completion_seen.get(txn, False),
-              "CompAck was sent before a write completion response",
+              self._completion_seen.get(txn, False),
+              "CompAck was sent before the completion it acknowledges",
               "section 2.6")
     self._chk("CHI_COMPACK_WITHOUT_EXPCOMPACK",
               self._req_exp_comp_ack.get(txn, False),
@@ -1561,7 +1566,7 @@ class bind_chi:
               "section 2.6")
 
     self._post(self._req_exp_comp_ack, txn, False)
-    self._post(self._write_completion_seen, txn, False)
+    self._post(self._completion_seen, txn, False)
 
   # ---------------------------------------------------------------------------
   # Table A-4 zero-field legality, checked from both vantages of the link.
@@ -1686,6 +1691,14 @@ class bind_chi:
               f"type", "section 2.9")
     self._post(seen, txn, 0)
     self._post(self._expected_completion_valid_by_txn, txn, False)
+    # The read half of section 2.8.3 rule 1. Keyed by the REQUEST's TxnID, not
+    # the completion's: a separated read returns its data under ReturnTxnID, but
+    # the CompAck that closes it still carries the TxnID the request was issued
+    # with.
+    self._post(self._completion_seen,
+               self._dat_completion_req_txn_by_txn.get(txn, txn)
+               if self._dat_completion_req_valid_by_txn.get(txn, False) else txn,
+               True)
     if self._dat_completion_req_valid_by_txn.get(txn, False):
       self._post(self._req_inflight,
                  self._dat_completion_req_txn_by_txn.get(txn, 0), False)

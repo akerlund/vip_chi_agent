@@ -367,9 +367,21 @@ module vip_chi_sva #(
         return 1'b1;
       end
       default: begin
+        // The combined Write + CMO family completes exactly as its plain write
+        // half does, and it ships with sequences, a testcase and a completer
+        // service routine -- so leaving it out stood the TxnID-reuse rules and
+        // the completion timeout down for six opcodes the regression drives. The
+        // same omission the WriteUniqueZero comment above records, for a family
+        // rather than for one opcode. It stayed invisible because
+        // check_classifier_coverage saw the six claimed by is_write_req_opcode,
+        // a classifier that answered a question about ExpCompAck and nothing
+        // about completions; the six surfaced the moment that function was
+        // deleted.
         return req_opcode_is_coherent_read(opcode) ||
                req_opcode_is_coherent_write_data(opcode) ||
                req_opcode_is_coherent_rsp_only(opcode) ||
+               vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+                 vip_chi_req_opcode_t'(opcode)) ||
                vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(
                  vip_chi_req_opcode_t'(opcode));
       end
@@ -469,30 +481,6 @@ module vip_chi_sva #(
     return (vif.txrspflitv &&
             (txn_id_t'(vif.txrspflit.txnid) == req_txn_id) &&
             is_final_rsp_completion(opcode, rsp_opcode_t'(vif.txrspflit.opcode)));
-  endfunction
-
-  // A combined Write + CMO is a write request here, exactly as its plain form
-  // is. Leaving the family out made this function quietly answer "not a write"
-  // for six legal write opcodes, which switched off the ExpCompAck bookkeeping
-  // below: a combined write that set ExpCompAck was then reported as sending a
-  // CompAck it had never asked for.
-  function automatic bit is_write_req_opcode(input req_opcode_t opcode);
-    return ((opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C)) ||
-            (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C)) ||
-            (opcode == VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C) ||
-            // Both Zero opcodes belong here, and for a reason that is not about
-            // data: neither carries a write burst, but this function decides
-            // whether ExpCompAck is RECORDED for the TxnID. Leave one out and
-            // its slot keeps the previous transaction's value, so a spurious
-            // CompAck on a WriteUniqueZero is measured against stale state.
-            // req_write_payload_beats() answers the data question separately,
-            // and correctly returns 0 for both.
-            (opcode == VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C) ||
-            vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
-              vip_chi_req_opcode_t'(opcode)) ||
-            req_opcode_is_coherent_write_data(opcode) ||
-            vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(
-              vip_chi_req_opcode_t'(opcode)));
   endfunction
 
   function automatic bit is_write_dat_opcode(input dat_opcode_t opcode);
@@ -677,7 +665,13 @@ module vip_chi_sva #(
   endfunction
 
   bit req_exp_comp_ack_by_txn[TXN_ID_COUNT_C];
-  bit write_completion_seen_by_txn[TXN_ID_COUNT_C];
+  // "A completion this TxnID's CompAck may acknowledge has been seen." It used
+  // to be write-only, in both senses: only writes recorded one, and only writes
+  // could reach it. Section 2.8.3 rule 1 names three ways a read arrives at the
+  // same point -- "an RN-F sends a CompAck after receiving Comp, RespSepData or
+  // CompData, or both RespSepData and DataSepResp" -- so a read completion sets
+  // it as well now.
+  bit completion_seen_by_txn[TXN_ID_COUNT_C];
   bit write_grant_seen_by_dbid[TXN_ID_COUNT_C];
   int unsigned expected_write_beats_by_txn[TXN_ID_COUNT_C];
   int unsigned expected_write_beats_by_dbid[TXN_ID_COUNT_C];
@@ -787,7 +781,7 @@ module vip_chi_sva #(
     if (!checks_enable || !vif.rst_n) begin
       for (int txn_i = 0; txn_i < TXN_ID_COUNT_C; txn_i++) begin
         req_exp_comp_ack_by_txn[txn_i]    <= 1'b0;
-        write_completion_seen_by_txn[txn_i] <= 1'b0;
+        completion_seen_by_txn[txn_i] <= 1'b0;
         write_grant_seen_by_dbid[txn_i]   <= 1'b0;
         expected_write_beats_by_txn[txn_i] <= 0;
         expected_write_beats_by_dbid[txn_i] <= 0;
@@ -862,11 +856,31 @@ module vip_chi_sva #(
           end
         end
 
-        if (vif.txreqflitv && is_write_req_opcode(req_opcode_t'(vif.txreqflit.opcode))) begin
+        // Every request, not only writes. The write-only gate was correct for
+        // exactly as long as ExpCompAck was unreachable on a read: the moment
+        // Table 2-9 was implemented and the four coherent reads started setting
+        // the bit, a read's CompAck would have arrived against a tracker that had
+        // recorded nothing -- and COMPACK_WITHOUT_EXPCOMPACK would have fired on
+        // every conformant coherent read in the regression.
+        if (vif.txreqflitv) begin
           req_exp_comp_ack_by_txn[txn_id_to_index(txn_id_t'(vif.txreqflit.txnid))] <=
             vif.txreqflit.expcompack;
-          write_completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.txreqflit.txnid))] <=
+          completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.txreqflit.txnid))] <=
             1'b0;
+
+          // Table 2-9's "Yes" column, checked from the requester's own vantage.
+          // The role argument is a constant one: every opcode the table marks
+          // required is an opcode only an RN-F may issue at all, so no ROLE_P
+          // test is needed here -- a non-RN-F sending one of them is a different
+          // violation, of the opcode legality rule rather than of this one.
+          if (vip_chi_exp_comp_ack_required(
+                vip_chi_req_opcode_t'(vif.txreqflit.opcode), 1'b1) &&
+              !vif.txreqflit.expcompack) begin
+            chk_miss(VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E, $sformatf("a request whose opcode requires CompAck was issued with ExpCompAck = 0"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E);
+          end
         end
 
         if (vif.rxrspflitv) begin
@@ -893,7 +907,7 @@ module vip_chi_sva #(
                 expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))];
               expected_write_valid_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <=
                 (expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] != 0);
-              write_completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b1;
+              completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b1;
               if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
                 req_outstanding_delta--;
               end
@@ -901,7 +915,7 @@ module vip_chi_sva #(
             end
 
             rsp_opcode_t'(VIP_CHI_RSP_COMP_C): begin
-              write_completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b1;
+              completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b1;
               if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
                 req_outstanding_delta--;
               end
@@ -953,8 +967,8 @@ module vip_chi_sva #(
 
         if (vif.txrspflitv &&
             (rsp_opcode_t'(vif.txrspflit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_COMP_ACK_C))) begin
-          if (!write_completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))]) begin
-            chk_miss(VIP_CHI_CHK_COMPACK_BEFORE_COMPLETION_E, $sformatf("CompAck was sent before a write completion response"));
+          if (!completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))]) begin
+            chk_miss(VIP_CHI_CHK_COMPACK_BEFORE_COMPLETION_E, $sformatf("CompAck was sent before the completion it acknowledges"));
           end
           else begin
             chk_hit(VIP_CHI_CHK_COMPACK_BEFORE_COMPLETION_E);
@@ -968,7 +982,7 @@ module vip_chi_sva #(
           end
 
           req_exp_comp_ack_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
-          write_completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
+          completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
         end
       end
       else if (ROLE_IS_COMPLETER_C) begin
@@ -980,6 +994,29 @@ module vip_chi_sva #(
 
           req_opcode = req_opcode_t'(vif.rxreqflit.opcode);
           txn_idx = txn_id_to_index(txn_id_t'(vif.rxreqflit.txnid));
+
+          // The same rule from the other end of the link. One rule, two
+          // directions, one check ID -- the RSP_FIELD_ZERO pattern, and for the
+          // same reason: a link may carry a bind at only one end, so checking
+          // solely from the requester's vantage would be silently one-sided on
+          // exactly the links where the peer is the device under test rather than
+          // this VIP.
+          //
+          // In THIS testbench it can only pass. The coherent link carries the
+          // main bind at the RN-F ends alone, and the completer binds that do
+          // exist sit on links no required-CompAck opcode crosses (an RN-I cannot
+          // issue one). That is a property of where the binds are, not of the
+          // rule, which is why the negative control asserts the requester vantage
+          // and says so.
+          if (vip_chi_exp_comp_ack_required(
+                vip_chi_req_opcode_t'(vif.rxreqflit.opcode), 1'b1) &&
+              !vif.rxreqflit.expcompack) begin
+            chk_miss(VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E, $sformatf("a request whose opcode requires CompAck was received with ExpCompAck = 0"));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E);
+          end
+
           if (req_has_modeled_completion(req_opcode)) begin
             if (req_inflight_by_txn[txn_idx]) begin
               chk_miss(VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E, $sformatf("completer observed a reused request TxnID while the earlier request was still in flight"));
@@ -1219,6 +1256,14 @@ module vip_chi_sva #(
             end
             expected_completion_valid_by_txn[rr_txn_idx] <= 1'b0;
             rxdat_beats_by_txn[rr_txn_idx] <= 0;
+            // The read half of section 2.8.3 rule 1. Keyed by the REQUEST's
+            // TxnID, not the completion's: a separated read returns its data
+            // under ReturnTxnID, but the CompAck that closes it still carries the
+            // TxnID the request was issued with.
+            completion_seen_by_txn[
+              dat_completion_req_valid_by_txn[rr_txn_idx]
+                ? txn_id_to_index(dat_completion_req_txn_by_txn[rr_txn_idx])
+                : rr_txn_idx] <= 1'b1;
             if (dat_completion_req_valid_by_txn[rr_txn_idx]) begin
               if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[rr_txn_idx])]) begin
                 req_outstanding_delta--;

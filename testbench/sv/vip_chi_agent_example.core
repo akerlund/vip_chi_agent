@@ -129,6 +129,15 @@ filesets:
       - tc/chi_coh_snoop_match_negctl_base_test.sv:    {is_include_file: true}
       - tc/tc_chi_coh_d_snoop_match_negctl.sv:              {is_include_file: true}
       - tc/tc_chi_coh_e_snoop_match_negctl.sv:              {is_include_file: true}
+      - tc/chi_coh_comp_ack_read_base_test.sv: {is_include_file: true}
+      - tc/tc_chi_coh_d_comp_ack_read.sv: {is_include_file: true}
+      - tc/tc_chi_coh_e_comp_ack_read.sv: {is_include_file: true}
+      - tc/chi_coh_comp_ack_window_negctl_base_test.sv: {is_include_file: true}
+      - tc/tc_chi_coh_d_comp_ack_window_negctl.sv: {is_include_file: true}
+      - tc/tc_chi_coh_e_comp_ack_window_negctl.sv: {is_include_file: true}
+      - tc/chi_coh_expcompack_negctl_base_test.sv: {is_include_file: true}
+      - tc/tc_chi_coh_d_expcompack_negctl.sv: {is_include_file: true}
+      - tc/tc_chi_coh_e_expcompack_negctl.sv: {is_include_file: true}
       - tc/chi_coh_writeback_evict_base_test.sv:        {is_include_file: true}
       - tc/tc_chi_coh_d_writeback_evict.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_writeback_evict.sv:                 {is_include_file: true}
