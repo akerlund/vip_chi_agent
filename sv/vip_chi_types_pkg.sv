@@ -864,6 +864,117 @@ package vip_chi_types_pkg;
   endfunction
 
   // ---------------------------------------------------------------------------
+  // The least cache state carrying every permission either operand carries.
+  //
+  // The five states this VIP models are exactly the five permission triples that
+  // satisfy "writable implies readable" and "dirty implies readable":
+  //
+  //     I  (-,-,-)   SC (R,-,-)   UC (R,W,-)   SD (R,-,D)   UD (R,W,D)
+  //
+  // OR-ing two such triples yields another one, so the join is total and closed
+  // over the modeled set and needs no default arm. It is NOT a maximum over a
+  // rank: SD and UC are incomparable (SD holds the dirty data without the right
+  // to write it, UC holds the right without the data), and their join is UD --
+  // a state neither operand is. That row is Table 4-14's ReadUnique-from-SD
+  // case, and it is the one a rank-based implementation gets wrong.
+  // ---------------------------------------------------------------------------
+  function automatic vip_chi_resp_t vip_chi_state_join(input vip_chi_resp_t a,
+                                                       input vip_chi_resp_t b);
+    bit r, w, d;
+
+    r = vip_chi_state_is_readable(a)   || vip_chi_state_is_readable(b);
+    w = vip_chi_state_is_writable(a)   || vip_chi_state_is_writable(b);
+    d = vip_chi_state_holds_dirty(a)   || vip_chi_state_holds_dirty(b);
+
+    if (!r)      return VIP_CHI_RESP_STATE_I_E;
+    if (w && d)  return VIP_CHI_RESP_STATE_UP_PD_DIRTY_E;
+    if (w)       return VIP_CHI_RESP_STATE_UC_E;
+    if (d)       return VIP_CHI_RESP_STATE_SD_PD_DIRTY_E;
+    return VIP_CHI_RESP_STATE_SC_E;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // The Requester's cache state after its own request completes: a function of
+  // the state it HELD and the state the completion GRANTED.
+  //
+  // IHI 0050 E Table 4-14 (§4.7.1, reads), Tables 4-17 and 4-18 (MakeReadUnique)
+  // and Table 4-19 (§4.7.2, dataless); D Tables 4-12 and 4-13. Those four tables
+  // are a single rule: a completion GRANTS coherence rights, it does not revoke
+  // rights the Requester already holds. Every row is the permission join of the
+  // two states, with one exception noted below -- checked row by row, including
+  // the three that make the point:
+  //
+  //   ReadClean  UD + CompData_SC -> UD    (the grant is weaker; the holder keeps
+  //                                         its dirty line and its write right)
+  //   ReadClean  SD + CompData_UC -> UD    (join of two incomparable states)
+  //   ReadUnique SD + CompData_UC -> UD    (same, and present in D as well as E)
+  //
+  // Taking the granted Resp verbatim -- which is what "final = Resp" does --
+  // silently drops the writeback obligation for a line the Requester is still
+  // responsible for, and the dirty beats along with it.
+  //
+  // The held state must be read at COMPLETION time, not at the time the request
+  // was issued. Tables 4-17 and 4-18 make this explicit with a separate "state at
+  // time of response" column: a snoop landing while the request is outstanding
+  // can take the line away, and then SC-at-issue/I-at-response + CompData_UC is
+  // UC, not the UD that joining against the issue-time state would give. Both
+  // callers read a live shadow, so they get this for free -- but only because
+  // they read it late.
+  //
+  // MakeUnique is the exception and the reason this takes an opcode at all. Its
+  // completion is Comp_UC (Table 4-19 / D Table 4-13) yet its final state is UD
+  // from every permitted initial state: the Requester has undertaken to overwrite
+  // the whole line, so it becomes Dirty by its own act rather than by inheriting
+  // anyone's dirty data. No join produces that, because the grant does not carry
+  // it.
+  //
+  // Opcodes that do not appear in these tables return the held state unchanged.
+  // The non-allocating reads belong to that group on purpose: §4.7.1 requires the
+  // Requester to IGNORE the cache state in the CompData response to ReadNoSnp,
+  // ReadOnce, ReadOnceCleanInvalid and ReadOnceMakeInvalid, so joining against it
+  // would be wrong and not merely unnecessary. Callers decide separately whether
+  // an opcode invalidates the line -- that is not a state this function can
+  // return, since "no change" and "goes to I" are different answers.
+  // ---------------------------------------------------------------------------
+  function automatic vip_chi_resp_t vip_chi_req_final_state(
+    input vip_chi_req_opcode_t opcode,
+    input vip_chi_resp_t       held,
+    input vip_chi_resp_t       granted
+  );
+    case (opcode)
+      VIP_CHI_REQ_MAKE_UNIQUE_E: begin
+        return VIP_CHI_RESP_STATE_UP_PD_DIRTY_E;
+      end
+      VIP_CHI_REQ_READ_SHARED_E,
+      VIP_CHI_REQ_READ_CLEAN_E,
+      VIP_CHI_REQ_READ_UNIQUE_E,
+      VIP_CHI_REQ_MAKE_READ_UNIQUE_E,
+      VIP_CHI_REQ_CLEAN_UNIQUE_E: begin
+        return vip_chi_state_join(held, granted);
+      end
+      default: begin
+        return held;
+      end
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // TRUE when the Requester must DISCARD the data a read returned because the
+  // line it already holds is the newer copy.
+  //
+  // IHI 0050 E Table 4-14 footnote c: "Data received from memory must be dropped
+  // if the cache state is UD or SD, or merged if the cache state is UDP." The
+  // reachable half of that is the drop: this VIP has no byte-granular dirty
+  // tracking, so UDP is not modeled and the merge case cannot arise. Overwriting
+  // a dirty line with the fetched copy loses the locally-modified bytes outright
+  // -- the state stays right and the data goes wrong, which is worse than either
+  // alone because every later data-integrity check then agrees with the loss.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_req_keeps_local_data(input vip_chi_resp_t held);
+    return vip_chi_state_holds_dirty(held);
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Return TRUE when the snoop's response must NOT carry data. The snoopee
   // invalidates the line and DISCARDS any Dirty copy instead of passing it to
   // the Home: IHI 0050 Chapter 4 lists no SnpRespData form among the responses

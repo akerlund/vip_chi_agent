@@ -588,23 +588,43 @@ class vip_chi_driver_rnf #(
   endtask
 
   // ---------------------------------------------------------------------------
-  // Record the granted coherent state as each request retires. A coherent read
-  // completes with CompData carrying the granted state in rsp_resp.
+  // Record the coherent state as each request retires.
+  //
+  // The final state is a function of the state this cache HELD and the state the
+  // completion GRANTED -- vip_chi_req_final_state, IHI 0050 E Tables 4-14, 4-17,
+  // 4-18 and 4-19 (D Tables 4-12 and 4-13). It is NOT the granted Resp on its
+  // own: a UD holder that issues ReadClean stays UD however weak the grant, and
+  // taking Resp verbatim would drop a writeback obligation this cache still owes.
   // ---------------------------------------------------------------------------
   protected function void on_transaction_complete(input item_t req);
-    addr_t line;
+    addr_t         line;
+    vip_chi_resp_t held;
 
     line = this.line_addr(addr_t'(req.addr));
+    held = this.cache_state.exists(line) ? this.cache_state[line]
+                                         : VIP_CHI_RESP_STATE_I_E;
 
     if ((req.direction == VIP_CHI_DIR_READ_E) &&
         this.req_opcode_is_coherent_read(req.opcode)) begin
       this.evict_for_capacity(line);
-      this.cache_state[line] = req.rsp_resp;
+      // Negative control: reinstate the pre-3.2 shortcut in full -- the granted
+      // Resp verbatim, and the fetched beats over the top of whatever was held.
+      this.cache_state[line] = this.cfg.rnf_req_final_state_verbatim ?
+                                 req.rsp_resp :
+                                 vip_chi_req_final_state(
+                                   vip_chi_req_opcode_t'(req.opcode), held, req.rsp_resp);
       // Record the granted beats so a later snoop can forward them if the line
-      // is dirtied (make_line_dirty) before the snoop arrives.
-      this.cache_data[line] = new[req.data.size()];
-      foreach (req.data[i]) begin
-        this.cache_data[line][i] = req.data[i];
+      // is dirtied (make_line_dirty) before the snoop arrives -- but only when
+      // this cache is not already holding a newer copy. Table 4-14 footnote c:
+      // data received from memory must be DROPPED if the cache state is UD or SD.
+      // Overwriting there loses the locally-modified bytes while leaving the
+      // state correct, so every later data-integrity check agrees with the loss.
+      if (this.cfg.rnf_req_final_state_verbatim ||
+          !vip_chi_req_keeps_local_data(held)) begin
+        this.cache_data[line] = new[req.data.size()];
+        foreach (req.data[i]) begin
+          this.cache_data[line][i] = req.data[i];
+        end
       end
     end
     else if (this.req_opcode_is_coherent_evicting_write(req.opcode) ||
@@ -626,7 +646,12 @@ class vip_chi_driver_rnf #(
       // line is touched -- a lost SC may have been snoop-invalidated out already.
       if (this.cache_state.exists(line)) begin
         if (!req.excl || (req.rsp_resp_err == VIP_CHI_RESP_ERR_EXCLUSIVE_OKAY_E)) begin
-          this.cache_state[line] = VIP_CHI_RESP_STATE_UC_E;
+          // Table 4-19 gives CleanUnique three rows, all completing Comp_UC: SC
+          // becomes UC and SD becomes UD. The grant confers the write right; it
+          // does not wash the line clean, and this is the join again rather than
+          // a fixed UC.
+          this.cache_state[line] = vip_chi_req_final_state(
+                                     vip_chi_req_opcode_t'(req.opcode), held, req.rsp_resp);
         end
       end
     end
@@ -640,7 +665,8 @@ class vip_chi_driver_rnf #(
       // So materialize a defined image -- zeros, the freshly-"made" line the
       // requester will overwrite -- sized to the coherence line. [fix F2]
       this.evict_for_capacity(line);
-      this.cache_state[line] = VIP_CHI_RESP_STATE_UP_PD_DIRTY_E;
+      this.cache_state[line] = vip_chi_req_final_state(
+                                 vip_chi_req_opcode_t'(req.opcode), held, req.rsp_resp);
       this.cache_data[line]  = new[VIP_CHI_CACHE_LINE_BYTES_C / CFG_P.DATA_BYTES_P];
       foreach (this.cache_data[line][i]) begin
         this.cache_data[line][i] = '0;

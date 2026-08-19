@@ -19,6 +19,17 @@
 // closed (get_coverage() reads 0 without a coverage build, so that check is gated
 // on coverage actually being collected).
 //
+// A SECOND sweep primes the REQUESTING node and issues on the SAME line, which
+// is the axis this test did not have. Priming only the snoopee leaves the
+// requester Invalid for every combination, and a Requester that holds nothing
+// cannot tell "final state = the granted Resp" apart from "final state = what the
+// grant adds to what was held" -- the two agree on every from-Invalid row of
+// Table 4-14. That is what let the held-state half of the table go missing with
+// a fully green regression and a closed transition covergroup behind it
+// (F-INTOP-009). The rows that separate the two are the ones where the grant is
+// WEAKER than what the Requester already had: a UD holder issuing ReadClean is
+// granted CompData_SC and must stay UD.
+//
 // Used by:
 //   tc_chi_coh_d_transition_sweep    (CHI-D)
 //   tc_chi_coh_e_transition_sweep  (wide CHI-E)
@@ -52,6 +63,20 @@ class chi_coh_transition_sweep_base_test #(
   // so the assertion catches the rule going dark rather than tracking an exact
   // count that stimulus changes would keep breaking.
   localparam int MIN_SNP_RESP_JUDGED_C = 10;
+  // The requester-priming sweep: 3 primed states {SC, UC, UD} x 4 requests
+  // {ReadShared, ReadClean, ReadUnique, MakeUnique}.
+  localparam int N_REQ_STATES_C = 3;
+  localparam int N_REQ_OPS_C    = 4;
+  // Of those 12, the held state changes the answer in exactly 5 -- the rows where
+  // the grant is weaker than what was held. Enumerated rather than approximated,
+  // because this count IS the evidence that the rule was exercised:
+  //   UC + ReadShared -> UC (granted SC)    UD + ReadShared -> UD (granted SC)
+  //   UC + ReadClean  -> UC (granted SC)    UD + ReadClean  -> UD (granted SC)
+  //                                         UD + ReadUnique -> UD (granted UC)
+  // The from-SC row retains nothing (SC is the weakest state that holds
+  // anything), and MakeUnique reaches UD from its opcode rather than from the
+  // held state, so it is correctly not counted -- see resolve_req_final_state.
+  localparam int MIN_REQ_FINAL_RETAINED_C = 5;
 
   function new(input string name, input uvm_component parent = null);
     super.new(name, parent);
@@ -118,6 +143,36 @@ class chi_coh_transition_sweep_base_test #(
 
         // RN-F1 issues the opcode; the home snoops RN-F0 in the primed state.
         this.run_op(1, line, op);
+      end
+    end
+
+    // -------------------------------------------------------------------------
+    // Requester axis. Same shape, but the node that is primed is the node that
+    // then issues, and it issues on the line it already holds -- so the
+    // completion arrives at a Requester in a known non-Invalid state and Table
+    // 4-14 has to combine the two. The sweep above can never produce this: it
+    // issues from RN-F1 on lines only RN-F0 ever touched.
+    // -------------------------------------------------------------------------
+    for (int st = 0; st < N_REQ_STATES_C; st++) begin
+      for (int op = 0; op < N_REQ_OPS_C; op++) begin
+        line = base_addr + item_t::addr_t'(idx * LINE_STRIDE_C);
+        idx++;
+
+        // Prime RN-F1 -- the requester this time -- exactly as above: UD comes
+        // from MakeUnique so the state is observable rather than silently local.
+        case (st)
+          0: this.run_op(1, line, 0);   // ReadShared -> SC
+          1: this.run_op(1, line, 2);   // ReadUnique -> UC
+          default: this.run_op(1, line, 6);   // MakeUnique -> UD (observable)
+        endcase
+
+        // ...and now issue again, on the SAME line, from the SAME node.
+        case (op)
+          0: this.run_op(1, line, 0);   // ReadShared
+          1: this.run_op(1, line, 1);   // ReadClean
+          2: this.run_op(1, line, 2);   // ReadUnique
+          default: this.run_op(1, line, 6);   // MakeUnique
+        endcase
       end
     end
 
@@ -247,6 +302,47 @@ class chi_coh_transition_sweep_base_test #(
         "FATAL [%s] the snoop-response legality cross closed only %0.1f%% under a coverage build -- the sweep drives every snoop opcode the home originates, so it should reach far more of the surface",
         super.tc_name, super.tb_env.coh_checker.get_snp_resp_legality_coverage()))
     end
+
+    // -------------------------------------------------------------------------
+    // The requester axis (F-INTOP-009). Same three-part discipline as D5/D6
+    // above: the rule ran, it ran on the inputs that distinguish it, and nothing
+    // it judged was illegal.
+    //
+    // req_final_retained is the load-bearing count. It rises only where the
+    // Requester's held state changed the answer -- which is nothing at all unless
+    // the stimulus primes the requesting node, and priming the requesting node is
+    // exactly what no test in either port did before. A regression can be green
+    // end to end with this at 0 and the whole held-state half of Table 4-14
+    // missing, which is how the defect survived.
+    // -------------------------------------------------------------------------
+    if (super.tb_env.coh_checker.get_req_final_judged_count() == 0) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] the requester final-state rule judged nothing -- no coherent read completed",
+        super.tc_name))
+    end
+
+    if (super.tb_env.coh_checker.get_req_final_retained_count() <
+        MIN_REQ_FINAL_RETAINED_C) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] only %0d completion(s) had their final state decided by the held state (< %0d); the requester was Invalid throughout, so Table 4-14's held-state half was never exercised",
+        super.tc_name, super.tb_env.coh_checker.get_req_final_retained_count(),
+        MIN_REQ_FINAL_RETAINED_C))
+    end
+
+    // A data-less completion must carry a Resp encoding its request's table
+    // permits. MakeUnique is the case the sweep drives: Table 4-19 (D Table 4-13)
+    // gives it Comp_UC, and issue D does not define UD_PD for a data-less
+    // completion at all.
+    if (super.tb_env.coh_checker.get_bad_dataless_resp_count() != 0) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] %0d data-less completion(s) carried a Resp encoding the request's table does not permit",
+        super.tc_name, super.tb_env.coh_checker.get_bad_dataless_resp_count()))
+    end
+
+    `uvm_info(get_name(), $sformatf(
+      "[%s] requester final state: judged=%0d, of which %0d were decided by the state the requester already held",
+      super.tc_name, super.tb_env.coh_checker.get_req_final_judged_count(),
+      super.tb_env.coh_checker.get_req_final_retained_count()), UVM_LOW)
 
     phase.drop_objection(this);
   endtask

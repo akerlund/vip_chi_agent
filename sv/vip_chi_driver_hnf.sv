@@ -976,17 +976,29 @@ class vip_chi_driver_hnf #(
       entry[k] = VIP_CHI_RESP_STATE_I_E;
     end
 
-    // Grant the requester Unique-Dirty and record the resolved directory.
+    // The requester ends up holding the line Unique-Dirty, so that is what the
+    // directory records.
     entry[p] = VIP_CHI_RESP_STATE_UP_PD_DIRTY_E;
     this.directory[line] = entry;
 
     // A store consumes/clears every monitor on the line.
     this.excl_monitor.delete(line);
 
+    // The COMPLETION, however, is Comp_UC and not Comp_UD_PD. IHI 0050 E Table
+    // 4-19 (D Table 4-13) gives MakeUnique a final state of UD from every
+    // permitted initial state and a completion response of Comp_UC: the requester
+    // becomes Dirty by its own act of overwriting the whole line, not by being
+    // handed anyone's dirty data, and Comp_UD_PD is reserved for the case where
+    // "responsibility for a Dirty cache line is being passed" (Table 4-7).
+    //
+    // Sending UD_PD here was not merely an odd choice of encoding. Issue D does
+    // not define UD_PD for a data-less completion at all -- D Table 4-5 permits
+    // exactly Comp_I, Comp_UC and Comp_SC -- so the CHI-D cut of this home was
+    // driving a Resp value the issue it implements has no meaning for.
     this.drive_rn_rsp(p,
                       item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C),
                       txn_id_t'(req.txnid), txn_id_t'(0),
-                      VIP_CHI_RESP_STATE_UP_PD_DIRTY_E,
+                      VIP_CHI_RESP_STATE_UC_E,
                       node_id_t'(req.tgtid), node_id_t'(req.srcid));
   endtask
 
@@ -1204,8 +1216,13 @@ class vip_chi_driver_hnf #(
       entry[k] = VIP_CHI_RESP_STATE_I_E;
     end
 
-    // Grant the requester Unique-Clean and record the resolved directory.
-    entry[p] = VIP_CHI_RESP_STATE_UC_E;
+    // Grant the requester Unique-Clean on the wire; record the join in the
+    // filter. Table 4-19 gives CleanUnique an SD row whose final state is UD, so
+    // writing a flat UC here would lose a dirty copy the same way -- Table 4-14
+    // footnote b again.
+    entry[p] = vip_chi_req_final_state(vip_chi_req_opcode_t'(req.opcode),
+                                       vip_chi_resp_t'(entry[p]),
+                                       VIP_CHI_RESP_STATE_UC_E);
     this.directory[line] = entry;
 
     // A store consumes/clears all monitors on the line (paths a + c).
@@ -1302,9 +1319,18 @@ class vip_chi_driver_hnf #(
       end
     end
 
-    // Grant the requester and record the resolved directory.
+    // The GRANT goes on the wire; the SNOOP FILTER records the join of the grant
+    // with what this port already held. IHI 0050 E Table 4-14 footnote b is
+    // explicit that the two are different: "a Home that uses a Snoop filter to
+    // track the cached state at the Requester must not downgrade the state of the
+    // cache line in the Snoop filter based on the state in the response to the
+    // Requester." A UD holder issuing ReadClean receives CompData_SC and stays
+    // UD, and a filter that wrote SC would then believe the only dirty copy in
+    // the system is clean -- and could serve a later reader from memory without
+    // asking for it.
     granted  = is_unique ? this.cfg.coh_read_unique_state : this.cfg.coh_read_shared_state;
-    entry[p] = granted;
+    entry[p] = vip_chi_req_final_state(vip_chi_req_opcode_t'(req.opcode),
+                                       vip_chi_resp_t'(entry[p]), granted);
     this.directory[line] = entry;
 
     // Exclusive load (LL): arm the per-(line,port) monitor and signal ExclOkay on
@@ -2075,8 +2101,11 @@ class vip_chi_driver_hnf #(
 
     // Resolve the directory: requester granted, snoopee downgraded/invalidated.
     // A unique fwd that invalidates the peer also breaks its exclusive monitor.
+    // The requester's entry is the join, not the grant -- Table 4-14 footnote b,
+    // as in service_coherent_read above.
     entry[fwd_k] = snoopee_next;
-    entry[p]     = granted;
+    entry[p]     = vip_chi_req_final_state(vip_chi_req_opcode_t'(req.opcode),
+                                           vip_chi_resp_t'(entry[p]), granted);
     this.directory[line] = entry;
     if ((snoopee_next == VIP_CHI_RESP_STATE_I_E) && this.excl_monitor.exists(line)) begin
       this.excl_monitor[line][fwd_k] = 1'b0;

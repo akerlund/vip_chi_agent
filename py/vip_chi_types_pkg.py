@@ -736,6 +736,109 @@ def snp_resp_state_gains_permission(from_state: int, reported_state: int) -> boo
            and not state_is_writable(from_state)))
 
 
+# The join is a lookup rather than a chain of ifs because the five states this
+# VIP models are exactly the five permission triples satisfying "writable implies
+# readable" and "dirty implies readable" -- (R, W, D) -> state is total over them.
+_JOIN_BY_PERMISSION = {
+  (False, False, False): int(Resp.I),
+  (True,  False, False): int(Resp.SC),
+  (True,  True,  False): int(Resp.UC),
+  (True,  False, True):  int(Resp.SD_PD),
+  (True,  True,  True):  int(Resp.UD_PD),
+}
+
+
+def state_join(a: int, b: int) -> int:
+  """The least cache state carrying every permission either operand carries.
+
+  OR-ing two permission triples yields another one, so the join is total and
+  closed over the modeled set. It is NOT a maximum over a rank: SD and UC are
+  incomparable (SD holds the dirty data without the right to write it, UC holds
+  the right without the data), and their join is UD -- a state neither operand
+  is. That row is Table 4-14's ReadUnique-from-SD case, and it is the one a
+  rank-based implementation gets wrong.
+  """
+  return _JOIN_BY_PERMISSION[(
+    state_is_readable(a) or state_is_readable(b),
+    state_is_writable(a) or state_is_writable(b),
+    state_holds_dirty(a) or state_holds_dirty(b),
+  )]
+
+
+_FINAL_STATE_JOIN_OPS = frozenset({
+  int(ReqOpcode.READ_SHARED),
+  int(ReqOpcode.READ_CLEAN),
+  int(ReqOpcode.READ_UNIQUE),
+  int(ReqOpcode.MAKE_READ_UNIQUE),
+  int(ReqOpcode.CLEAN_UNIQUE),
+})
+
+
+def req_final_state(opcode: int, held: int, granted: int) -> int:
+  """The Requester's cache state after its own request completes: a function of
+  the state it HELD and the state the completion GRANTED.
+
+  IHI 0050 E Table 4-14 (4.7.1, reads), Tables 4-17 and 4-18 (MakeReadUnique) and
+  Table 4-19 (4.7.2, dataless); D Tables 4-12 and 4-13. Those four tables are a
+  single rule: a completion GRANTS coherence rights, it does not revoke rights
+  the Requester already holds. Every row is the permission join of the two
+  states, with one exception noted below -- checked row by row, including the
+  three that make the point:
+
+    ReadClean  UD + CompData_SC -> UD    (the grant is weaker; the holder keeps
+                                          its dirty line and its write right)
+    ReadClean  SD + CompData_UC -> UD    (join of two incomparable states)
+    ReadUnique SD + CompData_UC -> UD    (same, and present in D as well as E)
+
+  Taking the granted Resp verbatim -- which is what "final = Resp" does --
+  silently drops the writeback obligation for a line the Requester is still
+  responsible for, and the dirty beats along with it.
+
+  The held state must be read at COMPLETION time, not at the time the request was
+  issued. Tables 4-17 and 4-18 make this explicit with a separate "state at time
+  of response" column: a snoop landing while the request is outstanding can take
+  the line away, and then SC-at-issue/I-at-response + CompData_UC is UC, not the
+  UD that joining against the issue-time state would give. Both callers read a
+  live shadow, so they get this for free -- but only because they read it late.
+
+  MakeUnique is the exception and the reason this takes an opcode at all. Its
+  completion is Comp_UC (Table 4-19 / D Table 4-13) yet its final state is UD
+  from every permitted initial state: the Requester has undertaken to overwrite
+  the whole line, so it becomes Dirty by its own act rather than by inheriting
+  anyone's dirty data. No join produces that, because the grant does not carry
+  it.
+
+  Opcodes that do not appear in these tables return the held state unchanged. The
+  non-allocating reads belong to that group on purpose: 4.7.1 requires the
+  Requester to IGNORE the cache state in the CompData response to ReadNoSnp,
+  ReadOnce, ReadOnceCleanInvalid and ReadOnceMakeInvalid, so joining against it
+  would be wrong and not merely unnecessary. Callers decide separately whether an
+  opcode invalidates the line -- that is not a state this function can return,
+  since "no change" and "goes to I" are different answers.
+  """
+  op = int(opcode)
+  if op == int(ReqOpcode.MAKE_UNIQUE):
+    return int(Resp.UD_PD)
+  if op in _FINAL_STATE_JOIN_OPS:
+    return state_join(held, granted)
+  return int(held)
+
+
+def req_keeps_local_data(held: int) -> bool:
+  """True when the Requester must DISCARD the data a read returned because the
+  line it already holds is the newer copy.
+
+  IHI 0050 E Table 4-14 footnote c: "Data received from memory must be dropped if
+  the cache state is UD or SD, or merged if the cache state is UDP." The
+  reachable half of that is the drop: this VIP has no byte-granular dirty
+  tracking, so UDP is not modeled and the merge case cannot arise. Overwriting a
+  dirty line with the fetched copy loses the locally-modified bytes outright --
+  the state stays right and the data goes wrong, which is worse than either alone
+  because every later data-integrity check then agrees with the loss.
+  """
+  return state_holds_dirty(held)
+
+
 # Atomic REQ opcodes occupy the contiguous 0x28..0x39 range.
 ATOMIC_REQ_OPCODES = tuple(range(0x28, 0x3A))
 

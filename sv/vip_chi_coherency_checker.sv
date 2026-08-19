@@ -93,6 +93,12 @@ class vip_chi_coherency_checker #(
   // Per-node open coherent reads (parallel maps keyed [node][TxnID], no struct).
   protected longint open_rd_line [N_NODES_C][longint];
   protected bit     open_rd_uniq [N_NODES_C][longint];
+  // The REQ opcode the completion belongs to. The Requester's final cache state
+  // is a function of the request as well as the granted Resp (IHI 0050 E Table
+  // 4-14), so the correlation the checker already keeps for the line has to
+  // carry the opcode too -- nothing on the CompData flit says which read it
+  // completes.
+  protected vip_chi_req_opcode_t open_rd_op [N_NODES_C][longint];
 
   // Per-line, per-node held state (packed 3 bits/node; '0 == all Invalid).
   protected logic [N_NODES_C-1:0][2:0] line_state [longint];
@@ -200,6 +206,24 @@ class vip_chi_coherency_checker #(
   protected int n_snp_resp_adopted;
   protected int n_snp_resp_state_differs;
 
+  // The requester axis of the same question. n_req_final_judged is how many
+  // completions the Table 4-14 rule had to decide; n_req_final_retained is how
+  // many of those ended in a state the granted Resp alone would NOT have given,
+  // which is precisely the count that separates the rule from the shortcut it
+  // replaces. It is 0 for any stimulus whose requester is Invalid when it issues
+  // -- which was every transition in this regression before the sweep primed the
+  // requesting node -- so it is the non-vacuity measure for this rule, not a
+  // statistic.
+  protected int n_req_final_judged;
+  protected int n_req_final_retained;
+  // Completions whose Resp encoding the dataless-completion table does not
+  // permit for that request (currently MakeUnique, Table 4-19 / D Table 4-13).
+  protected int n_bad_dataless_resp;
+  // Catalogue rule D7: a Dirty snoopee that answered without data and without
+  // keeping the dirty. The dual of n_bad_snp_resp_form, which reads the other
+  // direction.
+  protected int n_snp_dirty_lost;
+
   // cg_excl samples (SC outcome x clear-cause), set at the obs_rsp resolution.
   protected bit                excl_result_sample;  // 1 = ExclOkay (won), 0 = fail
   protected excl_clear_cause_e excl_cause_sample;
@@ -221,6 +245,15 @@ class vip_chi_coherency_checker #(
   protected item_t::snp_opcode_t sr_snp_opcode_sample;
   protected vip_chi_resp_t       sr_resp_state_sample;
   protected bit                  sr_returned_data_sample;
+
+  // cg_req_cache_transition samples, set where a request completes. The requester
+  // axis had no coverage target of any kind before 3.2 -- cg_cache_transition
+  // covers the snoop axis only -- which is a large part of why the held-state
+  // half of Table 4-14 could be missing without anything reporting a hole.
+  protected vip_chi_resp_t       rt_from_sample;
+  protected item_t::req_opcode_t rt_req_op_sample;
+  protected vip_chi_resp_t       rt_granted_sample;
+  protected vip_chi_resp_t       rt_to_sample;
 
   // ---------------------------------------------------------------------------
   // The snoop-response legality surface: snoop opcode x resulting state x whether
@@ -291,6 +324,77 @@ class vip_chi_coherency_checker #(
       illegal_bins make_invalid_returns_no_data =
         binsof(cp_snp.snp_make_invalid) && binsof(cp_data.with_data);
     }
+  endgroup
+
+  // ---------------------------------------------------------------------------
+  // The requester-side transition surface: held state x request x granted state
+  // x final state -- IHI 0050 E Table 4-14 (D Table 4-12) indexed exactly as the
+  // table itself is.
+  //
+  // The interesting axis is cp_from, and it is the one that was missing. Every
+  // requester transition in this regression began at Invalid, so "final = granted
+  // Resp" and "final = join(held, granted)" agreed on 100% of the stimulus and
+  // the difference between a correct model and a wrong one was invisible. A
+  // coverage report that does not name the initial state cannot show that.
+  //
+  // cp_to carries the guard rather than cp_from, because the join's output is
+  // where an error would surface: a completion may not leave the Requester
+  // holding LESS than it held, so a final state of I is impossible for every
+  // request binned here (all of them allocate or upgrade). That is the requester
+  // dual of cg_cache_transition's never_upgrades.
+  // ---------------------------------------------------------------------------
+  covergroup cg_req_cache_transition;
+    option.per_instance = 1;
+
+    // The five states this VIP models. SD is reachable on this axis in a way it
+    // is not on the snoop axis -- a CompData_SD_PD grants it directly (Table 4-14,
+    // ReadShared) -- so it is binned here rather than ignored.
+    cp_from: coverpoint this.rt_from_sample {
+      bins i   = {VIP_CHI_RESP_STATE_I_E};
+      bins sc  = {VIP_CHI_RESP_STATE_SC_E};
+      bins uc  = {VIP_CHI_RESP_STATE_UC_E};
+      bins sd  = {VIP_CHI_RESP_STATE_SD_PD_DIRTY_E};
+      bins ud  = {VIP_CHI_RESP_STATE_UP_PD_DIRTY_E};
+    }
+
+    // The requests whose final state Table 4-14 / Table 4-19 makes a function of
+    // the held state. The non-allocating reads are absent on purpose: 4.7.1
+    // requires the Requester to IGNORE the granted state for those, so they have
+    // no row here to cover.
+    cp_req: coverpoint this.rt_req_op_sample {
+      bins read_shared      = {VIP_CHI_REQ_READ_SHARED_C};
+      bins read_clean       = {VIP_CHI_REQ_READ_CLEAN_C};
+      bins read_unique      = {VIP_CHI_REQ_READ_UNIQUE_C};
+      bins make_read_unique = {VIP_CHI_REQ_MAKE_READ_UNIQUE_C};
+      bins make_unique      = {VIP_CHI_REQ_MAKE_UNIQUE_C};
+    }
+
+    // The states a completion can grant. Comp_I is not a grant any binned request
+    // can receive, so it is left unbinned rather than listed and never hit.
+    cp_granted: coverpoint this.rt_granted_sample {
+      bins sc  = {VIP_CHI_RESP_STATE_SC_E};
+      bins uc  = {VIP_CHI_RESP_STATE_UC_E};
+      bins sd  = {VIP_CHI_RESP_STATE_SD_PD_DIRTY_E};
+      bins ud  = {VIP_CHI_RESP_STATE_UP_PD_DIRTY_E};
+    }
+
+    cp_to: coverpoint this.rt_to_sample {
+      bins sc  = {VIP_CHI_RESP_STATE_SC_E};
+      bins uc  = {VIP_CHI_RESP_STATE_UC_E};
+      bins sd  = {VIP_CHI_RESP_STATE_SD_PD_DIRTY_E};
+      bins ud  = {VIP_CHI_RESP_STATE_UP_PD_DIRTY_E};
+      // Every request binned above either allocates the line or upgrades one the
+      // Requester already holds; none of them can end Invalid. Reaching I here
+      // means the join lost a permission both of its operands carried, which is a
+      // broken next-state function rather than a legal outcome.
+      illegal_bins never_loses_the_line = {VIP_CHI_RESP_STATE_I_E};
+    }
+
+    // The table's own shape: (initial, request, response) -> final. Crossing
+    // from x granted is what makes the retention rows visible as coverage; the
+    // request has to be in the cross because MakeUnique's final state does not
+    // follow from the other two.
+    cx_from_req_granted: cross cp_from, cp_req, cp_granted;
   endgroup
 
   covergroup cg_cache_transition;
@@ -453,6 +557,7 @@ class vip_chi_coherency_checker #(
     this.snf_req_cc  = new("snf_req_cc", this);
     this.snf_dat_cc  = new("snf_dat_cc", this);
     this.cg_cache_transition = new();
+    this.cg_req_cache_transition = new();
     this.cg_snp_resp_legality = new();
     this.cg_directory_occupancy = new();
     this.cg_excl = new();
@@ -466,6 +571,7 @@ class vip_chi_coherency_checker #(
     foreach (this.open_rd_line[n]) begin
       this.open_rd_line[n].delete();
       this.open_rd_uniq[n].delete();
+      this.open_rd_op[n].delete();
       this.open_wb_line[n].delete();
       this.open_rd_excl[n].delete();
       this.open_sc_excl[n].delete();
@@ -493,6 +599,10 @@ class vip_chi_coherency_checker #(
     this.n_snp_no_data_on_dirty   = 0;
     this.n_bad_snp_resp_state     = 0;
     this.n_snp_resp_judged        = 0;
+    this.n_req_final_judged       = 0;
+    this.n_req_final_retained     = 0;
+    this.n_bad_dataless_resp      = 0;
+    this.n_snp_dirty_lost         = 0;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -793,6 +903,7 @@ class vip_chi_coherency_checker #(
     if (this.is_coherent_read(item, uniq)) begin
       this.open_rd_line[node][longint'(item.txn_id)] = line;
       this.open_rd_uniq[node][longint'(item.txn_id)] = uniq;
+      this.open_rd_op[node][longint'(item.txn_id)]   = wop;
       // Remember whether this read is an exclusive load, resolved at CompData.
       this.open_rd_excl[node][longint'(item.txn_id)] = item.excl;
     end
@@ -833,6 +944,60 @@ class vip_chi_coherency_checker #(
              (wop == VIP_CHI_REQ_MAKE_INVALID_E)) begin
       this.clear_excl_all(line);
     end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Resolve the Requester's cache state when its own request completes.
+  //
+  // The dual of check_snp_resp_state, on the other axis. A snoop asks a node to
+  // GIVE UP permissions and the checker bounds the answer from above; a
+  // completion GRANTS permissions and the checker must not let the grant revoke
+  // what the node already held. IHI 0050 E Tables 4-14, 4-17, 4-18 and 4-19; D
+  // Tables 4-12 and 4-13.
+  //
+  // The held state is read from the shadow HERE, at the completion, not stashed
+  // at the request. Tables 4-17 and 4-18 index the final state on the state "at
+  // time of response" precisely because a snoop can take the line away while the
+  // request is outstanding, and obs_snp has already written that loss into the
+  // shadow by the time this runs.
+  // ---------------------------------------------------------------------------
+  protected function void resolve_req_final_state(input int                  node,
+                                                  input longint              line,
+                                                  input vip_chi_req_opcode_t opcode,
+                                                  input vip_chi_resp_t       granted);
+    vip_chi_resp_t held;
+    vip_chi_resp_t final_state;
+    vip_chi_resp_t from_invalid;
+
+    held         = this.line_state.exists(line) ? vip_chi_resp_t'(this.line_state[line][node])
+                                                : VIP_CHI_RESP_STATE_I_E;
+    final_state  = vip_chi_req_final_state(opcode, held, granted);
+    // What this same completion would have produced for a Requester holding
+    // nothing. Comparing against THAT rather than against the granted Resp is
+    // what isolates the held-state contribution: MakeUnique ends UD whatever it
+    // held, so measuring "final != granted" would count every MakeUnique as
+    // evidence for a rule it does not exercise.
+    from_invalid = vip_chi_req_final_state(opcode, VIP_CHI_RESP_STATE_I_E, granted);
+
+    this.n_req_final_judged++;
+    if (final_state != from_invalid) begin
+      // The held state changed the answer. Every such completion is one the
+      // pre-3.2 shadow got wrong, so this count is the rule's non-vacuity
+      // evidence: zero means the stimulus never presented a non-Invalid
+      // requester and the rule was never actually exercised.
+      this.n_req_final_retained++;
+      `uvm_info("VIP_CHI_COH", $sformatf(
+        "COHERENCY REQ RETAIN: node %0d line 0x%0h opcode 0x%0h held 0x%0h granted 0x%0h -> final 0x%0h",
+        node, line, opcode, held, granted, final_state), UVM_HIGH)
+    end
+
+    this.rt_from_sample    = held;
+    this.rt_req_op_sample  = item_t::req_opcode_t'(opcode);
+    this.rt_granted_sample = granted;
+    this.rt_to_sample      = final_state;
+    this.cg_req_cache_transition.sample();
+
+    this.set_node_state(line, node, final_state);
   endfunction
 
   protected function void obs_dat(input int node, input item_t item);
@@ -893,7 +1058,11 @@ class vip_chi_coherency_checker #(
     line    = this.open_rd_line[node][longint'(item.txn_id)];
     granted = (item.dat_resp.size() > 0) ? item.dat_resp[item.dat_resp.size() - 1]
                                          : VIP_CHI_RESP_STATE_I_E;
-    this.set_node_state(line, node, granted);
+    this.resolve_req_final_state(
+      node, line,
+      this.open_rd_op[node].exists(longint'(item.txn_id)) ?
+        this.open_rd_op[node][longint'(item.txn_id)] : vip_chi_req_opcode_t'(0),
+      granted);
     this.sample_occupancy(line);
 
     // Exclusive-load result: an exclusive coherent read that completes with
@@ -913,6 +1082,7 @@ class vip_chi_coherency_checker #(
 
     this.open_rd_line[node].delete(longint'(item.txn_id));
     this.open_rd_uniq[node].delete(longint'(item.txn_id));
+    this.open_rd_op[node].delete(longint'(item.txn_id));
     this.open_rd_excl[node].delete(longint'(item.txn_id));
     this.n_completions++;
     this.check_multi_owner(line);
@@ -1019,6 +1189,37 @@ class vip_chi_coherency_checker #(
       legal = 1'b0;
       `uvm_error("VIP_CHI_COH", $sformatf(
         "COHERENCY VIOLATION: node %0d held state 0x%0h on line 0x%0h and answered snoop opcode 0x%0h reporting state 0x%0h; a snoop cannot grant a permission the snoopee did not already hold",
+        node, from_state, line, op, state))
+    end
+
+    // -------------------------------------------------------------------------
+    // Catalogue rule D7: a snoopee holding Dirty must hand the dirty data over
+    // unless it is keeping it.
+    //
+    // IHI 0050 E Tables 4-30 to 4-34 (Snoopee state transitions) enumerate this
+    // row by row: every row whose INITIAL state is UD, UDP or SD and whose final
+    // state does not hold the dirty requires a SnpRespData_*_PD response. The
+    // only rows where a Dirty snoopee answers without data are the ones where it
+    // stays Dirty -- UD -> UD, UD -> SD, SD -> SD.
+    //
+    // Answering SnpResp_SC from UD instead loses the only modified copy in the
+    // system: the snoopee has dropped its claim to the line, the Home believes
+    // memory is current, and the next reader is served stale data with every
+    // check agreeing. Nothing else here catches it -- the reported STATE is
+    // legal (D5 and D6 both pass SC from UD), and the existing response-form
+    // rule reads the other direction, flagging data returned where none was
+    // wanted. This is the missing direction: data NOT returned where it was owed.
+    //
+    // SnpMakeInvalid is excluded because discarding is precisely what it asks
+    // for, which is the rule check_snp_resp_form polices.
+    // -------------------------------------------------------------------------
+    if (vip_chi_state_holds_dirty(from_state)   &&
+        !vip_chi_state_holds_dirty(state)       &&
+        !vip_chi_snp_opcode_returns_no_data(op) &&
+        !with_data) begin
+      this.n_snp_dirty_lost++;
+      `uvm_error("VIP_CHI_COH", $sformatf(
+        "COHERENCY VIOLATION: node %0d held state 0x%0h (Dirty) on line 0x%0h and answered snoop opcode 0x%0h with state 0x%0h and NO data; the dirty copy is neither retained nor passed on",
         node, from_state, line, op, state))
     end
 
@@ -1152,19 +1353,34 @@ class vip_chi_coherency_checker #(
     // an owner and a suppressed-snoop duplicate-owner bug would pass. [F1]
     if (this.open_mu_line[node].exists(longint'(item.txn_id))) begin
       line = this.open_mu_line[node][longint'(item.txn_id)];
-      // [F1] Validate the OBSERVED completion rather than inventing UD: a MakeUnique
-      // must complete with a data-less Comp granting Unique-Dirty (IHI0050). A
-      // completer that returns any other opcode/state is a protocol error -- flag it
-      // and record the state actually observed, so the shadow reflects reality
-      // rather than a fabricated Unique owner that would mask the broken completer.
-      if ((item.rsp_opcode !== item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) ||
-          (item.rsp_resp   !== VIP_CHI_RESP_STATE_UP_PD_DIRTY_E)) begin
+      // [F1] Validate the OBSERVED completion rather than inventing a state: a
+      // MakeUnique must complete with a data-less Comp, and a completer that
+      // returns any other opcode is a protocol error.
+      if (item.rsp_opcode !== item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) begin
         this.n_bad_make_unique++;
         `uvm_error("VIP_CHI_COH", $sformatf(
-          "COHERENCY VIOLATION: MakeUnique on line 0x%0h (node %0d) completed opcode=0x%0h resp=0x%0h, expected Comp / Unique-Dirty",
+          "COHERENCY VIOLATION: MakeUnique on line 0x%0h (node %0d) completed opcode=0x%0h resp=0x%0h, expected a data-less Comp",
           line, node, item.rsp_opcode, item.rsp_resp))
       end
-      this.set_node_state(line, node, item.rsp_resp);
+      // The GRANTED state on that Comp is Comp_UC. MakeUnique's final state is
+      // Unique-Dirty from every permitted initial state, but the Requester
+      // becomes Dirty by its own act of overwriting the whole line -- no dirty
+      // data is being handed to it -- and the response says so: Table 4-19 (D
+      // Table 4-13) lists Comp_UC as the completion for MakeUnique, and Comp_UD_PD
+      // means "responsibility for a Dirty cache line is being passed", which is a
+      // different transaction. Issue D does not define the UD_PD encoding for a
+      // data-less completion at all (Table 4-5 lists only Comp_I, Comp_UC and
+      // Comp_SC), so requiring it here rejected the one legal answer and demanded
+      // one a CHI-D completer may not send.
+      if (item.rsp_resp !== VIP_CHI_RESP_STATE_UC_E) begin
+        this.n_bad_dataless_resp++;
+        `uvm_error("VIP_CHI_COH", $sformatf(
+          "COHERENCY VIOLATION: MakeUnique on line 0x%0h (node %0d) completed resp=0x%0h; Table 4-19 permits only Comp_UC (0x%0h) for this request",
+          line, node, item.rsp_resp, VIP_CHI_RESP_STATE_UC_E))
+      end
+      // The final state still comes from the shared table function, which is what
+      // turns that Comp_UC into the Unique-Dirty the Requester ends up holding.
+      this.resolve_req_final_state(node, line, VIP_CHI_REQ_MAKE_UNIQUE_E, item.rsp_resp);
       this.sample_occupancy(line);
       this.n_completions++;
       this.check_multi_owner(line);
@@ -1267,6 +1483,10 @@ class vip_chi_coherency_checker #(
   function int get_snp_resp_gains_permission_count(); return this.n_snp_resp_gains_permission; endfunction
   function int get_snp_resp_adopted_count(); return this.n_snp_resp_adopted; endfunction
   function int get_snp_resp_state_differs_count(); return this.n_snp_resp_state_differs; endfunction
+  function int get_req_final_judged_count();   return this.n_req_final_judged;   endfunction
+  function int get_req_final_retained_count(); return this.n_req_final_retained; endfunction
+  function int get_bad_dataless_resp_count();  return this.n_bad_dataless_resp;  endfunction
+  function int get_snp_dirty_lost_count();     return this.n_snp_dirty_lost;     endfunction
   function real get_snp_resp_legality_coverage(); return this.cg_snp_resp_legality.get_coverage(); endfunction
   function int get_line_hazard_count(); return this.n_line_hazard; endfunction
   // Clean claim/release pairs. A test asserts on this to show the hazard rule
@@ -1295,13 +1515,19 @@ class vip_chi_coherency_checker #(
       "COHERENCY SNP RESP FORM SUMMARY: no_data_snoops_on_dirty=%0d bad_snp_resp_form=%0d",
       this.n_snp_no_data_on_dirty, this.n_bad_snp_resp_form), UVM_LOW)
     `uvm_info("VIP_CHI_COH", $sformatf(
-      "COHERENCY SNP RESP STATE SUMMARY: snp_resp_judged=%0d bad_snp_resp_state=%0d",
-      this.n_snp_resp_judged, this.n_bad_snp_resp_state), UVM_LOW)
+      "COHERENCY SNP RESP STATE SUMMARY: snp_resp_judged=%0d bad_snp_resp_state=%0d snp_dirty_lost=%0d",
+      this.n_snp_resp_judged, this.n_bad_snp_resp_state, this.n_snp_dirty_lost), UVM_LOW)
     // Its own line for the same reason as the two above: the report server wraps
     // long lines, and a wrapped field=value pair cannot be swept for with grep.
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY SNP RESP ADOPT SUMMARY: snp_resp_adopted=%0d snp_resp_state_differs=%0d snp_resp_gains_permission=%0d",
       this.n_snp_resp_adopted, this.n_snp_resp_state_differs, this.n_snp_resp_gains_permission), UVM_LOW)
+    // Its own line for the same reason as the three above: the report server
+    // wraps long lines, and a wrapped field=value pair cannot be swept for with
+    // grep across a regression.
+    `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY REQ FINAL STATE SUMMARY: req_final_judged=%0d req_final_retained=%0d bad_dataless_resp=%0d",
+      this.n_req_final_judged, this.n_req_final_retained, this.n_bad_dataless_resp), UVM_LOW)
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY HAZARD SUMMARY: line_hazards=%0d line_claims_cleared=%0d",
       this.n_line_hazard, this.n_line_clear), UVM_LOW)

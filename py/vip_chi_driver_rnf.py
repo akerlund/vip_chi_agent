@@ -26,6 +26,7 @@ from __future__ import annotations
 from vip_chi_types_pkg import (
   Role, Dir, Resp, RespErr, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode,
   CACHE_LINE_BYTES, mask, snp_opcode_returns_no_data,
+  req_final_state, req_keeps_local_data,
 )
 from vip_chi_driver_rni import vip_chi_driver_rni
 
@@ -355,16 +356,33 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     self.release_tx_flit()
 
   # ==========================================================================
-  # Record the granted coherent state/data as each request retires.
+  # Record the coherent state as each request retires.
+  #
+  # The final state is a function of the state this cache HELD and the state the
+  # completion GRANTED -- req_final_state, IHI 0050 E Tables 4-14, 4-17, 4-18 and
+  # 4-19 (D Tables 4-12 and 4-13). It is NOT the granted Resp on its own: a UD
+  # holder that issues ReadClean stays UD however weak the grant, and taking Resp
+  # verbatim would drop a writeback obligation this cache still owes.
   # ==========================================================================
   def on_transaction_complete(self, req):
     line = self.line_addr(req.addr)
     op = _I(req.opcode)
+    held = self.cache_state.get(line, int(Resp.I))
 
     if _I(req.direction) == int(Dir.READ) and self.req_opcode_is_coherent_read(op):
       self.evict_for_capacity(line)
-      self.cache_state[line] = _I(req.rsp_resp)
-      self.cache_data[line] = [_I(x) for x in req.data]
+      # Negative control: reinstate the pre-3.2 shortcut in full -- the granted
+      # Resp verbatim, and the fetched beats over the top of whatever was held.
+      verbatim = bool(self.cfg.rnf_req_final_state_verbatim)
+      self.cache_state[line] = (_I(req.rsp_resp) if verbatim
+                                else req_final_state(op, held, _I(req.rsp_resp)))
+      # Keep the granted beats for a later snoop to forward -- but only when this
+      # cache is not already holding a newer copy. Table 4-14 footnote c: data
+      # received from memory must be DROPPED if the cache state is UD or SD.
+      # Overwriting there loses the locally-modified bytes while leaving the
+      # state correct, so every later data-integrity check agrees with the loss.
+      if verbatim or not req_keeps_local_data(held):
+        self.cache_data[line] = [_I(x) for x in req.data]
     elif (self.req_opcode_is_coherent_evicting_write(op) or
           self.req_opcode_is_coherent_cmo(op) or
           self.req_opcode_is_coherent_write_unique(op)):
@@ -376,12 +394,16 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
       # exclusive store upgrades only on ExclOkay (else it lost; line untouched).
       if line in self.cache_state:
         if (not _I(req.excl)) or (_I(req.rsp_resp_err) == int(RespErr.EXOKAY)):
-          self.cache_state[line] = int(Resp.UC)
+          # Table 4-19 gives CleanUnique three rows, all completing Comp_UC: SC
+          # becomes UC and SD becomes UD. The grant confers the write right; it
+          # does not wash the line clean, and this is the join again rather than
+          # a fixed UC.
+          self.cache_state[line] = req_final_state(op, held, _I(req.rsp_resp))
     elif op == int(ReqOpcode.MAKE_UNIQUE):
       # Acquire Unique-Dirty WITHOUT a data transfer; materialize a zero image
       # sized to the coherence line so a later snoop can forward real beats.
       self.evict_for_capacity(line)
-      self.cache_state[line] = int(Resp.UD_PD)
+      self.cache_state[line] = req_final_state(op, held, _I(req.rsp_resp))
       n_beats = CACHE_LINE_BYTES // self.bus.cfg.data_bytes
       self.cache_data[line] = [0] * n_beats
 

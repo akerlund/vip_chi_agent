@@ -5,6 +5,16 @@
 # UD} on a fresh line, prime RN-F0 into it then run each of 7 coherent ops on
 # RN-F1, driving many distinct snoop transitions. Asserts the sweep actually
 # originated snoops (>= 10). Functional coverage is observational (0.0 here).
+#
+# A SECOND sweep primes the REQUESTING node and issues on the SAME line, which is
+# the axis this test did not have. Priming only the snoopee leaves the requester
+# Invalid for every combination, and a Requester that holds nothing cannot tell
+# "final state = the granted Resp" apart from "final state = what the grant adds
+# to what was held" -- the two agree on every from-Invalid row of Table 4-14.
+# That is what let the held-state half of the table go missing with a fully green
+# regression behind it (F-INTOP-009). The rows that separate the two are the ones
+# where the grant is WEAKER than what the Requester already had: a UD holder
+# issuing ReadClean is granted CompData_SC and must stay UD.
 ################################################################################
 
 from __future__ import annotations
@@ -33,6 +43,22 @@ _MIN_NO_DATA_SNOOPS_ON_DIRTY = 2
 _MIN_SNP_RESP_JUDGED = 10
 # Distinct (snoop opcode, resp state, with-data) triples the cross should reach.
 _MIN_SNP_RESP_TRIPLES = 3
+# The requester-priming sweep: 3 primed states {SC, UC, UD} x 4 requests
+# {ReadShared, ReadClean, ReadUnique, MakeUnique}.
+_N_REQ_STATES = 3
+_N_REQ_OPS = 4
+# Of those 12, the held state changes the answer in exactly 5 -- the rows where
+# the grant is weaker than what was held. Enumerated rather than approximated,
+# because this count IS the evidence that the rule was exercised:
+#   UC + ReadShared -> UC (granted SC)    UD + ReadShared -> UD (granted SC)
+#   UC + ReadClean  -> UC (granted SC)    UD + ReadClean  -> UD (granted SC)
+#                                         UD + ReadUnique -> UD (granted UC)
+# The from-SC row retains nothing (SC is the weakest state that holds anything),
+# and MakeUnique reaches UD from its opcode rather than from the held state, so
+# it is correctly not counted -- see resolve_req_final_state.
+_MIN_REQ_FINAL_RETAINED = 5
+# Requester-sweep request kinds, indexing _SEQ_BY_KIND.
+_REQ_SWEEP_KINDS = (0, 1, 2, 6)
 _SEQ_BY_KIND = (
   vip_chi_readshared_seq, vip_chi_readclean_seq, vip_chi_readunique_seq,
   vip_chi_readonce_seq, vip_chi_cleaninvalid_seq, vip_chi_makeinvalid_seq,
@@ -63,6 +89,21 @@ class chi_coh_transition_sweep_base_test(chi_coherent_base_test):
         # MakeUnique->UD.
         prime_kind = {0: 0, 1: 2}.get(st, 6)
         await self._run_op(0, line, prime_kind)
+        await self._run_op(1, line, op)
+
+    # Requester axis. Same shape, but the node that is primed is the node that
+    # then issues, and it issues on the line it already holds -- so the
+    # completion arrives at a Requester in a known non-Invalid state and Table
+    # 4-14 has to combine the two. The sweep above can never produce this: it
+    # issues from RN-F1 on lines only RN-F0 ever touched.
+    for st in range(_N_REQ_STATES):
+      for op in _REQ_SWEEP_KINDS:
+        line = WRITE_READ_ADDR_C + idx * _LINE_STRIDE
+        idx += 1
+        # Prime RN-F1 -- the requester this time -- exactly as above: UD comes
+        # from MakeUnique so the state is observable rather than silently local.
+        await self._run_op(1, line, {0: 0, 1: 2}.get(st, 6))
+        # ...and now issue again, on the SAME line, from the SAME node.
         await self._run_op(1, line, op)
 
     await self.wait_clocks(16)
@@ -156,6 +197,39 @@ class chi_coh_transition_sweep_base_test(chi_coherent_base_test):
     assert len(triples) >= _MIN_SNP_RESP_TRIPLES, \
       f"the snoop-response legality cross reached only {len(triples)} distinct " \
       f"(opcode, state, with-data) triple(s) (< {_MIN_SNP_RESP_TRIPLES})"
+
+    # The requester axis (F-INTOP-009). Same three-part discipline as D5/D6
+    # above: the rule ran, it ran on the inputs that distinguish it, and nothing
+    # it judged was illegal.
+    #
+    # req_final_retained is the load-bearing count. It rises only where the
+    # Requester's held state changed the answer -- which is nothing at all unless
+    # the stimulus primes the requesting node, and priming the requesting node is
+    # exactly what no test in either port did before. A regression can be green
+    # end to end with this at 0 and the whole held-state half of Table 4-14
+    # missing, which is how the defect survived.
+    req_judged = self.tb_env.coh_checker.get_req_final_judged_count()
+    assert req_judged > 0, \
+      "the requester final-state rule judged nothing -- no coherent read completed"
+
+    retained = self.tb_env.coh_checker.get_req_final_retained_count()
+    assert retained >= _MIN_REQ_FINAL_RETAINED, \
+      f"only {retained} completion(s) had their final state decided by the held " \
+      f"state (< {_MIN_REQ_FINAL_RETAINED}); the requester was Invalid " \
+      f"throughout, so Table 4-14's held-state half was never exercised"
+
+    # A data-less completion must carry a Resp encoding its request's table
+    # permits. MakeUnique is the case the sweep drives: Table 4-19 (D Table 4-13)
+    # gives it Comp_UC, and issue D does not define UD_PD for a data-less
+    # completion at all.
+    bad_dataless = self.tb_env.coh_checker.get_bad_dataless_resp_count()
+    assert bad_dataless == 0, \
+      f"transition sweep saw {bad_dataless} data-less completion(s) carrying a " \
+      f"Resp encoding the request's table does not permit"
+
+    self.logger.info(
+      f"requester final state: judged={req_judged}, of which {retained} were "
+      f"decided by the state the requester already held")
 
     self.logger.info("Test (coh_transition_sweep) PASS")
     self.drop_objection()

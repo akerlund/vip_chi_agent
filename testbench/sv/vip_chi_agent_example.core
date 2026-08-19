@@ -117,6 +117,12 @@ filesets:
       - tc/chi_coh_dirty_forward_base_test.sv:          {is_include_file: true}
       - tc/tc_chi_coh_d_dirty_forward.sv:                   {is_include_file: true}
       - tc/tc_chi_coh_e_dirty_forward.sv:                   {is_include_file: true}
+      - tc/chi_coh_req_retain_base_test.sv:             {is_include_file: true}
+      - tc/tc_chi_coh_d_req_retain.sv:                      {is_include_file: true}
+      - tc/tc_chi_coh_e_req_retain.sv:                      {is_include_file: true}
+      - tc/chi_coh_req_final_state_negctl_base_test.sv: {is_include_file: true}
+      - tc/tc_chi_coh_d_req_final_state_negctl.sv:          {is_include_file: true}
+      - tc/tc_chi_coh_e_req_final_state_negctl.sv:          {is_include_file: true}
       - tc/chi_coh_writeback_evict_base_test.sv:        {is_include_file: true}
       - tc/tc_chi_coh_d_writeback_evict.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_writeback_evict.sv:                 {is_include_file: true}

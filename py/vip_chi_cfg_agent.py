@@ -377,6 +377,15 @@ class VipChiCfgAgent:
     self.hnf_write_evict_request_data = True
     self.hnf_suppress_snoops = False
     self.hnf_corrupt_dirty_merge = False
+    # Negative-control knob: when set, the RN-F takes its final cache state
+    # VERBATIM from the granted Resp and overwrites its cached beats with the
+    # fetched ones -- the pre-3.2 behaviour, before IHI 0050 E Table 4-14's
+    # held-state half was implemented. A UD holder that issues ReadClean then
+    # drops to SC and loses its modified bytes, so the next snoop of that line
+    # answers without data and the only dirty copy in the system is gone.
+    # tc_chi_coh_{d,e}_req_final_state_negctl uses this to prove catalogue rule
+    # D7 reports the loss. Default False keeps the RN-F conformant.
+    self.rnf_req_final_state_verbatim = False
     self.exclusives_enabled = True
     self.hnf_force_excl_success = False
     self.hnf_enable_snoop_fwd = False
@@ -564,6 +573,7 @@ class VipChiCfgAgent:
     negctl = {
       "hnf_suppress_snoops": self.hnf_suppress_snoops,
       "hnf_corrupt_dirty_merge": self.hnf_corrupt_dirty_merge,
+      "rnf_req_final_state_verbatim": self.rnf_req_final_state_verbatim,
       "hnf_force_excl_success": self.hnf_force_excl_success,
       "hnf_corrupt_fwd_data": self.hnf_corrupt_fwd_data,
       "hnf_downstream_corrupt_data": self.hnf_downstream_corrupt_data,

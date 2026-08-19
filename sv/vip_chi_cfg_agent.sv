@@ -478,6 +478,16 @@ class vip_chi_cfg_agent extends uvm_object;
   // data-integrity check is not vacuous. Default 0 keeps the home coherent.
   bit hnf_corrupt_dirty_merge = 1'b0;
 
+  // Negative-control knob: when set, the RN-F takes its final cache state
+  // VERBATIM from the granted Resp and overwrites its cached beats with the
+  // fetched ones -- the pre-3.2 behaviour, before IHI 0050 E Table 4-14's
+  // held-state half was implemented. A UD holder that issues ReadClean then
+  // drops to SC and loses its modified bytes, so the next snoop of that line
+  // answers without data and the only dirty copy in the system is gone.
+  // tc_chi_coh_{d,e}_req_final_state_negctl uses this to prove catalogue rule D7
+  // reports the loss. Default 0 keeps the RN-F conformant.
+  bit rnf_req_final_state_verbatim = 1'b0;
+
   // Master enable for exclusive (LL/SC) monitor modeling on the HN-F. When 0 the
   // home ignores req.excl entirely (no monitor set, every completion NormalOkay),
   // so a bench that never uses exclusives is byte-unaffected. Default 1: the home
@@ -943,6 +953,7 @@ class vip_chi_cfg_agent extends uvm_object;
     // mystifying one, so say so -- but do not reject: the negative-control tests
     // are exactly the legitimate users.
     if (this.hnf_suppress_snoops || this.hnf_corrupt_dirty_merge ||
+        this.rnf_req_final_state_verbatim ||
         this.hnf_force_excl_success || this.hnf_corrupt_fwd_data ||
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||

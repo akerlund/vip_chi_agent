@@ -44,8 +44,16 @@ class chi_coh_make_unique_base_test(chi_coherent_base_test):
       f"MakeUnique completion opcode 0x{int(mu_rsp[0].rsp_opcode):x} was not Comp"
     assert len(mu_rsp[0].data) == 0, \
       f"MakeUnique returned {len(mu_rsp[0].data)} data beats, expected 0 (RSP-only Comp)"
-    assert int(mu_rsp[0].rsp_resp) == int(Resp.UD_PD), \
-      f"MakeUnique granted resp 0x{int(mu_rsp[0].rsp_resp):x}, expected Unique-Dirty"
+    # The COMPLETION is Comp_UC; the FINAL STATE is Unique-Dirty. IHI 0050 E
+    # Table 4-19 (D Table 4-13) makes them different on purpose: the requester
+    # becomes Dirty by its own act of overwriting the whole line, not by being
+    # handed a dirty copy, so nothing is passing it responsibility for one and
+    # Comp_UD_PD -- which means exactly that -- does not apply. Issue D does not
+    # even define UD_PD for a data-less completion (Table 4-5 permits Comp_I,
+    # Comp_UC and Comp_SC), so the value asserted here previously was one a CHI-D
+    # home may not drive. The final state is checked below and is still UD.
+    assert int(mu_rsp[0].rsp_resp) == int(Resp.UC), \
+      f"MakeUnique granted resp 0x{int(mu_rsp[0].rsp_resp):x}, expected Comp_UC (Table 4-19)"
     assert self.tb_env.coh_checker.get_snoop_count() > snoops_before, \
       "MakeUnique originated no snoop"
 

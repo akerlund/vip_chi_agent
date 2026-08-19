@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **159 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **160 pyUVM/cocotb**
+The shared regression currently runs **163 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **164 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -224,6 +224,8 @@ forwarding (`SnpRespData` + PassDirty), and eviction (`WriteBackFull` /
 | `tc_chi_coh_d_negctl` | COH | **negative control for Checker D**: with `cfg.hnf_suppress_snoops` the HN-F grants Unique without invalidating other holders, so two RN-F `ReadUnique`s to one line leave two Unique owners. The test fails unless Checker D flags the violation (`multi_owner` > 0); the induced error is caught and demoted so it does not count against the regression. |
 | `tc_chi_coh_d_line_hazard` | COH | the same-cache-line hazard rule, both halves. Two coherent reads to one line issued strictly one at a time must NOT be flagged (the rule must key on overlap, not on address reuse); two overlapping same-line observations must be flagged exactly once; and a re-issue on the same TxnID must not be, since obeying the retry protocol is not a hazard. The overlapping pair is published into the checker's REQ port rather than driven, because this VIP's RN-F issue path is serial and its multi-outstanding pipeline refuses coherent opcodes — there is no requester configuration that produces the fault. |
 | `tc_chi_coh_d_dirty_forward` | COH | dirty snoop forwarding: RN-F0 acquires a line Unique and dirties it (modelled local store), then RN-F1 `ReadShared` forces a downgrading snoop; RN-F0 answers with `SnpRespData` (PassDirty), the home merges the modified beats into memory, and RN-F1's `CompData` carries the dirtied data (asserted == RN-F0's original beats XOR the store pattern, not stale memory). |
+| `tc_chi_coh_d_req_retain` | COH | requester final state (IHI 0050 E Table 4-14 / D Table 4-12): RN-F1 `MakeUnique` a line (-> UD, observable), dirties it locally, then issues `ReadClean` on the SAME line and is granted the WEAKER `CompData_SC`. Asserts the line stays UD in the RN-F cache, in the checker's shadow and in the home's snoop filter (footnote b), that the locally-modified beats survive the fetch (footnote c) by having RN-F0 read them back through a forwarding snoop, and that the checker recorded the completion as held-state-decided. |
+| `tc_chi_coh_d_req_final_state_negctl` | COH | negative control for the above: `rnf_req_final_state_verbatim` puts RN-F1 back on the granted `Resp` verbatim, so its dirty copy is lost and the following snoop is answered with no data. Catalogue rule D7 must flag it (`snp_dirty_lost` rises); the induced error is caught and demoted. |
 | `tc_chi_coh_d_writeback_evict` | COH | both eviction paths: RN-F0 `WriteBackFull` (DBID grant → `CopyBackWrData` → memory commit) and RN-F1 `Evict` (RSP-only `Comp`). Both directory ports and both RN-F cache states return to Invalid. |
 | `tc_chi_coh_d_read_after_writeback` | COH | writeback data integrity: RN-F0 writes a fresh payload back, then RN-F1 `ReadShared` returns exactly the written-back data (and it differs from the original image — a no-op writeback would fail). |
 | `tc_chi_coh_d_write_unique_ptl` | COH | `WriteUniquePtl` data integrity: RN-F1 writes 16 byte-enabled bytes at offset 16, the HN-F invalidates RN-F0 and commits at the request address, and a full-line readback proves only the enabled lanes changed. |

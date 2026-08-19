@@ -80,9 +80,17 @@ class chi_coh_make_unique_base_test #(
         "FATAL [%s] MakeUnique returned %0d data beats, expected 0 (RSP-only Comp)",
         super.tc_name, mu_rsp[0].data.size()))
     end
-    if (mu_rsp[0].rsp_resp != VIP_CHI_RESP_STATE_UP_PD_DIRTY_E) begin
+    // The COMPLETION is Comp_UC; the FINAL STATE is Unique-Dirty. IHI 0050 E
+    // Table 4-19 (D Table 4-13) makes them different on purpose: the requester
+    // becomes Dirty by its own act of overwriting the whole line, not by being
+    // handed a dirty copy, so nothing is passing it responsibility for one and
+    // Comp_UD_PD -- which means exactly that -- does not apply. Issue D does not
+    // even define UD_PD for a data-less completion (Table 4-5 permits Comp_I,
+    // Comp_UC and Comp_SC), so the value asserted here previously was one a
+    // CHI-D home may not drive. The final state is checked below and is still UD.
+    if (mu_rsp[0].rsp_resp != VIP_CHI_RESP_STATE_UC_E) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] MakeUnique granted resp 0x%0h, expected Unique-Dirty",
+        "FATAL [%s] MakeUnique granted resp 0x%0h, expected Comp_UC (Table 4-19)",
         super.tc_name, mu_rsp[0].rsp_resp))
     end
     if (super.tb_env.coh_checker.get_snoop_count() <= snoops_before) begin

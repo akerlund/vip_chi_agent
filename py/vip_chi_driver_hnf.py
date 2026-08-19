@@ -34,7 +34,7 @@ from pyuvm import uvm_component
 
 from vip_chi_types_pkg import (
   Dir, Resp, RespErr, Exclusive, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode,
-  CACHE_LINE_BYTES, chi_xfer_dat_beats, mask,
+  CACHE_LINE_BYTES, chi_xfer_dat_beats, mask, req_final_state,
 )
 from vip_chi_lcrd_mgr import VipChiLcrdMgr
 from vip_chi_cfg_agent import VipChiCfgAgent
@@ -603,11 +603,24 @@ class vip_chi_driver_hnf(uvm_component):
         continue
       await self.drive_snoop(k, line, int(SnpOpcode.MAKE_INVALID))
       entry[k] = int(Resp.I)
+    # The requester ends up holding the line Unique-Dirty, so that is what the
+    # directory records.
     entry[p] = int(Resp.UD_PD)
     self.directory[line] = entry
     self.excl_monitor.pop(line, None)
+    # The COMPLETION, however, is Comp_UC and not Comp_UD_PD. IHI 0050 E Table
+    # 4-19 (D Table 4-13) gives MakeUnique a final state of UD from every
+    # permitted initial state and a completion response of Comp_UC: the requester
+    # becomes Dirty by its own act of overwriting the whole line, not by being
+    # handed anyone's dirty data, and Comp_UD_PD is reserved for the case where
+    # "responsibility for a Dirty cache line is being passed" (Table 4-7).
+    #
+    # Sending UD_PD here was not merely an odd choice of encoding. Issue D does
+    # not define UD_PD for a data-less completion at all -- D Table 4-5 permits
+    # exactly Comp_I, Comp_UC and Comp_SC -- so the CHI-D cut of this home was
+    # driving a Resp value the issue it implements has no meaning for.
     await self.drive_rn_rsp(p, int(RspOpcode.COMP), _I(req["txnid"]), 0,
-                            int(Resp.UD_PD), _I(req["tgtid"]), _I(req["srcid"]))
+                            int(Resp.UC), _I(req["tgtid"]), _I(req["srcid"]))
 
   # ==========================================================================
   # WriteUnique(Full/Ptl): non-allocating coherent write. SnpCleanInvalid every
@@ -696,7 +709,10 @@ class vip_chi_driver_hnf(uvm_component):
         continue
       await self.drive_snoop(k, line, int(SnpOpcode.UNIQUE))
       entry[k] = int(Resp.I)
-    entry[p] = int(Resp.UC)
+    # Grant the requester Unique-Clean on the wire; record the join in the
+    # filter. Table 4-19 gives CleanUnique an SD row whose final state is UD, so
+    # writing a flat UC here would lose a dirty copy -- Table 4-14 footnote b.
+    entry[p] = req_final_state(_I(req["opcode"]), entry[p], int(Resp.UC))
     self.directory[line] = entry
     self.excl_monitor.pop(line, None)
 
@@ -745,7 +761,16 @@ class vip_chi_driver_hnf(uvm_component):
         entry[k] = int(Resp.SC)
 
     granted = self.granted_state_for(_I(req["opcode"]))
-    entry[p] = granted
+    # The GRANT goes on the wire; the SNOOP FILTER records the join of the grant
+    # with what this port already held. IHI 0050 E Table 4-14 footnote b is
+    # explicit that the two are different: "a Home that uses a Snoop filter to
+    # track the cached state at the Requester must not downgrade the state of the
+    # cache line in the Snoop filter based on the state in the response to the
+    # Requester." A UD holder issuing ReadClean receives CompData_SC and stays UD,
+    # and a filter that wrote SC would then believe the only dirty copy in the
+    # system is clean -- and could serve a later reader from memory without
+    # asking for it.
+    entry[p] = req_final_state(_I(req["opcode"]), entry[p], granted)
     self.directory[line] = entry
 
     is_excl_ll = self._is_excl_req(req)
@@ -1142,8 +1167,10 @@ class vip_chi_driver_hnf(uvm_component):
     fwd_beats = await self.collect_fwd_resp_data(fwd_k, snp_txn, line)
     await self.drive_relayed_compdata(p, req, granted, fwd_beats)
 
+    # The requester's entry is the join, not the grant -- Table 4-14 footnote b,
+    # as in service_coherent_read above.
     entry[fwd_k] = snoopee_next
-    entry[p] = granted
+    entry[p] = req_final_state(_I(req["opcode"]), entry[p], granted)
     self.directory[line] = entry
     if snoopee_next == int(Resp.I) and line in self.excl_monitor:
       self.excl_monitor[line][fwd_k] = False

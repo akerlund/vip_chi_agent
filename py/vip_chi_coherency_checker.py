@@ -17,7 +17,9 @@
 #     written must return exactly that data (predictable-only, like Checker C).
 #   * n_excl_violation -- an SC reporting ExclOkay must have a continuously-valid
 #     self-derived reservation.
-#   * n_bad_make_unique -- MakeUnique must complete Comp / Unique-Dirty.
+#   * n_bad_make_unique -- MakeUnique must complete on a data-less Comp.
+#   * n_bad_dataless_resp -- and that Comp must carry the Resp encoding the
+#     data-less completion table permits for the request (Comp_UC for MakeUnique).
 #   * n_bad_snp_resp_form -- a snoop that returns no data (SnpMakeInvalid) must
 #     not be answered on DAT.
 #
@@ -42,6 +44,7 @@ from vip_chi_types_pkg import (
   Resp, RespErr, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode, CACHE_LINE_BYTES,
   snp_opcode_returns_no_data, snp_opcode_invalidates,
   snp_opcode_forbids_retaining_unique,
+  req_final_state, state_holds_dirty,
 )
 from vip_chi_analysis_imp import vip_chi_analysis_imp
 
@@ -102,6 +105,36 @@ _CT_CROSS_KEEPERS = frozenset(
                int(SnpOpcode.MAKE_INVALID))})
 
 
+# --------------------------------------------------------------------------
+# cg_req_cache_transition port (functional coverage of the requester-side
+# held-state x request x granted-state -> final-state transition, IHI 0050 E
+# Table 4-14 / D Table 4-12). Faithful to the SV covergroup: four coverpoints
+# plus the three-way cross, reported the way SV get_coverage() averages a
+# covergroup's items.
+#
+# The interesting axis is cp_from and it is the one that did not exist before:
+# every requester transition in this regression began at Invalid, so "final =
+# granted Resp" and "final = join(held, granted)" agreed on all of the stimulus
+# and a coverage report with no initial-state axis could not show the hole.
+_RT_FROM_BINS = (int(Resp.I), int(Resp.SC), int(Resp.UC),
+                 int(Resp.SD_PD), int(Resp.UD_PD))                     # cp_from (5)
+_RT_REQ_BINS = (int(ReqOpcode.READ_SHARED), int(ReqOpcode.READ_CLEAN),
+                int(ReqOpcode.READ_UNIQUE), int(ReqOpcode.MAKE_READ_UNIQUE),
+                int(ReqOpcode.MAKE_UNIQUE))                            # cp_req (5)
+_RT_GRANTED_BINS = (int(Resp.SC), int(Resp.UC),
+                    int(Resp.SD_PD), int(Resp.UD_PD))                  # cp_granted (4)
+_RT_TO_BINS = (int(Resp.SC), int(Resp.UC),
+               int(Resp.SD_PD), int(Resp.UD_PD))                       # cp_to (4)
+_RT_FROM_SET = frozenset(_RT_FROM_BINS)
+_RT_REQ_SET = frozenset(_RT_REQ_BINS)
+_RT_GRANTED_SET = frozenset(_RT_GRANTED_BINS)
+_RT_TO_SET = frozenset(_RT_TO_BINS)
+# The SV cross carries no ignore_bins -- unlike the snoop axis, the reachable
+# subset here is a property of the home's response policy rather than of the
+# protocol, so pruning it by hand would bake this VIP's HN-F into the denominator.
+_RT_CROSS_BIN_COUNT = len(_RT_FROM_BINS) * len(_RT_REQ_BINS) * len(_RT_GRANTED_BINS)
+
+
 class vip_chi_coherency_checker(uvm_component):
 
   def __init__(self, name, parent):
@@ -123,6 +156,12 @@ class vip_chi_coherency_checker(uvm_component):
     # Per-node open coherent reads + correlation maps (keyed by TxnID -> line).
     self.open_rd_line = [{} for _ in range(N_NODES)]
     self.open_rd_uniq = [{} for _ in range(N_NODES)]
+    # The REQ opcode the completion belongs to. The Requester's final cache state
+    # is a function of the request as well as the granted Resp (IHI 0050 E Table
+    # 4-14), so the correlation the checker already keeps for the line has to
+    # carry the opcode too -- nothing on the CompData flit says which read it
+    # completes.
+    self.open_rd_op = [{} for _ in range(N_NODES)]
     self.open_rd_excl = [{} for _ in range(N_NODES)]
     self.open_wb_line = [{} for _ in range(N_NODES)]
     self.open_sc_line = [{} for _ in range(N_NODES)]
@@ -191,6 +230,23 @@ class vip_chi_coherency_checker(uvm_component):
     # number to read.
     self.n_snp_resp_adopted = 0
     self.n_snp_resp_state_differs = 0
+    # The requester axis of the same question. n_req_final_judged is how many
+    # completions the Table 4-14 rule had to decide; n_req_final_retained is how
+    # many of those ended in a state the granted Resp alone would NOT have given,
+    # which is precisely the count that separates the rule from the shortcut it
+    # replaces. It is 0 for any stimulus whose requester is Invalid when it
+    # issues -- which was every transition in this regression before the sweep
+    # primed the requesting node -- so it is the non-vacuity measure for this
+    # rule, not a statistic.
+    self.n_req_final_judged = 0
+    self.n_req_final_retained = 0
+    # Completions whose Resp encoding the data-less completion table does not
+    # permit for that request (currently MakeUnique, Table 4-19 / D Table 4-13).
+    self.n_bad_dataless_resp = 0
+    # Catalogue rule D7: a Dirty snoopee that answered without data and without
+    # keeping the dirty. The dual of n_bad_snp_resp_form, which reads the other
+    # direction.
+    self.n_snp_dirty_lost = 0
     # cg_snp_resp_legality hit set: (snp_opcode, resp_state, with_data).
     self._srl_hit = set()
     # cg_cache_transition hit sets (one per covergroup item; see accessor).
@@ -198,6 +254,12 @@ class vip_chi_coherency_checker(uvm_component):
     self._ct_snp_hit = set()
     self._ct_to_hit = set()
     self._ct_cross_hit = set()
+    # cg_req_cache_transition hit sets (one per covergroup item; see accessor).
+    self._rt_from_hit = set()
+    self._rt_req_hit = set()
+    self._rt_granted_hit = set()
+    self._rt_to_hit = set()
+    self._rt_cross_hit = set()
 
   def set_cfg(self, cfg):
     self.cfg = cfg
@@ -280,6 +342,61 @@ class vip_chi_coherency_checker(uvm_component):
       self._ct_to_hit.add(t)
     if (f, s, t) in _CT_CROSS_KEEPERS:
       self._ct_cross_hit.add((f, s, t))
+
+  def _sample_req_transition(self, held, opcode, granted, final_state):
+    # Mirror the SV covergroup .sample(): each coverpoint records independently,
+    # and the cross records every (from, req, granted) tuple -- no ignore_bins on
+    # this axis, see _RT_CROSS_BIN_COUNT.
+    f, q, g, t = _I(held), _I(opcode), _I(granted), _I(final_state)
+    if f in _RT_FROM_SET:
+      self._rt_from_hit.add(f)
+    if q in _RT_REQ_SET:
+      self._rt_req_hit.add(q)
+    if g in _RT_GRANTED_SET:
+      self._rt_granted_hit.add(g)
+    if t in _RT_TO_SET:
+      self._rt_to_hit.add(t)
+    if f in _RT_FROM_SET and q in _RT_REQ_SET and g in _RT_GRANTED_SET:
+      self._rt_cross_hit.add((f, q, g))
+
+  def resolve_req_final_state(self, node, line, opcode, granted):
+    """Resolve the Requester's cache state when its own request completes.
+
+    The dual of check_snp_resp_state, on the other axis. A snoop asks a node to
+    GIVE UP permissions and the checker bounds the answer from above; a
+    completion GRANTS permissions and the checker must not let the grant revoke
+    what the node already held. IHI 0050 E Tables 4-14, 4-17, 4-18 and 4-19; D
+    Tables 4-12 and 4-13.
+
+    The held state is read from the shadow HERE, at the completion, not stashed
+    at the request. Tables 4-17 and 4-18 index the final state on the state "at
+    time of response" precisely because a snoop can take the line away while the
+    request is outstanding, and obs_snp has already written that loss into the
+    shadow by the time this runs.
+    """
+    held = self._entry(line)[node]
+    final_state = req_final_state(opcode, held, granted)
+    # What this same completion would have produced for a Requester holding
+    # nothing. Comparing against THAT rather than against the granted Resp is
+    # what isolates the held-state contribution: MakeUnique ends UD whatever it
+    # held, so measuring "final != granted" would count every MakeUnique as
+    # evidence for a rule it does not exercise.
+    from_invalid = req_final_state(opcode, int(Resp.I), granted)
+
+    self.n_req_final_judged += 1
+    if final_state != from_invalid:
+      # The held state changed the answer. Every such completion is one the
+      # pre-3.2 shadow got wrong, so this count is the rule's non-vacuity
+      # evidence: zero means the stimulus never presented a non-Invalid requester
+      # and the rule was never actually exercised.
+      self.n_req_final_retained += 1
+      self.logger.debug(
+        f"COHERENCY REQ RETAIN: node {node} line 0x{line:x} "
+        f"opcode 0x{_I(opcode):x} held 0x{_I(held):x} "
+        f"granted 0x{_I(granted):x} -> final 0x{final_state:x}")
+
+    self._sample_req_transition(held, opcode, granted, final_state)
+    self.set_node_state(line, node, final_state)
 
   def record_line_data(self, line, item):
     self.line_data[line] = [_I(b) for b in item.data]
@@ -383,6 +500,7 @@ class vip_chi_coherency_checker(uvm_component):
       tid = _I(item.txn_id)
       self.open_rd_line[node][tid] = line
       self.open_rd_uniq[node][tid] = _uniq
+      self.open_rd_op[node][tid] = wop
       self.open_rd_excl[node][tid] = bool(_I(item.excl))
     elif wop in (int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL)):
       self.open_wb_line[node][_I(item.txn_id)] = line
@@ -444,7 +562,8 @@ class vip_chi_coherency_checker(uvm_component):
 
     line = self.open_rd_line[node][tid]
     granted = _I(item.dat_resp[-1]) if item.dat_resp else int(Resp.I)
-    self.set_node_state(line, node, granted)
+    self.resolve_req_final_state(
+      node, line, self.open_rd_op[node].get(tid, 0), granted)
 
     ll_excl = self.open_rd_excl[node].get(tid, False)
     if ll_excl:
@@ -456,6 +575,7 @@ class vip_chi_coherency_checker(uvm_component):
 
     self.open_rd_line[node].pop(tid, None)
     self.open_rd_uniq[node].pop(tid, None)
+    self.open_rd_op[node].pop(tid, None)
     self.open_rd_excl[node].pop(tid, None)
     self.n_completions += 1
     self.check_multi_owner(line)
@@ -538,6 +658,36 @@ class vip_chi_coherency_checker(uvm_component):
         f"0x{line:x} and answered snoop opcode 0x{op:x} reporting state "
         f"0x{state:x}; a snoop cannot grant a permission the snoopee did not "
         f"already hold")
+
+    # ------------------------------------------------------------------------
+    # Catalogue rule D7: a snoopee holding Dirty must hand the dirty data over
+    # unless it is keeping it.
+    #
+    # IHI 0050 E Tables 4-30 to 4-34 (Snoopee state transitions) enumerate this
+    # row by row: every row whose INITIAL state is UD, UDP or SD and whose final
+    # state does not hold the dirty requires a SnpRespData_*_PD response. The
+    # only rows where a Dirty snoopee answers without data are the ones where it
+    # stays Dirty -- UD -> UD, UD -> SD, SD -> SD.
+    #
+    # Answering SnpResp_SC from UD instead loses the only modified copy in the
+    # system: the snoopee has dropped its claim to the line, the Home believes
+    # memory is current, and the next reader is served stale data with every
+    # check agreeing. Nothing else here catches it -- the reported STATE is legal
+    # (D5 and D6 both pass SC from UD), and the existing response-form rule reads
+    # the other direction, flagging data returned where none was wanted. This is
+    # the missing direction: data NOT returned where it was owed.
+    #
+    # SnpMakeInvalid is excluded because discarding is precisely what it asks
+    # for, which is the rule check_snp_resp_form polices.
+    # ------------------------------------------------------------------------
+    if (state_holds_dirty(from_state) and not state_holds_dirty(state)
+        and not snp_opcode_returns_no_data(op) and not with_data):
+      self.n_snp_dirty_lost += 1
+      self.logger.error(
+        f"COHERENCY VIOLATION: node {node} held state 0x{from_state:x} (Dirty) "
+        f"on line 0x{line:x} and answered snoop opcode 0x{op:x} with state "
+        f"0x{state:x} and NO data; the dirty copy is neither retained nor "
+        f"passed on")
 
     self.n_snp_resp_judged += 1
 
@@ -639,14 +789,34 @@ class vip_chi_coherency_checker(uvm_component):
     # run the single-writer check.
     if tid in self.open_mu_line[node]:
       line = self.open_mu_line[node][tid]
-      if (_I(item.rsp_opcode) != int(RspOpcode.COMP) or
-          _I(item.rsp_resp) != int(Resp.UD_PD)):
+      # Validate the OBSERVED completion rather than inventing a state: a
+      # MakeUnique must complete with a data-less Comp.
+      if _I(item.rsp_opcode) != int(RspOpcode.COMP):
         self.n_bad_make_unique += 1
         self.logger.error(
           f"COHERENCY VIOLATION: MakeUnique on line 0x{line:x} (node {node}) "
           f"completed opcode=0x{_I(item.rsp_opcode):x} resp=0x{_I(item.rsp_resp):x}, "
-          f"expected Comp / Unique-Dirty")
-      self.set_node_state(line, node, _I(item.rsp_resp))
+          f"expected a data-less Comp")
+      # The GRANTED state on that Comp is Comp_UC. MakeUnique's final state is
+      # Unique-Dirty from every permitted initial state, but the Requester
+      # becomes Dirty by its own act of overwriting the whole line -- no dirty
+      # data is being handed to it -- and the response says so: Table 4-19 (D
+      # Table 4-13) lists Comp_UC as the completion for MakeUnique, and
+      # Comp_UD_PD means "responsibility for a Dirty cache line is being passed",
+      # which is a different transaction. Issue D does not define the UD_PD
+      # encoding for a data-less completion at all (Table 4-5 lists only Comp_I,
+      # Comp_UC and Comp_SC), so requiring it here rejected the one legal answer
+      # and demanded one a CHI-D completer may not send.
+      if _I(item.rsp_resp) != int(Resp.UC):
+        self.n_bad_dataless_resp += 1
+        self.logger.error(
+          f"COHERENCY VIOLATION: MakeUnique on line 0x{line:x} (node {node}) "
+          f"completed resp=0x{_I(item.rsp_resp):x}; Table 4-19 permits only "
+          f"Comp_UC (0x{int(Resp.UC):x}) for this request")
+      # The final state still comes from the shared table function, which is what
+      # turns that Comp_UC into the Unique-Dirty the Requester ends up holding.
+      self.resolve_req_final_state(
+        node, line, int(ReqOpcode.MAKE_UNIQUE), _I(item.rsp_resp))
       self.n_completions += 1
       self.check_multi_owner(line)
       del self.open_mu_line[node][tid]
@@ -726,6 +896,18 @@ class vip_chi_coherency_checker(uvm_component):
   def get_snp_resp_state_differs_count(self):
     return self.n_snp_resp_state_differs
 
+  def get_req_final_judged_count(self):
+    return self.n_req_final_judged
+
+  def get_req_final_retained_count(self):
+    return self.n_req_final_retained
+
+  def get_bad_dataless_resp_count(self):
+    return self.n_bad_dataless_resp
+
+  def get_snp_dirty_lost_count(self):
+    return self.n_snp_dirty_lost
+
   def get_snp_resp_legality_tuples(self):
     """The distinct (snoop opcode, resp state, with-data) triples observed.
 
@@ -756,10 +938,23 @@ class vip_chi_coherency_checker(uvm_component):
     cross_cov = len(self._ct_cross_hit) / len(_CT_CROSS_KEEPERS)
     return 100.0 * (from_cov + snp_cov + to_cov + cross_cov) / 4.0
 
+  def get_req_cache_transition_coverage(self):
+    # Functional coverage of the requester-side (held x request x granted ->
+    # final) transition, averaged over the group's five items the way SV
+    # covergroup.get_coverage() does. Observational only -- no invariant depends
+    # on it; the invariant is n_req_final_retained.
+    from_cov = len(self._rt_from_hit) / len(_RT_FROM_BINS)
+    req_cov = len(self._rt_req_hit) / len(_RT_REQ_BINS)
+    granted_cov = len(self._rt_granted_hit) / len(_RT_GRANTED_BINS)
+    to_cov = len(self._rt_to_hit) / len(_RT_TO_BINS)
+    cross_cov = len(self._rt_cross_hit) / _RT_CROSS_BIN_COUNT
+    return 100.0 * (from_cov + req_cov + granted_cov + to_cov + cross_cov) / 5.0
+
   def total_violations(self):
     return (self.n_multi_owner + self.n_coherent_data_mismatch +
             self.n_excl_violation + self.n_bad_make_unique +
             self.n_bad_snp_resp_form + self.n_bad_snp_resp_state +
+            self.n_bad_dataless_resp + self.n_snp_dirty_lost +
             self.n_line_hazard)
 
   def handle_reset(self):
@@ -782,7 +977,8 @@ class vip_chi_coherency_checker(uvm_component):
     self.logger.info(
       f"COHERENCY SNP RESP STATE SUMMARY: "
       f"snp_resp_judged={self.n_snp_resp_judged} "
-      f"bad_snp_resp_state={self.n_bad_snp_resp_state}")
+      f"bad_snp_resp_state={self.n_bad_snp_resp_state} "
+      f"snp_dirty_lost={self.n_snp_dirty_lost}")
     # Its own line for the same reason as the two above: the report server wraps
     # long lines, and a wrapped field=value pair cannot be swept for with grep.
     self.logger.info(
@@ -790,6 +986,14 @@ class vip_chi_coherency_checker(uvm_component):
       f"snp_resp_adopted={self.n_snp_resp_adopted} "
       f"snp_resp_state_differs={self.n_snp_resp_state_differs} "
       f"snp_resp_gains_permission={self.n_snp_resp_gains_permission}")
+    # Its own line for the same reason as the three above: the report server
+    # wraps long lines, and a wrapped field=value pair cannot be swept for with
+    # grep across a regression.
+    self.logger.info(
+      f"COHERENCY REQ FINAL STATE SUMMARY: "
+      f"req_final_judged={self.n_req_final_judged} "
+      f"req_final_retained={self.n_req_final_retained} "
+      f"bad_dataless_resp={self.n_bad_dataless_resp}")
     self.logger.info(
       f"COHERENCY HAZARD SUMMARY: line_hazards={self.n_line_hazard} "
       f"line_claims_cleared={self.n_line_clear}")
