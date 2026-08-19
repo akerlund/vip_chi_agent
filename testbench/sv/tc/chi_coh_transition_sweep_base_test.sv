@@ -194,6 +194,50 @@ class chi_coh_transition_sweep_base_test #(
         MIN_SNP_RESP_JUDGED_C))
     end
 
+    // Catalogue rule D6, and the adoption it guards. The snooped node's next
+    // state is now taken FROM the response rather than derived from the opcode,
+    // so three things have to hold together.
+    //
+    // No response reported a state the snoopee could not have reached:
+    if (super.tb_env.coh_checker.get_snp_resp_gains_permission_count() != 0) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] %0d snoop response(s) reported a permission the snoopee did not hold when the snoop arrived",
+        super.tc_name, super.tb_env.coh_checker.get_snp_resp_gains_permission_count()))
+    end
+
+    // ...every judged response was adopted. With D5 and D6 both clean this is an
+    // identity, and that is exactly why it is worth asserting: if it ever parts,
+    // a response was judged legal and still failed to reach the shadow, which is
+    // the desynchronization this rule exists to prevent -- silent, and visible
+    // only as later checks failing somewhere else.
+    if (super.tb_env.coh_checker.get_snp_resp_adopted_count() !=
+        super.tb_env.coh_checker.get_snp_resp_judged_count()) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] %0d snoop response(s) judged but only %0d adopted into the shadow, with no violation reported for the difference",
+        super.tc_name, super.tb_env.coh_checker.get_snp_resp_judged_count(),
+        super.tb_env.coh_checker.get_snp_resp_adopted_count()))
+    end
+
+    // ...and the adoption path actually ran. Same non-vacuity discipline as the
+    // two counts above: adopted=0 would satisfy both assertions.
+    if (super.tb_env.coh_checker.get_snp_resp_adopted_count() < MIN_SNP_RESP_JUDGED_C) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] only %0d snoop response(s) reached the shadow (< %0d); the adoption path was never exercised",
+        super.tc_name, super.tb_env.coh_checker.get_snp_resp_adopted_count(),
+        MIN_SNP_RESP_JUDGED_C))
+    end
+
+    // Reported, not asserted. This VIP's own RN-F implements exactly the mapping
+    // snoop_result() encodes, so the expected value here is 0 -- and a 0 is only
+    // meaningful because the counts above prove responses were adopted at all.
+    // It is the first number to read against a DUT: non-zero says the peer
+    // resolved a snoop somewhere the derived model did not predict, which is the
+    // whole reason the state is taken from the response.
+    `uvm_info(get_name(), $sformatf(
+      "[%s] snoop responses adopted=%0d, of which %0d differed from the derived prediction",
+      super.tc_name, super.tb_env.coh_checker.get_snp_resp_adopted_count(),
+      super.tb_env.coh_checker.get_snp_resp_state_differs_count()), UVM_LOW)
+
     // Under a coverage build the legality cross should have spread across the
     // surface, not merely fired. Gated on coverage actually being collected, the
     // same way the cache-transition closure check above is.

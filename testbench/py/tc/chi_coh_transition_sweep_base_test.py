@@ -113,6 +113,43 @@ class chi_coh_transition_sweep_base_test(chi_coherent_base_test):
       f"D5 judged only {judged} snoop response(s) (< {_MIN_SNP_RESP_JUDGED}); a " \
       f"zero violation count above means nothing if nothing reached the rule"
 
+    # Catalogue rule D6, and the adoption it guards. The snooped node's next
+    # state is now taken FROM the response rather than derived from the opcode,
+    # so three things have to hold together.
+    #
+    # No response reported a state the snoopee could not have reached:
+    gains = self.tb_env.coh_checker.get_snp_resp_gains_permission_count()
+    assert gains == 0, \
+      f"transition sweep saw {gains} snoop response(s) reporting a permission " \
+      f"the snoopee did not hold when the snoop arrived"
+
+    # ...every judged response was adopted. With D5 and D6 both clean this is an
+    # identity, and that is exactly why it is worth asserting: if it ever parts, a
+    # response was judged legal and still failed to reach the shadow, which is the
+    # desynchronization this rule exists to prevent -- silent, and visible only as
+    # later checks failing somewhere else.
+    adopted = self.tb_env.coh_checker.get_snp_resp_adopted_count()
+    assert adopted == judged, \
+      f"{judged} snoop response(s) judged but only {adopted} adopted into the " \
+      f"shadow, with no violation reported for the difference"
+
+    # ...and the adoption path actually ran. Same non-vacuity discipline as the
+    # counts above: adopted=0 would satisfy both assertions.
+    assert adopted >= _MIN_SNP_RESP_JUDGED, \
+      f"only {adopted} snoop response(s) reached the shadow " \
+      f"(< {_MIN_SNP_RESP_JUDGED}); the adoption path was never exercised"
+
+    # Reported, not asserted. This VIP's own RN-F implements exactly the mapping
+    # snoop_result() encodes, so the expected value here is 0 -- and a 0 is only
+    # meaningful because the counts above prove responses were adopted at all. It
+    # is the first number to read against a DUT: non-zero says the peer resolved a
+    # snoop somewhere the derived model did not predict, which is the whole reason
+    # the state is taken from the response.
+    self.logger.info(
+      f"snoop responses adopted={adopted}, of which "
+      f"{self.tb_env.coh_checker.get_snp_resp_state_differs_count()} differed "
+      f"from the derived prediction")
+
     # ...and that the cross actually spread. One triple repeated N times would
     # satisfy the count above while covering a single point of the surface.
     triples = self.tb_env.coh_checker.get_snp_resp_legality_tuples()

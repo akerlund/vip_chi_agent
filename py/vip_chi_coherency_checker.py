@@ -38,6 +38,7 @@ from __future__ import annotations
 from pyuvm import uvm_component
 
 from vip_chi_types_pkg import (
+  snp_resp_state_gains_permission,
   Resp, RespErr, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode, CACHE_LINE_BYTES,
   snp_opcode_returns_no_data, snp_opcode_invalidates,
   snp_opcode_forbids_retaining_unique,
@@ -138,6 +139,12 @@ class vip_chi_coherency_checker(uvm_component):
     # is a property of the opcode and nothing else on the DAT flit records which
     # snoop it answers. See check_snp_resp_form.
     self.pending_snp_opcode = [0] * N_NODES
+    # ...and the state the node held WHEN THE SNOOP ARRIVED. The shadow is
+    # overwritten with the predicted result the moment the snoop is seen, so by
+    # the time the response arrives the from-state is gone -- and the from-state
+    # is what bounds which states the response may legally report (see
+    # snp_resp_state_gains_permission).
+    self.pending_snp_from = [int(Resp.I)] * N_NODES
     # Downstream SN-F read correlation (downstream TxnID -> line).
     self.dn_rd_line = {}
     # Exclusive (LL/SC) monitor shadow (per node: line -> bool / clear-cause).
@@ -172,6 +179,18 @@ class vip_chi_coherency_checker(uvm_component):
     # SnpResp this checker has taken: before D5 it observed SnpRespData on DAT
     # and was blind to the RSP half of the response space entirely.
     self.n_snp_resp_judged = 0
+    # Catalogue rule D6: responses reporting a state the snoopee could not have
+    # reached from what it held.
+    self.n_snp_resp_gains_permission = 0
+    # Non-vacuity for the ADOPTION, which is the point of the change: how many
+    # responses wrote their reported state into the shadow, and how many of those
+    # disagreed with the state derived from the opcode. On this VIP the second is
+    # expected to be 0 -- its own RN-F implements exactly the mapping
+    # snoop_result() encodes -- so the count is what makes that an OBSERVATION
+    # rather than the assumption it replaces. Against a DUT it is the first
+    # number to read.
+    self.n_snp_resp_adopted = 0
+    self.n_snp_resp_state_differs = 0
     # cg_snp_resp_legality hit set: (snp_opcode, resp_state, with_data).
     self._srl_hit = set()
     # cg_cache_transition hit sets (one per covergroup item; see accessor).
@@ -406,6 +425,15 @@ class vip_chi_coherency_checker(uvm_component):
         # this. SnpRespData_I_PD is a legal row of Table 4-11 -- what is
         # prohibited is sending it IN ANSWER TO a snoop that returns no data.
         self.check_snp_resp_form(node, self.pending_snp_line[node], op)
+        # The Resp-encoding half of the same pairing, on the data-carrying
+        # responses. The last beat carries the snoopee's final state; a
+        # SnpRespData with no beats cannot report one, so it is read as Invalid
+        # rather than skipped -- an unjudged response is how this rule goes
+        # quietly vacuous.
+        self.check_snp_resp_state(
+          node, self.pending_snp_line[node],
+          _I(item.dat_resp[-1]) if item.dat_resp else int(Resp.I),
+          True)
         self.record_line_data(self.pending_snp_line[node], item)
         self.pending_snp_valid[node] = False
       return
@@ -463,6 +491,9 @@ class vip_chi_coherency_checker(uvm_component):
   def check_snp_resp_state(self, node, line, state, with_data):
     op = _I(self.pending_snp_opcode[node])
     state = _I(state)
+    from_state = _I(self.pending_snp_from[node])
+    predicted = self._entry(line)[node]
+    legal = True
 
     # Sampled unconditionally, legal pairings included: a cross that only ever
     # recorded its violations would say nothing about what was exercised.
@@ -470,6 +501,7 @@ class vip_chi_coherency_checker(uvm_component):
 
     if snp_opcode_invalidates(op) and state != int(Resp.I):
       self.n_bad_snp_resp_state += 1
+      legal = False
       self.logger.error(
         f"COHERENCY VIOLATION: node {node} answered invalidating snoop opcode "
         f"0x{op:x} on line 0x{line:x} reporting state 0x{state:x}, but every "
@@ -477,12 +509,68 @@ class vip_chi_coherency_checker(uvm_component):
     elif (snp_opcode_forbids_retaining_unique(op)
           and state in (int(Resp.UC), int(Resp.UD_PD))):
       self.n_bad_snp_resp_state += 1
+      legal = False
       self.logger.error(
         f"COHERENCY VIOLATION: node {node} answered shared snoop opcode "
         f"0x{op:x} on line 0x{line:x} still holding Unique (state 0x{state:x}); "
         f"the grant that follows would create a second owner")
 
+    # ------------------------------------------------------------------------
+    # Catalogue rule D6: the reported state must not hold a permission the
+    # snoopee did not have when the snoop arrived.
+    #
+    # D5 above bounds the response by what was ASKED; this bounds it by what was
+    # HELD, and neither implies the other -- an SC holder answering SnpOnce with
+    # UC passes every opcode-keyed rule and is still impossible. A snoop is a
+    # request to give up permissions, never a grant of them; the only path that
+    # raises a cache state is a response to that node's own request, on a
+    # transaction this snoop knows nothing about.
+    #
+    # It is a gate and not merely a report, because the reported state is now
+    # ADOPTED into the shadow directory below. Without it a peer reporting
+    # nonsense would steer every later coherency check through the nonsense.
+    # ------------------------------------------------------------------------
+    if snp_resp_state_gains_permission(from_state, state):
+      self.n_snp_resp_gains_permission += 1
+      legal = False
+      self.logger.error(
+        f"COHERENCY VIOLATION: node {node} held state 0x{from_state:x} on line "
+        f"0x{line:x} and answered snoop opcode 0x{op:x} reporting state "
+        f"0x{state:x}; a snoop cannot grant a permission the snoopee did not "
+        f"already hold")
+
     self.n_snp_resp_judged += 1
+
+    # ------------------------------------------------------------------------
+    # Take the snoopee's next state FROM THE RESPONSE.
+    #
+    # The snoop opcode CONSTRAINS the resulting state but does not determine it:
+    # a UD holder answering SnpShared may pass the dirty data on and report SC,
+    # or keep it and report SD, and which one happened is knowable only here.
+    # Deriving it from the opcode alone -- what snoop_result() does, and what
+    # this checker did everywhere before D6 -- records what a snoop WOULD do to
+    # this VIP's own RN-F, which against any other peer is an assumption
+    # presented as an observation. One desynchronized entry then misdirects the
+    # single-writer check, the occupancy count and the data-integrity shadow, and
+    # every message they produce points at the peer.
+    #
+    # snoop_result() keeps its job as the PREDICTION: the shadow needs a value
+    # between the snoop and its response, and obs_snp still writes one. This
+    # reconciles it. An illegal response is not adopted -- D5 and D6 have already
+    # reported it, and steering the model with a value known to be wrong would
+    # turn one reported violation into a run of unexplained ones.
+    # ------------------------------------------------------------------------
+    if legal:
+      if state != predicted:
+        self.n_snp_resp_state_differs += 1
+      self.set_node_state(line, node, state)
+      self.n_snp_resp_adopted += 1
+      # The transition covergroup records the OBSERVED outcome, so it is sampled
+      # here rather than at the snoop. Sampled on the prediction it was a pure
+      # function of its own inputs, which is why the SV cp_to illegal_bins could
+      # never fire: snoop_result() provably returns only I or SC.
+      if self.snoop_samples_cache_transition(op):
+        self._sample_cache_transition(from_state, op, state)
 
   def check_snp_resp_form(self, node, line, op):
     if not snp_opcode_returns_no_data(self.pending_snp_opcode[node]):
@@ -498,11 +586,16 @@ class vip_chi_coherency_checker(uvm_component):
       return
     line = self.line_of(item.snp_addr)
     cur = self._entry(line)[node]
-    nxt = self.snoop_result(item.snp_opcode, cur)
-    if self.snoop_samples_cache_transition(item.snp_opcode):
-      self._sample_cache_transition(cur, item.snp_opcode, nxt)
-    self.set_node_state(line, node, nxt)
-    if nxt == int(Resp.I):
+    # The PREDICTED result, applied to the shadow so the window between a snoop
+    # and its response is not modeled as if the snoop had not happened. It is
+    # reconciled against the state the response actually reports in
+    # check_snp_resp_state, which is where the transition covergroup is now
+    # sampled -- it records the observed outcome, not this guess.
+    predicted = self.snoop_result(item.snp_opcode, cur)
+    self.set_node_state(line, node, predicted)
+    # Keyed off the snoop and not the response on purpose: it is the snoop that
+    # breaks the exclusive reservation, whatever the snoopee goes on to report.
+    if predicted == int(Resp.I):
       if self.excl_ll_valid[node].get(line):
         self.excl_clear_cause[node][line] = _EXCL_CLEAR_SNOOP
         self.excl_ll_valid[node][line] = False
@@ -511,6 +604,9 @@ class vip_chi_coherency_checker(uvm_component):
     self.pending_snp_line[node] = line
     self.pending_snp_valid[node] = True
     self.pending_snp_opcode[node] = _I(item.snp_opcode)
+    # The from-state, kept because the shadow above no longer holds it and D6
+    # needs it to bound what the response may legally report.
+    self.pending_snp_from[node] = _I(cur)
     self.n_snoops += 1
 
   def obs_rsp(self, node, item):
@@ -621,6 +717,15 @@ class vip_chi_coherency_checker(uvm_component):
   def get_snp_resp_judged_count(self):
     return self.n_snp_resp_judged
 
+  def get_snp_resp_gains_permission_count(self):
+    return self.n_snp_resp_gains_permission
+
+  def get_snp_resp_adopted_count(self):
+    return self.n_snp_resp_adopted
+
+  def get_snp_resp_state_differs_count(self):
+    return self.n_snp_resp_state_differs
+
   def get_snp_resp_legality_tuples(self):
     """The distinct (snoop opcode, resp state, with-data) triples observed.
 
@@ -678,6 +783,13 @@ class vip_chi_coherency_checker(uvm_component):
       f"COHERENCY SNP RESP STATE SUMMARY: "
       f"snp_resp_judged={self.n_snp_resp_judged} "
       f"bad_snp_resp_state={self.n_bad_snp_resp_state}")
+    # Its own line for the same reason as the two above: the report server wraps
+    # long lines, and a wrapped field=value pair cannot be swept for with grep.
+    self.logger.info(
+      f"COHERENCY SNP RESP ADOPT SUMMARY: "
+      f"snp_resp_adopted={self.n_snp_resp_adopted} "
+      f"snp_resp_state_differs={self.n_snp_resp_state_differs} "
+      f"snp_resp_gains_permission={self.n_snp_resp_gains_permission}")
     self.logger.info(
       f"COHERENCY HAZARD SUMMARY: line_hazards={self.n_line_hazard} "
       f"line_claims_cleared={self.n_line_clear}")

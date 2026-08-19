@@ -114,6 +114,12 @@ class vip_chi_coherency_checker #(
   // a property of the opcode and nothing else on the DAT flit records which
   // snoop it answers. See check_snp_resp_form.
   protected vip_chi_snp_opcode_t pending_snp_opcode [N_NODES_C];
+  // ...and the state the node held WHEN THE SNOOP ARRIVED. The shadow is
+  // overwritten with the predicted result the moment the snoop is seen, so by the
+  // time the response arrives the from-state is gone -- and the from-state is what
+  // bounds which states the response may legally report (see
+  // vip_chi_snp_resp_state_gains_permission).
+  protected vip_chi_resp_t pending_snp_from [N_NODES_C];
 
   // Downstream SN-F read correlation: a ReadNoSnp REQ (addr) -> its line, keyed by
   // the downstream TxnID, so the SN-F's later CompData establishes the line-data
@@ -182,6 +188,17 @@ class vip_chi_coherency_checker #(
   // this checker has ever taken: before D5 it observed SnpRespData on DAT and was
   // blind to the RSP half of the response space entirely.
   protected int n_snp_resp_judged;
+  // Catalogue rule D6: responses that reported a state the snoopee could not have
+  // reached from what it held.
+  protected int n_snp_resp_gains_permission;
+  // Non-vacuity for the ADOPTION, which is the point of the change: how many
+  // responses wrote their reported state into the shadow, and how many of those
+  // disagreed with the state derived from the opcode. On this VIP the second is
+  // expected to be 0 -- its own RN-F implements exactly the mapping snoop_result()
+  // encodes -- so the count is what makes that an OBSERVATION rather than the
+  // assumption it replaces. Against a DUT it is the first number to read.
+  protected int n_snp_resp_adopted;
+  protected int n_snp_resp_state_differs;
 
   // cg_excl samples (SC outcome x clear-cause), set at the obs_rsp resolution.
   protected bit                excl_result_sample;  // 1 = ExclOkay (won), 0 = fail
@@ -311,14 +328,29 @@ class vip_chi_coherency_checker #(
     cp_to: coverpoint this.ct_to_sample {
       bins inv = {VIP_CHI_RESP_STATE_I_E};
       bins sc  = {VIP_CHI_RESP_STATE_SC_E};
-      // [F3] snoop_result() only ever downgrades (-> SC) or invalidates (-> I); a
-      // snoop can NEVER upgrade a holder. Guard the reduced bin set: if a future
-      // miswire ever produces a Unique/Dirty to-state it lands here and is flagged,
-      // instead of silently vanishing as an unbinned value (which would leave the
-      // 11-bin denominator looking fully closed while masking the bug).
+      // [F3] a snoop can never UPGRADE a holder, and none of the four binned
+      // opcodes leaves it Unique: the three invalidating ones end at I, and
+      // SnpShared exists to create a sharer. Either outcome landing here is a
+      // miswire, so it is flagged rather than silently vanishing as an unbinned
+      // value (which would leave the denominator looking fully closed while
+      // masking the bug).
       illegal_bins never_upgrades = {VIP_CHI_RESP_STATE_UC_E,
-                                     VIP_CHI_RESP_STATE_UP_PD_DIRTY_E,
-                                     VIP_CHI_RESP_STATE_SD_PD_DIRTY_E};
+                                     VIP_CHI_RESP_STATE_UP_PD_DIRTY_E};
+      // SharedDirty is NOT a miswire and was wrongly grouped with the two above:
+      // a UD holder answering SnpShared may keep the dirty data and report SD
+      // instead of passing it on, which Chapter 4 permits. Now that the to-state
+      // is taken from the response rather than derived, an illegal_bin here would
+      // fail the simulation on legal peer traffic -- so it is ignored, not
+      // flagged.
+      //
+      // Ignored rather than binned because it is unreachable in THIS VIP for a
+      // structural reason that is itself an open finding: the home cannot forbid
+      // SD (the DoNotGoToSD field is absent from the snoop flit in both ports),
+      // and its own RN-F never retains dirty on a shared snoop. Binning it would
+      // hold the covergroup permanently short of closure and train the reader to
+      // ignore the gap. When the field lands, this ignore comes out and the bin
+      // goes in.
+      ignore_bins shared_dirty_unreachable_here = {VIP_CHI_RESP_STATE_SD_PD_DIRTY_E};
     }
 
     // The snoop-induced transition is a pure function of (from-state, snoop) --
@@ -444,6 +476,7 @@ class vip_chi_coherency_checker #(
       this.hazard_by_line[n].delete();
       this.hazard_by_txn[n].delete();
       this.pending_snp_valid[n] = 1'b0;
+      this.pending_snp_from[n]  = VIP_CHI_RESP_STATE_I_E;
     end
     this.n_line_hazard = 0;
     this.n_line_clear  = 0;
@@ -933,7 +966,14 @@ class vip_chi_coherency_checker #(
                                                input vip_chi_resp_t state,
                                                input bit            with_data);
     vip_chi_snp_opcode_t op;
-    op = this.pending_snp_opcode[node];
+    vip_chi_resp_t       from_state;
+    vip_chi_resp_t       predicted;
+    bit                  legal;
+    op         = this.pending_snp_opcode[node];
+    from_state = this.pending_snp_from[node];
+    predicted  = this.line_state.exists(line) ? vip_chi_resp_t'(this.line_state[line][node])
+                                              : VIP_CHI_RESP_STATE_I_E;
+    legal      = 1'b1;
 
     // Coverage first, and unconditionally: the cross has to see the legal
     // pairings too, or its illegal bins would be the only thing it ever recorded.
@@ -944,6 +984,7 @@ class vip_chi_coherency_checker #(
 
     if (vip_chi_snp_opcode_invalidates(op) && (state != VIP_CHI_RESP_STATE_I_E)) begin
       this.n_bad_snp_resp_state++;
+      legal = 1'b0;
       `uvm_error("VIP_CHI_COH", $sformatf(
         "COHERENCY VIOLATION: node %0d answered invalidating snoop opcode 0x%0h on line 0x%0h reporting state 0x%0h, but every response Chapter 4 permits to it is Invalid",
         node, op, line, state))
@@ -952,40 +993,102 @@ class vip_chi_coherency_checker #(
              ((state == VIP_CHI_RESP_STATE_UC_E) ||
               (state == VIP_CHI_RESP_STATE_UP_PD_DIRTY_E))) begin
       this.n_bad_snp_resp_state++;
+      legal = 1'b0;
       `uvm_error("VIP_CHI_COH", $sformatf(
         "COHERENCY VIOLATION: node %0d answered shared snoop opcode 0x%0h on line 0x%0h still holding Unique (state 0x%0h); the grant that follows would create a second owner",
         node, op, line, state))
     end
 
+    // -------------------------------------------------------------------------
+    // Catalogue rule D6: the reported state must not hold a permission the
+    // snoopee did not have when the snoop arrived.
+    //
+    // D5 above bounds the response by what was ASKED; this bounds it by what was
+    // HELD, and neither implies the other -- an SC holder answering SnpOnce with
+    // UC passes every opcode-keyed rule and is still impossible. A snoop is a
+    // request to give up permissions, never a grant of them; the only path that
+    // raises a cache state is a response to that node's own request, on a
+    // transaction this snoop knows nothing about.
+    //
+    // It is a gate and not merely a report, because the reported state is now
+    // ADOPTED into the shadow directory below. Without it a peer reporting
+    // nonsense would steer every later coherency check through the nonsense.
+    // -------------------------------------------------------------------------
+    if (vip_chi_snp_resp_state_gains_permission(from_state, state)) begin
+      this.n_snp_resp_gains_permission++;
+      legal = 1'b0;
+      `uvm_error("VIP_CHI_COH", $sformatf(
+        "COHERENCY VIOLATION: node %0d held state 0x%0h on line 0x%0h and answered snoop opcode 0x%0h reporting state 0x%0h; a snoop cannot grant a permission the snoopee did not already hold",
+        node, from_state, line, op, state))
+    end
+
     // Non-vacuity: how many responses this rule actually had to judge. A zero
     // violation count says nothing on its own -- see n_snp_no_data_on_dirty.
     this.n_snp_resp_judged++;
+
+    // -------------------------------------------------------------------------
+    // Take the snoopee's next state FROM THE RESPONSE.
+    //
+    // The snoop opcode CONSTRAINS the resulting state but does not determine it:
+    // a UD holder answering SnpShared may pass the dirty data on and report SC,
+    // or keep it and report SD, and which one happened is knowable only here.
+    // Deriving it from the opcode alone -- what snoop_result() does, and what
+    // this checker did everywhere before D6 -- records what a snoop WOULD do to
+    // this VIP's own RN-F, which against any other peer is an assumption
+    // presented as an observation. One desynchronized entry then misdirects the
+    // single-writer check, the occupancy count and the data-integrity shadow, and
+    // every message they produce points at the peer.
+    //
+    // snoop_result() keeps its job as the PREDICTION: the shadow needs a value
+    // between the snoop and its response, and obs_snp still writes one. This
+    // reconciles it. An illegal response is not adopted -- D5 and D6 have already
+    // reported it, and steering the model with a value known to be wrong would
+    // turn one reported violation into a run of unexplained ones.
+    // -------------------------------------------------------------------------
+    if (legal) begin
+      if (state != predicted) begin
+        this.n_snp_resp_state_differs++;
+      end
+      this.set_node_state(line, node, state);
+      this.n_snp_resp_adopted++;
+      // The transition covergroup records the OBSERVED outcome, so it is sampled
+      // here rather than at the snoop. Sampled on the prediction it was a pure
+      // function of its own inputs, which is why cp_to's illegal_bins could never
+      // fire: snoop_result() provably returns only I or SC. Against observed
+      // traffic the guard is live.
+      this.ct_from_sample       = from_state;
+      this.ct_snp_opcode_sample = item_t::snp_opcode_t'(op);
+      this.ct_to_sample         = state;
+      if (this.snoop_samples_cache_transition(item_t::snp_opcode_t'(op))) begin
+        this.cg_cache_transition.sample();
+      end
+      this.sample_occupancy(line);
+    end
   endfunction
 
   protected function void obs_snp(input int node, input item_t item);
     longint        line;
     vip_chi_resp_t cur;
+    vip_chi_resp_t predicted;
     if (!this.enable || !item.is_snoop) begin
       return;
     end
     line = this.line_of(longint'(item.snp_addr));
     cur  = this.line_state.exists(line) ? vip_chi_resp_t'(this.line_state[line][node])
                                         : VIP_CHI_RESP_STATE_I_E;
-    // Coverage: sample only the binned state-changing snoops (from-state x snoop x
-    // to) before applying them. Snapshot snoops (SnpOnce) preserve Unique/Dirty
-    // state and are not part of cg_cache_transition.
-    this.ct_from_sample       = cur;
-    this.ct_snp_opcode_sample = item.snp_opcode;
-    this.ct_to_sample         = this.snoop_result(item.snp_opcode, cur);
-    if (this.snoop_samples_cache_transition(item.snp_opcode)) begin
-      this.cg_cache_transition.sample();
-    end
-    this.set_node_state(line, node, this.ct_to_sample);
-    this.sample_occupancy(line);
+    // The PREDICTED result, applied to the shadow so the window between a snoop
+    // and its response is not modeled as if the snoop had not happened. It is
+    // reconciled against the state the response actually reports in
+    // check_snp_resp_state, which is where cg_cache_transition is now sampled --
+    // the covergroup records the observed outcome, not this guess.
+    predicted = this.snoop_result(item.snp_opcode, cur);
+    this.set_node_state(line, node, predicted);
     // An invalidating snoop (result Invalid) to this node breaks its exclusive
     // reservation on the line -- the same clear path (b) the HN-F wires at its
-    // snoop sites, derived here independently from the observed snoop.
-    if (this.ct_to_sample == VIP_CHI_RESP_STATE_I_E) begin
+    // snoop sites, derived here independently from the observed snoop. Keyed off
+    // the snoop and not the response on purpose: it is the snoop that breaks the
+    // reservation, whatever the snoopee goes on to report.
+    if (predicted == VIP_CHI_RESP_STATE_I_E) begin
       if (this.excl_ll_valid[node].exists(line) && this.excl_ll_valid[node][line]) begin
         this.excl_clear_cause[node][line] = EXCL_CLEAR_SNOOP;
         this.excl_ll_valid[node][line]    = 1'b0;
@@ -1001,6 +1104,9 @@ class vip_chi_coherency_checker #(
     this.pending_snp_line[node]   = line;
     this.pending_snp_valid[node]  = 1'b1;
     this.pending_snp_opcode[node] = vip_chi_snp_opcode_t'(item.snp_opcode);
+    // The from-state, kept because the shadow above no longer holds it and D6
+    // needs it to bound what the response may legally report.
+    this.pending_snp_from[node]   = cur;
     this.n_snoops++;
   endfunction
 
@@ -1158,6 +1264,9 @@ class vip_chi_coherency_checker #(
   function int get_snp_no_data_on_dirty_count(); return this.n_snp_no_data_on_dirty; endfunction
   function int get_bad_snp_resp_state_count(); return this.n_bad_snp_resp_state; endfunction
   function int get_snp_resp_judged_count(); return this.n_snp_resp_judged; endfunction
+  function int get_snp_resp_gains_permission_count(); return this.n_snp_resp_gains_permission; endfunction
+  function int get_snp_resp_adopted_count(); return this.n_snp_resp_adopted; endfunction
+  function int get_snp_resp_state_differs_count(); return this.n_snp_resp_state_differs; endfunction
   function real get_snp_resp_legality_coverage(); return this.cg_snp_resp_legality.get_coverage(); endfunction
   function int get_line_hazard_count(); return this.n_line_hazard; endfunction
   // Clean claim/release pairs. A test asserts on this to show the hazard rule
@@ -1188,6 +1297,11 @@ class vip_chi_coherency_checker #(
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY SNP RESP STATE SUMMARY: snp_resp_judged=%0d bad_snp_resp_state=%0d",
       this.n_snp_resp_judged, this.n_bad_snp_resp_state), UVM_LOW)
+    // Its own line for the same reason as the two above: the report server wraps
+    // long lines, and a wrapped field=value pair cannot be swept for with grep.
+    `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY SNP RESP ADOPT SUMMARY: snp_resp_adopted=%0d snp_resp_state_differs=%0d snp_resp_gains_permission=%0d",
+      this.n_snp_resp_adopted, this.n_snp_resp_state_differs, this.n_snp_resp_gains_permission), UVM_LOW)
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY HAZARD SUMMARY: line_hazards=%0d line_claims_cleared=%0d",
       this.n_line_hazard, this.n_line_clear), UVM_LOW)

@@ -794,6 +794,76 @@ package vip_chi_types_pkg;
   endfunction
 
   // ---------------------------------------------------------------------------
+  // The three permissions a cache state carries, named separately because the
+  // seven CHI states are not a total order: SharedDirty holds the dirty data
+  // without the right to write it, so it is neither above nor below UniqueClean.
+  // A rule written as "state must not increase" cannot be expressed on a rank;
+  // it has to be expressed on the permissions themselves.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_state_is_readable(input vip_chi_resp_t s);
+    return (s != VIP_CHI_RESP_STATE_I_E);
+  endfunction
+
+  function automatic bit vip_chi_state_is_writable(input vip_chi_resp_t s);
+    return (s == VIP_CHI_RESP_STATE_UC_E) || (s == VIP_CHI_RESP_STATE_UP_PD_DIRTY_E);
+  endfunction
+
+  function automatic bit vip_chi_state_holds_dirty(input vip_chi_resp_t s);
+    return (s == VIP_CHI_RESP_STATE_UP_PD_DIRTY_E) ||
+           (s == VIP_CHI_RESP_STATE_SD_PD_DIRTY_E);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Return TRUE when a snoop response reports a state holding a permission the
+  // snoopee did not have when the snoop arrived.
+  //
+  // IHI 0050 Chapter 4: a snoop is a request to give up permissions, never a
+  // grant of them. Whatever the opcode, a snoopee may keep what it held, drop to
+  // something weaker, or invalidate -- it may not come back readable if it was
+  // Invalid, writable if it was Shared, or Dirty if it was Clean. The only path
+  // that raises a cache state is a response to that node's OWN request, which
+  // arrives on RSP/DAT against a transaction the snoop knows nothing about.
+  //
+  // This is the gate that makes it safe to take the snoopee's next state FROM
+  // the response rather than deriving it: the reported state writes the shadow
+  // directory, so an implementation that reports nonsense would otherwise steer
+  // every later coherency check through it. The opcode ceiling
+  // (vip_chi_snp_opcode_invalidates and vip_chi_snp_opcode_forbids_retaining_unique
+  // above) is the other half and is independent -- it bounds the response by what
+  // was ASKED, this bounds it by what was HELD, and neither implies the other.
+  //
+  // Read and write permission are unconditional: I -> SC needs a read, SC -> UC
+  // needs a CleanUnique or MakeUnique, and both are requests the checker sees.
+  // Gaining either without one is a genuine impossibility.
+  //
+  // BECOMING DIRTY IS CONDITIONAL, and the condition is the whole subtlety. A
+  // holder turns Clean into Dirty by writing to its own cache line -- a purely
+  // local act with no CHI transaction behind it, so a node granted UC can be UD
+  // an instant later and nothing on the wire says so. Flagging that would report
+  // the observer's blind spot as the peer's fault, which is the failure mode
+  // this rule exists to avoid. But the local act needs WRITE PERMISSION: a
+  // SharedClean holder cannot write, so it cannot manufacture dirty data, and an
+  // SC -> SD response is impossible rather than merely unobserved. So dirty is
+  // allowed to appear only where the snoopee could have written it.
+  //
+  // Stated as a permission comparison and not a state table on purpose: it holds
+  // for all seven CHI states including the three this VIP does not model, so it
+  // does not have to be revisited when one of them is added.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_snp_resp_state_gains_permission(
+    input vip_chi_resp_t from_state,
+    input vip_chi_resp_t reported_state
+  );
+    return (vip_chi_state_is_readable(reported_state) &&
+            !vip_chi_state_is_readable(from_state))   ||
+           (vip_chi_state_is_writable(reported_state) &&
+            !vip_chi_state_is_writable(from_state))   ||
+           (vip_chi_state_holds_dirty(reported_state) &&
+            !vip_chi_state_holds_dirty(from_state)    &&
+            !vip_chi_state_is_writable(from_state));
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Return TRUE when the snoop's response must NOT carry data. The snoopee
   // invalidates the line and DISCARDS any Dirty copy instead of passing it to
   // the Home: IHI 0050 Chapter 4 lists no SnpRespData form among the responses
