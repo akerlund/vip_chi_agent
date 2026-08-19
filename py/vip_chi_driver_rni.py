@@ -40,6 +40,7 @@ import cocotb
 
 from pyuvm import uvm_driver, ConfigDB
 
+from vip_chi_reject import reject
 from vip_chi_types_pkg import (
   Role, Dir, ReqOpcode, RspOpcode, RawChannel,
   req_opcode_is_atomic, lasm, chi_xfer_dat_beats,
@@ -1278,18 +1279,18 @@ class vip_chi_driver_rni(uvm_driver):
       return
 
     if flit["opcode"] != int(RspOpcode.DBID_RESP):
-      raise AssertionError(
-        f"[{self.get_name()}] zero-write first response opcode "
-        f"0x{flit['opcode']:x} was neither DBIDResp nor CompDBIDResp")
+      reject("WRITE_ZERO_FIRST_RESPONSE",
+             f"[{self.get_name()}] zero-write first response opcode "
+             f"0x{flit['opcode']:x} was neither DBIDResp nor CompDBIDResp")
 
     await self.bus.rising()
     self.drive_idle_sideband()
     flit = await self.wait_for_matching_rsp(_I(req.txn_id))
     self.stamp_rsp_flit_on_req(req, flit)
     if flit["opcode"] != int(RspOpcode.COMP):
-      raise AssertionError(
-        f"[{self.get_name()}] zero-write completion after DBIDResp had opcode "
-        f"0x{flit['opcode']:x}, not Comp")
+      reject("WRITE_ZERO_COMPLETION",
+             f"[{self.get_name()}] zero-write completion after DBIDResp had "
+             f"opcode 0x{flit['opcode']:x}, not Comp")
 
   async def collect_persist_sep_completion(self, req):
     """Collect a separated-persist completion, in either of its two legal forms.
@@ -1317,9 +1318,13 @@ class vip_chi_driver_rni(uvm_driver):
       return
 
     if flit["opcode"] != int(RspOpcode.COMP):
-      raise AssertionError(
-        f"[{self.get_name()}] PersistSep first completion opcode "
-        f"0x{flit['opcode']:x} was neither Comp nor CompPersist")
+      # reject() rather than raise: with no expectation armed it raises exactly
+      # as before, and inside an expect_rejection scope it records and returns so
+      # a negative control can prove the refusal happened -- the behaviour of a
+      # demoted `uvm_fatal in the SV twin. See py/vip_chi_reject.py (F-CHK-003).
+      reject("PERSIST_SEP_FIRST_COMPLETION",
+             f"[{self.get_name()}] PersistSep first completion opcode "
+             f"0x{flit['opcode']:x} was neither Comp nor CompPersist")
 
     await self.bus.rising()
     self.drive_idle_sideband()

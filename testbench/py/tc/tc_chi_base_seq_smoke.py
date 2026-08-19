@@ -29,6 +29,7 @@ from vip_chi_base_seq import vip_chi_base_seq
 from vip_chi_read_seq import vip_chi_read_seq
 from vip_chi_write_seq import vip_chi_write_seq
 from vip_chi_write_zero_seq import vip_chi_write_zero_seq
+from vip_chi_reject import expect_rejection
 from vip_chi_write_cmo_seq import vip_chi_write_cmo_seq, CMO_CLEAN_SH_PER_SEP
 from vip_chi_pipelined_seq import vip_chi_pipelined_seq
 from chi_tb_pkg import CHI_D_WIDE_CFG, CHI_E_WIDE_CFG
@@ -252,17 +253,16 @@ class tc_chi_base_seq_smoke(uvm_test):
     assert write_zero_e.get_direction() == Dir.WRITE, \
       "write_zero_seq reset() did not preserve WRITE direction"
 
-    # WriteNoSnpZero is CHI-E only. The SV twin catches a uvm_fatal here; this
-    # port raises, so the refusal is asserted as an exception.
+    # WriteNoSnpZero is CHI-E only. The SV twin catches a uvm_fatal with
+    # chi_write_zero_fatal_catcher and asserts it fired; this is the same
+    # statement in this port's form. It used to be a try/except/else, which works
+    # only because the refusal is raised in code the test awaits directly -- the
+    # scope below is the general form, and it is the one a refusal raised inside a
+    # driver coroutine needs (F-CHK-003).
     write_zero_d = vip_chi_write_zero_seq("write_zero_seq_d", cfg=CHI_D_WIDE_CFG)
     write_zero_d.set_requests(0)
-    try:
+    with expect_rejection("WRITE_ZERO_ISSUE", count=None):
       await write_zero_d.body()
-    except RuntimeError:
-      pass
-    else:
-      raise AssertionError(
-        "write_zero_seq accepted CHI-D; WriteNoSnpZero is CHI-E only")
 
     # ---- combined Write + CMO sequence --------------------------------------
     # The combined forms are opt-in in the item's opcode pool, and the sequence

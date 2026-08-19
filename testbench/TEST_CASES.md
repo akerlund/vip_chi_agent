@@ -1,12 +1,20 @@
 # vip_chi testbench testcase catalog
 
 The shared regression currently runs **173 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **174 pyUVM/cocotb**
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **175 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
 
-The lists are otherwise identical; the one difference is `tc_chi_sva_smoke`,
+The lists are otherwise identical apart from two Python-only testcases,
+`tc_chi_sva_smoke` and `tc_chi_reject_scope`. The second tests a mechanism
+the SV port does not need: SV catches a driver's refusal with a
+`uvm_report_catcher`, which seven existing negative controls exercise every
+sweep, while this port had no way to observe a refusal raised inside a
+coroutine the agent started. `py/vip_chi_reject.py` closes that and
+`tc_chi_reject_scope` is what says it works. The first is described below.
+
+On `tc_chi_sva_smoke`,
 which exists only on the Python side. It is the negative control for
 `py/sva/bind_chi.py`, and the SV checker it mirrors reports through SVA
 `assert property ... else $error`, which a `uvm_report_catcher` cannot demote
@@ -90,6 +98,7 @@ exception of `tc_chi_sva_smoke` described at the top of this file.
 | `tc_chi_item_smoke` | n/a | item randomization, legality, copy/compare, and payload handling across CHI-D and CHI-E shapes. |
 | `tc_chi_base_seq_smoke` | RNI | base-sequence helpers, wrapper sequences, and the write-zero legality path. |
 | `tc_chi_opcode_pool_safe` | n/a | `PCrdReturn` is not drawable from the non-coherent legal-opcode pools: an RN-I item randomized many times across both directions and both issues never lands on it, and every drawn opcode is accepted by the legality helper. A drawn `PCrdReturn` would wedge the driver with no diagnostic. The coherent RN-F pool is drawn the same way and cross-checked against the helper, so the two hand-written opcode tables cannot drift apart. |
+| `tc_chi_reject_scope` | n/a | the Python port's negative-control mechanism, tested as a mechanism (`py/vip_chi_reject.py`). A driver's refusal is an exception inside a coroutine the agent started, so nothing could observe it as a tested outcome and every control of that shape existed in SV only. Checks that an unarmed refusal still raises, that an armed one records and RETURNS so the driver carries on as a demoted `uvm_fatal` does, that a scope which provokes NOTHING fails, that a scope for another rule does not swallow it, and that a wrong count fails in either direction. Python-only; see the note at the top of this file. |
 | `tc_chi_sva_smoke` | n/a | negative control for the Python link-layer protocol checker (`py/sva/bind_chi.py`): one induced violation per check family — flitpend without flitv, a flit sent during one-sided ACTIVATING, L-credit underflow and overflow, TXSACTIVE held past deactivation, channel traffic during reset, and a link that never reactivates — each asserted to be REPORTED. Plus two positive controls that must NOT fire: a same-cycle credit grant and consume (the race that false-fired two earlier SV attempts) and a link that reactivates inside the window. Every other testcase passes with the checkers enabled, so without this a vacuous checker would pass exactly as loudly as a working one. Python-only; see the note at the top of this file. |
 | `tc_chi_a0_smoke` | n/a | the interface and `chi_link_adapter` at a third flit geometry (7-bit node IDs, 32-byte data): an agent-free link-activation handshake and one REQ flit checked verbatim on the far side. The Python twin additionally checks its packing codec against the HDL net widths — a check with no SV counterpart, since the SV interface carries the flit struct itself. |
 
