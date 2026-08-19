@@ -8,7 +8,10 @@
 # checked out when it was last built -- which is worse than not running at all.
 #
 # Results land in $OUT_DIR:
-#   summary.txt          one line per failing test, then the SV_TOTAL tally
+#   summary.txt          one line per failing or hung test, then the SV_TOTAL
+#                        tally. FAIL and HUNG are separate outcomes: a FAIL
+#                        reached a verdict and it was bad, a HUNG reached no
+#                        verdict at all (see TEST_TIMEOUT_S below).
 #   build.log            the FuseSoC/VCS build transcript
 #   vcs_<testcase>.log   one simulator log per testcase (in the run directory)
 #
@@ -52,6 +55,13 @@ OUT_DIR="${OUT_DIR:-$ROOT/build/sv_regression}"
 # anywhere -- only the union over the sweep can -- so each run appends its rows
 # and scripts/check_vacuity.py reads the lot.
 CHECK_CSV="${CHECK_CSV:-$OUT_DIR/check_tallies.csv}"
+# Per-test wall-clock ceiling. A simulator that stops advancing time does not
+# exit and does not fail -- it spins, and the sweep waits on it forever. One
+# hung testcase then costs the WHOLE regression rather than one verdict, which
+# is how a sweep comes back after hours with no result at all instead of "158
+# passed, 1 hung". Kept generous: this is a stuck-detector, not a performance
+# budget, and a slow test blocking the licence queue is normal.
+TEST_TIMEOUT_S="${TEST_TIMEOUT_S:-600}"
 
 mkdir -p "$OUT_DIR"
 SUMMARY="$OUT_DIR/summary.txt"
@@ -75,9 +85,22 @@ cd "$RUNDIR" || exit 1
 
 pass=0
 fail=0
+hung=0
 for t in $(ls "$ROOT/testbench/sv/tc"/tc_*.sv | sed 's|.*/||; s|\.sv$||'); do
-  "$SIMV" +UVM_TESTNAME="$t" +vip_chi_check_csv="$CHECK_CSV" \
+  timeout --signal=TERM "$TEST_TIMEOUT_S" \
+    "$SIMV" +UVM_TESTNAME="$t" +vip_chi_check_csv="$CHECK_CSV" \
     -l "vcs_${t}.log" > /dev/null 2>&1
+  rc=$?
+  # 124 is timeout(1) reporting it fired. Counted apart from a failure on
+  # purpose: a FAIL is a verdict that was reached and was bad, a HUNG is no
+  # verdict at all, and the two want different follow-up. Reported before the
+  # log is consulted, because a spinning simulator leaves a log whose last
+  # buffered line is whatever it managed to flush -- which can read as clean.
+  if [ "$rc" -eq 124 ]; then
+    hung=$((hung + 1))
+    echo "HUNG: $t (no verdict after ${TEST_TIMEOUT_S}s)" >> "$SUMMARY"
+    continue
+  fi
   # A clean run is zero UVM_ERROR and zero UVM_FATAL. Grepping the report
   # summary rather than the exit code is deliberate: the simulator exits 0 on a
   # UVM_ERROR, so the exit code alone would call a failing test a pass.
@@ -91,7 +114,7 @@ for t in $(ls "$ROOT/testbench/sv/tc"/tc_*.sv | sed 's|.*/||; s|\.sv$||'); do
 done
 
 {
-  echo "SV_TOTAL pass=$pass fail=$fail"
+  echo "SV_TOTAL pass=$pass fail=$fail hung=$hung"
   echo "finished $(date -Is)"
 } >> "$SUMMARY"
 

@@ -509,6 +509,14 @@ class vip_chi_driver_snf #(
     this.tx_active_extend = 0;
     this.reset_credit_state();
     this.reset_outputs();
+    // The agent tears down the driver threads with disable-fork on reset, which
+    // can kill a send mid-critical-section holding the key -- and every send now
+    // holds it across a clock edge, because announce_flit takes the key and then
+    // waits for the announcement cycle. A lost key is silent: the re-forked
+    // threads block on get(1) forever, this completer never transmits again, and
+    // the test simply never finishes. Re-seed a fresh one-key mutex, exactly as
+    // the requester does.
+    this.tx_flit_arb = new(1);
   endfunction
 
   // ---------------------------------------------------------------------------
