@@ -839,6 +839,184 @@ def req_keeps_local_data(held: int) -> bool:
   return state_holds_dirty(held)
 
 
+# ---------------------------------------------------------------------------
+# IHI 0050 E Table 4-5 / D Table 4-3, "Request types and the corresponding snoop
+# requests": WHICH snoop a Home is permitted to send for a given request. The
+# table is only half the rule -- the bullet list that follows it in both issues
+# widens several rows, and the widening is normative, not commentary. The
+# permitted set for a request is therefore
+#
+#   {Snoop Expected} u {Alternative snoop} u {the bullets below}
+#
+# and the bullets that matter to the requests this VIP models are:
+#
+#   B1  SnpNotSharedDirty, SnpShared or SnpClean may be used for
+#       ReadNotSharedDirty, ReadShared AND ReadClean.
+#   B2  SnpNotSharedDirtyFwd, SnpSharedFwd or SnpCleanFwd may be used for
+#       ReadShared.
+#   B3  SnpNotSharedDirtyFwd or SnpCleanFwd may be used for ReadNotSharedDirty
+#       and ReadClean.  *** SnpSharedFwd is absent here ***
+#   B4  Any invalidating snoop may be replaced by SnpUnique or SnpCleanInvalid.
+#   B5  Any Forwarding snoop may be replaced by its non-Forwarding form.
+#   B6  ReadOnce may use any non-Forwarding, non-invalidating snoop, or
+#       SnpOnceFwd.
+#
+# B1 against B3 is the whole point of this table, and it is the opposite of what
+# a reading of the table alone suggests. SnpShared for a ReadClean is PERMITTED
+# (B1). SnpSharedFwd for a ReadClean is NOT (B3 omits it, and no other bullet
+# reaches it).
+#
+# The asymmetry is not editorial. A forwarding snoop hands the cache line
+# straight to the requester in a state the SNOOPEE picks, and Table 4-34
+# (SnpSharedFwd) permits a UD or SD snoopee to forward CompData_SD_PD -- the
+# requester ends Shared Dirty. Table 4-14's ReadClean rows permit final SC or UC
+# and nothing else; there is no SD row and no CompData_SD_PD column for that
+# request. So SnpSharedFwd for a ReadClean lets one legal snoopee response put
+# the requester in a state its own request forbids, with no flit anywhere in the
+# transaction being individually illegal. The non-forwarding SnpShared cannot do
+# this: the snoopee answers the HOME, the home sources the completion, and the
+# home is bound by Table 4-14 when it picks the Resp.
+#
+# Both issues carry B1-B5 in identical words. D additionally permits
+# SnpUniqueFwd for ReadShared when only one sharer is present; E drops that
+# bullet, so it is not encoded here -- this VIP never picks it, and encoding a
+# D-only permission would make the checker accept on E what E does not allow.
+# ---------------------------------------------------------------------------
+_SNOOPS_PERMITTED_FOR_REQ = {
+    # SnpSharedFwd expected, SnpShared alternative; B1 adds SnpClean, B2 the
+    # other two Fwd forms.
+    int(ReqOpcode.READ_SHARED): frozenset({
+        int(SnpOpcode.SHARED), int(SnpOpcode.CLEAN),
+        int(SnpOpcode.SHARED_FWD), int(SnpOpcode.CLEAN_FWD),
+        int(SnpOpcode.NOT_SHARED_DIRTY_FWD),
+    }),
+    # SnpCleanFwd expected, SnpClean alternative; B1 adds SnpShared, B3 adds
+    # SnpNotSharedDirtyFwd ONLY.
+    int(ReqOpcode.READ_CLEAN): frozenset({
+        int(SnpOpcode.CLEAN), int(SnpOpcode.SHARED),
+        int(SnpOpcode.CLEAN_FWD), int(SnpOpcode.NOT_SHARED_DIRTY_FWD),
+    }),
+    # SnpUniqueFwd expected, SnpUnique alternative; B4 adds SnpCleanInvalid.
+    int(ReqOpcode.READ_UNIQUE): frozenset({
+        int(SnpOpcode.UNIQUE), int(SnpOpcode.UNIQUE_FWD),
+        int(SnpOpcode.CLEAN_INVALID),
+    }),
+    # SnpCleanInvalid expected; SnpUnique, SnpUniqueFwd and SnpMakeInvalid are
+    # listed alternatives. E-only opcode, so no D column to reconcile.
+    int(ReqOpcode.MAKE_READ_UNIQUE): frozenset({
+        int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.UNIQUE),
+        int(SnpOpcode.UNIQUE_FWD), int(SnpOpcode.MAKE_INVALID),
+    }),
+    # SnpOnceFwd expected, SnpOnce alternative, plus B6's "any non-Forwarding,
+    # non-invalidating snoop".
+    int(ReqOpcode.READ_ONCE): frozenset({
+        int(SnpOpcode.ONCE), int(SnpOpcode.ONCE_FWD), int(SnpOpcode.SHARED),
+        int(SnpOpcode.CLEAN), int(SnpOpcode.CLEAN_SHARED),
+    }),
+    # SnpCleanInvalid expected, no alternative column; B4 adds SnpUnique.
+    int(ReqOpcode.CLEAN_UNIQUE): frozenset({
+        int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.UNIQUE),
+    }),
+    int(ReqOpcode.CLEAN_INVALID): frozenset({
+        int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.UNIQUE),
+    }),
+    # SnpCleanShared expected, no alternative and no bullet reaching it:
+    # CleanShared is the one request in this set whose snoop is forced. The
+    # pairing is encoded now, ahead of the request itself -- CleanShared is not
+    # yet in the RN-F's opcode set, and adding it without this row would have put
+    # the home on the SnpCleanInvalid default, invalidating a line the request
+    # only asked to have cleaned.
+    int(ReqOpcode.CLEAN_SHARED): frozenset({int(SnpOpcode.CLEAN_SHARED)}),
+    # SnpMakeInvalid expected; E lists SnpCleanInvalid as the alternative and B4
+    # reaches SnpUnique in both issues.
+    int(ReqOpcode.MAKE_UNIQUE): frozenset({
+        int(SnpOpcode.MAKE_INVALID), int(SnpOpcode.CLEAN_INVALID),
+        int(SnpOpcode.UNIQUE),
+    }),
+    int(ReqOpcode.MAKE_INVALID): frozenset({
+        int(SnpOpcode.MAKE_INVALID), int(SnpOpcode.CLEAN_INVALID),
+        int(SnpOpcode.UNIQUE),
+    }),
+    int(ReqOpcode.WRITE_UNIQUE_FULL): frozenset({
+        int(SnpOpcode.MAKE_INVALID), int(SnpOpcode.CLEAN_INVALID),
+        int(SnpOpcode.UNIQUE),
+    }),
+    int(ReqOpcode.WRITE_UNIQUE_ZERO): frozenset({
+        int(SnpOpcode.MAKE_INVALID), int(SnpOpcode.CLEAN_INVALID),
+        int(SnpOpcode.UNIQUE),
+    }),
+    # The one row the table states as a choice rather than an expectation:
+    # "SnpCleanInvalid or SnpUnique".
+    int(ReqOpcode.WRITE_UNIQUE_PTL): frozenset({
+        int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.UNIQUE),
+    }),
+}
+
+
+def snoop_permitted_for_req(req_op: int, snp_op: int) -> bool:
+  """True when Table 4-5 (plus its bullets) permits `snp_op` for `req_op`.
+
+  Requests whose Table 4-5 row is n/a in every snoop column -- the NoSnp family,
+  the CopyBacks, Evict, PCrdReturn -- return False for every snoop. A snoop
+  attributed to one of those is judged by req_generates_snoop() instead, so
+  returning False here would double-report the same event.
+  """
+  return int(snp_op) in _SNOOPS_PERMITTED_FOR_REQ.get(int(req_op), frozenset())
+
+
+def req_generates_snoop(req_op: int) -> bool:
+  """True when Table 4-5 gives the request a snoop at all.
+
+  Split from snoop_permitted_for_req() so a snoop correlated to a ReadNoSnp
+  reports "this request is snoopless" rather than "this snoop is the wrong
+  opcode", which are different defects with different causes.
+  """
+  return int(req_op) in _SNOOPS_PERMITTED_FOR_REQ
+
+
+# The Home's CHOICE from the permitted set above, with `fwd` selecting the Direct
+# Cache Transfer column. Deliberately separate from the predicate, and not
+# derived from it: the driver picks and the checker judges, and a checker that
+# asked the driver's function what to expect would agree with the driver by
+# construction. They are cross-checked only at the point where it counts -- the
+# checker applies the predicate to the opcode that actually appeared on the wire.
+#
+# Where the choice is free the Expected column is taken, except that
+# CleanUnique/CleanInvalid/MakeReadUnique keep the SnpUnique this home has always
+# sent (B4 permits it) so the change is confined to the row the spec forbids.
+_SNOOP_FOR_REQ = {
+    int(ReqOpcode.READ_SHARED): (int(SnpOpcode.SHARED), int(SnpOpcode.SHARED_FWD)),
+    # The row this box exists for. SnpCleanFwd is the Expected forwarding snoop;
+    # SnpSharedFwd -- what this home used to send for every read that was not a
+    # unique read -- is permitted for ReadShared and for nothing else.
+    int(ReqOpcode.READ_CLEAN): (int(SnpOpcode.CLEAN), int(SnpOpcode.CLEAN_FWD)),
+    int(ReqOpcode.READ_UNIQUE): (int(SnpOpcode.UNIQUE), int(SnpOpcode.UNIQUE_FWD)),
+    int(ReqOpcode.MAKE_READ_UNIQUE): (int(SnpOpcode.UNIQUE), int(SnpOpcode.UNIQUE_FWD)),
+    int(ReqOpcode.READ_ONCE): (int(SnpOpcode.ONCE), int(SnpOpcode.ONCE_FWD)),
+    int(ReqOpcode.CLEAN_UNIQUE): (int(SnpOpcode.UNIQUE), int(SnpOpcode.UNIQUE)),
+    int(ReqOpcode.CLEAN_INVALID): (int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.CLEAN_INVALID)),
+    int(ReqOpcode.CLEAN_SHARED): (int(SnpOpcode.CLEAN_SHARED), int(SnpOpcode.CLEAN_SHARED)),
+    int(ReqOpcode.MAKE_UNIQUE): (int(SnpOpcode.MAKE_INVALID), int(SnpOpcode.MAKE_INVALID)),
+    int(ReqOpcode.MAKE_INVALID): (int(SnpOpcode.MAKE_INVALID), int(SnpOpcode.MAKE_INVALID)),
+    int(ReqOpcode.WRITE_UNIQUE_FULL): (int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.CLEAN_INVALID)),
+    int(ReqOpcode.WRITE_UNIQUE_PTL): (int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.CLEAN_INVALID)),
+    int(ReqOpcode.WRITE_UNIQUE_ZERO): (int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.CLEAN_INVALID)),
+}
+
+
+def snoop_for_req(req_op: int, fwd: bool = False) -> int:
+  """The snoop this VIP's HN-F originates for `req_op`; `fwd` picks the DCT form.
+
+  Snoopless requests per Table 4-5 return SnpOnce rather than raising: callers
+  gate on req_generates_snoop(), and a caller that does not is wrong in a way a
+  simulation reports instead of propagating.
+  """
+  pair = _SNOOP_FOR_REQ.get(int(req_op))
+  if pair is None:
+    return int(SnpOpcode.ONCE)
+  return pair[1] if fwd else pair[0]
+
+
 # Atomic REQ opcodes occupy the contiguous 0x28..0x39 range.
 ATOMIC_REQ_OPCODES = tuple(range(0x28, 0x3A))
 

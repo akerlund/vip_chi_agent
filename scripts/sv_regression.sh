@@ -155,4 +155,17 @@ python3 "$ROOT/scripts/check_classifier_coverage.py" >> "$SUMMARY" 2>&1 || true
 # sweep is the only place that knows both numbers at once.
 python3 "$ROOT/scripts/check_test_counts.py" >> "$SUMMARY" 2>&1 || true
 
+# What the two ports' coherency checkers JUDGED on the same testcase. Every check
+# above compares a SURFACE -- enums, config fields, opcode sets, classifiers,
+# testcase lists -- and all of them pass when the ports agree about what exists.
+# None looks at what the ports DECIDED when the same stimulus went through them,
+# and that is where the divergences have been: the Python DAT hook judging 14 of
+# 19 snoop responses against SV's 19, and the SV reset clearing 13 of 16 counters.
+# Both numbers were printed by both flows and nobody was comparing them.
+#
+# Needs the PYTHON logs as well, so it reports and exits 1 when only this flow has
+# run. Advisory here, like the checks above: a missing Python sweep is not a
+# failure of this one.
+python3 "$ROOT/scripts/check_counter_parity.py" >> "$SUMMARY" 2>&1 || true
+
 exit $(( fail > 0 ))

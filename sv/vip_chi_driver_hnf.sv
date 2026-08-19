@@ -454,6 +454,35 @@ class vip_chi_driver_hnf #(
            (wop == VIP_CHI_REQ_MAKE_READ_UNIQUE_E);
   endfunction
 
+  // ---------------------------------------------------------------------------
+  // The snoop this home sends for a request, from IHI 0050 E Table 4-5 / D Table
+  // 4-3 by way of vip_chi_snoop_for_req. Every snoop this driver originates goes
+  // through here, so the request->snoop correspondence lives in one table
+  // instead of being spelled out at nine call sites.
+  //
+  // It replaced a single is_unique bit, and a bit cannot express Table 4-5: the
+  // table has a distinct row per request and this home had two. ReadClean took
+  // the not-unique branch and was snooped as though it were a ReadShared.
+  //
+  // `fwd` selects the Direct Cache Transfer column, which is where the actual
+  // violation was -- SnpShared for a ReadClean is permitted by the bullet under
+  // the table, SnpSharedFwd is not, and the DCT path could hand the requester a
+  // forwarded CompData_SD_PD that Table 4-14 does not list for ReadClean.
+  // ---------------------------------------------------------------------------
+  protected function snp_opcode_t snoop_for(input req_opcode_t opcode,
+                                            input bit          fwd = 1'b0);
+    // Negative-control hook: put ReadClean back on the shared branch the
+    // is_unique bit used to send it down. SnpShared is legal for a ReadClean and
+    // SnpSharedFwd is not, so the SAME knob gives catalogue rule D8 one case it
+    // must pass and one it must fail.
+    if (this.cfg.hnf_snoop_shared_for_read_clean &&
+        (vip_chi_req_opcode_t'(opcode) == VIP_CHI_REQ_READ_CLEAN_E)) begin
+      return fwd ? snp_opcode_t'(VIP_CHI_SNP_SHARED_FWD_C)
+                 : snp_opcode_t'(VIP_CHI_SNP_SHARED_C);
+    end
+    return snp_opcode_t'(vip_chi_snoop_for_req(vip_chi_req_opcode_t'(opcode), fwd));
+  endfunction
+
   protected function vip_chi_resp_t granted_state_for(input req_opcode_t opcode);
     if (this.req_opcode_is_unique_read(opcode)) begin
       return this.cfg.coh_read_unique_state;
@@ -911,10 +940,10 @@ class vip_chi_driver_hnf #(
       this.service_evict(p, req);
     end
     else if (op == req_opcode_t'(VIP_CHI_REQ_CLEAN_INVALID_C)) begin
-      this.service_cmo_invalidate(p, req, snp_opcode_t'(VIP_CHI_SNP_CLEAN_INVALID_C));
+      this.service_cmo_invalidate(p, req, this.snoop_for(op));
     end
     else if (op == req_opcode_t'(VIP_CHI_REQ_MAKE_INVALID_C)) begin
-      this.service_cmo_invalidate(p, req, snp_opcode_t'(VIP_CHI_SNP_MAKE_INVALID_C));
+      this.service_cmo_invalidate(p, req, this.snoop_for(op));
     end
     else if (op == req_opcode_t'(VIP_CHI_REQ_READ_ONCE_C)) begin
       this.service_read_once(p, req);
@@ -972,7 +1001,7 @@ class vip_chi_driver_hnf #(
       if (cur_k == VIP_CHI_RESP_STATE_I_E) begin
         continue;
       end
-      this.drive_snoop(k, line, snp_opcode_t'(VIP_CHI_SNP_MAKE_INVALID_C));
+      this.drive_snoop(k, line, this.snoop_for(req_opcode_t'(req.opcode)));
       entry[k] = VIP_CHI_RESP_STATE_I_E;
     end
 
@@ -1033,7 +1062,7 @@ class vip_chi_driver_hnf #(
       if (cur_k == VIP_CHI_RESP_STATE_I_E) begin
         continue;
       end
-      this.drive_snoop(k, line, snp_opcode_t'(VIP_CHI_SNP_CLEAN_INVALID_C));
+      this.drive_snoop(k, line, this.snoop_for(req_opcode_t'(req.opcode)));
     end
 
     // The line is invalid everywhere; the non-allocating writer does not own it.
@@ -1105,7 +1134,7 @@ class vip_chi_driver_hnf #(
       end
       cur_k = vip_chi_resp_t'(entry[k]);
       if (cur_k != VIP_CHI_RESP_STATE_I_E) begin
-        this.drive_snoop(k, line, snp_opcode_t'(VIP_CHI_SNP_ONCE_C));
+        this.drive_snoop(k, line, this.snoop_for(req_opcode_t'(req.opcode)));
       end
     end
 
@@ -1212,7 +1241,7 @@ class vip_chi_driver_hnf #(
       if (cur_k == VIP_CHI_RESP_STATE_I_E) begin
         continue;
       end
-      this.drive_snoop(k, line, snp_opcode_t'(VIP_CHI_SNP_UNIQUE_C));
+      this.drive_snoop(k, line, this.snoop_for(req_opcode_t'(req.opcode)));
       entry[k] = VIP_CHI_RESP_STATE_I_E;
     end
 
@@ -1305,16 +1334,23 @@ class vip_chi_driver_hnf #(
       end
 
       if (is_unique) begin
-        this.drive_snoop(k, line, snp_opcode_t'(VIP_CHI_SNP_UNIQUE_C));
+        this.drive_snoop(k, line, this.snoop_for(req_opcode_t'(req.opcode)));
         entry[k] = VIP_CHI_RESP_STATE_I_E;
         // A snoop-invalidate to port k breaks any exclusive reservation it held.
         if (this.excl_monitor.exists(line)) begin
           this.excl_monitor[line][k] = 1'b0;
         end
       end
+      // A non-unique read downgrades a Unique holder and leaves an already-Shared
+      // one alone. The OPCODE now comes from Table 4-5 rather than from this
+      // branch: SnpShared for a ReadShared, SnpClean for a ReadClean. The two
+      // resolve the snoopee identically in this model (both end SC, both return
+      // dirty data if it had any), which is why one opcode served both for so
+      // long -- the difference the spec draws is in what the snoopee is
+      // PERMITTED to do, not in what this RN-F does.
       else if ((cur_k == VIP_CHI_RESP_STATE_UC_E) ||
                (cur_k == VIP_CHI_RESP_STATE_UP_PD_DIRTY_E)) begin
-        this.drive_snoop(k, line, snp_opcode_t'(VIP_CHI_SNP_SHARED_C));
+        this.drive_snoop(k, line, this.snoop_for(req_opcode_t'(req.opcode)));
         entry[k] = VIP_CHI_RESP_STATE_SC_E;
       end
     end
@@ -1471,7 +1507,7 @@ class vip_chi_driver_hnf #(
       if (cur_k == VIP_CHI_RESP_STATE_I_E) begin
         continue;
       end
-      this.drive_snoop(k, line, snp_opcode_t'(VIP_CHI_SNP_CLEAN_INVALID_C));
+      this.drive_snoop(k, line, this.snoop_for(req_opcode_t'(req.opcode)));
     end
 
     // The line is invalid everywhere; the zeroing writer does not own it either.
@@ -2088,8 +2124,7 @@ class vip_chi_driver_hnf #(
     entry        = entry_in;
     granted      = is_unique ? this.cfg.coh_read_unique_state
                              : this.cfg.coh_read_shared_state;
-    fwd_op       = is_unique ? snp_opcode_t'(VIP_CHI_SNP_UNIQUE_FWD_C)
-                             : snp_opcode_t'(VIP_CHI_SNP_SHARED_FWD_C);
+    fwd_op       = this.snoop_for(req_opcode_t'(req.opcode), 1'b1);
     snoopee_next = is_unique ? VIP_CHI_RESP_STATE_I_E
                              : VIP_CHI_RESP_STATE_SC_E;
 

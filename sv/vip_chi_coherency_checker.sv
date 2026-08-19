@@ -170,8 +170,44 @@ class vip_chi_coherency_checker #(
   // (see chi_coherent_tb_env); the checker holds no agent cfg of its own.
   bit hazard_check_enable = 1'b1;
 
+  // ---------------------------------------------------------------------------
+  // Catalogue rule D8, the request->snoop correspondence. To judge a snoop
+  // against IHI 0050 E Table 4-5 / D Table 4-3 the checker has to know which
+  // request caused it, and nothing on the SNP flit says: a snoop carries the
+  // requester's SrcID in TxnID terms only for the forwarding forms, and the
+  // address is the only field shared with the request in every case.
+  //
+  // So the correlation is by line: at the time a snoop reaches node k, find the
+  // request outstanding to the same line from some node other than k. Kept
+  // separately from the hazard shadow above rather than folded into it, because
+  // that one is switched off by a config knob for the hazard negative control
+  // and this rule must keep working while it is.
+  //
+  // req_op_by_line is per node, so two requesters contending for one line are
+  // two entries and the ambiguous case is detectable rather than silently
+  // resolved to whichever wrote last.
+  // ---------------------------------------------------------------------------
+  protected vip_chi_req_opcode_t req_op_by_line  [N_NODES_C][longint];
+  protected longint              req_line_by_txn [N_NODES_C][longint];
+
   protected int n_line_hazard;
   protected int n_line_clear;
+  // Catalogue rule D8 non-vacuity. n_snp_req_judged is how many snoops were
+  // correlated to exactly one outstanding request and therefore had a Table 4-5
+  // row to be judged against; n_snp_req_mismatch is how many of those carried an
+  // opcode that row does not permit.
+  //
+  // n_snp_req_uncorrelated is the honest denominator alongside them, and it is
+  // NOT a violation: the same section that gives Table 4-5 states that "it is
+  // permitted for the interconnect to generate a snoop request spontaneously
+  // without a corresponding request from an RN" -- a backward invalidation from
+  // a snoop filter is the example it gives. A rule that fired on an
+  // uncorrelated snoop would report a conformant interconnect. It is counted so
+  // that a run in which the correlation silently stopped working reads as
+  // "judged 0, uncorrelated 40" instead of as a clean pass.
+  protected int n_snp_req_judged;
+  protected int n_snp_req_mismatch;
+  protected int n_snp_req_uncorrelated;
   protected int n_multi_owner;
   protected int n_completions;
   protected int n_snoops;
@@ -275,16 +311,27 @@ class vip_chi_coherency_checker #(
   covergroup cg_snp_resp_legality;
     option.per_instance = 1;
 
-    // The seven this home originates. The other five modeled snoops are left
-    // unbinned rather than listed-and-unreachable, the same convention
-    // cg_cache_transition uses below.
+    // The nine this home originates. SnpClean and SnpCleanFwd joined the set
+    // with Table 4-5: ReadClean used to be snooped as a ReadShared, so the two
+    // opcodes the spec names for it appeared nowhere -- and because the bins were
+    // drawn from what the home DID send, the report read closed on a space that
+    // excluded the correct answer. That is the failure mode this coverage model
+    // is supposed to prevent, so the bins now come from Table 4-5's column
+    // rather than from the driver.
+    //
+    // The other three modeled snoops (SnpCleanShared, SnpOnceFwd,
+    // SnpNotSharedDirtyFwd) are left unbinned rather than listed-and-unreachable,
+    // the same convention cg_cache_transition uses below: no request in the
+    // RN-F's opcode set asks for them.
     cp_snp: coverpoint this.sr_snp_opcode_sample {
       bins snp_shared        = {VIP_CHI_SNP_SHARED_C};
+      bins snp_clean         = {VIP_CHI_SNP_CLEAN_C};
       bins snp_once          = {VIP_CHI_SNP_ONCE_C};
       bins snp_unique        = {VIP_CHI_SNP_UNIQUE_C};
       bins snp_clean_invalid = {VIP_CHI_SNP_CLEAN_INVALID_C};
       bins snp_make_invalid  = {VIP_CHI_SNP_MAKE_INVALID_C};
       bins snp_shared_fwd    = {VIP_CHI_SNP_SHARED_FWD_C};
+      bins snp_clean_fwd     = {VIP_CHI_SNP_CLEAN_FWD_C};
       bins snp_unique_fwd    = {VIP_CHI_SNP_UNIQUE_FWD_C};
     }
 
@@ -410,14 +457,19 @@ class vip_chi_coherency_checker #(
       bins ud  = {VIP_CHI_RESP_STATE_UP_PD_DIRTY_E};
     }
 
-    // Only the state-changing snoops this HN-F actually originates are binned.
-    // SnpClean / SnpCleanShared are never originated (see the HN-F snoop sites),
-    // and SnpOnce / the fwd variants are snapshots or carry the same result via a
-    // separate DCT path -- none is a distinct state transition, so they are left
-    // unbinned (SV ignores coverpoint values outside the listed bins) rather than
-    // diluting the report with permanently-unreachable bins.
+    // Only the state-changing snoops this HN-F originates are binned. SnpClean
+    // joined them with Table 4-5 -- it is what a ReadClean is now snooped with,
+    // and it downgrades a Unique holder exactly as SnpShared does, so it is a
+    // transition in its own right and not a synonym.
+    //
+    // SnpCleanShared is still never originated (no request in the RN-F's opcode
+    // set asks for it), and SnpOnce / the fwd variants are snapshots or carry the
+    // same result via a separate DCT path -- none is a distinct state transition,
+    // so they are left unbinned (SV ignores coverpoint values outside the listed
+    // bins) rather than diluting the report with permanently-unreachable bins.
     cp_snp: coverpoint this.ct_snp_opcode_sample {
       bins snp_shared        = {VIP_CHI_SNP_SHARED_C};
+      bins snp_clean         = {VIP_CHI_SNP_CLEAN_C};
       bins snp_unique        = {VIP_CHI_SNP_UNIQUE_C};
       bins snp_clean_invalid = {VIP_CHI_SNP_CLEAN_INVALID_C};
       bins snp_make_invalid  = {VIP_CHI_SNP_MAKE_INVALID_C};
@@ -467,13 +519,18 @@ class vip_chi_coherency_checker #(
     // ignored (this FSM cannot produce it) or illegal (a mis-wire), so the report
     // reflects the real transition space rather than a diluted fraction.
     cx_from_snp_to: cross cp_from, cp_snp, cp_to {
-      // SnpShared retains a held line Shared (-> SC), never invalidates it.
-      ignore_bins shared_snp_keeps_sc =
-        binsof(cp_snp.snp_shared) && binsof(cp_to.inv);
-      // A ReadShared never snoops an already-Shared holder, so SnpShared is only
-      // ever sent to a Unique (UC/UD) holder -- never a from-SC.
-      ignore_bins shared_snp_only_to_unique_holder =
-        binsof(cp_snp.snp_shared) && binsof(cp_from.sc);
+      // SnpShared and SnpClean both retain a held line Shared (-> SC) and never
+      // invalidate it. The two are grouped because the spec's difference between
+      // them -- whether the snoopee may keep the line Shared DIRTY -- is not a
+      // difference this RN-F can express: it has no path to SD, so both end SC.
+      ignore_bins downgrade_snp_keeps_sc =
+        binsof(cp_snp.snp_shared) && binsof(cp_to.inv) ||
+        binsof(cp_snp.snp_clean)  && binsof(cp_to.inv);
+      // Neither a ReadShared nor a ReadClean snoops an already-Shared holder, so
+      // neither downgrading snoop is ever sent to a from-SC.
+      ignore_bins downgrade_snp_only_to_unique_holder =
+        binsof(cp_snp.snp_shared) && binsof(cp_from.sc) ||
+        binsof(cp_snp.snp_clean)  && binsof(cp_from.sc);
       // Invalidating snoops drop a held line to I, never leave it SC.
       ignore_bins inval_snp_reaches_i =
         binsof(cp_snp) intersect {VIP_CHI_SNP_UNIQUE_C,
@@ -581,11 +638,16 @@ class vip_chi_coherency_checker #(
       this.excl_clear_cause[n].delete();
       this.hazard_by_line[n].delete();
       this.hazard_by_txn[n].delete();
+      this.req_op_by_line[n].delete();
+      this.req_line_by_txn[n].delete();
       this.pending_snp_valid[n] = 1'b0;
       this.pending_snp_from[n]  = VIP_CHI_RESP_STATE_I_E;
     end
     this.n_line_hazard = 0;
     this.n_line_clear  = 0;
+    this.n_snp_req_judged       = 0;
+    this.n_snp_req_mismatch     = 0;
+    this.n_snp_req_uncorrelated = 0;
     this.line_state.delete();
     this.line_data.delete();
     this.dn_rd_line.delete();
@@ -599,6 +661,15 @@ class vip_chi_coherency_checker #(
     this.n_snp_no_data_on_dirty   = 0;
     this.n_bad_snp_resp_state     = 0;
     this.n_snp_resp_judged        = 0;
+    // These three were left out when D5/D6 landed, and the omission is exactly
+    // what a post-reset run reports as a divergence: Python clears them, SV did
+    // not, so a snoop response judged BEFORE the reset kept its adopt tally while
+    // the judged tally beside it went back to zero -- a summary reading
+    // "judged=0 adopted=1", which is a state no single run can reach. Found by
+    // scripts/check_counter_parity.py on its first execution.
+    this.n_snp_resp_gains_permission = 0;
+    this.n_snp_resp_adopted          = 0;
+    this.n_snp_resp_state_differs    = 0;
     this.n_req_final_judged       = 0;
     this.n_req_final_retained     = 0;
     this.n_bad_dataless_resp      = 0;
@@ -737,6 +808,7 @@ class vip_chi_coherency_checker #(
   protected function bit snoop_samples_cache_transition(input item_t::snp_opcode_t snp_opcode);
     case (snp_opcode)
       VIP_CHI_SNP_SHARED_C,
+      VIP_CHI_SNP_CLEAN_C,
       VIP_CHI_SNP_UNIQUE_C,
       VIP_CHI_SNP_CLEAN_INVALID_C,
       VIP_CHI_SNP_MAKE_INVALID_C: return 1'b1;
@@ -857,6 +929,95 @@ class vip_chi_coherency_checker #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Request tracking for catalogue rule D8. Deliberately a separate pair from
+  // hazard_claim/hazard_release: same call sites, same lifetime, but ungated, so
+  // turning the hazard rule off for its negative control does not also turn off
+  // the request->snoop correspondence.
+  // ---------------------------------------------------------------------------
+  protected function void req_track_claim(input int                  node,
+                                          input longint              line,
+                                          input longint              txn_id,
+                                          input vip_chi_req_opcode_t opcode);
+    this.req_op_by_line[node][line]   = opcode;
+    this.req_line_by_txn[node][txn_id] = line;
+  endfunction
+
+  protected function void req_track_release(input int node, input longint txn_id);
+    longint line;
+    if (!this.req_line_by_txn[node].exists(txn_id)) begin
+      return;
+    end
+    line = this.req_line_by_txn[node][txn_id];
+    this.req_line_by_txn[node].delete(txn_id);
+    this.req_op_by_line[node].delete(line);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Catalogue rule D8: a snoop's opcode must be one IHI 0050 E Table 4-5 / D
+  // Table 4-3 permits for the request that caused it.
+  //
+  // Nothing in this VIP checked the snoop against its cause before. Every rule
+  // on the SNP channel judged the flit's own contents -- its opcode is a modeled
+  // one, its fields are in range, the response to it is a permitted form -- and
+  // the pairing of a request with the snoop the home chose for it was left to
+  // the home's own code to get right. It got one row wrong for both issues, and
+  // the covergroup could not show the gap either, because the bins were drawn
+  // from the set of opcodes this home originates: the two it should have been
+  // sending were not binned, so the report was closed on a space that excluded
+  // the correct answer.
+  //
+  // The correlation is by cache line and excludes the snooped node itself: a
+  // requester is never snooped for its own request. Two nodes with a request
+  // outstanding to the same line is ordinary contention, not an error, but it
+  // leaves the cause ambiguous -- the rule declines to judge rather than guess,
+  // and the decline is counted.
+  // ---------------------------------------------------------------------------
+  protected function void check_snoop_matches_request(input int                  node,
+                                                      input longint              line,
+                                                      input vip_chi_snp_opcode_t snp_op);
+    int                  cause_node;
+    int                  cause_count;
+    vip_chi_req_opcode_t cause_op;
+
+    cause_count = 0;
+    cause_node  = -1;
+    cause_op    = vip_chi_req_opcode_t'(0);
+    for (int k = 0; k < N_NODES_C; k++) begin
+      if (k == node) begin
+        continue;
+      end
+      if (this.req_op_by_line[k].exists(line)) begin
+        cause_node = k;
+        cause_op   = this.req_op_by_line[k][line];
+        cause_count++;
+      end
+    end
+
+    // No cause, or more than one candidate: not judgeable. See the comment on
+    // n_snp_req_uncorrelated -- a spontaneous snoop is explicitly permitted, so
+    // silence here is the correct answer and not a missed check.
+    if (cause_count != 1) begin
+      this.n_snp_req_uncorrelated++;
+      return;
+    end
+
+    this.n_snp_req_judged++;
+    if (!vip_chi_req_generates_snoop(cause_op)) begin
+      this.n_snp_req_mismatch++;
+      `uvm_error("VIP_CHI_COH", $sformatf(
+        "COHERENCY VIOLATION: snoop opcode 0x%0h sent to node %0d for line 0x%0h, but the request outstanding on that line from node %0d (opcode 0x%0h) generates no snoop (Table 4-5 lists n/a in every snoop column)",
+        snp_op, node, line, cause_node, cause_op))
+      return;
+    end
+    if (!vip_chi_snoop_permitted_for_req(cause_op, snp_op)) begin
+      this.n_snp_req_mismatch++;
+      `uvm_error("VIP_CHI_COH", $sformatf(
+        "COHERENCY VIOLATION: snoop opcode 0x%0h sent to node %0d for line 0x%0h is not permitted for the request that caused it (node %0d, opcode 0x%0h) -- IHI 0050 E Table 4-5 / D Table 4-3 and the bullets under it",
+        snp_op, node, line, cause_node, cause_op))
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Exclusive-monitor shadow maintenance: clear reservations broken by a store.
   // clear_excl_all breaks every node's reservation on a line (a store/invalidate
   // that changes the line for everyone); clear_excl_others keeps the initiating
@@ -900,6 +1061,7 @@ class vip_chi_coherency_checker #(
     // shadow below does not model: the hazard rule is about a requester
     // overlapping itself, which does not depend on what the request does.
     this.hazard_claim(node, line, longint'(item.txn_id), longint'(wop));
+    this.req_track_claim(node, line, longint'(item.txn_id), wop);
     if (this.is_coherent_read(item, uniq)) begin
       this.open_rd_line[node][longint'(item.txn_id)] = line;
       this.open_rd_uniq[node][longint'(item.txn_id)] = uniq;
@@ -1014,6 +1176,7 @@ class vip_chi_coherency_checker #(
     // A read's CompData is its completion, so it releases the line.
     if (op == VIP_CHI_DAT_COMP_DATA_E) begin
       this.hazard_release(node, longint'(item.txn_id));
+      this.req_track_release(node, longint'(item.txn_id));
     end
 
     // Authoritative writes to the home establish the expected line data.
@@ -1302,6 +1465,9 @@ class vip_chi_coherency_checker #(
         && this.state_is_dirty(cur)) begin
       this.n_snp_no_data_on_dirty++;
     end
+    // Rule D8 runs before the shadow bookkeeping below so it judges the snoop as
+    // it arrives, on the request set outstanding at that moment.
+    this.check_snoop_matches_request(node, line, vip_chi_snp_opcode_t'(item.snp_opcode));
     this.pending_snp_line[node]   = line;
     this.pending_snp_valid[node]  = 1'b1;
     this.pending_snp_opcode[node] = vip_chi_snp_opcode_t'(item.snp_opcode);
@@ -1346,6 +1512,7 @@ class vip_chi_coherency_checker #(
     // Release the line on a genuine completion (see hazard_release_rsp).
     if (this.hazard_release_rsp(item.rsp_opcode)) begin
       this.hazard_release(node, longint'(item.txn_id));
+      this.req_track_release(node, longint'(item.txn_id));
     end
     // MakeUnique completion (RSP-only Comp): mark the requester the Unique owner
     // and run the single-writer check -- the ownership shadow is otherwise updated
@@ -1487,6 +1654,9 @@ class vip_chi_coherency_checker #(
   function int get_req_final_retained_count(); return this.n_req_final_retained; endfunction
   function int get_bad_dataless_resp_count();  return this.n_bad_dataless_resp;  endfunction
   function int get_snp_dirty_lost_count();     return this.n_snp_dirty_lost;     endfunction
+  function int get_snp_req_judged_count();       return this.n_snp_req_judged;       endfunction
+  function int get_snp_req_mismatch_count();     return this.n_snp_req_mismatch;     endfunction
+  function int get_snp_req_uncorrelated_count(); return this.n_snp_req_uncorrelated; endfunction
   function real get_snp_resp_legality_coverage(); return this.cg_snp_resp_legality.get_coverage(); endfunction
   function int get_line_hazard_count(); return this.n_line_hazard; endfunction
   // Clean claim/release pairs. A test asserts on this to show the hazard rule
@@ -1528,6 +1698,10 @@ class vip_chi_coherency_checker #(
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY REQ FINAL STATE SUMMARY: req_final_judged=%0d req_final_retained=%0d bad_dataless_resp=%0d",
       this.n_req_final_judged, this.n_req_final_retained, this.n_bad_dataless_resp), UVM_LOW)
+    // Its own line for the same reason as the four above.
+    `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY SNP REQ MATCH SUMMARY: snp_req_judged=%0d snp_req_mismatch=%0d snp_req_uncorrelated=%0d",
+      this.n_snp_req_judged, this.n_snp_req_mismatch, this.n_snp_req_uncorrelated), UVM_LOW)
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY HAZARD SUMMARY: line_hazards=%0d line_claims_cleared=%0d",
       this.n_line_hazard, this.n_line_clear), UVM_LOW)

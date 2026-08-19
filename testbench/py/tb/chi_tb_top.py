@@ -292,6 +292,20 @@ async def tc_chi_coh_d_req_final_state_negctl(dut) -> None:
   await _run_d_coherent(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_coh_d_read_clean_snoop", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_read_clean_snoop(dut) -> None:
+  """Run this public testcase through the CHI-D coherent topology."""
+  test_name = "tc_chi_coh_d_read_clean_snoop"
+  await _run_d_coherent(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_coh_d_snoop_match_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_snoop_match_negctl(dut) -> None:
+  """Run this public testcase through the CHI-D coherent topology."""
+  test_name = "tc_chi_coh_d_snoop_match_negctl"
+  await _run_d_coherent(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_coh_d_excl_fail_snoop", timeout_time=20, timeout_unit="ms")
 async def tc_chi_coh_d_excl_fail_snoop(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
@@ -569,6 +583,20 @@ async def tc_chi_coh_e_req_retain(dut) -> None:
 async def tc_chi_coh_e_req_final_state_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_req_final_state_negctl"
+  await _run_e_coherent(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_coh_e_read_clean_snoop", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_read_clean_snoop(dut) -> None:
+  """Run this public testcase through the CHI-E coherent topology."""
+  test_name = "tc_chi_coh_e_read_clean_snoop"
+  await _run_e_coherent(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_coh_e_snoop_match_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_snoop_match_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E coherent topology."""
+  test_name = "tc_chi_coh_e_snoop_match_negctl"
   await _run_e_coherent(dut, test_name)
 
 

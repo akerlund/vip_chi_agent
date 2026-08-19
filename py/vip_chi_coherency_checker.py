@@ -45,6 +45,7 @@ from vip_chi_types_pkg import (
   snp_opcode_returns_no_data, snp_opcode_invalidates,
   snp_opcode_forbids_retaining_unique,
   req_final_state, state_holds_dirty,
+  snoop_permitted_for_req, req_generates_snoop,
 )
 from vip_chi_analysis_imp import vip_chi_analysis_imp
 
@@ -88,17 +89,22 @@ _SNP_TO_INVALID = {
 # the way SV get_coverage() averages a covergroup's items. Snapshot snoops such
 # as SnpOnce still update the shadow state, but are not transition samples.
 _CT_FROM_BINS = (int(Resp.SC), int(Resp.UC), int(Resp.UD_PD))          # cp_from (3)
-_CT_SNP_BINS = (int(SnpOpcode.SHARED), int(SnpOpcode.UNIQUE),
-                int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.MAKE_INVALID))  # cp_snp (4)
+# SnpClean joined cp_snp with Table 4-5: it is what a ReadClean is now snooped
+# with, and it downgrades a Unique holder exactly as SnpShared does, so it is a
+# transition in its own right and not a synonym.
+_CT_SNP_BINS = (int(SnpOpcode.SHARED), int(SnpOpcode.CLEAN), int(SnpOpcode.UNIQUE),
+                int(SnpOpcode.CLEAN_INVALID), int(SnpOpcode.MAKE_INVALID))  # cp_snp (5)
 _CT_TO_BINS = (int(Resp.I), int(Resp.SC))                              # cp_to (2)
 _CT_FROM_SET = frozenset(_CT_FROM_BINS)
 _CT_SNP_SET = frozenset(_CT_SNP_BINS)
 _CT_TO_SET = frozenset(_CT_TO_BINS)
-# The 11 reachable cross tuples that survive the SV ignore_bins:
-#   {UC,UD} x SnpShared -> SC, and {SC,UC,UD} x {SnpUnique,CleanInvalid,MakeInvalid} -> I.
+# The 13 reachable cross tuples that survive the SV ignore_bins:
+#   {UC,UD} x {SnpShared,SnpClean} -> SC, and
+#   {SC,UC,UD} x {SnpUnique,CleanInvalid,MakeInvalid} -> I.
 _CT_CROSS_KEEPERS = frozenset(
-  {(int(Resp.UC), int(SnpOpcode.SHARED), int(Resp.SC)),
-   (int(Resp.UD_PD), int(SnpOpcode.SHARED), int(Resp.SC))}
+  {(f, s, int(Resp.SC))
+   for f in (int(Resp.UC), int(Resp.UD_PD))
+   for s in (int(SnpOpcode.SHARED), int(SnpOpcode.CLEAN))}
   | {(f, s, int(Resp.I))
      for f in (int(Resp.SC), int(Resp.UC), int(Resp.UD_PD))
      for s in (int(SnpOpcode.UNIQUE), int(SnpOpcode.CLEAN_INVALID),
@@ -196,6 +202,27 @@ class vip_chi_coherency_checker(uvm_component):
     self.hazard_by_txn = [{} for _ in range(N_NODES)]
     self.n_line_hazard = 0
     self.n_line_clear = 0
+    # Catalogue rule D8, the request->snoop correspondence. To judge a snoop
+    # against IHI 0050 E Table 4-5 / D Table 4-3 the checker has to know which
+    # request caused it, and nothing on the SNP flit says so: the address is the
+    # only field shared with the request in every case. So the correlation is by
+    # line. Kept separately from the hazard shadow above rather than folded into
+    # it, because that one is switched off by a config knob for the hazard
+    # negative control and this rule must keep working while it is.
+    self.req_op_by_line = [{} for _ in range(N_NODES)]
+    self.req_line_by_txn = [{} for _ in range(N_NODES)]
+    # n_snp_req_judged is how many snoops were correlated to exactly one
+    # outstanding request and therefore had a Table 4-5 row to be judged against;
+    # n_snp_req_mismatch is how many of those carried an opcode that row does not
+    # permit. n_snp_req_uncorrelated is the honest denominator alongside them and
+    # is NOT a violation: the section that gives Table 4-5 states that "it is
+    # permitted for the interconnect to generate a snoop request spontaneously
+    # without a corresponding request from an RN". It is counted so that a run in
+    # which the correlation silently stopped working reads as "judged 0,
+    # uncorrelated 40" instead of as a clean pass.
+    self.n_snp_req_judged = 0
+    self.n_snp_req_mismatch = 0
+    self.n_snp_req_uncorrelated = 0
     self.n_multi_owner = 0
     self.n_completions = 0
     self.n_snoops = 0
@@ -457,6 +484,66 @@ class vip_chi_coherency_checker(uvm_component):
     self.hazard_by_line[node][line] = txn_id
     self.hazard_by_txn[node][txn_id] = line
 
+  # Request tracking for catalogue rule D8. Deliberately a separate pair from
+  # hazard_claim/hazard_release: same call sites, same lifetime, but ungated, so
+  # turning the hazard rule off for its negative control does not also turn off
+  # the request->snoop correspondence.
+  def req_track_claim(self, node, line, txn_id, opcode):
+    self.req_op_by_line[node][line] = _I(opcode)
+    self.req_line_by_txn[node][txn_id] = line
+
+  def req_track_release(self, node, txn_id):
+    line = self.req_line_by_txn[node].pop(txn_id, None)
+    if line is not None:
+      self.req_op_by_line[node].pop(line, None)
+
+  def check_snoop_matches_request(self, node, line, snp_op):
+    """Catalogue rule D8: a snoop's opcode must be one IHI 0050 E Table 4-5 / D
+    Table 4-3 permits for the request that caused it.
+
+    Nothing in this VIP checked the snoop against its cause before. Every rule on
+    the SNP channel judged the flit's own contents -- its opcode is a modeled
+    one, its fields are in range, the response to it is a permitted form -- and
+    the pairing of a request with the snoop the home chose for it was left to the
+    home's own code to get right. It got one row wrong for both issues, and the
+    covergroup could not show the gap either, because the bins were drawn from
+    the set of opcodes this home originates: the two it should have been sending
+    were not binned, so the report was closed on a space that excluded the
+    correct answer.
+
+    The correlation is by cache line and excludes the snooped node itself: a
+    requester is never snooped for its own request. Two nodes with a request
+    outstanding to the same line is ordinary contention, not an error, but it
+    leaves the cause ambiguous -- the rule declines to judge rather than guess,
+    and the decline is counted.
+    """
+    causes = [(k, self.req_op_by_line[k][line])
+              for k in range(N_NODES)
+              if k != node and line in self.req_op_by_line[k]]
+    # No cause, or more than one candidate: not judgeable. A spontaneous snoop is
+    # explicitly permitted, so silence here is the correct answer and not a
+    # missed check.
+    if len(causes) != 1:
+      self.n_snp_req_uncorrelated += 1
+      return
+    cause_node, cause_op = causes[0]
+    self.n_snp_req_judged += 1
+    if not req_generates_snoop(cause_op):
+      self.n_snp_req_mismatch += 1
+      self.logger.error(
+        f"COHERENCY VIOLATION: snoop opcode 0x{_I(snp_op):x} sent to node {node} "
+        f"for line 0x{line:x}, but the request outstanding on that line from "
+        f"node {cause_node} (opcode 0x{cause_op:x}) generates no snoop "
+        f"(Table 4-5 lists n/a in every snoop column)")
+      return
+    if not snoop_permitted_for_req(cause_op, snp_op):
+      self.n_snp_req_mismatch += 1
+      self.logger.error(
+        f"COHERENCY VIOLATION: snoop opcode 0x{_I(snp_op):x} sent to node {node} "
+        f"for line 0x{line:x} is not permitted for the request that caused it "
+        f"(node {cause_node}, opcode 0x{cause_op:x}) -- IHI 0050 E Table 4-5 / "
+        f"D Table 4-3 and the bullets under it")
+
   def hazard_release(self, node, txn_id):
     if not self.hazard_check_enable:
       return
@@ -495,6 +582,7 @@ class vip_chi_coherency_checker(uvm_component):
     # shadow below does not model: the hazard rule is about a requester
     # overlapping itself, which does not depend on what the request does.
     self.hazard_claim(node, line, _I(item.txn_id), wop)
+    self.req_track_claim(node, line, _I(item.txn_id), wop)
     is_read, _uniq = self.is_coherent_read(item)
     if is_read:
       tid = _I(item.txn_id)
@@ -529,6 +617,7 @@ class vip_chi_coherency_checker(uvm_component):
     # A read's CompData is its completion, so it releases the line.
     if op == int(DatOpcode.COMP_DATA):
       self.hazard_release(node, tid)
+      self.req_track_release(node, tid)
 
     if op == int(DatOpcode.COPY_BACK_WR_DATA):
       if tid in self.open_wb_line[node]:
@@ -751,6 +840,9 @@ class vip_chi_coherency_checker(uvm_component):
         self.excl_ll_valid[node][line] = False
     if snp_opcode_returns_no_data(item.snp_opcode) and self.state_is_dirty(cur):
       self.n_snp_no_data_on_dirty += 1
+    # Rule D8 runs on the request set outstanding at the moment the snoop
+    # arrives.
+    self.check_snoop_matches_request(node, line, item.snp_opcode)
     self.pending_snp_line[node] = line
     self.pending_snp_valid[node] = True
     self.pending_snp_opcode[node] = _I(item.snp_opcode)
@@ -785,6 +877,7 @@ class vip_chi_coherency_checker(uvm_component):
     # line, and the re-issue claims one again.
     if _I(item.rsp_opcode) in _HAZARD_RELEASE_RSP_OPS:
       self.hazard_release(node, tid)
+      self.req_track_release(node, tid)
     # MakeUnique completion (RSP-only Comp): mark the requester Unique owner and
     # run the single-writer check.
     if tid in self.open_mu_line[node]:
@@ -908,6 +1001,15 @@ class vip_chi_coherency_checker(uvm_component):
   def get_snp_dirty_lost_count(self):
     return self.n_snp_dirty_lost
 
+  def get_snp_req_judged_count(self):
+    return self.n_snp_req_judged
+
+  def get_snp_req_mismatch_count(self):
+    return self.n_snp_req_mismatch
+
+  def get_snp_req_uncorrelated_count(self):
+    return self.n_snp_req_uncorrelated
+
   def get_snp_resp_legality_tuples(self):
     """The distinct (snoop opcode, resp state, with-data) triples observed.
 
@@ -955,7 +1057,7 @@ class vip_chi_coherency_checker(uvm_component):
             self.n_excl_violation + self.n_bad_make_unique +
             self.n_bad_snp_resp_form + self.n_bad_snp_resp_state +
             self.n_bad_dataless_resp + self.n_snp_dirty_lost +
-            self.n_line_hazard)
+            self.n_snp_req_mismatch + self.n_line_hazard)
 
   def handle_reset(self):
     self._init_shadow()
@@ -994,6 +1096,12 @@ class vip_chi_coherency_checker(uvm_component):
       f"req_final_judged={self.n_req_final_judged} "
       f"req_final_retained={self.n_req_final_retained} "
       f"bad_dataless_resp={self.n_bad_dataless_resp}")
+    # Its own line for the same reason as the four above.
+    self.logger.info(
+      f"COHERENCY SNP REQ MATCH SUMMARY: "
+      f"snp_req_judged={self.n_snp_req_judged} "
+      f"snp_req_mismatch={self.n_snp_req_mismatch} "
+      f"snp_req_uncorrelated={self.n_snp_req_uncorrelated}")
     self.logger.info(
       f"COHERENCY HAZARD SUMMARY: line_hazards={self.n_line_hazard} "
       f"line_claims_cleared={self.n_line_clear}")

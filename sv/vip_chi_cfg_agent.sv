@@ -488,6 +488,24 @@ class vip_chi_cfg_agent extends uvm_object;
   // reports the loss. Default 0 keeps the RN-F conformant.
   bit rnf_req_final_state_verbatim = 1'b0;
 
+  // Negative-control knob: when set, the HN-F picks a ReadClean's snoop the way
+  // it did before IHI 0050 E Table 4-5 / D Table 4-3 was modeled -- one is_unique
+  // bit, so every read that is not a unique read is snooped as though it were a
+  // ReadShared.
+  //
+  // What makes it a useful control is that it produces one LEGAL snoop and one
+  // ILLEGAL one from the same bit. On the ordinary path it sends SnpShared for
+  // the ReadClean, which the bullet under Table 4-5 expressly permits. On the
+  // Direct Cache Transfer path it sends SnpSharedFwd, which no bullet reaches --
+  // and Table 4-34 lets a Dirty snoopee answer that with a forwarded
+  // CompData_SD_PD, putting the requester in SD, a final state Table 4-14 does
+  // not list for ReadClean.
+  //
+  // tc_chi_coh_{d,e}_snoop_match_negctl uses it to prove catalogue rule D8 fires
+  // on the forwarding half and stays quiet on the other. Default 0 keeps the
+  // home on the table.
+  bit hnf_snoop_shared_for_read_clean = 1'b0;
+
   // Master enable for exclusive (LL/SC) monitor modeling on the HN-F. When 0 the
   // home ignores req.excl entirely (no monitor set, every completion NormalOkay),
   // so a bench that never uses exclusives is byte-unaffected. Default 1: the home
@@ -954,6 +972,7 @@ class vip_chi_cfg_agent extends uvm_object;
     // are exactly the legitimate users.
     if (this.hnf_suppress_snoops || this.hnf_corrupt_dirty_merge ||
         this.rnf_req_final_state_verbatim ||
+        this.hnf_snoop_shared_for_read_clean ||
         this.hnf_force_excl_success || this.hnf_corrupt_fwd_data ||
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||

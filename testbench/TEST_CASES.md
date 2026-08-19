@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **163 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **164 pyUVM/cocotb**
+The shared regression currently runs **167 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **168 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -226,6 +226,8 @@ forwarding (`SnpRespData` + PassDirty), and eviction (`WriteBackFull` /
 | `tc_chi_coh_d_dirty_forward` | COH | dirty snoop forwarding: RN-F0 acquires a line Unique and dirties it (modelled local store), then RN-F1 `ReadShared` forces a downgrading snoop; RN-F0 answers with `SnpRespData` (PassDirty), the home merges the modified beats into memory, and RN-F1's `CompData` carries the dirtied data (asserted == RN-F0's original beats XOR the store pattern, not stale memory). |
 | `tc_chi_coh_d_req_retain` | COH | requester final state (IHI 0050 E Table 4-14 / D Table 4-12): RN-F1 `MakeUnique` a line (-> UD, observable), dirties it locally, then issues `ReadClean` on the SAME line and is granted the WEAKER `CompData_SC`. Asserts the line stays UD in the RN-F cache, in the checker's shadow and in the home's snoop filter (footnote b), that the locally-modified beats survive the fetch (footnote c) by having RN-F0 read them back through a forwarding snoop, and that the checker recorded the completion as held-state-decided. |
 | `tc_chi_coh_d_req_final_state_negctl` | COH | negative control for the above: `rnf_req_final_state_verbatim` puts RN-F1 back on the granted `Resp` verbatim, so its dirty copy is lost and the following snoop is answered with no data. Catalogue rule D7 must flag it (`snp_dirty_lost` rises); the induced error is caught and demoted. |
+| `tc_chi_coh_d_read_clean_snoop` | COH | request->snoop correspondence (IHI 0050 E Table 4-5 / D Table 4-3): a `ReadClean` must be snooped with `SnpClean` on the ordinary path and `SnpCleanFwd` on the Direct Cache Transfer path. Drives both, asserting the observed snoop opcode each time, and that catalogue rule D8 judged at least one snoop against its request with no mismatch. Before Table 4-5 was modeled both were `SnpShared`/`SnpSharedFwd`. |
+| `tc_chi_coh_d_snoop_match_negctl` | COH | negative control for the above: `hnf_snoop_shared_for_read_clean` puts the home back on the single `is_unique` bit. The same knob then yields `SnpShared` (which the bullet under Table 4-5 PERMITS for `ReadClean`, so D8 must stay silent) and `SnpSharedFwd` (which no bullet reaches, so D8 must fire). Asserts both halves; the induced error is caught and demoted. |
 | `tc_chi_coh_d_writeback_evict` | COH | both eviction paths: RN-F0 `WriteBackFull` (DBID grant → `CopyBackWrData` → memory commit) and RN-F1 `Evict` (RSP-only `Comp`). Both directory ports and both RN-F cache states return to Invalid. |
 | `tc_chi_coh_d_read_after_writeback` | COH | writeback data integrity: RN-F0 writes a fresh payload back, then RN-F1 `ReadShared` returns exactly the written-back data (and it differs from the original image — a no-op writeback would fail). |
 | `tc_chi_coh_d_write_unique_ptl` | COH | `WriteUniquePtl` data integrity: RN-F1 writes 16 byte-enabled bytes at offset 16, the HN-F invalidates RN-F0 and commits at the request address, and a full-line readback proves only the enabled lanes changed. |

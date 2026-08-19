@@ -34,7 +34,7 @@ from pyuvm import uvm_component
 
 from vip_chi_types_pkg import (
   Dir, Resp, RespErr, Exclusive, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode,
-  CACHE_LINE_BYTES, chi_xfer_dat_beats, mask, req_final_state,
+  CACHE_LINE_BYTES, chi_xfer_dat_beats, mask, req_final_state, snoop_for_req,
 )
 from vip_chi_lcrd_mgr import VipChiLcrdMgr
 from vip_chi_cfg_agent import VipChiCfgAgent
@@ -259,6 +259,31 @@ class vip_chi_driver_hnf(uvm_component):
 
   def req_opcode_is_unique_read(self, opcode):
     return _I(opcode) in _UNIQUE_READ_OPS
+
+  def snoop_for(self, opcode, fwd=False):
+    """The snoop this home sends for a request, from IHI 0050 E Table 4-5 / D
+    Table 4-3 by way of snoop_for_req().
+
+    Every snoop this driver originates goes through here, so the request->snoop
+    correspondence lives in one table instead of being spelled out at nine call
+    sites. It replaced a single is_unique bit, and a bit cannot express Table
+    4-5: the table has a distinct row per request and this home had two, so
+    ReadClean took the not-unique branch and was snooped as though it were a
+    ReadShared.
+
+    `fwd` selects the Direct Cache Transfer column, which is where the actual
+    violation was -- SnpShared for a ReadClean is permitted by the bullet under
+    the table, SnpSharedFwd is not, and the DCT path could hand the requester a
+    forwarded CompData_SD_PD that Table 4-14 does not list for ReadClean.
+    """
+    # Negative-control hook: put ReadClean back on the shared branch the
+    # is_unique bit used to send it down. SnpShared is legal for a ReadClean and
+    # SnpSharedFwd is not, so the SAME knob gives catalogue rule D8 one case it
+    # must pass and one it must fail.
+    if (self.cfg.hnf_snoop_shared_for_read_clean and
+        _I(opcode) == int(ReqOpcode.READ_CLEAN)):
+      return int(SnpOpcode.SHARED_FWD) if fwd else int(SnpOpcode.SHARED)
+    return snoop_for_req(_I(opcode), fwd)
 
   def granted_state_for(self, opcode):
     if self.req_opcode_is_unique_read(opcode):
@@ -570,9 +595,9 @@ class vip_chi_driver_hnf(uvm_component):
     elif op == int(ReqOpcode.EVICT):
       await self.service_evict(p, req)
     elif op == int(ReqOpcode.CLEAN_INVALID):
-      await self.service_cmo_invalidate(p, req, int(SnpOpcode.CLEAN_INVALID))
+      await self.service_cmo_invalidate(p, req, self.snoop_for(req["opcode"]))
     elif op == int(ReqOpcode.MAKE_INVALID):
-      await self.service_cmo_invalidate(p, req, int(SnpOpcode.MAKE_INVALID))
+      await self.service_cmo_invalidate(p, req, self.snoop_for(req["opcode"]))
     elif op == int(ReqOpcode.READ_ONCE):
       await self.service_read_once(p, req)
     elif op in (int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL)):
@@ -601,7 +626,7 @@ class vip_chi_driver_hnf(uvm_component):
         continue
       if entry[k] == int(Resp.I):
         continue
-      await self.drive_snoop(k, line, int(SnpOpcode.MAKE_INVALID))
+      await self.drive_snoop(k, line, self.snoop_for(req["opcode"]))
       entry[k] = int(Resp.I)
     # The requester ends up holding the line Unique-Dirty, so that is what the
     # directory records.
@@ -634,7 +659,7 @@ class vip_chi_driver_hnf(uvm_component):
         continue
       if entry[k] == int(Resp.I):
         continue
-      await self.drive_snoop(k, line, int(SnpOpcode.CLEAN_INVALID))
+      await self.drive_snoop(k, line, self.snoop_for(req["opcode"]))
 
     self.directory[line] = [int(Resp.I)] * len(self.rn_buses)
     self.excl_monitor.pop(line, None)
@@ -665,7 +690,7 @@ class vip_chi_driver_hnf(uvm_component):
       if k == p or self.cfg.hnf_suppress_snoops:
         continue
       if entry[k] != int(Resp.I):
-        await self.drive_snoop(k, line, int(SnpOpcode.ONCE))
+        await self.drive_snoop(k, line, self.snoop_for(req["opcode"]))
     await self.drive_coherent_read_compdata(p, req, int(Resp.I))
 
   # ==========================================================================
@@ -707,7 +732,7 @@ class vip_chi_driver_hnf(uvm_component):
         continue
       if entry[k] == int(Resp.I):
         continue
-      await self.drive_snoop(k, line, int(SnpOpcode.UNIQUE))
+      await self.drive_snoop(k, line, self.snoop_for(req["opcode"]))
       entry[k] = int(Resp.I)
     # Grant the requester Unique-Clean on the wire; record the join in the
     # filter. Table 4-19 gives CleanUnique an SD row whose final state is UD, so
@@ -752,12 +777,19 @@ class vip_chi_driver_hnf(uvm_component):
       if cur_k == int(Resp.I):
         continue
       if is_unique:
-        await self.drive_snoop(k, line, int(SnpOpcode.UNIQUE))
+        await self.drive_snoop(k, line, self.snoop_for(req["opcode"]))
         entry[k] = int(Resp.I)
         if line in self.excl_monitor:
           self.excl_monitor[line][k] = False
+      # A non-unique read downgrades a Unique holder and leaves an
+      # already-Shared one alone. The OPCODE now comes from Table 4-5 rather
+      # than from this branch: SnpShared for a ReadShared, SnpClean for a
+      # ReadClean. The two resolve the snoopee identically in this model (both
+      # end SC, both return dirty data if it had any), which is why one opcode
+      # served both for so long -- the difference the spec draws is in what the
+      # snoopee is PERMITTED to do, not in what this RN-F does.
       elif cur_k in (int(Resp.UC), int(Resp.UD_PD)):
-        await self.drive_snoop(k, line, int(SnpOpcode.SHARED))
+        await self.drive_snoop(k, line, self.snoop_for(req["opcode"]))
         entry[k] = int(Resp.SC)
 
     granted = self.granted_state_for(_I(req["opcode"]))
@@ -848,7 +880,7 @@ class vip_chi_driver_hnf(uvm_component):
         continue
       if entry[k] == int(Resp.I):
         continue
-      await self.drive_snoop(k, line, int(SnpOpcode.CLEAN_INVALID))
+      await self.drive_snoop(k, line, self.snoop_for(req["opcode"]))
 
     # The line is invalid everywhere; the zeroing writer does not own it either.
     self.directory[line] = [int(Resp.I)] * len(self.rn_buses)
@@ -1159,7 +1191,7 @@ class vip_chi_driver_hnf(uvm_component):
   async def service_coherent_read_fwd(self, p, req, line, fwd_k, is_unique, entry_in):
     entry = list(entry_in)
     granted = self.granted_state_for(_I(req["opcode"]))
-    fwd_op = int(SnpOpcode.UNIQUE_FWD) if is_unique else int(SnpOpcode.SHARED_FWD)
+    fwd_op = self.snoop_for(req["opcode"], fwd=True)
     snoopee_next = int(Resp.I) if is_unique else int(Resp.SC)
 
     snp_txn = await self.send_snoop_flit(fwd_k, line, fwd_op,
