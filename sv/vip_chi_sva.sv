@@ -1065,6 +1065,34 @@ module vip_chi_sva #(
           else begin
             chk_hit(VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E);
           end
+
+          // Table A-3 fixes Size at 64 bytes for every coherent read, dataless
+          // and CopyBack opcode, and for the full writes. Size = 0b110 is 64
+          // bytes (Table 2-15), independent of the data bus width.
+          if (vip_chi_types_pkg::vip_chi_req_size_fixed_64b(
+                vip_chi_req_opcode_t'(vif.txreqflit.opcode)) &&
+              (vif.txreqflit.size != VIP_CHI_REQ_SIZE_64B_C)) begin
+            chk_miss(VIP_CHI_CHK_REQ_SIZE_LEGAL_E, $sformatf(
+              "opcode 0x%0h was issued with Size 0b%03b, and Table A-3 fixes its Size at 64 bytes (0b110)",
+              vif.txreqflit.opcode, vif.txreqflit.size));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_SIZE_LEGAL_E);
+          end
+
+          // Section 6.3's closed list of transactions that support an Exclusive
+          // access. Excl on anything else is not a weaker guarantee, it is a bit
+          // the receiver has no defined behavior for.
+          if (vif.txreqflit.excl != VIP_CHI_REQ_NORMAL_E &&
+              !vip_chi_types_pkg::vip_chi_req_excl_permitted(
+                 vip_chi_req_opcode_t'(vif.txreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_EXCL_LEGAL_E, $sformatf(
+              "opcode 0x%0h was issued with Excl asserted, and section 6.3 does not list it as supporting Exclusive accesses",
+              vif.txreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_EXCL_LEGAL_E);
+          end
         end
 
         if (vif.rxrspflitv) begin
@@ -1291,6 +1319,34 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E);
+          end
+
+          // Table A-3 fixes Size at 64 bytes for every coherent read, dataless
+          // and CopyBack opcode, and for the full writes. Size = 0b110 is 64
+          // bytes (Table 2-15), independent of the data bus width.
+          if (vip_chi_types_pkg::vip_chi_req_size_fixed_64b(
+                vip_chi_req_opcode_t'(vif.rxreqflit.opcode)) &&
+              (vif.rxreqflit.size != VIP_CHI_REQ_SIZE_64B_C)) begin
+            chk_miss(VIP_CHI_CHK_REQ_SIZE_LEGAL_E, $sformatf(
+              "opcode 0x%0h was received with Size 0b%03b, and Table A-3 fixes its Size at 64 bytes (0b110)",
+              vif.rxreqflit.opcode, vif.rxreqflit.size));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_SIZE_LEGAL_E);
+          end
+
+          // Section 6.3's closed list of transactions that support an Exclusive
+          // access. Excl on anything else is not a weaker guarantee, it is a bit
+          // the receiver has no defined behavior for.
+          if (vif.rxreqflit.excl != VIP_CHI_REQ_NORMAL_E &&
+              !vip_chi_types_pkg::vip_chi_req_excl_permitted(
+                 vip_chi_req_opcode_t'(vif.rxreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_EXCL_LEGAL_E, $sformatf(
+              "opcode 0x%0h was received with Excl asserted, and section 6.3 does not list it as supporting Exclusive accesses",
+              vif.rxreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_EXCL_LEGAL_E);
           end
 
           if (req_has_modeled_completion(req_opcode)) begin

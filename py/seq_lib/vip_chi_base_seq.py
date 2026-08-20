@@ -34,7 +34,7 @@ from pyuvm import uvm_sequence
 from vip_chi_types_pkg import (
   ChiCfg, VIP_CHI_DEFAULT_CFG, Dir, Role, DataType, ReqOpcode,
   exp_comp_ack_required, SnpAttr, SnpAttrReq, snp_attr_requirement,
-  req_mem_attr_default,
+  req_mem_attr_default, req_size_fixed_64b, REQ_SIZE_64B,
 )
 from vip_chi_item import vip_chi_item
 from vip_chi_cfg_item import VipChiCfgItem
@@ -79,6 +79,12 @@ class vip_chi_base_seq(uvm_sequence):
     # turns the *_val into an override.
     self.mem_attr_val = 0
     self.mem_attr_forced = 0
+    # Size joins MemAttr and SnpAttr as opcode-derived: Table A-3 fixes it at 64
+    # bytes for every coherent read, dataless and CopyBack opcode and for the
+    # full writes, leaving it free only on the Ptl forms, ReadNoSnp and the
+    # Atomics. The default range is [0, 6], so before this the full writes
+    # randomized to sizes the table does not allow them.
+    self.size_forced = 0
     self.allow_retry_val = 1
     # ExpCompAck is not a plain stamped field like the ones around it: IHI 0050
     # E Table 2-9 / D Table 2-8 makes it required on some opcodes, optional on
@@ -138,11 +144,14 @@ class vip_chi_base_seq(uvm_sequence):
 
   def set_addr_stride(self, stride): self.addr_iter.set_increment(stride)
   def set_addr_enabled(self, enabled): self.addr_iter.set_enabled(enabled)
-  def set_size(self, size): self.item_cfg.min_size = self.item_cfg.max_size = int(size)
+  def set_size(self, size):
+    self.item_cfg.min_size = self.item_cfg.max_size = int(size)
+    self.size_forced = 1
 
   def set_size_range(self, min_size, max_size):
     if min_size < 0 or max_size > 6 or min_size > max_size:
       raise ValueError(f"[{self.get_name()}] Illegal size range [{min_size}:{max_size}]")
+    self.size_forced = 1
     self.item_cfg.min_size = min_size
     self.item_cfg.max_size = max_size
 
@@ -302,6 +311,13 @@ class vip_chi_base_seq(uvm_sequence):
                     else req_mem_attr_default(opcode_val))
     snp_attr_eff = (self.snp_attr_val if self.snp_attr_forced
                     else int(snp_attr_requirement(opcode_val) is SnpAttrReq.ONE))
+
+    # Size, same shape again. An explicit set_size()/set_size_range() still wins
+    # -- and if it names a size Table A-3 forbids for the chosen opcode,
+    # CHI_REQ_SIZE_LEGAL reports it rather than the sequence silently overriding
+    # the caller.
+    if not self.size_forced and req_size_fixed_64b(opcode_val):
+      req.set_size_range(REQ_SIZE_64B, REQ_SIZE_64B)
 
     with req.randomize_with() as x:
       x.direction == direction_val

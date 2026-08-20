@@ -83,6 +83,8 @@ from vip_chi_types_pkg import (
   req_order_legal,
   req_attr_combination_legal,
   req_likely_shared_permitted,
+  req_size_fixed_64b, REQ_SIZE_64B,
+  req_excl_permitted,
   SnpAttrReq, snp_attr_requirement, req_bit17_is_dodwt,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
@@ -151,7 +153,7 @@ _COMPLETER_ROLES_C = (Role.SNF, Role.HNF, Role.HNI)
 # bit `data` field through a big-int shift for a checker that never looks at it.
 _FLIT_FIELDS_C = {
   "req": ("opcode", "txnid", "returntxnid", "size", "expcompack", "order",
-          "memattr", "snpattr", "likelyshared"),
+          "memattr", "snpattr", "likelyshared", "excl"),
   "rsp": ("opcode", "txnid", "dbid", "resperr", "resp"),
   "dat": ("opcode", "txnid", "dbid", "dataid"),
 }
@@ -1602,6 +1604,25 @@ class bind_chi:
               f"opcode 0x{int(opcode):x} carried LikelyShared asserted, which "
               f"section 2.9.5 does not permit for it",
               "section 2.9.5")
+
+    # Table A-3 fixes Size at 64 bytes for every coherent read, dataless and
+    # CopyBack opcode, and for the full writes. Size = 0b110 is 64 bytes
+    # (Table 2-15), independent of the data bus width.
+    self._chk("CHI_REQ_SIZE_LEGAL",
+              not (req_size_fixed_64b(opcode)
+                   and int(f["size"]) != REQ_SIZE_64B),
+              f"opcode 0x{int(opcode):x} carried Size 0b{int(f['size']):03b}, and "
+              f"Table A-3 fixes its Size at 64 bytes (0b110)",
+              "Table A-3")
+
+    # Section 6.3's closed list of transactions that support an Exclusive access.
+    # Excl on anything else is not a weaker guarantee, it is a bit the receiver
+    # has no defined behavior for.
+    self._chk("CHI_REQ_EXCL_LEGAL",
+              not (int(f["excl"]) and not req_excl_permitted(opcode)),
+              f"opcode 0x{int(opcode):x} carried Excl asserted, and section 6.3 "
+              f"does not list it as supporting Exclusive accesses",
+              "section 6.3")
 
   def _arm_completion(self, s: dict, f: dict) -> None:
     """Start the temporal attempts a request opens."""

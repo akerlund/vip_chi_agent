@@ -54,6 +54,7 @@ class tc_chi_d_atomic_predict extends chi_base_test;
   );
 
     item_t::data_t data_q[$];
+    item_t::be_t   be_q[$];
     item_t         wr_rsp[$];
 
     data_q.delete();
@@ -63,6 +64,15 @@ class tc_chi_d_atomic_predict extends chi_base_test;
     super.rni0_wr_seq.set_size(beat_size);
     super.rni0_wr_seq.set_allow_retry(1'b0);
     super.rni0_wr_seq.set_data(data_q);
+    // Full byte enables for the seeded beat. This is what makes a sub-line write
+    // legal: Table A-3 and Chapter 4 fix WriteNoSnpFull at a cache line length,
+    // so a single-beat write has to be a WriteNoSnpPtl -- and a Ptl with every
+    // byte enabled in its Size window is exactly "write these bytes". Supplying
+    // BE is also what selects the Ptl opcode, and it keeps the enables
+    // deterministic rather than randomized, which the readback depends on.
+    be_q.delete();
+    be_q.push_back('1);
+    super.rni0_wr_seq.set_be(be_q);
     super.rni0_wr_seq.set_get_response(1'b1);
     super.rni0_wr_seq.set_verbose(1'b0);
     super.rni0_wr_seq.start(super.v_sqr.rni_sequencer);

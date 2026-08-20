@@ -15,6 +15,7 @@ from chi_base_test import chi_base_test
 
 ADDR_C = 0x3100_0000
 SIZE_C = 4          # one 16-byte beat
+BE_FULL_C = (1 << 16) - 1   # every byte of that beat enabled
 SETTLE_C = 20
 WRITTEN = 0xCAFE_0001
 
@@ -33,6 +34,13 @@ class tc_chi_d_retry(chi_base_test):
     wr.set_size(SIZE_C)
     wr.set_allow_retry(1)          # let the SN-F bounce it
     wr.set_data([WRITTEN])         # custom data => bounded by payload
+    # Full byte enables for the one beat. This is what makes a sub-line write
+    # legal: Table A-3 and Chapter 4 fix WriteNoSnpFull at a cache line length,
+    # so a 16-byte write has to be a WriteNoSnpPtl -- and a Ptl with every byte
+    # enabled in its Size window is exactly "write these 16 bytes". Supplying BE
+    # is also what selects the Ptl opcode, and it keeps the enables deterministic
+    # rather than randomized, which the readback below depends on.
+    wr.set_be([BE_FULL_C])
     wr.set_get_response(True)
     wr.set_verbose(False)
     await wr.start(self.v_sqr.rni_sequencer)

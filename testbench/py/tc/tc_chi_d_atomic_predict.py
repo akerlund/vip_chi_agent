@@ -32,6 +32,13 @@ class tc_chi_d_atomic_predict(chi_base_test):
     wr.set_size(beat_size)
     wr.set_allow_retry(0)
     wr.set_data([value])
+    # Full byte enables for the seeded beat. This is what makes a sub-line write
+    # legal: Table A-3 and Chapter 4 fix WriteNoSnpFull at a cache line length, so
+    # a single-beat write has to be a WriteNoSnpPtl -- and a Ptl with every byte
+    # enabled in its Size window is exactly "write these bytes". Supplying BE is
+    # also what selects the Ptl opcode, and it keeps the enables deterministic
+    # rather than randomized, which the readback depends on.
+    wr.set_be([(1 << self.chi_cfg.data_bytes) - 1])
     wr.set_get_response(True)
     wr.set_verbose(False)
     await wr.start(self.v_sqr.rni_sequencer)

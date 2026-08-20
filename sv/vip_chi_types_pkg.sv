@@ -32,6 +32,10 @@ package vip_chi_types_pkg;
   // 1. Spec-derived field widths.
   // ---------------------------------------------------------------------------
   localparam int VIP_CHI_REQ_SIZE_WIDTH_C     = 3;
+  // Table 2-15: Size 0b110 is 64 bytes, a cache line. Named because Table A-3
+  // fixes it for a whole class of opcodes and a bare 3'd6 at each use site says
+  // nothing about which 64 that is.
+  localparam logic [VIP_CHI_REQ_SIZE_WIDTH_C - 1 : 0] VIP_CHI_REQ_SIZE_64B_C = 3'b110;
   localparam int VIP_CHI_MPAM_WIDTH_C         = 11;
   localparam int VIP_CHI_QOS_WIDTH_C          = 4;
   localparam int VIP_CHI_PCRD_TYPE_WIDTH_C    = 4;
@@ -498,6 +502,8 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E,
     VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E,
     VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E,
+    VIP_CHI_CHK_REQ_SIZE_LEGAL_E,
+    VIP_CHI_CHK_REQ_EXCL_LEGAL_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -1797,6 +1803,106 @@ package vip_chi_types_pkg;
     // zero throughout: this VIP models no Device-memory stimulus, and a Device
     // request is a different Table 2-12 block entirely.
     return {allocate, cacheable, 1'b0, ewa};
+  endfunction
+
+  // TRUE when this opcode supports an Exclusive access, so may assert Excl.
+  //
+  // IHI 0050 E section 6.3 "Exclusive transactions" opens with "The following
+  // transaction types support Exclusive accesses through an Excl bit" and then
+  // names them, which makes it a closed list:
+  //
+  //   Exclusive Load, Snoopable location   ReadClean, ReadNotSharedDirty,
+  //                                        ReadShared, ReadPreferUnique
+  //   Exclusive Store, Snoopable location  CleanUnique, MakeReadUnique
+  //   Exclusive Load, Non-snoopable        ReadNoSnp
+  //   Exclusive Store, Non-snoopable       WriteNoSnp
+  //
+  // A consolidated list is why this is a rule and the neighbouring Excl
+  // constraints are not: Chapter 4 states the same permission per opcode, spread
+  // across forty request descriptions as "Can have exclusive attribute
+  // asserted", and a whitelist assembled from those would be a transcription
+  // exercise with no way to tell a missed bullet from an opcode that genuinely
+  // forbids it.
+  //
+  // "WriteNoSnp" is read as the family -- Full, Ptl and Zero. The section does
+  // not qualify it, and a permissive reading under-reports rather than faulting
+  // conformant traffic, which is the right direction for a rule that runs on
+  // every request.
+  //
+  // TOTAL: returns TRUE for everything it does not object to.
+  function automatic bit vip_chi_req_excl_permitted(
+    input vip_chi_req_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_REQ_READ_CLEAN_E,
+      VIP_CHI_REQ_READ_SHARED_E,
+      VIP_CHI_REQ_CLEAN_UNIQUE_E,
+      VIP_CHI_REQ_MAKE_READ_UNIQUE_E,
+      VIP_CHI_REQ_READ_NO_SNP_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_E: begin
+        return 1'b1;
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
+  endfunction
+
+  // TRUE when Table A-3 fixes this opcode's Size at 64 bytes.
+  //
+  // IHI 0050 E Table A-3 "Request message field mappings part 2" (read from the
+  // PDF, physical page 468) gives a literal "64B" in the Size column for these
+  // opcodes and a plain "Y" -- any legal value -- for the rest. Chapter 4 says
+  // the same thing per opcode in prose: "Data size is a cache line length" for
+  // the fixed ones against "Data size is up to a cache line length" for the
+  // others.
+  //
+  // The Combined Write family SPLITS here and must not be treated as one class:
+  // Table A-3 gives WriteNoSnpFull(CMO) 64B and WriteNoSnpPtl(CMO) any. That
+  // follows the write half, which is the same rule Table 2-14 and the CompAck
+  // table use for this family.
+  //
+  // Size = 0b110 is 64 bytes (Table 2-15). It is independent of the data bus
+  // width: a 64-byte transfer is four beats on a 16-byte bus.
+  function automatic bit vip_chi_req_size_fixed_64b(
+    input vip_chi_req_opcode_t opcode
+  );
+    case (opcode)
+      // Coherent reads.
+      VIP_CHI_REQ_READ_SHARED_E,
+      VIP_CHI_REQ_READ_CLEAN_E,
+      VIP_CHI_REQ_READ_ONCE_E,
+      VIP_CHI_REQ_READ_UNIQUE_E,
+      VIP_CHI_REQ_MAKE_READ_UNIQUE_E,
+      // Dataless, including the CMOs.
+      VIP_CHI_REQ_CLEAN_SHARED_E,
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_E,
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_E,
+      VIP_CHI_REQ_CLEAN_INVALID_E,
+      VIP_CHI_REQ_MAKE_INVALID_E,
+      VIP_CHI_REQ_CLEAN_UNIQUE_E,
+      VIP_CHI_REQ_MAKE_UNIQUE_E,
+      VIP_CHI_REQ_EVICT_E,
+      // CopyBack and the full writes.
+      VIP_CHI_REQ_WRITE_BACK_FULL_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_E,
+      VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_ZERO_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_E,
+      // Combined Write, Full forms only.
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E: begin
+        return 1'b1;
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
   endfunction
 
   // TRUE when this opcode is permitted to assert LikelyShared.

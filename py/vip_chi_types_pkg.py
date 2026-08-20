@@ -318,6 +318,8 @@ CHECK_IDS = (
   "CHI_REQ_ATTR_COMBINATION_LEGAL",
   "CHI_REQ_SNP_ATTR_LEGAL",
   "CHI_REQ_LIKELY_SHARED_LEGAL",
+  "CHI_REQ_SIZE_LEGAL",
+  "CHI_REQ_EXCL_LEGAL",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -1351,6 +1353,85 @@ _LIKELY_SHARED_PERMITTED = frozenset({
   int(ReqOpcode.WRITE_EVICT_OR_EVICT),
   int(ReqOpcode.PREFETCH_TGT),
 })
+
+
+# Section 6.3's closed list of transactions that support an Exclusive access.
+# "WriteNoSnp" is read as the family -- Full, Ptl and Zero -- since the section
+# does not qualify it and a permissive reading under-reports.
+_EXCL_PERMITTED_OPCODES = frozenset({
+  int(ReqOpcode.READ_CLEAN), int(ReqOpcode.READ_SHARED),
+  int(ReqOpcode.CLEAN_UNIQUE), int(ReqOpcode.MAKE_READ_UNIQUE),
+  int(ReqOpcode.READ_NO_SNP),
+  int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
+  int(ReqOpcode.WRITE_NO_SNP_ZERO),
+})
+
+
+def req_excl_permitted(opcode: int) -> bool:
+  """TRUE when this opcode supports an Exclusive access, so may assert Excl.
+
+  IHI 0050 E section 6.3 "Exclusive transactions" opens with "The following
+  transaction types support Exclusive accesses through an Excl bit" and then names
+  them, which makes it a closed list: ReadClean, ReadNotSharedDirty, ReadShared,
+  ReadPreferUnique (Snoopable load); CleanUnique, MakeReadUnique (Snoopable
+  store); ReadNoSnp (Non-snoopable load); WriteNoSnp (Non-snoopable store).
+
+  A consolidated list is why this is a rule at all: Chapter 4 states the same
+  permission per opcode across forty request descriptions as "Can have exclusive
+  attribute asserted", and a whitelist assembled from those would be a
+  transcription exercise with no way to tell a missed bullet from an opcode that
+  genuinely forbids it.
+
+  TOTAL: returns True for everything it does not object to.
+
+  The twin of vip_chi_req_excl_permitted in the SystemVerilog types package.
+  """
+  return int(opcode) in _EXCL_PERMITTED_OPCODES
+
+
+# Table 2-15: Size 0b110 is 64 bytes, a cache line.
+REQ_SIZE_64B = 0b110
+
+# Table A-3's Size column, the opcodes it gives a literal "64B". The Combined
+# Write family SPLITS: Full forms are fixed, Ptl forms are free.
+_SIZE_FIXED_64B_OPCODES = frozenset({
+  int(ReqOpcode.READ_SHARED), int(ReqOpcode.READ_CLEAN),
+  int(ReqOpcode.READ_ONCE), int(ReqOpcode.READ_UNIQUE),
+  int(ReqOpcode.MAKE_READ_UNIQUE),
+  int(ReqOpcode.CLEAN_SHARED), int(ReqOpcode.CLEAN_SHARED_PERSIST),
+  int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP), int(ReqOpcode.CLEAN_INVALID),
+  int(ReqOpcode.MAKE_INVALID), int(ReqOpcode.CLEAN_UNIQUE),
+  int(ReqOpcode.MAKE_UNIQUE), int(ReqOpcode.EVICT),
+  int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL),
+  int(ReqOpcode.WRITE_EVICT_OR_EVICT), int(ReqOpcode.WRITE_UNIQUE_FULL),
+  int(ReqOpcode.WRITE_UNIQUE_ZERO), int(ReqOpcode.WRITE_NO_SNP_FULL),
+  int(ReqOpcode.WRITE_NO_SNP_ZERO),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+})
+
+
+def req_size_fixed_64b(opcode: int) -> bool:
+  """TRUE when Table A-3 fixes this opcode's Size at 64 bytes.
+
+  IHI 0050 E Table A-3 "Request message field mappings part 2" (read from the
+  PDF, physical page 468) gives a literal "64B" in the Size column for these
+  opcodes and a plain "Y" -- any legal value -- for the rest. Chapter 4 says the
+  same thing per opcode in prose: "Data size is a cache line length" for the
+  fixed ones against "Data size is up to a cache line length" for the others.
+
+  The Combined Write family SPLITS here and must not be treated as one class:
+  Table A-3 gives WriteNoSnpFull(CMO) 64B and WriteNoSnpPtl(CMO) any. That
+  follows the write half, the same rule Table 2-14 and the CompAck table use for
+  this family.
+
+  Size = 0b110 is 64 bytes (Table 2-15), independent of the data bus width: a
+  64-byte transfer is four beats on a 16-byte bus.
+
+  The twin of vip_chi_req_size_fixed_64b in the SystemVerilog types package.
+  """
+  return int(opcode) in _SIZE_FIXED_64B_OPCODES
 
 
 def req_likely_shared_permitted(opcode: int) -> bool:

@@ -64,6 +64,7 @@ class tc_chi_d_multi_outstanding_atomic extends chi_base_test;
   task run_phase(input uvm_phase phase);
 
     item_t::data_t seed_q  [$];
+    item_t::be_t   be_q    [$];
     item_t::data_t op_q    [$];
     item_t::data_t preop   [item_t::addr_t];   // expected returned pre-op value
     item_t::data_t updated [item_t::addr_t];   // expected read-back (seed+operand)
@@ -103,6 +104,16 @@ class tc_chi_d_multi_outstanding_atomic extends chi_base_test;
     super.rni0_wr_seq.set_size(SIZE_C);
     super.rni0_wr_seq.set_allow_retry(1'b0);
     super.rni0_wr_seq.set_data(seed_q);           // custom data => bounded by payload
+    // Full byte enables for the seeded beat. This is what makes a sub-line write
+    // legal: Table A-3 and Chapter 4 fix WriteNoSnpFull at a cache line length,
+    // so a single-beat write has to be a WriteNoSnpPtl -- and a Ptl with every
+    // byte enabled in its Size window is exactly "write these bytes". Supplying
+    // BE is also what selects the Ptl opcode, and it keeps the enables
+    // deterministic rather than randomized, which the readback depends on.
+    foreach (seed_q[i]) begin
+      be_q.push_back('1);
+    end
+    super.rni0_wr_seq.set_be(be_q);
     super.rni0_wr_seq.set_get_response(1'b1);
     super.rni0_wr_seq.set_pipelined_send(1'b1);
     super.rni0_wr_seq.set_verbose(1'b0);

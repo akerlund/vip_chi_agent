@@ -66,6 +66,12 @@ class vip_chi_base_seq #(
   // setter call turns the *_val into an override.
   protected logic [3:0] mem_attr_val     = 4'b0;
   protected bit         mem_attr_forced  = 1'b0;
+  // Size joins MemAttr and SnpAttr as opcode-derived: Table A-3 fixes it at 64
+  // bytes for every coherent read, dataless and CopyBack opcode and for the full
+  // writes, leaving it free only on the Ptl forms, ReadNoSnp and the Atomics.
+  // The default range is [0, 6], so before this the full writes randomized to
+  // sizes the table does not allow them.
+  protected bit         size_forced      = 1'b0;
   protected vip_chi_snp_attr_t snp_attr_val    = VIP_CHI_SNP_NON_SNOOPABLE_E;
   protected bit                snp_attr_forced = 1'b0;
   protected logic       allow_retry_val  = 1'b1;
@@ -142,6 +148,7 @@ class vip_chi_base_seq #(
     this.exp_comp_ack_forced = 1'b0;
     this.mem_attr_forced     = 1'b0;
     this.snp_attr_forced     = 1'b0;
+    this.size_forced         = 1'b0;
     this.excl_val           = 1'b0;
     this.pcrd_type_val      = 4'b0;
     this.src_id_val         = '0;
@@ -251,6 +258,7 @@ class vip_chi_base_seq #(
   function void set_size(input logic [2:0] size);
     this.item_cfg.min_size = int'(size);
     this.item_cfg.max_size = int'(size);
+    this.size_forced       = 1'b1;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -264,6 +272,7 @@ class vip_chi_base_seq #(
         get_name(), min_size, max_size))
     end
 
+    this.size_forced       = 1'b1;
     this.item_cfg.min_size = min_size;
     this.item_cfg.max_size = max_size;
   endfunction
@@ -664,6 +673,16 @@ class vip_chi_base_seq #(
                     ? VIP_CHI_SNP_SNOOPABLE_E : VIP_CHI_SNP_NON_SNOOPABLE_E);
     req.set_mem_attr(mem_attr_eff);
     req.set_snp_attr(snp_attr_eff);
+
+    // Size, same shape again. An explicit set_size()/set_size_range() still
+    // wins -- and if it names a size Table A-3 forbids for the chosen opcode,
+    // CHI_REQ_SIZE_LEGAL reports it rather than the sequence silently
+    // overriding the caller.
+    if (!this.size_forced &&
+        vip_chi_types_pkg::vip_chi_req_size_fixed_64b(
+          vip_chi_req_opcode_t'(opcode_val))) begin
+      req.set_size(VIP_CHI_REQ_SIZE_64B_C);
+    end
     if (!req.randomize() with {
       direction     == direction_val;
       role          == local::role_val_v;
