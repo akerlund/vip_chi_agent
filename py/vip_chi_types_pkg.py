@@ -316,6 +316,7 @@ CHECK_IDS = (
   "CHI_ATOMIC_SIZE_LEGAL",
   "CHI_REQ_ORDER_LEGAL",
   "CHI_REQ_ATTR_COMBINATION_LEGAL",
+  "CHI_REQ_SNP_ATTR_LEGAL",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -1216,6 +1217,123 @@ def req_dodwt_applicable(opcode: int) -> bool:
   """
   return (int(opcode) in _DODWT_APPLICABLE_OPCODES or
           req_opcode_is_combined_write_cmo(opcode))
+
+
+class SnpAttrReq(IntEnum):
+  """Three-valued because Table 2-14 is.
+
+  Its two columns give "Y -", "- Y" and "Y Y", and collapsing those to a boolean
+  loses the difference between "must be zero" and "may be either".
+  """
+
+  ANY = 0
+  ZERO = 1
+  ONE = 2
+
+
+# Table 2-14's "- Y" rows: Snoopable only. Every one is a coherent transaction,
+# which is why modeling REQ bit 17 as DoDWT alone put the whole coherent traffic
+# class on the wire marked Non-snoopable.
+_SNP_ATTR_ONE_OPCODES = frozenset({
+  int(ReqOpcode.READ_ONCE),
+  int(ReqOpcode.READ_CLEAN),
+  int(ReqOpcode.READ_SHARED),
+  int(ReqOpcode.READ_UNIQUE),
+  int(ReqOpcode.MAKE_READ_UNIQUE),
+  int(ReqOpcode.CLEAN_UNIQUE),
+  int(ReqOpcode.MAKE_UNIQUE),
+  int(ReqOpcode.EVICT),
+  int(ReqOpcode.WRITE_BACK_FULL),
+  int(ReqOpcode.WRITE_CLEAN_FULL),
+  int(ReqOpcode.WRITE_EVICT_OR_EVICT),
+  int(ReqOpcode.WRITE_UNIQUE_FULL),
+  int(ReqOpcode.WRITE_UNIQUE_PTL),
+  int(ReqOpcode.WRITE_UNIQUE_ZERO),
+})
+
+# Table 2-14's "Y -" rows: Non-snoopable only. The Combined Write family is added
+# by predicate below -- every form this VIP models is a WriteNoSnp, so it inherits
+# the write half's requirement.
+_SNP_ATTR_ZERO_OPCODES = frozenset({
+  int(ReqOpcode.READ_NO_SNP),
+  int(ReqOpcode.READ_NO_SNP_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_FULL),
+  int(ReqOpcode.WRITE_NO_SNP_PTL),
+  int(ReqOpcode.WRITE_NO_SNP_ZERO),
+})
+
+
+def snp_attr_requirement(opcode: int) -> SnpAttrReq:
+  """What SnpAttr value this opcode is permitted to carry.
+
+  IHI 0050 E Table 2-14 / D Table 2-14, "Snoop attributes for the different
+  transaction types".
+
+  TOTAL: an opcode the table does not constrain returns ANY, so a caller may
+  apply this to every request without first asking what kind it is.
+
+  Two normative tightenings are deliberately NOT applied here. Section 2.9.6
+  requires SnpAttr = 0 in a CMO, an Atomic, and ReadNoSnp/ReadNoSnpSep "from Home
+  to Slave", and section 2.9.3 requires it in ANY request from HN to SN. Both are
+  properties of the link rather than of the opcode, and whether a given link is
+  Home-to-Slave is not decidable from a role parameter here -- the same limitation
+  req_order_legal records for Order = 0b01. A rule that runs on every request must
+  under-report rather than fail conformant traffic, so the opcode half is what
+  this answers.
+
+  The twin of vip_chi_snp_attr_requirement in the SystemVerilog types package.
+  """
+  opcode = int(opcode)
+  if opcode in _SNP_ATTR_ONE_OPCODES:
+    return SnpAttrReq.ONE
+  if opcode in _SNP_ATTR_ZERO_OPCODES or req_opcode_is_combined_write_cmo(opcode):
+    return SnpAttrReq.ZERO
+  # The "Y Y" rows -- the four CMOs and the Atomics -- plus PrefetchTgt, which the
+  # table marks not applicable and free to take any value, plus the credit returns
+  # the table does not list at all.
+  return SnpAttrReq.ANY
+
+
+def req_mem_attr_default(opcode: int) -> int:
+  """The MemAttr value this opcode must carry, where the specification fixes it.
+
+  IHI 0050 E section 2.9.3, the assertion-requirement lists under EWA, Cacheable
+  and Allocate:
+
+    EWA       "Must be asserted in any Read or Dataless transaction that is not a
+              ReadNoSnp, ReadNoSnpSep, or CMO transaction" and "in any Write
+              transaction that is not a WriteNoSnp transaction".
+    Cacheable "Must be asserted for any Read transaction except for ReadNoSnp and
+              ReadNoSnpSep", "any Dataless transaction except for CleanShared,
+              CleanSharedPersist*, CleanInvalid, MakeInvalid", and "any Write
+              transaction except WriteNoSnpFull and WriteNoSnpPtl".
+    Allocate  "Must be asserted for the WriteEvictFull transaction", "Is
+              inapplicable and must be set to zero in DVMOp, PCrdReturn and Evict
+              transactions", and otherwise only "Can be asserted".
+
+  Where the specification leaves a field free the answer here is zero, which is
+  Non-cacheable Non-bufferable -- a legal Table 2-12 row and what this VIP has
+  always driven. So this changes the wire image for exactly the opcodes that were
+  non-conformant: the fourteen Snoopable-only ones, and WriteNoSnpZero, whose
+  Cacheable the Write rule above does not except.
+
+  Cacheable implies EWA here rather than merely permitting it, because Table 2-12
+  lists no row with Cacheable = 1 and EWA = 0.
+
+  Returns {Allocate, Cacheable, Device, EWA} in Table 13-21 bit order. Device is
+  zero throughout: this VIP models no Device-memory stimulus, and a Device request
+  is a different Table 2-12 block entirely.
+
+  The twin of vip_chi_req_mem_attr_default in the SystemVerilog types package.
+  """
+  opcode = int(opcode)
+  cacheable = opcode in _SNP_ATTR_ONE_OPCODES or opcode == int(ReqOpcode.WRITE_NO_SNP_ZERO)
+  ewa = cacheable
+  # "Must be asserted for the WriteEvictFull transaction" -- one whose Allocate is
+  # deasserted is convertible to an Evict, a different transaction. Evict itself is
+  # on the inapplicable-and-zero list.
+  allocate = opcode == int(ReqOpcode.WRITE_EVICT_OR_EVICT)
+  return (int(allocate) << 3) | (int(cacheable) << 2) | int(ewa)
 
 
 def req_attr_combination_legal(mem_attr: int, snp_attr: int,

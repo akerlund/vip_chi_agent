@@ -58,7 +58,16 @@ class vip_chi_base_seq #(
 
   protected logic       ns_val           = 1'b1;
   protected logic [1:0] order_val        = VIP_CHI_ORDER_NONE_E;
+  // MemAttr and SnpAttr are opcode-derived for the same reason ExpCompAck is,
+  // described below: IHI 0050 E section 2.9.3 fixes EWA, Cacheable and Allocate
+  // per opcode, and Table 2-14 fixes SnpAttr per opcode, so "the value the
+  // sequence stamps" is only meaningful once the opcode is known. Left alone,
+  // the sequence reads both off the tables for the opcode it just chose; a
+  // setter call turns the *_val into an override.
   protected logic [3:0] mem_attr_val     = 4'b0;
+  protected bit         mem_attr_forced  = 1'b0;
+  protected vip_chi_snp_attr_t snp_attr_val    = VIP_CHI_SNP_NON_SNOOPABLE_E;
+  protected bit                snp_attr_forced = 1'b0;
   protected logic       allow_retry_val  = 1'b1;
   // ExpCompAck is not a plain stamped field like the ones around it: IHI 0050 E
   // Table 2-9 / D Table 2-8 makes it required on some opcodes, optional on
@@ -79,7 +88,6 @@ class vip_chi_base_seq #(
   protected txn_id_t    return_txn_id_val = '0;
   protected logic [VIP_CHI_QOS_WIDTH_C - 1:0] qos_val = '0;
   protected logic       tracetag_val     = 1'b0;
-  protected vip_chi_snp_attr_t snp_attr_val = VIP_CHI_SNP_NON_SNOOPABLE_E;
   protected logic       dodwt_val        = 1'b0;
   protected logic       likelyshared_val = 1'b0;
   protected logic       endian_val       = 1'b0;
@@ -132,6 +140,8 @@ class vip_chi_base_seq #(
     this.allow_retry_val    = 1'b1;
     this.exp_comp_ack_val   = 1'b0;
     this.exp_comp_ack_forced = 1'b0;
+    this.mem_attr_forced     = 1'b0;
+    this.snp_attr_forced     = 1'b0;
     this.excl_val           = 1'b0;
     this.pcrd_type_val      = 4'b0;
     this.src_id_val         = '0;
@@ -143,6 +153,7 @@ class vip_chi_base_seq #(
     this.tracetag_val       = 1'b0;
     this.snp_attr_val       = VIP_CHI_SNP_NON_SNOOPABLE_E;
     this.dodwt_val          = 1'b0;
+    this.mem_attr_val       = 4'b0;
     this.likelyshared_val   = 1'b0;
     this.endian_val         = 1'b0;
     this.group_id_ext_val   = '0;
@@ -390,7 +401,8 @@ class vip_chi_base_seq #(
   // issues; see vip_chi_snp_attr_t.
   // ---------------------------------------------------------------------------
   function void set_snp_attr(input vip_chi_snp_attr_t snp_attr);
-    this.snp_attr_val = snp_attr;
+    this.snp_attr_val    = snp_attr;
+    this.snp_attr_forced = 1'b1;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -476,7 +488,8 @@ class vip_chi_base_seq #(
   // Set the MemAttr field stamped onto every generated request.
   // ---------------------------------------------------------------------------
   function void set_mem_attr(input logic [3:0] mem_attr);
-    this.mem_attr_val = mem_attr;
+    this.mem_attr_val    = mem_attr;
+    this.mem_attr_forced = 1'b1;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -589,6 +602,8 @@ class vip_chi_base_seq #(
     req_opcode_t   opcode_val;
     vip_chi_role_t role_val_v;
     logic          exp_comp_ack_eff;
+    logic [3:0]    mem_attr_eff;
+    vip_chi_snp_attr_t snp_attr_eff;
 
     req = new($sformatf("req_%0d", request_idx));
     req.set_config(CFG_P);
@@ -614,7 +629,6 @@ class vip_chi_base_seq #(
     req.max_addr = this.addr_iter.current();
     req.set_ns(this.ns_val);
     req.set_order(this.order_val);
-    req.set_mem_attr(this.mem_attr_val);
     req.set_allow_retry(this.allow_retry_val);
     req.set_excl(this.excl_val);
     req.set_pcrd_type(this.pcrd_type_val);
@@ -635,6 +649,21 @@ class vip_chi_base_seq #(
                          vip_chi_req_opcode_t'(opcode_val),
                          (role_val_v == VIP_CHI_ROLE_RNF_E));
     req.set_exp_comp_ack(exp_comp_ack_eff);
+
+    // The same shape for MemAttr and SnpAttr, and after choose_opcode() for the
+    // same reason. The two must move together: Table 2-12 lists no Snoopable row
+    // without Cacheable and EWA, so a request with SnpAttr = 1 over the old
+    // all-zero MemAttr default would be a combination the table calls Not valid.
+    mem_attr_eff = this.mem_attr_forced ? this.mem_attr_val
+                 : vip_chi_types_pkg::vip_chi_req_mem_attr_default(
+                     vip_chi_req_opcode_t'(opcode_val));
+    snp_attr_eff = this.snp_attr_forced ? this.snp_attr_val
+                 : ((vip_chi_types_pkg::vip_chi_snp_attr_requirement(
+                       vip_chi_req_opcode_t'(opcode_val)) ==
+                     vip_chi_types_pkg::VIP_CHI_SNP_ATTR_ONE_E)
+                    ? VIP_CHI_SNP_SNOOPABLE_E : VIP_CHI_SNP_NON_SNOOPABLE_E);
+    req.set_mem_attr(mem_attr_eff);
+    req.set_snp_attr(snp_attr_eff);
     if (!req.randomize() with {
       direction     == direction_val;
       role          == local::role_val_v;
@@ -646,7 +675,7 @@ class vip_chi_base_seq #(
       return_txn_id == local::this.return_txn_id_val;
       qos           == local::this.qos_val;
       tracetag      == local::this.tracetag_val;
-      snp_attr      == local::this.snp_attr_val;
+      snp_attr      == local::snp_attr_eff;
       dodwt         == local::this.dodwt_val;
       likelyshared  == local::this.likelyshared_val;
       endian        == local::this.endian_val;
@@ -654,7 +683,7 @@ class vip_chi_base_seq #(
       tagop         == local::this.tagop_val;
       ns            == local::this.ns_val;
       order         == local::this.order_val;
-      mem_attr      == local::this.mem_attr_val;
+      mem_attr      == local::mem_attr_eff;
       allow_retry   == local::this.allow_retry_val;
       exp_comp_ack  == local::exp_comp_ack_eff;
       excl          == local::this.excl_val;

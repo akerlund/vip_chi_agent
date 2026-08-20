@@ -82,6 +82,7 @@ from vip_chi_types_pkg import (
   atomic_size_legal,
   req_order_legal,
   req_attr_combination_legal,
+  SnpAttrReq, snp_attr_requirement, req_bit17_is_dodwt,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
   req_opcode_is_atomic_returning_data,
@@ -490,6 +491,10 @@ class bind_chi:
     self._slices = _flit_slices(bus.cfg)
     self._data_id_mask = (1 << bus.cfg.data_id_width) - 1
     self._data_bytes = bus.cfg.data_bytes
+    # Cached with the other cfg-derived values rather than read at check time:
+    # the REQ bit-17 rule needs the issue on every request, and reaching through
+    # self.bus mid-check couples a pure classifier to bus liveness.
+    self._issue = bus.cfg.issue
 
     # LASM coverage accumulates over the whole run and is deliberately NOT
     # cleared by _reset_state: a link that was torn down and brought back up
@@ -1563,6 +1568,29 @@ class bind_chi:
               f"and Order 0b{int(f['order']):02b}, a combination Table 2-12 does "
               f"not list",
               "Table 2-12")
+
+    # Table 2-14's per-opcode requirement, which the tuple rule above cannot
+    # express: Table 2-12 says which combinations are legal, Table 2-14 says which
+    # of them this opcode may use. A coherent request marked Non-snoopable
+    # satisfies the tuple rule and is still wrong.
+    # Judged only where the bit IS SnpAttr. Under Issue E the same bit is DoDWT on
+    # WriteNoSnpFull, WriteNoSnpPtl and Combined Write, and a conformant
+    # DoDWT = 1 there puts a one on the wire that is not an SnpAttr claim at all.
+    # The specification separates the two by role -- DoDWT is applicable only from
+    # Home to Slave -- which a bind cannot establish, so on those opcodes the rule
+    # has nothing to falsify and says so by passing rather than by not evaluating.
+    snp_req = (SnpAttrReq.ANY
+               if req_bit17_is_dodwt(self._issue, opcode)
+               else snp_attr_requirement(opcode))
+    snp = int(f["snpattr"])
+    self._chk("CHI_REQ_SNP_ATTR_LEGAL",
+              not ((snp_req is SnpAttrReq.ONE and snp != 1)
+                   or (snp_req is SnpAttrReq.ZERO and snp != 0)),
+              f"opcode 0x{int(opcode):x} carried SnpAttr {snp}, and Table 2-14 "
+              f"lists it as "
+              f"{'Snoopable' if snp_req is SnpAttrReq.ONE else 'Non-snoopable'} "
+              f"only",
+              "Table 2-14")
 
   def _arm_completion(self, s: dict, f: dict) -> None:
     """Start the temporal attempts a request opens."""

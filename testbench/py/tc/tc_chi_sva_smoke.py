@@ -154,6 +154,10 @@ def _checker(role: Role = Role.RNI) -> bind_chi:
   c._slices = _flit_slices(cfg)
   c._data_id_mask = (1 << cfg.data_id_width) - 1
   c._data_bytes = cfg.data_bytes
+  # The issue, for the REQ bit-17 rule. Cached by the real constructor, so it has
+  # to be set here too -- the same hazard the registry comment above describes,
+  # in the other direction: a field added to __init__ silently breaks this path.
+  c._issue = cfg.issue
 
   c._reset_state()
   return c

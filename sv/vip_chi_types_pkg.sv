@@ -496,6 +496,7 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E,
     VIP_CHI_CHK_REQ_ORDER_LEGAL_E,
     VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E,
+    VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -1638,6 +1639,165 @@ package vip_chi_types_pkg;
   // ---------------------------------------------------------------------------
   // Return TRUE when the atomic request is a store-style completion-only op.
   // ---------------------------------------------------------------------------
+  // Three-valued because Table 2-14 is: its two columns give "Y -", "- Y" and
+  // "Y Y", and collapsing those to a boolean loses the difference between "must
+  // be zero" and "may be either".
+  typedef enum int {
+    VIP_CHI_SNP_ATTR_ANY_E,
+    VIP_CHI_SNP_ATTR_ZERO_E,
+    VIP_CHI_SNP_ATTR_ONE_E
+  } vip_chi_snp_attr_req_t;
+
+  // What SnpAttr value this opcode is permitted to carry.
+  //
+  // IHI 0050 E Table 2-14 / D Table 2-14, "Snoop attributes for the different
+  // transaction types".
+  //
+  // TOTAL: an opcode the table does not constrain returns ANY, so a caller may
+  // apply this to every request without first asking what kind it is.
+  //
+  // Two normative tightenings are deliberately NOT applied here. Section 2.9.6
+  // requires SnpAttr = 0 in a CMO, an Atomic, and ReadNoSnp/ReadNoSnpSep "from
+  // Home to Slave", and section 2.9.3 requires it in ANY request from HN to SN.
+  // Both are properties of the link rather than of the opcode, and whether a
+  // given link is Home-to-Slave is not decidable from a role parameter here --
+  // the same limitation vip_chi_req_order_legal records for Order = 0b01. A rule
+  // that runs on every request must under-report rather than fail conformant
+  // traffic, so the opcode half is what this answers.
+  function automatic vip_chi_snp_attr_req_t vip_chi_snp_attr_requirement(
+    input vip_chi_req_opcode_t opcode
+  );
+
+    // The "- Y" rows: Snoopable only. Every one of these is a coherent
+    // transaction, which is why modeling this bit as DoDWT alone put the whole
+    // coherent traffic class on the wire marked Non-snoopable.
+    case (opcode)
+      VIP_CHI_REQ_READ_ONCE_E,
+      VIP_CHI_REQ_READ_CLEAN_E,
+      VIP_CHI_REQ_READ_SHARED_E,
+      VIP_CHI_REQ_READ_UNIQUE_E,
+      VIP_CHI_REQ_MAKE_READ_UNIQUE_E,
+      VIP_CHI_REQ_CLEAN_UNIQUE_E,
+      VIP_CHI_REQ_MAKE_UNIQUE_E,
+      VIP_CHI_REQ_EVICT_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_E,
+      VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_ZERO_E: begin
+        return VIP_CHI_SNP_ATTR_ONE_E;
+      end
+      default: begin
+      end
+    endcase
+
+    // The "Y -" rows: Non-snoopable only. Every Combined Write this VIP models
+    // is a WriteNoSnp, so the family inherits the write half's requirement.
+    if (vip_chi_req_opcode_is_combined_write_cmo(opcode)) begin
+      return VIP_CHI_SNP_ATTR_ZERO_E;
+    end
+    case (opcode)
+      VIP_CHI_REQ_READ_NO_SNP_E,
+      VIP_CHI_REQ_READ_NO_SNP_SEP_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_E: begin
+        return VIP_CHI_SNP_ATTR_ZERO_E;
+      end
+      default: begin
+      end
+    endcase
+
+    // The "Y Y" rows -- the four CMOs and the Atomics -- plus PrefetchTgt, which
+    // the table marks not applicable and free to take any value, plus the credit
+    // returns the table does not list at all.
+    return VIP_CHI_SNP_ATTR_ANY_E;
+  endfunction
+
+  // The MemAttr value this opcode must carry, where the specification fixes it.
+  //
+  // IHI 0050 E section 2.9.3, the assertion-requirement lists under EWA,
+  // Cacheable and Allocate:
+  //
+  //   EWA       "Must be asserted in any Read or Dataless transaction that is
+  //             not a ReadNoSnp, ReadNoSnpSep, or CMO transaction" and "in any
+  //             Write transaction that is not a WriteNoSnp transaction".
+  //   Cacheable "Must be asserted for any Read transaction except for ReadNoSnp
+  //             and ReadNoSnpSep", "any Dataless transaction except for
+  //             CleanShared, CleanSharedPersist*, CleanInvalid, MakeInvalid",
+  //             and "any Write transaction except WriteNoSnpFull and
+  //             WriteNoSnpPtl".
+  //   Allocate  "Must be asserted for the WriteEvictFull transaction", "Is
+  //             inapplicable and must be set to zero in DVMOp, PCrdReturn and
+  //             Evict transactions", and otherwise only "Can be asserted".
+  //
+  // Where the specification leaves a field free the answer here is zero, which
+  // is Non-cacheable Non-bufferable -- a legal Table 2-12 row and what this VIP
+  // has always driven. So this changes the wire image for exactly the opcodes
+  // that were non-conformant: the fourteen Snoopable-only ones, and
+  // WriteNoSnpZero, whose Cacheable the Write rule above does not except.
+  //
+  // Cacheable implies EWA here rather than merely permitting it, because Table
+  // 2-12 lists no row with Cacheable = 1 and EWA = 0.
+  function automatic logic [3 : 0] vip_chi_req_mem_attr_default(
+    input vip_chi_req_opcode_t opcode
+  );
+
+    bit allocate, cacheable, ewa;
+
+    allocate  = 1'b0;
+    cacheable = 1'b0;
+    ewa       = 1'b0;
+
+    case (opcode)
+      // Coherent reads and Dataless: neither a ReadNoSnp form nor a CMO, so both
+      // Cacheable and EWA are required. Then the coherent writes, none of which
+      // is a WriteNoSnp, so both are required there too.
+      VIP_CHI_REQ_READ_ONCE_E,
+      VIP_CHI_REQ_READ_CLEAN_E,
+      VIP_CHI_REQ_READ_SHARED_E,
+      VIP_CHI_REQ_READ_UNIQUE_E,
+      VIP_CHI_REQ_MAKE_READ_UNIQUE_E,
+      VIP_CHI_REQ_CLEAN_UNIQUE_E,
+      VIP_CHI_REQ_MAKE_UNIQUE_E,
+      VIP_CHI_REQ_EVICT_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_E,
+      VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_ZERO_E,
+      // A Write, so Cacheable is required -- the exception list names only
+      // WriteNoSnpFull and WriteNoSnpPtl. EWA is free here, but Table 2-12 has
+      // no Cacheable row without it.
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_E: begin
+        cacheable = 1'b1;
+        ewa       = 1'b1;
+      end
+      default: begin
+      end
+    endcase
+
+    // Section 2.9.3 requires Allocate on a WriteEvictFull and does not name
+    // WriteEvictOrEvict, so asserting it here is a choice rather than the
+    // letter of the text -- but it is the choice that makes the opcode mean
+    // what it says. The note under that bullet reads "A Requester can convert a
+    // WriteEvictFull with the Allocate bit not asserted to an Evict
+    // transaction", so Allocate is exactly what separates this opcode's
+    // WriteEvictFull leg from its Evict leg. Both values are Table 2-12 legal
+    // (rows 9 and 8 respectively), so this is not a conformance question.
+    // Plain Evict is on the inapplicable-and-zero list and keeps Allocate low.
+    if (opcode == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_E) begin
+      allocate = 1'b1;
+    end
+
+    // {Allocate, Cacheable, Device, EWA} -- Table 13-21 bit order. Device is
+    // zero throughout: this VIP models no Device-memory stimulus, and a Device
+    // request is a different Table 2-12 block entirely.
+    return {allocate, cacheable, 1'b0, ewa};
+  endfunction
+
   // TRUE when this request's {MemAttr, SnpAttr, LikelyShared, Order} tuple is one
   // of the nine Table 2-12 permits.
   //

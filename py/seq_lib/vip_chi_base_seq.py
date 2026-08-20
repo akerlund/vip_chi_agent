@@ -33,7 +33,8 @@ from pyuvm import uvm_sequence
 
 from vip_chi_types_pkg import (
   ChiCfg, VIP_CHI_DEFAULT_CFG, Dir, Role, DataType, ReqOpcode,
-  exp_comp_ack_required, SnpAttr,
+  exp_comp_ack_required, SnpAttr, SnpAttrReq, snp_attr_requirement,
+  req_mem_attr_default,
 )
 from vip_chi_item import vip_chi_item
 from vip_chi_cfg_item import VipChiCfgItem
@@ -71,7 +72,13 @@ class vip_chi_base_seq(uvm_sequence):
     self.item_cfg.direction = saved_direction
     self.ns_val = 1
     self.order_val = 0
+    # MemAttr and SnpAttr are opcode-derived for the same reason ExpCompAck is,
+    # described below: IHI 0050 E section 2.9.3 fixes EWA, Cacheable and Allocate
+    # per opcode, and Table 2-14 fixes SnpAttr per opcode, so "the value the
+    # sequence stamps" is only meaningful once the opcode is known. A setter call
+    # turns the *_val into an override.
     self.mem_attr_val = 0
+    self.mem_attr_forced = 0
     self.allow_retry_val = 1
     # ExpCompAck is not a plain stamped field like the ones around it: IHI 0050
     # E Table 2-9 / D Table 2-8 makes it required on some opcodes, optional on
@@ -83,6 +90,7 @@ class vip_chi_base_seq(uvm_sequence):
     # the zero that the item constraint now (correctly) refuses.
     self.exp_comp_ack_val = 0
     self.exp_comp_ack_forced = 0
+    self.snp_attr_forced = 0
     self.excl_val = 0
     self.pcrd_type_val = 0
     self.src_id_val = 0
@@ -170,7 +178,9 @@ class vip_chi_base_seq(uvm_sequence):
   def set_return_txn_id(self, return_txn_id): self.return_txn_id_val = int(return_txn_id)
   def set_qos(self, qos): self.qos_val = int(qos)
   def set_tracetag(self, tracetag): self.tracetag_val = int(tracetag)
-  def set_snp_attr(self, snp_attr): self.snp_attr_val = int(snp_attr)
+  def set_snp_attr(self, snp_attr):
+    self.snp_attr_val = int(snp_attr)
+    self.snp_attr_forced = 1
   def set_dodwt(self, dodwt): self.dodwt_val = int(dodwt)
   def set_likelyshared(self, likelyshared): self.likelyshared_val = int(likelyshared)
   def set_endian(self, endian): self.endian_val = int(endian)
@@ -181,7 +191,9 @@ class vip_chi_base_seq(uvm_sequence):
   def set_tu(self, tu): self.tu_val = [int(t) for t in tu]
   def set_ns(self, ns): self.ns_val = int(ns)
   def set_order(self, order): self.order_val = int(order)
-  def set_mem_attr(self, mem_attr): self.mem_attr_val = int(mem_attr)
+  def set_mem_attr(self, mem_attr):
+    self.mem_attr_val = int(mem_attr)
+    self.mem_attr_forced = 1
   def set_allow_retry(self, allow_retry): self.allow_retry_val = int(allow_retry)
   def set_exp_comp_ack(self, exp_comp_ack):
     self.exp_comp_ack_val = int(exp_comp_ack)
@@ -282,6 +294,15 @@ class vip_chi_base_seq(uvm_sequence):
                         else int(exp_comp_ack_required(opcode_val,
                                                        role_val == int(Role.RNF))))
 
+    # The same shape for MemAttr and SnpAttr, and after choose_opcode() for the
+    # same reason. The two must move together: Table 2-12 lists no Snoopable row
+    # without Cacheable and EWA, so a request with SnpAttr = 1 over the old
+    # all-zero MemAttr default would be a combination the table calls Not valid.
+    mem_attr_eff = (self.mem_attr_val if self.mem_attr_forced
+                    else req_mem_attr_default(opcode_val))
+    snp_attr_eff = (self.snp_attr_val if self.snp_attr_forced
+                    else int(snp_attr_requirement(opcode_val) is SnpAttrReq.ONE))
+
     with req.randomize_with() as x:
       x.direction == direction_val
       x.role == role_val
@@ -293,7 +314,7 @@ class vip_chi_base_seq(uvm_sequence):
       x.return_txn_id == self.return_txn_id_val
       x.qos == self.qos_val
       x.tracetag == self.tracetag_val
-      x.snp_attr == self.snp_attr_val
+      x.snp_attr == snp_attr_eff
       x.dodwt == self.dodwt_val
       x.likelyshared == self.likelyshared_val
       x.endian == self.endian_val
@@ -301,7 +322,7 @@ class vip_chi_base_seq(uvm_sequence):
       x.tagop == self.tagop_val
       x.ns == self.ns_val
       x.order == self.order_val
-      x.mem_attr == self.mem_attr_val
+      x.mem_attr == mem_attr_eff
       x.allow_retry == self.allow_retry_val
       x.exp_comp_ack == exp_comp_ack_eff
       x.excl == self.excl_val

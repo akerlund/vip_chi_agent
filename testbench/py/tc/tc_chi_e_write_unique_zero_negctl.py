@@ -100,6 +100,12 @@ class tc_chi_e_write_unique_zero_negctl(chi_e_base_test):
       "opcode": int(ReqOpcode.WRITE_UNIQUE_ZERO),
       "addr": E_WUZ_NEGCTL_ADDR_C,
       "size": 6,
+      # WriteUniqueZero is Snoopable only (Table 2-14), and Table 2-12 lists no
+      # Snoopable row without Cacheable and EWA. A raw flit bypasses the
+      # sequence's per-opcode defaults, so both fields are set here or this
+      # testcase injects the exact non-conformance the two rules exist to catch.
+      "snpattr": 1,
+      "memattr": 0b0101,
       "ns": NON_SECURE_C,
       "allowretry": 1,
       "qos": 0x7,

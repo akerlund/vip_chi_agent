@@ -40,7 +40,7 @@ from vip_chi_types_pkg import (
   RspOpcode, Resp, RespErr, Issue, RawChannel, mask, clog2, chi_xfer_dat_beats,
   req_opcode_is_atomic, req_opcode_is_atomic_compare,
   exp_comp_ack_required, exp_comp_ack_prohibited,
-  SnpAttr, req_dodwt_applicable,
+  SnpAttr, req_dodwt_applicable, SnpAttrReq, snp_attr_requirement,
 )
 
 _RO = ReqOpcode  # brevity in the opcode-set tables below
@@ -115,6 +115,12 @@ _COMPACK_ALLOWED_NON_RNF = tuple(sorted(
 # the classifier rather than listed, so the two can never drift.
 _DODWT_APPLICABLE = tuple(sorted(
   int(o) for o in _RO if req_dodwt_applicable(int(o))))
+# Table 2-14's two constrained columns, derived from the classifier rather than
+# listed so the two can never drift.
+_SNP_ATTR_MUST_BE_ONE = tuple(sorted(
+  int(o) for o in _RO if snp_attr_requirement(int(o)) is SnpAttrReq.ONE))
+_SNP_ATTR_MUST_BE_ZERO = tuple(sorted(
+  int(o) for o in _RO if snp_attr_requirement(int(o)) is SnpAttrReq.ZERO))
 
 
 @vsc.randobj
@@ -655,6 +661,23 @@ class vip_chi_item(uvm_sequence_item):
       with vsc.if_then(~self.opcode.inside(
           vsc.rangelist(*_COMPACK_REQUIRED_RNF))):
         vsc.soft(self.exp_comp_ack == 0)
+
+  @vsc.constraint
+  def con_snp_attr_legal(self):
+    """SnpAttr must be the value Table 2-14 permits for this opcode.
+
+    The same shape as con_exp_comp_ack_legal, and for the same reason: the table
+    marks a value required on some opcodes, forbidden on others and free on the
+    rest, so an explicit setter asking for the wrong one should be refused here
+    rather than reaching the wire. raw_override is the way to drive an illegal
+    value on purpose.
+    """
+    with vsc.if_then(self.s_raw_override == 0):
+      with vsc.if_then(self.opcode.inside(vsc.rangelist(*_SNP_ATTR_MUST_BE_ONE))):
+        self.snp_attr == 1
+      with vsc.else_if(self.opcode.inside(
+          vsc.rangelist(*_SNP_ATTR_MUST_BE_ZERO))):
+        self.snp_attr == 0
 
   @vsc.constraint
   def con_dodwt_overload(self):

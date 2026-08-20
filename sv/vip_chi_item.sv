@@ -1701,6 +1701,30 @@ class vip_chi_item #(
   }
 
   // ---------------------------------------------------------------------------
+  // Constraint: SnpAttr must be the value Table 2-14 permits for this opcode.
+  //
+  // The same shape as con_exp_comp_ack_legal, and for the same reason: the table
+  // marks a value required on some opcodes, forbidden on others and free on the
+  // rest, so an explicit setter asking for the wrong one should be refused here
+  // rather than reaching the wire. raw_override is the way to drive an illegal
+  // value on purpose.
+  // ---------------------------------------------------------------------------
+  constraint con_snp_attr_legal {
+    if (!raw_override) {
+      if (vip_chi_types_pkg::vip_chi_snp_attr_requirement(
+            vip_chi_req_opcode_t'(opcode)) ==
+          vip_chi_types_pkg::VIP_CHI_SNP_ATTR_ONE_E) {
+        snp_attr == VIP_CHI_SNP_SNOOPABLE_E;
+      }
+      if (vip_chi_types_pkg::vip_chi_snp_attr_requirement(
+            vip_chi_req_opcode_t'(opcode)) ==
+          vip_chi_types_pkg::VIP_CHI_SNP_ATTR_ZERO_E) {
+        snp_attr == VIP_CHI_SNP_NON_SNOOPABLE_E;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Constraint: DoDWT and SnpAttr share REQ bit 17, so only one of them can be
   // set at a time.
   //

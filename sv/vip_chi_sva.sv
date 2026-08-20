@@ -1016,6 +1016,41 @@ module vip_chi_sva #(
           else begin
             chk_hit(VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E);
           end
+
+          // Table 2-14's per-opcode SnpAttr requirement, which the tuple rule
+          // above cannot express: Table 2-12 says which combinations are legal,
+          // Table 2-14 says which of them this opcode may use. A coherent request
+          // marked Non-snoopable satisfies the tuple rule and is still wrong.
+          // Judged only where the bit IS SnpAttr. Under Issue E the same bit is
+          // DoDWT on WriteNoSnpFull, WriteNoSnpPtl and Combined Write, and a
+          // conformant DoDWT = 1 there puts a one on the wire that is not an
+          // SnpAttr claim at all. The specification separates the two by role --
+          // DoDWT is applicable only from Home to Slave -- which a bind cannot
+          // establish, so on those opcodes the rule has nothing to falsify and
+          // says so by passing rather than by not evaluating.
+          if (vip_chi_types_pkg::vip_chi_req_bit17_is_dodwt(
+                CFG_P.ISSUE_P, vip_chi_req_opcode_t'(vif.txreqflit.opcode))) begin
+            chk_hit(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E);
+          end
+          else if ((vip_chi_types_pkg::vip_chi_snp_attr_requirement(
+                      vip_chi_req_opcode_t'(vif.txreqflit.opcode)) ==
+                    vip_chi_types_pkg::VIP_CHI_SNP_ATTR_ONE_E) &&
+                   (vif.txreqflit.snpattr != VIP_CHI_SNP_SNOOPABLE_E)) begin
+            chk_miss(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E, $sformatf(
+              "opcode 0x%0h was issued Non-snoopable, and Table 2-14 lists it as Snoopable only",
+              vif.txreqflit.opcode));
+          end
+          else if ((vip_chi_types_pkg::vip_chi_snp_attr_requirement(
+                      vip_chi_req_opcode_t'(vif.txreqflit.opcode)) ==
+                    vip_chi_types_pkg::VIP_CHI_SNP_ATTR_ZERO_E) &&
+                   (vif.txreqflit.snpattr != VIP_CHI_SNP_NON_SNOOPABLE_E)) begin
+            chk_miss(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E, $sformatf(
+              "opcode 0x%0h was issued Snoopable, and Table 2-14 lists it as Non-snoopable only",
+              vif.txreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E);
+          end
         end
 
         if (vif.rxrspflitv) begin
@@ -1196,6 +1231,38 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E);
+          end
+
+          // The same Table 2-14 rule from the receiving end.
+          // Judged only where the bit IS SnpAttr. Under Issue E the same bit is
+          // DoDWT on WriteNoSnpFull, WriteNoSnpPtl and Combined Write, and a
+          // conformant DoDWT = 1 there puts a one on the wire that is not an
+          // SnpAttr claim at all. The specification separates the two by role --
+          // DoDWT is applicable only from Home to Slave -- which a bind cannot
+          // establish, so on those opcodes the rule has nothing to falsify and
+          // says so by passing rather than by not evaluating.
+          if (vip_chi_types_pkg::vip_chi_req_bit17_is_dodwt(
+                CFG_P.ISSUE_P, vip_chi_req_opcode_t'(vif.rxreqflit.opcode))) begin
+            chk_hit(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E);
+          end
+          else if ((vip_chi_types_pkg::vip_chi_snp_attr_requirement(
+                      vip_chi_req_opcode_t'(vif.rxreqflit.opcode)) ==
+                    vip_chi_types_pkg::VIP_CHI_SNP_ATTR_ONE_E) &&
+                   (vif.rxreqflit.snpattr != VIP_CHI_SNP_SNOOPABLE_E)) begin
+            chk_miss(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E, $sformatf(
+              "opcode 0x%0h was received Non-snoopable, and Table 2-14 lists it as Snoopable only",
+              vif.rxreqflit.opcode));
+          end
+          else if ((vip_chi_types_pkg::vip_chi_snp_attr_requirement(
+                      vip_chi_req_opcode_t'(vif.rxreqflit.opcode)) ==
+                    vip_chi_types_pkg::VIP_CHI_SNP_ATTR_ZERO_E) &&
+                   (vif.rxreqflit.snpattr != VIP_CHI_SNP_NON_SNOOPABLE_E)) begin
+            chk_miss(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E, $sformatf(
+              "opcode 0x%0h was received Snoopable, and Table 2-14 lists it as Non-snoopable only",
+              vif.rxreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E);
           end
 
           if (req_has_modeled_completion(req_opcode)) begin

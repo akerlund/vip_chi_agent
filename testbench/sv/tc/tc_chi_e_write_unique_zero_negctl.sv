@@ -143,6 +143,12 @@ class tc_chi_e_write_unique_zero_negctl extends chi_e_base_test;
     raw_req.addr       = E_WUZ_NEGCTL_ADDR_C;
     raw_req.size       = item_t::size_t'(3'd6);
     raw_req.ns         = VIP_CHI_REQ_NON_SECURE_ACCESS_E;
+    // WriteUniqueZero is Snoopable only (Table 2-14), and Table 2-12 lists no
+    // Snoopable row without Cacheable and EWA. A raw flit bypasses the
+    // sequence's per-opcode defaults, so both fields are set here or this
+    // testcase injects the exact non-conformance the two rules exist to catch.
+    raw_req.snpattr    = VIP_CHI_SNP_SNOOPABLE_E;
+    raw_req.memattr    = 4'b0101;
     raw_req.allowretry = 1'b1;
     raw_req.qos        = 4'h7;
 
