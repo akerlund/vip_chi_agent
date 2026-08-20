@@ -34,7 +34,7 @@ from pyuvm import uvm_monitor, uvm_analysis_port
 
 from vip_chi_types_pkg import (
   ChiCfg, Role, Dir, ReqOpcode, RspOpcode, DatOpcode, unpack,
-  req_opcode_is_atomic, chi_xfer_dat_beats,
+  req_opcode_is_atomic, chi_xfer_dat_beats, SnpAttr, req_bit17_is_dodwt,
 )
 from vip_chi_if import ChiBus, CHANNELS
 from vip_chi_item import vip_chi_item, defer_field_model
@@ -118,7 +118,14 @@ def req_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_i
   it.qos, it.opcode, it.addr, it.size = f["qos"], f["opcode"], f["addr"], f["size"]
   it.ns, it.order, it.mem_attr, it.pcrd_type = f["ns"], f["order"], f["memattr"], f["pcrdtype"]
   it.allow_retry, it.excl, it.exp_comp_ack = f["allowretry"], f["excl"], f["expcompack"]
-  it.tracetag, it.dodwt = f["tracetag"], f["dodwt"]
+  it.tracetag = f["tracetag"]
+  # The mirror of the packer: one wire bit, decoded into whichever of the two
+  # fields this opcode actually carries. Reporting it under the wrong name is how
+  # a peer correctly asserting SnpAttr would show up as DoDWT.
+  if req_bit17_is_dodwt(cfg.issue, f["opcode"]):
+    it.dodwt, it.snp_attr = f["snpattr"], int(SnpAttr.NON_SNOOPABLE)
+  else:
+    it.snp_attr, it.dodwt = f["snpattr"], 0
   it.likelyshared, it.endian, it.mpam = f["likelyshared"], f["endian"], f["mpam"]
   if cfg.is_e:
     it.tagop, it.group_id_ext = f.get("tagop", 0), f.get("groupidext", 0)

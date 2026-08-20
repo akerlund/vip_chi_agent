@@ -121,6 +121,21 @@ class Exclusive(IntEnum):
   EXCLUSIVE = 1
 
 
+class SnpAttr(IntEnum):
+  """IHI 0050 E Table 2-13 / D Table 2-13: SnpAttr field encodings.
+
+  The field says whether a transaction requires snooping, and Table 2-14 fixes
+  the permitted value per transaction type -- it is not a free attribute.
+
+  Under Issue E this one bit is also DoDWT (E section 13.10.25, "The bit shares
+  the same field as SnpAttr"). The two never collide: DoDWT is only applicable
+  in requests from Home to Slave, and E section 2.9.3 requires SnpAttr to be zero
+  in every such request. Issue D defines no DoDWT at all.
+  """
+  NON_SNOOPABLE = 0
+  SNOOPABLE = 1
+
+
 class ReqOrder(IntEnum):
   NONE = 0
   REQ_ACCEPTED = 1
@@ -1172,6 +1187,51 @@ def req_opcode_is_combined_write_cmo(opcode: int) -> bool:
   return int(opcode) in _COMBINED_WRITE_CMO_OPCODES
 
 
+# The opcode half of IHI 0050 E section 13.10.25. The Combined Write family is
+# added by predicate below rather than listed here, so a form added later cannot
+# miss this set.
+_DODWT_APPLICABLE_OPCODES = frozenset({
+  int(ReqOpcode.WRITE_NO_SNP_FULL),
+  int(ReqOpcode.WRITE_NO_SNP_PTL),
+})
+
+
+def req_dodwt_applicable(opcode: int) -> bool:
+  """TRUE for the request opcodes in which DoDWT is a field at all.
+
+  IHI 0050 E section 13.10.25: DoDWT is "Only applicable in WriteNoSnpFull,
+  WriteNoSnpPtl and Combined Write requests from Home to Slave", is
+  "inapplicable and must be set to zero in all other requests", and "The bit
+  shares the same field as SnpAttr". This answers the opcode half of that rule;
+  the Home-to-Slave half is a property of the link, so a caller that knows its
+  role adds it.
+
+  The overload is safe precisely because the two lists cannot overlap. Every
+  opcode here is a WriteNoSnp form, which Table 2-14 lists as Non-snoopable only,
+  and section 2.9.3 independently requires SnpAttr to be zero in any request from
+  HN to SN. Where DoDWT can be one, SnpAttr must be zero.
+
+  The twin of vip_chi_req_dodwt_applicable in the SystemVerilog types package.
+  """
+  return (int(opcode) in _DODWT_APPLICABLE_OPCODES or
+          req_opcode_is_combined_write_cmo(opcode))
+
+
+def req_bit17_is_dodwt(issue: int, opcode: int) -> bool:
+  """TRUE when REQ bit 17 carries DoDWT rather than SnpAttr on this link.
+
+  The opcode test alone is not sufficient: DoDWT was introduced in Issue E and
+  appears nowhere in Issue D, whose Table 12-6 names that bit SnpAttr and nothing
+  else. So under CHI-D the bit is SnpAttr for EVERY opcode, including the
+  WriteNoSnp forms. A packer or monitor that consults the opcode alone
+  reintroduces, for those opcodes, exactly the field-identity error this pair of
+  functions exists to remove.
+
+  The twin of vip_chi_req_bit17_is_dodwt in the SystemVerilog types package.
+  """
+  return int(issue) == int(Issue.E) and req_dodwt_applicable(opcode)
+
+
 class CompAckReq(IntEnum):
   """Three-valued because Table 2-9 is.
 
@@ -1299,7 +1359,9 @@ def flit_layout(cfg: ChiCfg, channel: str):
     if e:
       lay.append(("groupidext", GROUP_ID_EXT_WIDTH))
     lay += [
-      ("lpid", cfg.lpid_width), ("dodwt", 1), ("memattr", MEMATTR_WIDTH),
+      # Table 13-6 / 12-6 stack SnpAttr over DoDWT on this bit, and SnpAttr is
+      # the name both issues have. See SnpAttr.
+      ("lpid", cfg.lpid_width), ("snpattr", 1), ("memattr", MEMATTR_WIDTH),
       ("pcrdtype", PCRD_TYPE_WIDTH), ("order", ORDER_WIDTH), ("allowretry", 1),
       ("likelyshared", 1), ("ns", 1), ("addr", a), ("size", SIZE_WIDTH),
       ("opcode", cfg.req_opcode_width), ("returntxnid", txn), ("endian", 1),

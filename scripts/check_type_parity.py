@@ -156,6 +156,14 @@ def _compare_non_opcode_enums(sv: str, py_types) -> list[str]:
       {"NORMAL": "VIP_CHI_REQ_NORMAL_E", "EXCLUSIVE": "VIP_CHI_REQ_EXCLUSIVE_E"},
     ),
     (
+      "SnpAttr",
+      py_types.SnpAttr,
+      {
+        "NON_SNOOPABLE": "VIP_CHI_SNP_NON_SNOOPABLE_E",
+        "SNOOPABLE": "VIP_CHI_SNP_SNOOPABLE_E",
+      },
+    ),
+    (
       "ReqOrder",
       py_types.ReqOrder,
       {

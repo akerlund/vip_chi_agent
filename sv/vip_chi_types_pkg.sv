@@ -301,6 +301,19 @@ package vip_chi_types_pkg;
     VIP_CHI_REQ_EXCLUSIVE_E = 1'b1
   } vip_chi_exclusive_t;
 
+  // IHI 0050 E Table 2-13 / D Table 2-13: SnpAttr field encodings. The field
+  // says whether a transaction requires snooping, and Table 2-14 fixes the
+  // permitted value per transaction type -- it is not a free attribute.
+  //
+  // Under Issue E this one bit is also DoDWT (E section 13.10.25, "The bit
+  // shares the same field as SnpAttr"). The two never collide: DoDWT is only
+  // applicable in requests from Home to Slave, and E section 2.9.3 requires
+  // SnpAttr to be zero in every such request. Issue D defines no DoDWT at all.
+  typedef enum logic {
+    VIP_CHI_SNP_NON_SNOOPABLE_E = 1'b0,
+    VIP_CHI_SNP_SNOOPABLE_E     = 1'b1
+  } vip_chi_snp_attr_t;
+
   typedef enum logic [1 : 0] {
     VIP_CHI_ORDER_NONE_E         = 2'b00,
     VIP_CHI_ORDER_REQ_ACCEPTED_E = 2'b01,
@@ -672,6 +685,47 @@ package vip_chi_types_pkg;
   );
     return (opcode == VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E) ||
            (opcode == VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E);
+  endfunction
+
+  // TRUE for the request opcodes in which DoDWT is a field at all.
+  //
+  // IHI 0050 E section 13.10.25: DoDWT is "Only applicable in WriteNoSnpFull,
+  // WriteNoSnpPtl and Combined Write requests from Home to Slave", is
+  // "inapplicable and must be set to zero in all other requests", and "The bit
+  // shares the same field as SnpAttr". This function answers the opcode half of
+  // that rule; the Home-to-Slave half is a property of the link, so a caller
+  // that knows its role adds it.
+  //
+  // The overload is safe precisely because the two lists cannot overlap. Every
+  // opcode below is a WriteNoSnp form, which Table 2-14 lists as Non-snoopable
+  // only, and section 2.9.3 independently requires SnpAttr to be zero in any
+  // request from HN to SN. Where DoDWT can be one, SnpAttr must be zero.
+  function automatic bit vip_chi_req_dodwt_applicable(
+    input vip_chi_req_opcode_t opcode
+  );
+    if (vip_chi_req_opcode_is_combined_write_cmo(opcode)) begin
+      return 1'b1;
+    end
+    case (opcode)
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_E: return 1'b1;
+      default:                        return 1'b0;
+    endcase
+  endfunction
+
+  // TRUE when REQ bit 17 carries DoDWT rather than SnpAttr on this link.
+  //
+  // The opcode test above is not sufficient on its own: DoDWT was introduced in
+  // Issue E and appears nowhere in Issue D, whose Table 12-6 names that bit
+  // SnpAttr and nothing else. So under CHI-D the bit is SnpAttr for EVERY
+  // opcode, including the WriteNoSnp forms. A packer or monitor that consults
+  // the opcode alone reintroduces, for those opcodes, exactly the field-identity
+  // error this pair of functions exists to remove.
+  function automatic bit vip_chi_req_bit17_is_dodwt(
+    input vip_chi_issue_t      issue,
+    input vip_chi_req_opcode_t opcode
+  );
+    return (issue == VIP_CHI_ISSUE_E_E) && vip_chi_req_dodwt_applicable(opcode);
   endfunction
 
   typedef enum logic [4 : 0] {
@@ -1883,7 +1937,9 @@ package vip_chi_types_pkg;
       vip_chi_exclusive_t excl;
       groupidext_t        groupidext;
       lpid_t              lpid;
-      logic               dodwt;
+      // Table 13-6 / 12-6 stack SnpAttr over DoDWT on this bit, and SnpAttr is
+      // the name both issues have. See vip_chi_snp_attr_t.
+      vip_chi_snp_attr_t  snpattr;
       logic [3 : 0]       memattr;
       vip_chi_pcrd_type_t pcrdtype;
       vip_chi_req_order_t order;
@@ -2000,7 +2056,9 @@ package vip_chi_types_pkg;
       logic               expcompack;
       vip_chi_exclusive_t excl;
       lpid_t              lpid;
-      logic               dodwt;
+      // Table 13-6 / 12-6 stack SnpAttr over DoDWT on this bit, and SnpAttr is
+      // the name both issues have. See vip_chi_snp_attr_t.
+      vip_chi_snp_attr_t  snpattr;
       logic [3 : 0]       memattr;
       vip_chi_pcrd_type_t pcrdtype;
       vip_chi_req_order_t order;
@@ -2117,7 +2175,9 @@ package vip_chi_types_pkg;
       vip_chi_exclusive_t excl;
       groupidext_t        groupidext;
       lpid_t              lpid;
-      logic               dodwt;
+      // Table 13-6 / 12-6 stack SnpAttr over DoDWT on this bit, and SnpAttr is
+      // the name both issues have. See vip_chi_snp_attr_t.
+      vip_chi_snp_attr_t  snpattr;
       logic [3 : 0]       memattr;
       vip_chi_pcrd_type_t pcrdtype;
       vip_chi_req_order_t order;

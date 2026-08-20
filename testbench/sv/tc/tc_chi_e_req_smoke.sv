@@ -48,7 +48,13 @@ class tc_chi_e_req_smoke extends chi_e_base_test;
     this.rni_wr_zero_seq.set_lp_id(item_t::lpid_t'('h9));
     this.rni_wr_zero_seq.set_qos(4'hb);
     this.rni_wr_zero_seq.set_tracetag(1'b1);
-    this.rni_wr_zero_seq.set_dodwt(1'b1);
+    // DoDWT is deliberately absent from the stamped set. IHI 0050 E section
+    // 13.10.25 makes it applicable only in WriteNoSnpFull, WriteNoSnpPtl and
+    // Combined Write, and Table 2-14 lists WriteNoSnpZero as Non-snoopable only --
+    // so on this opcode REQ bit 17 has no legal non-zero value under either of
+    // the two names it carries. The field is proven drivable on an opcode that
+    // does carry it by tc_chi_e_signal_drivability; what is worth checking here
+    // is that the inapplicable field is held at zero.
     this.rni_wr_zero_seq.set_likelyshared(1'b1);
     this.rni_wr_zero_seq.set_endian(1'b1);
     this.rni_wr_zero_seq.set_group_id_ext(item_t::groupidext_t'('h3));
@@ -82,7 +88,7 @@ class tc_chi_e_req_smoke extends chi_e_base_test;
     end
 
     if ((req_item.tracetag != 1'b1) ||
-        (req_item.dodwt != 1'b1) ||
+        (req_item.dodwt != 1'b0) ||
         (req_item.likelyshared != 1'b1) ||
         (req_item.endian != 1'b1) ||
         (req_item.group_id_ext != item_t::groupidext_t'('h3)) ||

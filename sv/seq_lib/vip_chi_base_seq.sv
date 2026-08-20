@@ -79,6 +79,7 @@ class vip_chi_base_seq #(
   protected txn_id_t    return_txn_id_val = '0;
   protected logic [VIP_CHI_QOS_WIDTH_C - 1:0] qos_val = '0;
   protected logic       tracetag_val     = 1'b0;
+  protected vip_chi_snp_attr_t snp_attr_val = VIP_CHI_SNP_NON_SNOOPABLE_E;
   protected logic       dodwt_val        = 1'b0;
   protected logic       likelyshared_val = 1'b0;
   protected logic       endian_val       = 1'b0;
@@ -140,6 +141,7 @@ class vip_chi_base_seq #(
     this.return_txn_id_val  = '0;
     this.qos_val            = '0;
     this.tracetag_val       = 1'b0;
+    this.snp_attr_val       = VIP_CHI_SNP_NON_SNOOPABLE_E;
     this.dodwt_val          = 1'b0;
     this.likelyshared_val   = 1'b0;
     this.endian_val         = 1'b0;
@@ -384,7 +386,18 @@ class vip_chi_base_seq #(
   endfunction
 
   // ---------------------------------------------------------------------------
-  // Set the CHI-E DoDWT field stamped onto every generated request.
+  // Set the SnpAttr field stamped onto every generated request. Present in both
+  // issues; see vip_chi_snp_attr_t.
+  // ---------------------------------------------------------------------------
+  function void set_snp_attr(input vip_chi_snp_attr_t snp_attr);
+    this.snp_attr_val = snp_attr;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the CHI-E DoDWT field stamped onto every generated request. Only the
+  // opcodes vip_chi_req_dodwt_applicable() names carry the field; asking for a
+  // one on any other request is rejected by the item rather than quietly
+  // rewritten into SnpAttr, because the two share REQ bit 17.
   // ---------------------------------------------------------------------------
   function void set_dodwt(input logic dodwt);
     this.dodwt_val = dodwt;
@@ -633,6 +646,7 @@ class vip_chi_base_seq #(
       return_txn_id == local::this.return_txn_id_val;
       qos           == local::this.qos_val;
       tracetag      == local::this.tracetag_val;
+      snp_attr      == local::this.snp_attr_val;
       dodwt         == local::this.dodwt_val;
       likelyshared  == local::this.likelyshared_val;
       endian        == local::this.endian_val;

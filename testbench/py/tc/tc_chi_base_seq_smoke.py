@@ -207,7 +207,13 @@ class tc_chi_base_seq_smoke(uvm_test):
     read_seq_e.set_return_txn_id(0x2A)
     read_seq_e.set_qos(0x6)
     read_seq_e.set_tracetag(1)
-    read_seq_e.set_dodwt(1)
+    # DoDWT is deliberately absent from the stamped set. IHI 0050 E section
+    # 13.10.25 makes it applicable only in WriteNoSnpFull, WriteNoSnpPtl and
+    # Combined Write, and Table 2-14 lists ReadNoSnpSep as Non-snoopable only --
+    # so on this opcode REQ bit 17 has no legal non-zero value under either of
+    # the two names it carries. The field is proven drivable on an opcode that
+    # does carry it by tc_chi_e_signal_drivability; what is worth checking here
+    # is that the inapplicable field is held at zero.
     read_seq_e.set_likelyshared(1)
     read_seq_e.set_endian(1)
     read_seq_e.set_group_id_ext(0x5)
@@ -222,7 +228,7 @@ class tc_chi_base_seq_smoke(uvm_test):
     assert (int(preview_e.tracetag), int(preview_e.dodwt),
             int(preview_e.likelyshared), int(preview_e.endian),
             int(preview_e.group_id_ext), int(preview_e.tagop)) == \
-      (1, 1, 1, 1, 0x5, 0x2), \
+      (1, 0, 1, 1, 0x5, 0x2), \
       "read_seq CHI-E preview did not preserve control / tagop fields"
 
     # ---- CHI-E write preview carries the DAT tagging fields ----------------

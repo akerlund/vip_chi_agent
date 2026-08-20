@@ -40,6 +40,7 @@ from vip_chi_types_pkg import (
   RspOpcode, Resp, RespErr, Issue, RawChannel, mask, clog2, chi_xfer_dat_beats,
   req_opcode_is_atomic, req_opcode_is_atomic_compare,
   exp_comp_ack_required, exp_comp_ack_prohibited,
+  SnpAttr, req_dodwt_applicable,
 )
 
 _RO = ReqOpcode  # brevity in the opcode-set tables below
@@ -110,6 +111,10 @@ _COMPACK_ALLOWED_RNF = tuple(sorted(
   int(o) for o in _RO if not exp_comp_ack_prohibited(int(o), True)))
 _COMPACK_ALLOWED_NON_RNF = tuple(sorted(
   int(o) for o in _RO if not exp_comp_ack_prohibited(int(o), False)))
+# The opcodes in which DoDWT is a field at all (E section 13.10.25). Derived from
+# the classifier rather than listed, so the two can never drift.
+_DODWT_APPLICABLE = tuple(sorted(
+  int(o) for o in _RO if req_dodwt_applicable(int(o))))
 
 
 @vsc.randobj
@@ -161,6 +166,12 @@ class vip_chi_item(uvm_sequence_item):
     self.excl = vsc.rand_bit_t(1)
     self.exp_comp_ack = vsc.rand_bit_t(1)
     self.tracetag = vsc.rand_bit_t(1)
+    # REQ bit 17 carries SnpAttr in both issues and, under Issue E only, DoDWT.
+    # Two members for one wire bit because the two are different fields with
+    # different rules; req_dodwt_applicable(opcode) says which one this request
+    # is actually carrying, and con_dodwt_overload keeps the pair from ever
+    # disagreeing about it.
+    self.snp_attr = vsc.rand_bit_t(1)
     self.dodwt = vsc.rand_bit_t(1)
     self.likelyshared = vsc.rand_bit_t(1)
     self.endian = vsc.rand_bit_t(1)
@@ -339,6 +350,9 @@ class vip_chi_item(uvm_sequence_item):
 
   def set_tracetag(self, value) -> None:
     self.tracetag = int(value) & 1
+
+  def set_snp_attr(self, value) -> None:
+    self.snp_attr = int(value) & 1
 
   def set_dodwt(self, value) -> None:
     self.dodwt = int(value) & 1
@@ -643,7 +657,30 @@ class vip_chi_item(uvm_sequence_item):
         vsc.soft(self.exp_comp_ack == 0)
 
   @vsc.constraint
+  def con_dodwt_overload(self):
+    """DoDWT and SnpAttr share REQ bit 17, so only one can be set at a time.
+
+    IHI 0050 E section 13.10.25 restricts DoDWT to WriteNoSnpFull, WriteNoSnpPtl
+    and Combined Write, and makes it "inapplicable and must be set to zero in all
+    other requests". Holding the inapplicable bit at zero is what lets the packer
+    treat the wire bit as SnpAttr everywhere else without silently discarding a
+    value a sequence asked for: a sequence that sets DoDWT on, say, a read now
+    fails randomization here rather than having its request go out with SnpAttr
+    asserted instead.
+    """
+    with vsc.if_then(self.s_raw_override == 0):
+      with vsc.if_then(~self.opcode.inside(vsc.rangelist(*_DODWT_APPLICABLE))):
+        self.dodwt == 0
+
+  @vsc.constraint
   def con_issue_gated_fields(self):
+    """Issue-gated optional fields are forced to zero when absent.
+
+    SnpAttr is deliberately NOT in this list. Issue D defines the field (D Table
+    12-6 names that bit SnpAttr and nothing else) -- it is DoDWT alone that Issue
+    E introduced, so gating the pair together is what made Non-snoopable
+    structural on every coherent request in CHI-D.
+    """
     with vsc.if_then(self.s_raw_override == 0):
       if not self._issue_e:
         self.tracetag == 0
@@ -740,7 +777,8 @@ class vip_chi_item(uvm_sequence_item):
   _SCALARS = (
     "direction", "role", "src_id", "tgt_id", "txn_id", "lp_id", "return_nid",
     "return_txn_id", "qos", "opcode", "addr", "size", "ns", "order", "mem_attr",
-    "pcrd_type", "allow_retry", "excl", "exp_comp_ack", "tracetag", "dodwt",
+    "pcrd_type", "allow_retry", "excl", "exp_comp_ack", "tracetag", "snp_attr",
+    "dodwt",
     "likelyshared", "endian", "group_id_ext", "tagop", "mpam", "datacheck",
     "poison", "dat_opcode", "dat_tagop", "rsp_opcode", "rsp_resp", "rsp_resp_err",
     "dbid", "fwd_state", "snp_opcode", "snp_addr", "snp_resp",

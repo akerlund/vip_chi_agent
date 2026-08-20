@@ -301,7 +301,13 @@ class tc_chi_base_seq_smoke extends uvm_test;
     read_seq_e.set_return_txn_id(vip_chi_item #(CHI_E_WIDE_CFG_C)::txn_id_t'('h2a));
     read_seq_e.set_qos(4'h6);
     read_seq_e.set_tracetag(1'b1);
-    read_seq_e.set_dodwt(1'b1);
+    // DoDWT is deliberately absent from the stamped set. IHI 0050 E section
+    // 13.10.25 makes it applicable only in WriteNoSnpFull, WriteNoSnpPtl and
+    // Combined Write, and Table 2-14 lists ReadNoSnpSep as Non-snoopable only --
+    // so on this opcode REQ bit 17 has no legal non-zero value under either of
+    // the two names it carries. The field is proven drivable on an opcode that
+    // does carry it by tc_chi_e_signal_drivability; what is worth checking here
+    // is that the inapplicable field is held at zero.
     read_seq_e.set_likelyshared(1'b1);
     read_seq_e.set_endian(1'b1);
     read_seq_e.set_group_id_ext(groupidext_e_t'('h5));
@@ -323,7 +329,7 @@ class tc_chi_base_seq_smoke extends uvm_test;
     end
 
     if ((preview_item_e.tracetag != 1'b1) ||
-        (preview_item_e.dodwt != 1'b1) ||
+        (preview_item_e.dodwt != 1'b0) ||
         (preview_item_e.likelyshared != 1'b1) ||
         (preview_item_e.endian != 1'b1) ||
         (preview_item_e.group_id_ext != groupidext_e_t'('h5)) ||

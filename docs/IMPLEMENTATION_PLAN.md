@@ -712,7 +712,7 @@ assembling all beats by `TxnID`/`DataID`). Populates `dat_opcode`,
 common identity/QoS fields needed by coverage/scoreboard (`lp_id`, return-path
 fields, `qos`, `mpam`, DAT `poison`/`datacheck`, RSP `pcrd_type`) plus the
 common REQ control bits shared by the exact D/E flit shapes (`tracetag`,
-`dodwt`, `likelyshared`, `endian`). The current runtime cut now also covers the
+`snpattr`, `likelyshared`, `endian`). The current runtime cut now also covers the
 exact-E-only REQ/DAT fields exercised by the focused wide-sidecar smokes,
 including autonomous SN-F tag replay in `tc_chi_mte`; remaining Tier-B parity
 work is any later RSP-side exact-E additions plus future raw-override
@@ -810,7 +810,7 @@ Shipped flow: pull item → `drive_req` → write: `collect_write_dbid_grant`
 **Required corrections/extensions:** the Wave 1/Wave 2 baseline now maps the
 common request/data controls (`lpid`, `poison`, `datacheck`, `qos`) plus the
 REQ-side control bits shared by the exact D/E flit families (`tracetag`,
-`dodwt`, `likelyshared`, `endian`), and it keeps write DAT routing fields intact
+`snpattr`, `likelyshared`, `endian`), and it keeps write DAT routing fields intact
 across the early DBID-grant response. A new exact-CHI-E RN-I runtime path now
 covers the REQ-only E fields that are absent from the exact-D flit family
 (`groupidext`, REQ `tagop`) via issue-specific driver/monitor hooks and
@@ -891,8 +891,8 @@ cfg-driven node settings.
 **12.2 Driver field mapping.** Wave 1 closed the known LPID and DAT
 `poison`/`datacheck` gaps, and the current Wave 2 slices add `qos` on REQ/DAT/
 RSP, common identity/QoS monitor readback, and REQ-side mapping/readback of the
-common control bits present in both exact D/E flit shapes (`tracetag`, `dodwt`,
-`likelyshared`, `endian`). Exact-E request-only mapping/readback now also covers
+common control bits present in both exact D/E flit shapes (`tracetag`,
+`snpattr`, `likelyshared`, `endian`). Exact-E request-only mapping/readback now also covers
 `groupidext` and REQ `tagop` through an issue-specific RN-I driver/monitor path.
 Exact-E DAT mapping/readback on the RN-I write path now also covers `DAT tagop`,
 `tag`, and `tu` through the same subclass-hook pattern, and the manual SN-F

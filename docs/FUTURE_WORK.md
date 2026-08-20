@@ -128,6 +128,20 @@ Extends the RN-F / HN-F subsystem with more of the CHI coherency surface.
   this gap survived several documentation passes: the grep that should have
   found nothing found something plausible instead. Search for `SYSCOREQ`.
 
+- **`RSVDC` on REQ and DAT** — the specification's user-defined field, `X` bits
+  wide on REQ and `Y` on DAT (IHI 0050E_a Table 13-6 / 13-9, D Table 12-6 /
+  12-9). Absent from both ports, in both issues, and legal that way: the widths
+  are implementation-defined and zero is a permitted value for each, so a VIP
+  that declares no user-defined bits is conformant. Recorded here because it was
+  the one *undocumented* omission -- every other configurable width in this VIP
+  is a knob on `vip_chi_cfg_t`, so a reader comparing the flit structs against
+  the tables finds `RSVDC` missing with nothing saying it was a decision.
+  `scripts/check_flit_layout.py` lists it as an advisory `missing` on three
+  channels; that advisory is the intended steady state, not a defect to chase.
+  Adding it would mean two more config widths and no protocol behavior to check
+  against, since the field's meaning is by definition outside the spec.
+  *Effort S; value low.*
+
 ## 3. Depth / polish (deferred from the retired TODO.md)
 
 - **Checker-A completion-count / opcode thinning** — the scoreboard keeps ~56

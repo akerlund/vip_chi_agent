@@ -98,6 +98,12 @@ class vip_chi_item #(
   rand logic          excl         = 1'b0;
   rand logic          exp_comp_ack = 1'b0;
   rand logic          tracetag     = 1'b0;
+  // REQ bit 17 carries SnpAttr in both issues and, under Issue E only, DoDWT.
+  // Two members for one wire bit because the two are different fields with
+  // different rules; vip_chi_req_dodwt_applicable(opcode) says which one this
+  // request is actually carrying, and con_dodwt_overload keeps the pair from
+  // ever disagreeing about it.
+  rand vip_chi_snp_attr_t snp_attr = VIP_CHI_SNP_NON_SNOOPABLE_E;
   rand logic          dodwt        = 1'b0;
   rand logic          likelyshared = 1'b0;
   rand logic          endian       = 1'b0;
@@ -438,7 +444,16 @@ class vip_chi_item #(
   endfunction
 
   // ---------------------------------------------------------------------------
-  // Override the CHI-E DoDWT field.
+  // Override the SnpAttr field. Present in both issues.
+  // ---------------------------------------------------------------------------
+  function void set_snp_attr(input vip_chi_snp_attr_t value);
+    this.snp_attr = value;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Override the CHI-E DoDWT field. Only applicable in the opcodes
+  // vip_chi_req_dodwt_applicable() names; elsewhere the field is inapplicable
+  // and con_dodwt_overload holds it at zero.
   // ---------------------------------------------------------------------------
   function void set_dodwt(input logic value);
     this.dodwt = value;
@@ -1015,6 +1030,7 @@ class vip_chi_item #(
     this.excl                    = rhs_item.excl;
     this.exp_comp_ack            = rhs_item.exp_comp_ack;
     this.tracetag                = rhs_item.tracetag;
+    this.snp_attr                = rhs_item.snp_attr;
     this.dodwt                   = rhs_item.dodwt;
     this.likelyshared            = rhs_item.likelyshared;
     this.endian                  = rhs_item.endian;
@@ -1175,6 +1191,7 @@ class vip_chi_item #(
         (this.excl                     !== rhs_item.excl) ||
         (this.exp_comp_ack             !== rhs_item.exp_comp_ack) ||
         (this.tracetag                 !== rhs_item.tracetag) ||
+        (this.snp_attr                 !== rhs_item.snp_attr) ||
         (this.dodwt                    !== rhs_item.dodwt) ||
         (this.likelyshared             !== rhs_item.likelyshared) ||
         (this.endian                   !== rhs_item.endian) ||
@@ -1317,7 +1334,7 @@ class vip_chi_item #(
   // ---------------------------------------------------------------------------
   function string convert2string();
     return $sformatf(
-      "%s dir=%0d role=%0d src=0x%0h tgt=0x%0h txn=0x%0h ret_nid=0x%0h ret_txn=0x%0h lp_id=0x%0h qos=0x%0h tracetag=%0b tagop=0x%0h dat_tagop=0x%0h dodwt=%0b likelyshared=%0b endian=%0b excl=%0b group_id_ext=0x%0h opcode=0x%0h addr=0x%0h size=%0d dbid=0x%0h dat_beats=%0d rsp_opcode=0x%0h rsp_resp=0x%0h rsp_resp_err=0x%0h raw=%0b raw_ch=%0d raw_pend=%0b raw_req=0x%0h raw_rsp=0x%0h raw_dat=0x%0h raw_snp=0x%0h is_snoop=%0b snp_opcode=0x%0h snp_addr=0x%0h snp_resp=0x%0h",
+      "%s dir=%0d role=%0d src=0x%0h tgt=0x%0h txn=0x%0h ret_nid=0x%0h ret_txn=0x%0h lp_id=0x%0h qos=0x%0h tracetag=%0b tagop=0x%0h dat_tagop=0x%0h snp_attr=%0b dodwt=%0b likelyshared=%0b endian=%0b excl=%0b group_id_ext=0x%0h opcode=0x%0h addr=0x%0h size=%0d dbid=0x%0h dat_beats=%0d rsp_opcode=0x%0h rsp_resp=0x%0h rsp_resp_err=0x%0h raw=%0b raw_ch=%0d raw_pend=%0b raw_req=0x%0h raw_rsp=0x%0h raw_dat=0x%0h raw_snp=0x%0h is_snoop=%0b snp_opcode=0x%0h snp_addr=0x%0h snp_resp=0x%0h",
       super.convert2string(),
       this.direction,
       this.role,
@@ -1331,6 +1348,7 @@ class vip_chi_item #(
       this.tracetag,
       this.tagop,
       this.dat_tagop,
+      this.snp_attr,
       this.dodwt,
       this.likelyshared,
       this.endian,
@@ -1683,7 +1701,32 @@ class vip_chi_item #(
   }
 
   // ---------------------------------------------------------------------------
+  // Constraint: DoDWT and SnpAttr share REQ bit 17, so only one of them can be
+  // set at a time.
+  //
+  // IHI 0050 E section 13.10.25 restricts DoDWT to WriteNoSnpFull,
+  // WriteNoSnpPtl and Combined Write, and makes it "inapplicable and must be
+  // set to zero in all other requests". Holding the inapplicable bit at zero is
+  // what lets the packer treat the wire bit as SnpAttr everywhere else without
+  // silently discarding a value a sequence asked for: a sequence that sets
+  // DoDWT on, say, a read now fails randomization here rather than having its
+  // request go out with SnpAttr asserted instead.
+  // ---------------------------------------------------------------------------
+  constraint con_dodwt_overload {
+    if (!raw_override &&
+        !vip_chi_types_pkg::vip_chi_req_dodwt_applicable(
+           vip_chi_req_opcode_t'(opcode))) {
+      dodwt == 1'b0;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Constraints: issue-gated optional fields are forced to zero when absent.
+  //
+  // SnpAttr is deliberately NOT in this list. Issue D defines the field (D
+  // Table 12-6 names that bit SnpAttr and nothing else) -- it is DoDWT alone
+  // that Issue E introduced, so gating the pair together is what made
+  // Non-snoopable structural on every coherent request in CHI-D.
   // ---------------------------------------------------------------------------
   constraint con_issue_gated_fields {
     if (!raw_override && (CFG_P.ISSUE_P != VIP_CHI_ISSUE_E_E)) {

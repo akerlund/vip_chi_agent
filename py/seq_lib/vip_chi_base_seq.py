@@ -33,7 +33,7 @@ from pyuvm import uvm_sequence
 
 from vip_chi_types_pkg import (
   ChiCfg, VIP_CHI_DEFAULT_CFG, Dir, Role, DataType, ReqOpcode,
-  exp_comp_ack_required,
+  exp_comp_ack_required, SnpAttr,
 )
 from vip_chi_item import vip_chi_item
 from vip_chi_cfg_item import VipChiCfgItem
@@ -92,6 +92,7 @@ class vip_chi_base_seq(uvm_sequence):
     self.return_txn_id_val = 0
     self.qos_val = 0
     self.tracetag_val = 0
+    self.snp_attr_val = int(SnpAttr.NON_SNOOPABLE)
     self.dodwt_val = 0
     self.likelyshared_val = 0
     self.endian_val = 0
@@ -169,6 +170,7 @@ class vip_chi_base_seq(uvm_sequence):
   def set_return_txn_id(self, return_txn_id): self.return_txn_id_val = int(return_txn_id)
   def set_qos(self, qos): self.qos_val = int(qos)
   def set_tracetag(self, tracetag): self.tracetag_val = int(tracetag)
+  def set_snp_attr(self, snp_attr): self.snp_attr_val = int(snp_attr)
   def set_dodwt(self, dodwt): self.dodwt_val = int(dodwt)
   def set_likelyshared(self, likelyshared): self.likelyshared_val = int(likelyshared)
   def set_endian(self, endian): self.endian_val = int(endian)
@@ -291,6 +293,7 @@ class vip_chi_base_seq(uvm_sequence):
       x.return_txn_id == self.return_txn_id_val
       x.qos == self.qos_val
       x.tracetag == self.tracetag_val
+      x.snp_attr == self.snp_attr_val
       x.dodwt == self.dodwt_val
       x.likelyshared == self.likelyshared_val
       x.endian == self.endian_val

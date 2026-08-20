@@ -1412,7 +1412,13 @@ class vip_chi_driver_rni #(
     flit.tracetag     = req.tracetag;
     flit.expcompack   = req.exp_comp_ack;
     flit.excl         = vip_chi_exclusive_t'(req.excl);
-    flit.dodwt        = req.dodwt;
+    // REQ bit 17 is SnpAttr, which under Issue E is also DoDWT (E section
+    // 13.10.25, "The bit shares the same field as SnpAttr"). The opcode picks
+    // which field the bit carries; the item's con_dodwt_overload guarantees the
+    // discarded one is zero, so nothing a sequence asked for is lost here.
+    flit.snpattr      = vip_chi_types_pkg::vip_chi_req_bit17_is_dodwt(
+                          CFG_P.ISSUE_P, vip_chi_req_opcode_t'(req.opcode))
+                      ? vip_chi_snp_attr_t'(req.dodwt) : req.snp_attr;
     flit.memattr      = req.mem_attr;
     flit.pcrdtype     = req.pcrd_type;
     flit.order        = vip_chi_req_order_t'(req.order);
@@ -1503,7 +1509,7 @@ class vip_chi_driver_rni #(
     flit.expcompack   = item.raw_req.expcompack;
     flit.excl         = item.raw_req.excl;
     flit.lpid         = item.raw_req.lpid;
-    flit.dodwt        = item.raw_req.dodwt;
+    flit.snpattr      = item.raw_req.snpattr;
     flit.memattr      = item.raw_req.memattr;
     flit.pcrdtype     = item.raw_req.pcrdtype;
     flit.order        = item.raw_req.order;

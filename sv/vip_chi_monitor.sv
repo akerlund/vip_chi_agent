@@ -647,7 +647,18 @@ class vip_chi_monitor #(
     item.size          = size_t'(flit.size);
     item.ns            = flit.ns;
     item.tracetag      = flit.tracetag;
-    item.dodwt         = flit.dodwt;
+    // The mirror of the packer: one wire bit, decoded into whichever of the two
+    // fields this opcode actually carries. Reporting it under the wrong name is
+    // how a peer correctly asserting SnpAttr would show up as DoDWT.
+    if (vip_chi_types_pkg::vip_chi_req_bit17_is_dodwt(
+          CFG_P.ISSUE_P, vip_chi_req_opcode_t'(flit.opcode))) begin
+      item.dodwt       = flit.snpattr;
+      item.snp_attr    = VIP_CHI_SNP_NON_SNOOPABLE_E;
+    end
+    else begin
+      item.snp_attr    = flit.snpattr;
+      item.dodwt       = 1'b0;
+    end
     item.likelyshared  = flit.likelyshared;
     item.endian        = flit.endian;
     item.order         = flit.order;

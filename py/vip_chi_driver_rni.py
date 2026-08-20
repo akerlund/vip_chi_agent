@@ -43,7 +43,7 @@ from pyuvm import uvm_driver, ConfigDB
 from vip_chi_reject import reject
 from vip_chi_types_pkg import (
   Role, Dir, ReqOpcode, RspOpcode, RawChannel,
-  req_opcode_is_atomic, lasm, chi_xfer_dat_beats,
+  req_opcode_is_atomic, lasm, chi_xfer_dat_beats, req_bit17_is_dodwt,
 )
 from vip_chi_if import ChiBus
 
@@ -975,7 +975,14 @@ class vip_chi_driver_rni(uvm_driver):
     f = {
       "mpam": _I(req.mpam), "tracetag": _I(req.tracetag),
       "expcompack": _I(req.exp_comp_ack), "excl": _I(req.excl),
-      "dodwt": _I(req.dodwt), "memattr": _I(req.mem_attr),
+      # REQ bit 17 is SnpAttr, which under Issue E is also DoDWT (E section
+      # 13.10.25, "The bit shares the same field as SnpAttr"). The opcode picks
+      # which field the bit carries; the item's con_dodwt_overload guarantees the
+      # discarded one is zero, so nothing a sequence asked for is lost here.
+      "snpattr": (_I(req.dodwt)
+                  if req_bit17_is_dodwt(self.bus.cfg.issue, _I(req.opcode))
+                  else _I(req.snp_attr)),
+      "memattr": _I(req.mem_attr),
       "pcrdtype": _I(req.pcrd_type), "order": _I(req.order),
       "allowretry": _I(req.allow_retry), "likelyshared": _I(req.likelyshared),
       "ns": _I(req.ns), "addr": _I(req.addr), "size": _I(req.size),
