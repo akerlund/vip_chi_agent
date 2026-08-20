@@ -1,10 +1,11 @@
 ################################################################################
 # pyUVM/cocotb port of tc/tc_chi_e_req_smoke.sv.
 #
-# A CHI-E WriteNoSnpZero carrying the exact-CHI-E REQ fields (tracetag,
-# likelyshared, endian, group_id_ext, tagop, plus the common src/tgt/lpid/qos);
-# the monitor must observe every one of them on the REQ, and the SN-F completes
-# with Comp.
+# A CHI-E WriteNoSnpZero carrying the exact-CHI-E REQ fields (tracetag, endian,
+# group_id_ext, tagop, plus the common src/tgt/lpid/qos); the monitor must
+# observe every one of them on the REQ, and the SN-F completes with Comp.
+# DoDWT and LikelyShared are checked as zero rather than driven: this opcode
+# carries neither (E sections 13.10.25 and 2.9.5).
 # Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
@@ -37,7 +38,14 @@ class tc_chi_e_req_smoke(chi_e_base_test):
     # the two names it carries. The field is proven drivable on an opcode that
     # does carry it by tc_chi_e_signal_drivability; what is worth checking here
     # is that the inapplicable field is held at zero.
-    seq.set_likelyshared(1)
+    # LikelyShared is deliberately absent too. IHI 0050 E section 2.9.5 names
+    # the opcodes that may assert it -- the three WriteUnique forms, four
+    # coherent reads, the StashOnce forms, WriteBackFull, WriteCleanFull,
+    # WriteEvictFull and WriteEvictOrEvict -- and closes with "Must not be
+    # asserted in any other Read, Write or Combined Write transaction".
+    # WriteNoSnpZero is one of those others. Table 2-12 agrees from the other
+    # direction: LikelyShared is 0/1 only on its two Snoopable rows, and
+    # WriteNoSnp is Non-snoopable only.
     seq.set_endian(1)
     seq.set_group_id_ext(0x3)
     seq.set_tagop(0x2)
@@ -53,7 +61,7 @@ class tc_chi_e_req_smoke(chi_e_base_test):
     assert int(req_item.src_id) == 0x15 and int(req_item.tgt_id) == 0x2A
     assert int(req_item.lp_id) == 0x9 and int(req_item.qos) == 0xB
     assert int(req_item.tracetag) == 1 and int(req_item.dodwt) == 0
-    assert int(req_item.likelyshared) == 1 and int(req_item.endian) == 1
+    assert int(req_item.likelyshared) == 0 and int(req_item.endian) == 1
     assert int(req_item.group_id_ext) == 0x3 and int(req_item.tagop) == 0x2
     # WriteNoSnpZero completes with a combined CompDBIDResp (or DBIDResp then
     # Comp under cfg.split_write_rsp); a bare Comp is not a legal completion.

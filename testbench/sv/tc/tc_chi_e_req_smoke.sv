@@ -55,7 +55,14 @@ class tc_chi_e_req_smoke extends chi_e_base_test;
     // the two names it carries. The field is proven drivable on an opcode that
     // does carry it by tc_chi_e_signal_drivability; what is worth checking here
     // is that the inapplicable field is held at zero.
-    this.rni_wr_zero_seq.set_likelyshared(1'b1);
+    // LikelyShared is deliberately absent too. IHI 0050 E section 2.9.5 names
+    // the opcodes that may assert it -- the three WriteUnique forms, four
+    // coherent reads, the StashOnce forms, WriteBackFull, WriteCleanFull,
+    // WriteEvictFull and WriteEvictOrEvict -- and closes with "Must not be
+    // asserted in any other Read, Write or Combined Write transaction".
+    // WriteNoSnpZero is one of those others. Table 2-12 agrees from the other
+    // direction: LikelyShared is 0/1 only on its two Snoopable rows, and
+    // WriteNoSnp is Non-snoopable only.
     this.rni_wr_zero_seq.set_endian(1'b1);
     this.rni_wr_zero_seq.set_group_id_ext(item_t::groupidext_t'('h3));
     this.rni_wr_zero_seq.set_tagop(item_t::tagop_t'('h2));
@@ -89,7 +96,7 @@ class tc_chi_e_req_smoke extends chi_e_base_test;
 
     if ((req_item.tracetag != 1'b1) ||
         (req_item.dodwt != 1'b0) ||
-        (req_item.likelyshared != 1'b1) ||
+        (req_item.likelyshared != 1'b0) ||
         (req_item.endian != 1'b1) ||
         (req_item.group_id_ext != item_t::groupidext_t'('h3)) ||
         (req_item.tagop != item_t::tagop_t'('h2))) begin

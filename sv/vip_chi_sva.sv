@@ -996,6 +996,26 @@ module vip_chi_sva #(
           else begin
             chk_hit(VIP_CHI_CHK_REQ_ORDER_LEGAL_E);
           end
+
+          // Table 2-12 as a whitelist. Total for the same reason as the rule
+          // above: the table closes each of its two blocks with "All other
+          // values -- Not valid", so a tuple outside the nine rows is a protocol
+          // error and every request has a tuple to judge.
+          if (!vip_chi_types_pkg::vip_chi_req_attr_combination_legal(
+                vif.txreqflit.memattr,
+                vip_chi_snp_attr_t'(vif.txreqflit.snpattr),
+                vif.txreqflit.likelyshared,
+                vip_chi_req_order_t'(vif.txreqflit.order))) begin
+            chk_miss(VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E, $sformatf(
+              "request was issued with MemAttr 0x%0h (Allocate %0b Cacheable %0b Device %0b EWA %0b), SnpAttr %0b, LikelyShared %0b and Order 0b%02b, a combination Table 2-12 does not list",
+              vif.txreqflit.memattr, vif.txreqflit.memattr[3],
+              vif.txreqflit.memattr[2], vif.txreqflit.memattr[1],
+              vif.txreqflit.memattr[0], vif.txreqflit.snpattr,
+              vif.txreqflit.likelyshared, vif.txreqflit.order));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E);
+          end
         end
 
         if (vif.rxrspflitv) begin
@@ -1159,6 +1179,23 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_REQ_ORDER_LEGAL_E);
+          end
+
+          // The same Table 2-12 rule from the receiving end.
+          if (!vip_chi_types_pkg::vip_chi_req_attr_combination_legal(
+                vif.rxreqflit.memattr,
+                vip_chi_snp_attr_t'(vif.rxreqflit.snpattr),
+                vif.rxreqflit.likelyshared,
+                vip_chi_req_order_t'(vif.rxreqflit.order))) begin
+            chk_miss(VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E, $sformatf(
+              "request was received with MemAttr 0x%0h (Allocate %0b Cacheable %0b Device %0b EWA %0b), SnpAttr %0b, LikelyShared %0b and Order 0b%02b, a combination Table 2-12 does not list",
+              vif.rxreqflit.memattr, vif.rxreqflit.memattr[3],
+              vif.rxreqflit.memattr[2], vif.rxreqflit.memattr[1],
+              vif.rxreqflit.memattr[0], vif.rxreqflit.snpattr,
+              vif.rxreqflit.likelyshared, vif.rxreqflit.order));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E);
           end
 
           if (req_has_modeled_completion(req_opcode)) begin

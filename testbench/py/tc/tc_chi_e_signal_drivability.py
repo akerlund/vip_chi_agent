@@ -27,6 +27,7 @@ from chi_tb_pkg import (
 
 NON_SECURE_C = 1
 ORDER_RULE_C = "CHI_REQ_ORDER_LEGAL"
+ATTR_RULE_C = "CHI_REQ_ATTR_COMBINATION_LEGAL"
 
 
 class tc_chi_e_signal_drivability(chi_e_base_test):
@@ -59,6 +60,15 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
     rni_sva, snf_sva = self.tb_env.rni_sva, self.tb_env.snf_sva
     rni_sva.off_check(ORDER_RULE_C)
     snf_sva.off_check(ORDER_RULE_C)
+
+    # Same waiver, same reason, for the Table 2-12 tuple rule. This test drives
+    # MemAttr = 0xC -- Cacheable with EWA deasserted -- and LikelyShared on a
+    # WriteNoSnp, and the table lists neither: its Cacheable rows all carry
+    # EWA = 1, and LikelyShared is 0/1 only on the two Snoopable rows. IHI 0050 E
+    # section 2.9.5 is narrower still and names the opcodes that may assert
+    # LikelyShared; WriteNoSnpFull is not among them.
+    rni_sva.off_check(ATTR_RULE_C)
+    snf_sva.off_check(ATTR_RULE_C)
 
     self.drain_observation_fifos()
 
@@ -216,5 +226,13 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
       f"drives: rni_e={rni_fails} snf_e={snf_fails}. Either the stimulus is now "
       f"conformant -- in which case drop the waiver above -- or the rule stopped "
       f"evaluating, which is worse")
+
+    rni_attr = rni_sva.fail_count.get(ATTR_RULE_C, 0)
+    snf_attr = snf_sva.fail_count.get(ATTR_RULE_C, 0)
+    assert rni_attr > 0 and snf_attr > 0, (
+      f"{ATTR_RULE_C} did not report the deliberately illegal "
+      f"MemAttr/LikelyShared combination this test drives: rni_e={rni_attr} "
+      f"snf_e={snf_attr}. Either the stimulus is now conformant -- in which case "
+      f"drop the waiver above -- or the rule stopped evaluating, which is worse")
 
     self.drop_objection()

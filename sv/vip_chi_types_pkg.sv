@@ -495,6 +495,7 @@ package vip_chi_types_pkg;
     // stress profile; see atomic_size_stress_allowed.
     VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E,
     VIP_CHI_CHK_REQ_ORDER_LEGAL_E,
+    VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -1637,6 +1638,82 @@ package vip_chi_types_pkg;
   // ---------------------------------------------------------------------------
   // Return TRUE when the atomic request is a store-style completion-only op.
   // ---------------------------------------------------------------------------
+  // TRUE when this request's {MemAttr, SnpAttr, LikelyShared, Order} tuple is one
+  // of the nine Table 2-12 permits.
+  //
+  // IHI 0050 E Table 2-12 / D Table 2-12, "Legal combinations of MemAttr,
+  // SnpAttr, and Order field values". The table lists nine rows and closes each
+  // of its two blocks with "All other values -- Not valid", so it is a whitelist
+  // and every tuple outside it is a protocol error, not merely unusual.
+  //
+  // MemAttr bit positions are Table 13-21's: [3] Allocate, [2] Cacheable,
+  // [1] Device (0 Normal, 1 Device), [0] EWA.
+  //
+  // This judges the tuple only. The per-opcode restrictions that also bear on
+  // these fields live elsewhere on purpose: Order's opcode whitelist is
+  // vip_chi_req_order_legal, and section 2.9.5 additionally restricts
+  // LikelyShared to a named list of opcodes, which is narrower than the "must be
+  // Snoopable" this table implies. Splitting them keeps each rule's report
+  // naming one reason rather than several.
+  function automatic bit vip_chi_req_attr_combination_legal(
+    input logic [3 : 0]       mem_attr,
+    input vip_chi_snp_attr_t  snp_attr,
+    input logic               likely_shared,
+    input vip_chi_req_order_t order
+  );
+
+    bit allocate, cacheable, device, ewa, snoopable, unordered_or_req_order;
+
+    allocate  = mem_attr[3];
+    cacheable = mem_attr[2];
+    device    = mem_attr[1];
+    ewa       = mem_attr[0];
+    snoopable = (snp_attr == VIP_CHI_SNP_SNOOPABLE_E);
+
+    // Every row but the two Endpoint-Order Device ones carries Order[0] = 0,
+    // which leaves 0b00 and 0b10. 0b01 appears in no row at all -- footnote b,
+    // "Order = 0b01 is not used for transactions' ordering".
+    unordered_or_req_order = (order == VIP_CHI_ORDER_NONE_E) ||
+                             (order == VIP_CHI_ORDER_REQ_ORDER_E);
+
+    if (device) begin
+      // The three Device rows are Allocate = 0, Cacheable = 0, SnpAttr = 0 and
+      // LikelyShared = 0 without exception.
+      if (allocate || cacheable || snoopable || likely_shared) begin
+        return 1'b0;
+      end
+      // Device nRnE is the only row with EWA = 0, and it is Endpoint Order.
+      if (!ewa) begin
+        return (order == VIP_CHI_ORDER_ENDPOINT_E);
+      end
+      // EWA = 1 covers both Device nRE (Endpoint Order) and Device RE.
+      return (order == VIP_CHI_ORDER_ENDPOINT_E) || unordered_or_req_order;
+    end
+
+    // Normal memory. No row here takes Endpoint Order.
+    if (!unordered_or_req_order) begin
+      return 1'b0;
+    end
+    // LikelyShared is 0/1 only on the two Snoopable rows.
+    if (likely_shared && !snoopable) begin
+      return 1'b0;
+    end
+    if (snoopable) begin
+      // Snoopable WriteBack, No-allocate or Allocate: both require Cacheable
+      // and EWA. This is the pairing that makes SnpAttr = 1 over a zero MemAttr
+      // illegal rather than merely odd.
+      return cacheable && ewa;
+    end
+    if (!cacheable) begin
+      // Non-cacheable Non-bufferable and Non-cacheable Bufferable, differing
+      // only in EWA. Neither allocates -- section 2.9.3, "Must not be asserted
+      // for Normal Non-cacheable memory transactions".
+      return !allocate;
+    end
+    // Non-snoopable WriteBack, No-allocate or Allocate: Cacheable implies EWA.
+    return ewa;
+  endfunction
+
   function automatic bit vip_chi_req_opcode_is_atomic_store(input vip_chi_req_opcode_t opcode);
     case (opcode)
       VIP_CHI_REQ_ATOMIC_STORE_0_E,

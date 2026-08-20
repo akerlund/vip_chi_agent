@@ -315,6 +315,7 @@ CHECK_IDS = (
   # stress profile; see atomic_size_stress_allowed.
   "CHI_ATOMIC_SIZE_LEGAL",
   "CHI_REQ_ORDER_LEGAL",
+  "CHI_REQ_ATTR_COMBINATION_LEGAL",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -1215,6 +1216,72 @@ def req_dodwt_applicable(opcode: int) -> bool:
   """
   return (int(opcode) in _DODWT_APPLICABLE_OPCODES or
           req_opcode_is_combined_write_cmo(opcode))
+
+
+def req_attr_combination_legal(mem_attr: int, snp_attr: int,
+                               likely_shared: int, order: int) -> bool:
+  """TRUE when this request's {MemAttr, SnpAttr, LikelyShared, Order} tuple is one
+  of the nine Table 2-12 permits.
+
+  IHI 0050 E Table 2-12 / D Table 2-12, "Legal combinations of MemAttr, SnpAttr,
+  and Order field values". The table lists nine rows and closes each of its two
+  blocks with "All other values -- Not valid", so it is a whitelist and every
+  tuple outside it is a protocol error, not merely unusual.
+
+  MemAttr bit positions are Table 13-21's: [3] Allocate, [2] Cacheable,
+  [1] Device (0 Normal, 1 Device), [0] EWA.
+
+  This judges the tuple only. The per-opcode restrictions that also bear on these
+  fields live elsewhere on purpose: Order's opcode whitelist is req_order_legal,
+  and section 2.9.5 additionally restricts LikelyShared to a named list of
+  opcodes, which is narrower than the "must be Snoopable" this table implies.
+  Splitting them keeps each rule's report naming one reason rather than several.
+
+  The twin of vip_chi_req_attr_combination_legal in the SystemVerilog types
+  package.
+  """
+  mem_attr = int(mem_attr)
+  allocate = bool(mem_attr & 0x8)
+  cacheable = bool(mem_attr & 0x4)
+  device = bool(mem_attr & 0x2)
+  ewa = bool(mem_attr & 0x1)
+  snoopable = int(snp_attr) == int(SnpAttr.SNOOPABLE)
+  order = int(order)
+
+  # Every row but the two Endpoint-Order Device ones carries Order[0] = 0, which
+  # leaves 0b00 and 0b10. 0b01 appears in no row at all -- footnote b, "Order =
+  # 0b01 is not used for transactions' ordering".
+  unordered_or_req_order = order in (int(ReqOrder.NONE), int(ReqOrder.REQ_ORDER))
+
+  if device:
+    # The three Device rows are Allocate = 0, Cacheable = 0, SnpAttr = 0 and
+    # LikelyShared = 0 without exception.
+    if allocate or cacheable or snoopable or int(likely_shared):
+      return False
+    # Device nRnE is the only row with EWA = 0, and it is Endpoint Order.
+    if not ewa:
+      return order == int(ReqOrder.ENDPOINT)
+    # EWA = 1 covers both Device nRE (Endpoint Order) and Device RE.
+    return order == int(ReqOrder.ENDPOINT) or unordered_or_req_order
+
+  # Normal memory. No row here takes Endpoint Order.
+  if not unordered_or_req_order:
+    return False
+  # LikelyShared is 0/1 only on the two Snoopable rows.
+  if int(likely_shared) and not snoopable:
+    return False
+  if snoopable:
+    # Snoopable WriteBack, No-allocate or Allocate: both require Cacheable and
+    # EWA. This is the pairing that makes SnpAttr = 1 over a zero MemAttr illegal
+    # rather than merely odd.
+    return cacheable and ewa
+  if not cacheable:
+    # Non-cacheable Non-bufferable and Non-cacheable Bufferable, differing only
+    # in EWA. Neither allocates -- section 2.9.3, "Must not be asserted for
+    # Normal Non-cacheable memory transactions".
+    return not allocate
+  # Non-snoopable WriteBack, No-allocate or Allocate: Cacheable implies EWA.
+  return ewa
 
 
 def req_bit17_is_dodwt(issue: int, opcode: int) -> bool:

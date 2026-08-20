@@ -81,6 +81,7 @@ from vip_chi_types_pkg import (
   lasm_legal_step,
   atomic_size_legal,
   req_order_legal,
+  req_attr_combination_legal,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
   req_opcode_is_atomic_returning_data,
@@ -147,7 +148,8 @@ _COMPLETER_ROLES_C = (Role.SNF, Role.HNF, Role.HNI)
 # raw flit: unpacking the whole DAT flit every beat would drag the multi-hundred
 # bit `data` field through a big-int shift for a checker that never looks at it.
 _FLIT_FIELDS_C = {
-  "req": ("opcode", "txnid", "returntxnid", "size", "expcompack", "order"),
+  "req": ("opcode", "txnid", "returntxnid", "size", "expcompack", "order",
+          "memattr", "snpattr", "likelyshared"),
   "rsp": ("opcode", "txnid", "dbid", "resperr", "resp"),
   "dat": ("opcode", "txnid", "dbid", "dataid"),
 }
@@ -1547,6 +1549,20 @@ class bind_chi:
               f"opcode 0x{int(opcode):x} carried Order 0b{int(f['order']):02b}, "
               f"which the specification does not permit for it",
               "Table 13-25 / Table 2-12 footnote a")
+
+    # Table 2-12 as a whitelist: the table closes each of its two blocks with
+    # "All other values -- Not valid", so a tuple outside the nine rows is a
+    # protocol error and every request has a tuple to judge.
+    ma = int(f["memattr"])
+    self._chk("CHI_REQ_ATTR_COMBINATION_LEGAL",
+              req_attr_combination_legal(ma, f["snpattr"], f["likelyshared"],
+                                         f["order"]),
+              f"request carried MemAttr 0x{ma:x} (Allocate {(ma >> 3) & 1} "
+              f"Cacheable {(ma >> 2) & 1} Device {(ma >> 1) & 1} EWA {ma & 1}), "
+              f"SnpAttr {int(f['snpattr'])}, LikelyShared {int(f['likelyshared'])} "
+              f"and Order 0b{int(f['order']):02b}, a combination Table 2-12 does "
+              f"not list",
+              "Table 2-12")
 
   def _arm_completion(self, s: dict, f: dict) -> None:
     """Start the temporal attempts a request opens."""

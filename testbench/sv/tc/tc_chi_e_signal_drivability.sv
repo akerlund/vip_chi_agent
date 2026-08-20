@@ -80,6 +80,17 @@ class tc_chi_e_signal_drivability extends chi_e_base_test;
     super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_REQ_ORDER_LEGAL_E] =
       VIP_CHI_CHK_SEV_OFF_E;
 
+    // Same waiver, same reason, for the Table 2-12 tuple rule. This test drives
+    // MemAttr = 0x4'hc -- Cacheable with EWA deasserted -- and LikelyShared on a
+    // WriteNoSnp, and the table lists neither: its Cacheable rows all carry
+    // EWA = 1, and LikelyShared is 0/1 only on the two Snoopable rows.
+    // IHI 0050 E section 2.9.5 is narrower still and names the opcodes that may
+    // assert LikelyShared; WriteNoSnpFull is not among them.
+    super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+
     super.drain_observation_fifos();
 
     req_tag_vals = new[1];
@@ -270,6 +281,15 @@ class tc_chi_e_signal_drivability extends chi_e_base_test;
         super.tc_name, vip_chi_check_name(VIP_CHI_CHK_REQ_ORDER_LEGAL_E),
         super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ORDER_LEGAL_E],
         super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ORDER_LEGAL_E]))
+    end
+
+    if ((super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E] == 0) ||
+        (super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E] == 0)) begin
+      `uvm_error(get_name(), $sformatf(
+        "ERROR [%s] %s did not report the deliberately illegal MemAttr/LikelyShared combination this test drives: rni_e=%0d snf_e=%0d. Either the stimulus is now conformant -- in which case drop the waiver above -- or the rule stopped evaluating, which is worse",
+        super.tc_name, vip_chi_check_name(VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E),
+        super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E],
+        super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E]))
     end
 
     phase.drop_objection(this);
