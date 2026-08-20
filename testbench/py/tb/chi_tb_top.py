@@ -1258,6 +1258,13 @@ async def tc_chi_lasm_timeout(dut) -> None:
   await _run_d_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_e_link_lifecycle", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_link_lifecycle(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_link_lifecycle"
+  await _run_e_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_ordered_write_no_comp_ack", timeout_time=20, timeout_unit="ms")
 async def tc_chi_ordered_write_no_comp_ack(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""

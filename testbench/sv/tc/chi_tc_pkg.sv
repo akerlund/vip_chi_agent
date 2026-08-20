@@ -53,6 +53,7 @@ package chi_tc_pkg;
   `include "tc_chi_lasm_deactivate.sv"
   `include "tc_chi_lasm_timeout.sv"
   `include "tc_chi_lasm_race.sv"
+  `include "tc_chi_e_link_lifecycle.sv"
   `include "tc_chi_flitpend_without_valid.sv"
   `include "tc_chi_flit_without_flitpend.sv"
   `include "tc_chi_recording_smoke.sv"

@@ -37,10 +37,18 @@ is transmitted at a requester and received at a completer, snoops the other way
 round -- is dead at the other end by POLARITY, not for want of a testcase. Naming
 the vantage separates the two, and what is left is the actual triage backlog.
 
-The vantage table is declared rather than parsed, and it checks itself: a rule
-declared requester-only that records evidence at a completer bind is a
+A rule can also be dead because of the link's GEOMETRY. The DAT burst-ordering
+rules only exist on the second and later beat of a burst, so on a link whose bus
+is as wide as the largest transfer CHI can ask for there is nowhere for a second
+beat to be. Those want a narrower link, not a testcase, which is a topology item
+and a different queue -- so they are counted apart from both of the above rather
+than sitting in a backlog no testcase can ever drain.
+
+Both tables are declared rather than parsed, and they check themselves: a rule
+declared requester-only that records evidence at a completer bind, or a
+multi-beat rule that records evidence on a bus too wide to produce one, is a
 contradiction, and the script says so instead of quietly filing 650 pairs under
-"structural". That self-check is the reason the table is trustworthy at all.
+"structural". That self-check is the reason the tables are trustworthy at all.
 
 Exit status: 0 clean, 1 a gap. With no tally CSV it reports what it can from the
 source alone and exits 0 on the source-only half -- the CSV is a sweep artifact,
@@ -59,6 +67,7 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("CHI_ROOT", Path(__file__).resolve().parents[1]))
 TOP = ROOT / "testbench" / "sv" / "tb" / "chi_tb_top.sv"
+PKG = ROOT / "testbench" / "sv" / "tb" / "chi_tb_pkg.sv"
 DEFAULT_CSV = ROOT / "build" / "sv_regression" / "check_tallies.csv"
 
 # Live interfaces that deliberately carry no bind. Each entry is a sentence
@@ -97,6 +106,41 @@ REQUESTER_VANTAGE_C = frozenset({
   "CHI_TXSACTIVE_COVERS_OUTSTANDING",
   # Snoop credits are GRANTED by the RN-F that receives snoops.
   "CHI_SNP_LCRDV_REQUIRES_LINK",
+})
+
+# The largest data payload one CHI transaction can move. IHI 0050 E Table 2-15
+# (Size field value encodings, §2.10.1) and Table 13-20: Size 0b110 is 64 bytes
+# and 0b111 is Reserved, so 64 is the ceiling and there is no encoding above it.
+CHI_MAX_XFER_BYTES_C = 64
+
+# Rules that only exist on the SECOND and later beat of a DAT burst. Their
+# antecedent is "this flit continues a burst already in progress", so a link
+# where every transfer fits in one beat cannot reach them -- not for want of a
+# testcase, but because the geometry leaves nowhere for a second beat to be.
+#
+# That is the case on any link whose DAT bus is at least CHI_MAX_XFER_BYTES_C
+# wide: the largest transfer CHI can ask for still lands in a single flit.
+#
+# This is a THIRD reason a rule can be dead, distinct from the vantage above and
+# recorded separately because the remedy is different. A vantage-dead rule is
+# checked at the other end and wants nothing. A geometry-dead rule is not checked
+# on this link AT ALL and wants a narrower link to be checked on -- which is a
+# topology change, not a testcase, and belongs in a different queue from the
+# triage backlog.
+#
+# One honest caveat, kept here rather than in a commit message because it is the
+# thing that would mislead the next reader: a burst CAN exceed one beat on a wide
+# bus when the completer interleaves two transfers under one FLITPEND. Both rules
+# stand themselves down in that case (they are gated on !dat_interleave_allowed)
+# and record a pass for a flit they did not judge, so the evidence would be real
+# and the judgement would not. The self-check below therefore reports any
+# evaluation on a wide-bus bind as a contradiction: on this testbench there are
+# none, and if one appears it is worth reading either way.
+MULTI_BEAT_VANTAGE_C = frozenset({
+  "CHI_TX_DAT_DATAID_SEQUENTIAL",
+  "CHI_RX_DAT_DATAID_SEQUENTIAL",
+  "CHI_TX_DAT_TXNID_STABLE",
+  "CHI_RX_DAT_TXNID_STABLE",
 })
 
 # The mirror set: evidence only at the completer's end.
@@ -159,6 +203,33 @@ def parse_bind_roles(sv: str) -> dict[str, str]:
   return roles
 
 
+def parse_cfg_data_bytes(pkg: str) -> dict[str, int]:
+  """Config localparam name -> DATA_BYTES_P, read from chi_tb_pkg."""
+  widths: dict[str, int] = {}
+  for m in re.finditer(
+      r"localparam\s+vip_chi_cfg_t\s+(\w+)\s*=\s*'\{(.*?)\};", pkg, re.S):
+    db = re.search(r"DATA_BYTES_P\s*:\s*(\d+)", m.group(2))
+    if db:
+      widths[m.group(1)] = int(db.group(1))
+  return widths
+
+
+def parse_bind_data_bytes(sv: str, cfg_widths: dict[str, int]) -> dict[str, int]:
+  """Bind instance name -> the DAT bus width of the link it observes.
+
+  Taken from the bind's own CFG_P, not from the interface, for the same reason
+  parse_bind_roles reads ROLE_P: what the bind was PARAMETERISED with is what it
+  compiled against, and a bind parameterised with the wrong config is a real
+  mistake this repository has already made once.
+  """
+  widths: dict[str, int] = {}
+  for m in re.finditer(
+      r"vip_chi_(?:snp_)?sva\s*#\((.*?)\)\s*\n\s*(\w+)\s*\(\.vif\(", sv, re.S):
+    cfg = re.search(r"CFG_P\((\w+)\)", m.group(1))
+    widths[m.group(2)] = cfg_widths.get(cfg.group(1), 0) if cfg else 0
+  return widths
+
+
 def read_evidence(csv_path: Path):
   """(bind, check) -> evaluations, and (bind, check) -> enabled-anywhere."""
   ev: dict[tuple[str, str], int] = {}
@@ -175,26 +246,40 @@ def read_evidence(csv_path: Path):
   return ev, enabled
 
 
-def split_dead(ev, enabled, roles) -> tuple[list, list, list]:
-  """Split the dead (bind, rule) pairs by whether the vantage explains them."""
+def split_dead(ev, enabled, roles, data_bytes=None) -> tuple[list, list, list, list]:
+  """Split the dead (bind, rule) pairs by what explains them.
+
+  Three explanations, in the order a reader should try them: the rule's evidence
+  belongs at the other end of the link (vantage), the link's geometry leaves the
+  rule's antecedent unreachable (geometry), or nothing drove it (the backlog).
+  """
   alive_rule: dict[str, int] = {}
   for (_b, c), n in ev.items():
     alive_rule[c] = alive_rule.get(c, 0) + n
+  data_bytes = data_bytes or {}
 
-  structural, no_stimulus, contradictions = [], [], []
+  structural, geometry, no_stimulus, contradictions = [], [], [], []
   for (bind, check), n in sorted(ev.items()):
     role = roles.get(bind, "UNKNOWN")
     is_req = role in _REQUESTER_ROLES_C
     is_comp = role in _COMPLETER_ROLES_C
     wrong_end = ((check in REQUESTER_VANTAGE_C and is_comp) or
                  (check in COMPLETER_VANTAGE_C and is_req))
-    if n and wrong_end:
+    width = data_bytes.get(bind, 0)
+    too_wide = (check in MULTI_BEAT_VANTAGE_C and
+                width >= CHI_MAX_XFER_BYTES_C)
+    if n and (wrong_end or too_wide):
       contradictions.append((bind, check, role, n))
       continue
     if n or not enabled[(bind, check)] or not alive_rule.get(check):
       continue
-    (structural if wrong_end else no_stimulus).append((bind, check, role))
-  return structural, no_stimulus, contradictions
+    if wrong_end:
+      structural.append((bind, check, role))
+    elif too_wide:
+      geometry.append((bind, check, width))
+    else:
+      no_stimulus.append((bind, check, role))
+  return structural, geometry, no_stimulus, contradictions
 
 
 def exported_binds(csv_path: Path) -> set[str] | None:
@@ -295,7 +380,10 @@ def main() -> int:
   if seen is not None:
     ev, enabled = read_evidence(Path(args.csv))
     roles = parse_bind_roles(sv)
-    structural, no_stimulus, contradictions = split_dead(ev, enabled, roles)
+    cfg_widths = parse_cfg_data_bytes(_read(PKG))
+    data_bytes = parse_bind_data_bytes(sv, cfg_widths)
+    structural, geometry, no_stimulus, contradictions = split_dead(
+      ev, enabled, roles, data_bytes)
 
     if contradictions:
       print(f"\nVANTAGE TABLE CONTRADICTED ({len(contradictions)}):")
@@ -304,8 +392,10 @@ def main() -> int:
               f"which the table calls impossible at this end")
         failures += 1
 
-    print(f"\ndead (bind, rule) pairs: {len(structural) + len(no_stimulus)}  "
+    print(f"\ndead (bind, rule) pairs: "
+          f"{len(structural) + len(geometry) + len(no_stimulus)}  "
           f"= {len(structural)} explained by vantage  "
+          f"+ {len(geometry)} explained by geometry  "
           f"+ {len(no_stimulus)} missing stimulus")
     if structural:
       print("  Explained: the rule's evidence can only appear at the other end of "
@@ -313,6 +403,19 @@ def main() -> int:
             "at a completer; snoops\n  go the other way. These are dead by "
             "polarity, not for want of a testcase,\n  and no testcase can move "
             "them.")
+    if geometry:
+      by_width: dict[int, set[str]] = {}
+      for bind, _check, width in geometry:
+        by_width.setdefault(width, set()).add(bind)
+      widths = ", ".join(f"{len(b)} bind(s) at {w} B"
+                         for w, b in sorted(by_width.items()))
+      print(f"\n  GEOMETRY -- the rule's antecedent is unreachable on this link "
+            f"({len(geometry)}).\n  These want a NARROWER LINK, not a testcase, "
+            f"so they are a topology item and\n  not part of the triage backlog "
+            f"below. Every one is a DAT burst-ordering rule\n  on a link whose "
+            f"bus is at least the largest transfer CHI can ask for\n  "
+            f"({CHI_MAX_XFER_BYTES_C} B, IHI 0050 E Table 2-15), so no transfer "
+            f"needs a second beat: {widths}.")
     if no_stimulus:
       print(f"\n  MISSING STIMULUS -- alive elsewhere, possible here, and "
             f"nothing drove it ({len(no_stimulus)}).\n  This is the triage "
