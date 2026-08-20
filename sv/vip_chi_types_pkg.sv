@@ -1343,9 +1343,14 @@ package vip_chi_types_pkg;
     // want Ordered Write Observation ("For Write transactions, CompAck can only
     // be used for WriteUnique and WriteNoSnp transactions when they require
     // Ordered Write Observation guarantees").
+    // ReadNoSnpSep is deliberately NOT in this list. Chapter 4 gives it "Must not
+    // assert ExpCompAck in the Request" and Table A-3's ExpCompAck column agrees
+    // with a "0". Classifying it Optional -- as this function did -- permitted the
+    // bit on an opcode the specification forbids it on, and left
+    // CHI_EXPCOMPACK_PROHIBITED_BUT_SET blind to the violation, because the
+    // classifier did not call it one.
     case (req_op)
       VIP_CHI_REQ_READ_NO_SNP_E,
-      VIP_CHI_REQ_READ_NO_SNP_SEP_E,
       VIP_CHI_REQ_READ_ONCE_E,
       VIP_CHI_REQ_WRITE_UNIQUE_FULL_E,
       VIP_CHI_REQ_WRITE_UNIQUE_PTL_E,
@@ -1598,6 +1603,16 @@ package vip_chi_types_pkg;
     input vip_chi_req_opcode_t opcode,
     input vip_chi_req_order_t  order
   );
+    // Checked BEFORE the per-value cases: this is a requirement on the OPCODE, so
+    // it must reject every value except 0b01 rather than only the ones a
+    // per-value branch happens to reach. 0b10 would otherwise slip through the
+    // Request-Order whitelist, which lists ReadNoSnpSep because that value is
+    // permitted on it in general -- but Chapter 4 makes 0b01 mandatory, which is
+    // stricter.
+    if (opcode == VIP_CHI_REQ_READ_NO_SNP_SEP_E) begin
+      return (order == VIP_CHI_ORDER_REQ_ACCEPTED_E);
+    end
+
     case (order)
 
       VIP_CHI_ORDER_REQ_ACCEPTED_E: begin
@@ -1639,6 +1654,18 @@ package vip_chi_types_pkg;
         endcase
       end
 
+      // Order = 0b00 and 0b11 land here. 0b11 Endpoint Order is not judged by
+      // opcode: Table 2-12 already ties it to Device memory, and
+      // vip_chi_req_attr_combination_legal owns that pairing.
+      //
+      // The one POSITIVE requirement on this field lives here, and it is the
+      // reason the 0b01 encoding exists at all. Chapter 4 gives ReadNoSnpSep "The
+      // Order field of the request must be set to b01", and its communicating node
+      // pairs are exactly ICN(HN-F) to SN-F and ICN(HN-I) to SN-I -- the two cases
+      // Table 13-25 names as applicable for that value. So on that opcode every
+      // other Order value is wrong, which incidentally closes the gap this
+      // function documents above: the Home-to-Slave condition a bind cannot decide
+      // is implied by the opcode in the one place the value is mandatory.
       default: begin
         return 1'b1;
       end
@@ -2007,10 +2034,18 @@ package vip_chi_types_pkg;
     snoopable = (snp_attr == VIP_CHI_SNP_SNOOPABLE_E);
 
     // Every row but the two Endpoint-Order Device ones carries Order[0] = 0,
-    // which leaves 0b00 and 0b10. 0b01 appears in no row at all -- footnote b,
-    // "Order = 0b01 is not used for transactions' ordering".
+    // which leaves 0b00 and 0b10.
+    //
+    // 0b01 appears in no row, and footnote b says why: "Order = 0b01 is not used
+    // for transactions' ordering". It is a Request-accepted signal rather than an
+    // ordering requirement, so this table has nothing to say about it and such a
+    // request is judged on its MemAttr alone. Faulting it here would fail
+    // conformant traffic: ReadNoSnpSep is REQUIRED to carry 0b01 (Chapter 4, "The
+    // Order field of the request must be set to b01"), and whether a given opcode
+    // may carry it is vip_chi_req_order_legal's business, not this rule's.
     unordered_or_req_order = (order == VIP_CHI_ORDER_NONE_E) ||
-                             (order == VIP_CHI_ORDER_REQ_ORDER_E);
+                             (order == VIP_CHI_ORDER_REQ_ORDER_E) ||
+                             (order == VIP_CHI_ORDER_REQ_ACCEPTED_E);
 
     if (device) begin
       // The three Device rows are Allocate = 0, Cacheable = 0, SnpAttr = 0 and
@@ -2019,8 +2054,10 @@ package vip_chi_types_pkg;
         return 1'b0;
       end
       // Device nRnE is the only row with EWA = 0, and it is Endpoint Order.
+      // 0b01 stands down here too, for the footnote-b reason above.
       if (!ewa) begin
-        return (order == VIP_CHI_ORDER_ENDPOINT_E);
+        return (order == VIP_CHI_ORDER_ENDPOINT_E) ||
+               (order == VIP_CHI_ORDER_REQ_ACCEPTED_E);
       end
       // EWA = 1 covers both Device nRE (Endpoint Order) and Device RE.
       return (order == VIP_CHI_ORDER_ENDPOINT_E) || unordered_or_req_order;

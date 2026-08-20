@@ -72,6 +72,11 @@ class vip_chi_base_seq #(
   // The default range is [0, 6], so before this the full writes randomized to
   // sizes the table does not allow them.
   protected bit         size_forced      = 1'b0;
+  // Order is opcode-derived in exactly one place: Chapter 4 requires
+  // ReadNoSnpSep to carry 0b01. Everywhere else the field is a caller policy, so
+  // this flag exists only so that one requirement does not override an explicit
+  // set_order().
+  protected bit         order_forced     = 1'b0;
   protected vip_chi_snp_attr_t snp_attr_val    = VIP_CHI_SNP_NON_SNOOPABLE_E;
   protected bit                snp_attr_forced = 1'b0;
   protected logic       allow_retry_val  = 1'b1;
@@ -149,6 +154,7 @@ class vip_chi_base_seq #(
     this.mem_attr_forced     = 1'b0;
     this.snp_attr_forced     = 1'b0;
     this.size_forced         = 1'b0;
+    this.order_forced        = 1'b0;
     this.excl_val           = 1'b0;
     this.pcrd_type_val      = 4'b0;
     this.src_id_val         = '0;
@@ -490,7 +496,8 @@ class vip_chi_base_seq #(
   // Set the Order field stamped onto every generated request.
   // ---------------------------------------------------------------------------
   function void set_order(input logic [1:0] order);
-    this.order_val = order;
+    this.order_val    = order;
+    this.order_forced = 1'b1;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -612,6 +619,7 @@ class vip_chi_base_seq #(
     vip_chi_role_t role_val_v;
     logic          exp_comp_ack_eff;
     logic [3:0]    mem_attr_eff;
+    logic [1:0]    order_eff;
     vip_chi_snp_attr_t snp_attr_eff;
 
     req = new($sformatf("req_%0d", request_idx));
@@ -637,7 +645,6 @@ class vip_chi_base_seq #(
     req.min_addr = this.addr_iter.current();
     req.max_addr = this.addr_iter.current();
     req.set_ns(this.ns_val);
-    req.set_order(this.order_val);
     req.set_allow_retry(this.allow_retry_val);
     req.set_excl(this.excl_val);
     req.set_pcrd_type(this.pcrd_type_val);
@@ -683,6 +690,13 @@ class vip_chi_base_seq #(
           vip_chi_req_opcode_t'(opcode_val))) begin
       req.set_size(VIP_CHI_REQ_SIZE_64B_C);
     end
+
+    // Order, opcode-derived for the single opcode that mandates a value.
+    order_eff = (!this.order_forced &&
+                 (req_opcode_t'(opcode_val) ==
+                  req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C)))
+              ? VIP_CHI_ORDER_REQ_ACCEPTED_E : this.order_val;
+    req.set_order(order_eff);
     if (!req.randomize() with {
       direction     == direction_val;
       role          == local::role_val_v;
@@ -701,7 +715,7 @@ class vip_chi_base_seq #(
       group_id_ext  == local::this.group_id_ext_val;
       tagop         == local::this.tagop_val;
       ns            == local::this.ns_val;
-      order         == local::this.order_val;
+      order         == local::order_eff;
       mem_attr      == local::mem_attr_eff;
       allow_retry   == local::this.allow_retry_val;
       exp_comp_ack  == local::exp_comp_ack_eff;

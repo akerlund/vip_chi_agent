@@ -34,7 +34,7 @@ from pyuvm import uvm_sequence
 from vip_chi_types_pkg import (
   ChiCfg, VIP_CHI_DEFAULT_CFG, Dir, Role, DataType, ReqOpcode,
   exp_comp_ack_required, SnpAttr, SnpAttrReq, snp_attr_requirement,
-  req_mem_attr_default, req_size_fixed_64b, REQ_SIZE_64B,
+  req_mem_attr_default, req_size_fixed_64b, REQ_SIZE_64B, ReqOrder,
 )
 from vip_chi_item import vip_chi_item
 from vip_chi_cfg_item import VipChiCfgItem
@@ -85,6 +85,11 @@ class vip_chi_base_seq(uvm_sequence):
     # Atomics. The default range is [0, 6], so before this the full writes
     # randomized to sizes the table does not allow them.
     self.size_forced = 0
+    # Order is opcode-derived in exactly one place: Chapter 4 requires
+    # ReadNoSnpSep to carry 0b01. Everywhere else the field is caller policy, so
+    # this flag exists only so that one requirement cannot override an explicit
+    # set_order().
+    self.order_forced = 0
     self.allow_retry_val = 1
     # ExpCompAck is not a plain stamped field like the ones around it: IHI 0050
     # E Table 2-9 / D Table 2-8 makes it required on some opcodes, optional on
@@ -199,7 +204,9 @@ class vip_chi_base_seq(uvm_sequence):
   def set_tag(self, tag): self.tag_val = [int(t) for t in tag]
   def set_tu(self, tu): self.tu_val = [int(t) for t in tu]
   def set_ns(self, ns): self.ns_val = int(ns)
-  def set_order(self, order): self.order_val = int(order)
+  def set_order(self, order):
+    self.order_val = int(order)
+    self.order_forced = 1
   def set_mem_attr(self, mem_attr):
     self.mem_attr_val = int(mem_attr)
     self.mem_attr_forced = 1
@@ -319,6 +326,12 @@ class vip_chi_base_seq(uvm_sequence):
     if not self.size_forced and req_size_fixed_64b(opcode_val):
       req.set_size_range(REQ_SIZE_64B, REQ_SIZE_64B)
 
+    # Order, opcode-derived for the single opcode that mandates a value.
+    order_eff = (int(ReqOrder.REQ_ACCEPTED)
+                 if (not self.order_forced
+                     and int(opcode_val) == int(ReqOpcode.READ_NO_SNP_SEP))
+                 else self.order_val)
+
     with req.randomize_with() as x:
       x.direction == direction_val
       x.role == role_val
@@ -337,7 +350,7 @@ class vip_chi_base_seq(uvm_sequence):
       x.group_id_ext == self.group_id_ext_val
       x.tagop == self.tagop_val
       x.ns == self.ns_val
-      x.order == self.order_val
+      x.order == order_eff
       x.mem_attr == mem_attr_eff
       x.allow_retry == self.allow_retry_val
       x.exp_comp_ack == exp_comp_ack_eff

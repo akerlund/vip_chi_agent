@@ -1159,10 +1159,26 @@ def req_order_legal(opcode: int, order: int) -> bool:
   under-reports; read narrowly it would fail conformant traffic, which is the
   worse error for a rule that runs on every request in the sweep.
 
-  Order = 0b00 is legal everywhere. Order = 0b11 Endpoint Order is NOT judged
+  The one POSITIVE requirement on this field is ReadNoSnpSep's. Chapter 4 gives it
+  "The Order field of the request must be set to b01", and its communicating node
+  pairs are exactly ICN(HN-F) to SN-F and ICN(HN-I) to SN-I -- the two cases Table
+  13-25 names as applicable for that value. So on that opcode every other Order
+  value is wrong, which incidentally closes the gap described above: the
+  Home-to-Slave condition undecidable at a bind is implied by the opcode in the one
+  place the value is mandatory.
+
+  Order = 0b00 is legal everywhere EXCEPT ReadNoSnpSep. Order = 0b11 is NOT judged
   here: Table 2-12 admits it only on the two Device rows, so it is a constraint on
   {MemAttr, Order} together and belongs to the attribute-combination rule.
   """
+  # Checked BEFORE the per-value cases: this is a requirement on the OPCODE, so it
+  # has to reject every value except 0b01 rather than only the ones a per-value
+  # branch happens to reach. 0b10 would otherwise slip through the Request-Order
+  # whitelist, which lists ReadNoSnpSep because that value is permitted on it in
+  # general -- but Chapter 4 makes 0b01 mandatory, which is stricter.
+  if int(opcode) == int(ReqOpcode.READ_NO_SNP_SEP):
+    return int(order) == int(ReqOrder.REQ_ACCEPTED)
+
   order = int(order)
   opcode = int(opcode)
   if order == int(ReqOrder.REQ_ACCEPTED):
@@ -1518,9 +1534,17 @@ def req_attr_combination_legal(mem_attr: int, snp_attr: int,
   order = int(order)
 
   # Every row but the two Endpoint-Order Device ones carries Order[0] = 0, which
-  # leaves 0b00 and 0b10. 0b01 appears in no row at all -- footnote b, "Order =
-  # 0b01 is not used for transactions' ordering".
-  unordered_or_req_order = order in (int(ReqOrder.NONE), int(ReqOrder.REQ_ORDER))
+  # leaves 0b00 and 0b10.
+  #
+  # 0b01 appears in no row, and footnote b says why: "Order = 0b01 is not used for
+  # transactions' ordering". It is a Request-accepted signal rather than an
+  # ordering requirement, so this table has nothing to say about it and such a
+  # request is judged on its MemAttr alone. Faulting it here would fail conformant
+  # traffic: ReadNoSnpSep is REQUIRED to carry 0b01 (Chapter 4, "The Order field of
+  # the request must be set to b01"), and whether a given opcode may carry it is
+  # req_order_legal's business, not this rule's.
+  unordered_or_req_order = order in (int(ReqOrder.NONE), int(ReqOrder.REQ_ORDER),
+                                     int(ReqOrder.REQ_ACCEPTED))
 
   if device:
     # The three Device rows are Allocate = 0, Cacheable = 0, SnpAttr = 0 and
@@ -1528,8 +1552,9 @@ def req_attr_combination_legal(mem_attr: int, snp_attr: int,
     if allocate or cacheable or snoopable or int(likely_shared):
       return False
     # Device nRnE is the only row with EWA = 0, and it is Endpoint Order.
+    # 0b01 stands down here too, for the footnote-b reason above.
     if not ewa:
-      return order == int(ReqOrder.ENDPOINT)
+      return order in (int(ReqOrder.ENDPOINT), int(ReqOrder.REQ_ACCEPTED))
     # EWA = 1 covers both Device nRE (Endpoint Order) and Device RE.
     return order == int(ReqOrder.ENDPOINT) or unordered_or_req_order
 
@@ -1584,9 +1609,13 @@ class CompAckReq(IntEnum):
 # Optional for BOTH columns of the table: the two read forms an RN-F may decline
 # to acknowledge, and the two writes that use CompAck only when they want
 # Ordered Write Observation.
+# ReadNoSnpSep is deliberately NOT here. Chapter 4 gives it "Must not assert
+# ExpCompAck in the Request" and Table A-3's ExpCompAck column agrees with a "0".
+# Classifying it Optional -- as this set did -- permitted the bit on an opcode the
+# specification forbids it on, and left CHI_EXPCOMPACK_PROHIBITED_BUT_SET blind to
+# the violation, because the classifier did not call it one.
 _COMPACK_OPTIONAL_OPCODES = frozenset({
   int(ReqOpcode.READ_NO_SNP),
-  int(ReqOpcode.READ_NO_SNP_SEP),
   int(ReqOpcode.READ_ONCE),
   int(ReqOpcode.WRITE_UNIQUE_FULL),
   int(ReqOpcode.WRITE_UNIQUE_PTL),
