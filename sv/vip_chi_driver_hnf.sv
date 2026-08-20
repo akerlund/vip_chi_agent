@@ -1934,6 +1934,12 @@ class vip_chi_driver_hnf #(
     flit.srcid    = node_id_t'(0);   // matched by TxnID + port; SrcID is nominal
     flit.fwdnid   = fwd_nid;
     flit.fwdtxnid = fwd_txn;
+    // IHI 0050 E 13.10.35 makes DoNotGoToSD mandatory-one on the invalidating
+    // snoops and on SnpCleanShared; D 12.9.32 lets the same bit take any value
+    // there, so this drives a one only where the specification requires it and
+    // leaves the CHI-D wire value as it was.
+    flit.donotgotosd = vip_chi_types_pkg::vip_chi_snp_do_not_go_to_sd_required(
+                         CFG_P.ISSUE_P, op);
 
     this.wait_rn_snp_send_credit(k);
 

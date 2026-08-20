@@ -1284,6 +1284,63 @@ _SNP_ATTR_ZERO_OPCODES = frozenset({
 })
 
 
+# The four stash snoops of D 12.9.33. Empty because none is modelled: the set is
+# named rather than implied so that adding SnpStashUnique means adding it here
+# and nowhere else.
+_SNP_STASH_OPCODES_C: tuple = ()
+
+
+def snp_bit_is_do_not_data_pull(issue: int, opcode: int) -> bool:
+  """Whether one SNP packet bit is DoNotDataPull rather than DoNotGoToSD.
+
+  IHI 0050 E Table 13-8 / D Table 12-8: the two field names share a single
+  one-bit row -- the same shape as REQ bit 17's SnpAttr/DoDWT overload. D
+  12.9.32 and 12.9.33 state the partition from both sides: DoNotGoToSD is
+  applicable in every snoop except SnpUniqueStash, SnpMakeInvalidStash,
+  SnpStashShared, SnpStashUnique and SnpDVMOp, and "for Stash snoop requests the
+  same bits in the packet are used for DoNotDataPull"; DoNotDataPull is
+  applicable in exactly those four stash snoops and is "not present in Non-stash
+  snoops". Issue E removed DoNotDataPull entirely.
+
+  No stash snoop is modelled here -- none has an encoding in SnpOpcode -- so on
+  every opcode this VIP can send or receive the bit is DoNotGoToSD, in both
+  issues. Kept as a function rather than folded away so that adding a stash
+  snoop cannot silently reinterpret the bit, and so the two flows say the same
+  thing.
+  """
+  if int(issue) != int(Issue.D):
+    return False
+  return int(opcode) in _SNP_STASH_OPCODES_C
+
+
+def snp_do_not_go_to_sd_required(issue: int, opcode: int) -> bool:
+  """Whether DoNotGoToSD must be set to 1 for an opcode.
+
+  E 13.10.35 gives three lists rather than two: any value in the
+  non-invalidating snoops, MUST BE ONE in the invalidating and stash forms plus
+  SnpQuery, and zero in SnpDVMOp. D 12.9.32 has no must-be-one list at all --
+  there the field is applicable and takes any value outside the stash and DVM
+  opcodes -- so this is a place where the two issues genuinely differ rather
+  than one being a clarification of the other.
+
+  A boolean answers it because the third case is unreachable here: the
+  must-be-zero opcode is SnpDVMOp, and DVM is a recorded non-goal
+  (docs/FUTURE_WORK.md). Modelling DVM means giving this a three-valued answer.
+  Restricted to modelled opcodes for the same reason: SnpQuery,
+  SnpPreferUnique*, SnpNotSharedDirty and the stash forms have no encoding here,
+  so naming them would assert a reading no traffic in this tree can confirm.
+  """
+  if snp_bit_is_do_not_data_pull(issue, opcode):
+    return False
+  if int(issue) != int(Issue.E):
+    return False
+  return int(opcode) in (
+    int(SnpOpcode.UNIQUE), int(SnpOpcode.UNIQUE_FWD),
+    int(SnpOpcode.CLEAN_SHARED), int(SnpOpcode.CLEAN_INVALID),
+    int(SnpOpcode.MAKE_INVALID),
+  )
+
+
 def snp_attr_requirement(opcode: int) -> SnpAttrReq:
   """What SnpAttr value this opcode is permitted to carry.
 
@@ -1764,8 +1821,8 @@ def flit_layout(cfg: ChiCfg, channel: str):
 
   if channel == "snp":
     return [
-      ("tracetag", 1), ("donotdatapull", 1), ("rettosrc", 1),
-      ("opcode", cfg.snp_opcode_width), ("addr", a), ("ns", 1),
+      ("tracetag", 1), ("rettosrc", 1), ("donotgotosd", 1),
+      ("ns", 1), ("addr", a), ("opcode", cfg.snp_opcode_width),
       ("fwdtxnid", txn), ("fwdnid", n), ("txnid", txn), ("srcid", n),
       ("qos", QOS_WIDTH),
     ]

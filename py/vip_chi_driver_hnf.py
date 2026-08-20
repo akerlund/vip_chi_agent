@@ -35,6 +35,7 @@ from pyuvm import uvm_component
 from vip_chi_types_pkg import (
   Dir, Resp, RespErr, Exclusive, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode,
   CACHE_LINE_BYTES, chi_xfer_dat_beats, mask, req_final_state, snoop_for_req,
+  snp_do_not_go_to_sd_required,
 )
 from vip_chi_lcrd_mgr import VipChiLcrdMgr
 from vip_chi_cfg_agent import VipChiCfgAgent
@@ -1112,9 +1113,14 @@ class vip_chi_driver_hnf(uvm_component):
   async def send_snoop_flit(self, k, line, op, fwd_nid=0, fwd_txn=0):
     rn = self.rn_buses[k]
     snp_txn = self.alloc_snp_txn()
+    # IHI 0050 E 13.10.35 makes DoNotGoToSD mandatory-one on the invalidating
+    # snoops and on SnpCleanShared; D 12.9.32 lets the same bit take any value
+    # there, so drive a one only where the specification requires it and leave
+    # the CHI-D wire value as it was.
     fields = {
       "opcode": op, "addr": _I(line), "txnid": snp_txn, "srcid": 0,
       "fwdnid": fwd_nid, "fwdtxnid": fwd_txn,
+      "donotgotosd": int(snp_do_not_go_to_sd_required(rn.cfg.issue, op)),
     }
     await self.wait_rn_snp_send_credit(k)
     await self.announce_rn_flit(k, "snp")

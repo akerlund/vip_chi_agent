@@ -160,7 +160,7 @@ class vip_chi_item #(
   node_id_t      fwd_nid          = '0;
   txn_id_t       fwd_txn_id       = '0;
   logic          ret_to_src       = 1'b0;
-  logic          do_not_data_pull = 1'b0;
+  logic          do_not_go_to_sd = 1'b0;
   vip_chi_resp_t snp_resp         = VIP_CHI_RESP_STATE_I_E;
 
   // ---------------------------------------------------------------------------
@@ -1052,7 +1052,7 @@ class vip_chi_item #(
     this.fwd_nid                 = rhs_item.fwd_nid;
     this.fwd_txn_id              = rhs_item.fwd_txn_id;
     this.ret_to_src              = rhs_item.ret_to_src;
-    this.do_not_data_pull        = rhs_item.do_not_data_pull;
+    this.do_not_go_to_sd         = rhs_item.do_not_go_to_sd;
     this.snp_resp                = rhs_item.snp_resp;
     this.raw_override            = rhs_item.raw_override;
     this.raw_channel             = rhs_item.raw_channel;
@@ -1213,7 +1213,7 @@ class vip_chi_item #(
         (this.fwd_nid                  !== rhs_item.fwd_nid) ||
         (this.fwd_txn_id               !== rhs_item.fwd_txn_id) ||
         (this.ret_to_src               !== rhs_item.ret_to_src) ||
-        (this.do_not_data_pull         !== rhs_item.do_not_data_pull) ||
+        (this.do_not_go_to_sd          !== rhs_item.do_not_go_to_sd) ||
         (this.snp_resp                 !== rhs_item.snp_resp) ||
         (this.raw_override             !== rhs_item.raw_override) ||
         (this.raw_channel              !== rhs_item.raw_channel) ||

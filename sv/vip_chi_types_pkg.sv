@@ -1674,6 +1674,82 @@ package vip_chi_types_pkg;
 
   // ---------------------------------------------------------------------------
   // Return TRUE when the atomic request is a store-style completion-only op.
+  // IHI 0050 E Table 13-8 / D Table 12-8: one SNP packet bit carries two
+  // different field names, and which one it is depends on the opcode -- the same
+  // shape as REQ bit 17's SnpAttr/DoDWT overload. D Table 12-8 prints the two
+  // names stacked in a single one-bit row, and D 12.9.32/12.9.33 state the
+  // partition from both sides: DoNotGoToSD is "applicable in all Snoop requests
+  // except SnpUniqueStash, SnpMakeInvalidStash, SnpStashShared, SnpStashUnique,
+  // SnpDVMOp" and "for Stash snoop requests the same bits in the packet are used
+  // for DoNotDataPull"; DoNotDataPull is "applicable in" exactly those four
+  // stash snoops and "not present in Non-stash snoops". Issue E removed
+  // DoNotDataPull entirely.
+  //
+  // NONE of the four stash snoops is modelled here, so on every opcode this VIP
+  // can send or receive the bit is DoNotGoToSD, in both issues. The classifier
+  // is written from the specification rather than from that fact, so that adding
+  // a stash snoop cannot silently reinterpret the bit.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_snp_bit_is_do_not_data_pull(
+    input vip_chi_issue_t          issue,
+    input vip_chi_snp_opcode_t     opcode
+  );
+    // The four stash snoops have no encoding constant in this package, so no
+    // modelled opcode can reach the DoNotDataPull reading. The issue test is
+    // kept because it is half the specification's rule.
+    if (issue != VIP_CHI_ISSUE_D_E) begin
+      return 1'b0;
+    end
+    case (opcode)
+      default: begin
+        return 1'b0;
+      end
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Return TRUE when DoNotGoToSD must be set to 1 for an opcode. E 13.10.35
+  // gives three lists rather than two: any value in the non-invalidating snoops,
+  // MUST BE ONE in the invalidating and stash forms plus SnpQuery, and zero in
+  // SnpDVMOp. D 12.9.32 has no must-be-one list at all -- there the field is
+  // applicable and takes any value outside the stash and DVM opcodes -- so this
+  // is a place where the two issues genuinely differ rather than one being a
+  // clarification of the other.
+  //
+  // A boolean answers it because the third case is unreachable here: the
+  // must-be-zero opcode is SnpDVMOp, and DVM is a recorded non-goal
+  // (FUTURE_WORK.md). Modelling DVM means giving this a three-valued answer.
+  // Restricted to modelled opcodes for the same reason: SnpQuery,
+  // SnpPreferUnique*, SnpNotSharedDirty and the stash forms have no encoding in
+  // this package, so naming them would assert a reading no traffic here can
+  // confirm or refute.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_snp_do_not_go_to_sd_required(
+    input vip_chi_issue_t      issue,
+    input vip_chi_snp_opcode_t opcode
+  );
+    if (vip_chi_snp_bit_is_do_not_data_pull(issue, opcode)) begin
+      // The bit is not DoNotGoToSD at all here, so it carries no requirement.
+      return 1'b0;
+    end
+    if (issue != VIP_CHI_ISSUE_E_E) begin
+      return 1'b0;
+    end
+    case (opcode)
+      VIP_CHI_SNP_UNIQUE_E,
+      VIP_CHI_SNP_UNIQUE_FWD_E,
+      VIP_CHI_SNP_CLEAN_SHARED_E,
+      VIP_CHI_SNP_CLEAN_INVALID_E,
+      VIP_CHI_SNP_MAKE_INVALID_E: begin
+        return 1'b1;
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // ---------------------------------------------------------------------------
   // Three-valued because Table 2-14 is: its two columns give "Y -", "- Y" and
   // "Y Y", and collapsing those to a boolean loses the difference between "must
@@ -2461,11 +2537,11 @@ package vip_chi_types_pkg;
     // BE, tag, or DBID (data returns on DAT as SnpRespData, response on RSP).
     typedef struct packed {
       logic            tracetag;
-      logic            donotdatapull;
       logic            rettosrc;
-      snp_opcode_t     opcode;
-      addr_t           addr;
+      logic            donotgotosd;
       vip_chi_req_ns_t ns;
+      addr_t           addr;
+      snp_opcode_t     opcode;
       txn_id_t         fwdtxnid;
       node_id_t        fwdnid;
       txn_id_t         txnid;
@@ -2574,11 +2650,11 @@ package vip_chi_types_pkg;
     typedef vip_chi_types #(CFG_P)::snp_opcode_t snp_opcode_t;
     typedef struct packed {
       logic            tracetag;
-      logic            donotdatapull;
       logic            rettosrc;
-      snp_opcode_t     opcode;
-      addr_t           addr;
+      logic            donotgotosd;
       vip_chi_req_ns_t ns;
+      addr_t           addr;
+      snp_opcode_t     opcode;
       txn_id_t         fwdtxnid;
       node_id_t        fwdnid;
       txn_id_t         txnid;
@@ -2697,11 +2773,11 @@ package vip_chi_types_pkg;
     typedef vip_chi_types #(CFG_P)::snp_opcode_t snp_opcode_t;
     typedef struct packed {
       logic            tracetag;
-      logic            donotdatapull;
       logic            rettosrc;
-      snp_opcode_t     opcode;
-      addr_t           addr;
+      logic            donotgotosd;
       vip_chi_req_ns_t ns;
+      addr_t           addr;
+      snp_opcode_t     opcode;
       txn_id_t         fwdtxnid;
       node_id_t        fwdnid;
       txn_id_t         txnid;

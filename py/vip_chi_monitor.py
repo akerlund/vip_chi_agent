@@ -181,7 +181,7 @@ def snp_item_from_flit(cfg: ChiCfg, flit: int, observed_role: Role) -> vip_chi_i
   it.qos, it.snp_opcode, it.snp_addr = f["qos"], f["opcode"], f["addr"]
   it.fwd_nid, it.fwd_txn_id = f["fwdnid"], f["fwdtxnid"]
   it.ns = f["ns"]
-  it.ret_to_src, it.do_not_data_pull = bool(f["rettosrc"]), bool(f["donotdatapull"])
+  it.ret_to_src, it.do_not_go_to_sd = bool(f["rettosrc"]), bool(f["donotgotosd"])
   return it
 
 

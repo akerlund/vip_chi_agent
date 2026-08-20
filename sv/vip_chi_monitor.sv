@@ -1092,7 +1092,7 @@ class vip_chi_monitor #(
     item.snp_addr         = addr_t'(flit.addr);
     item.ns               = flit.ns;
     item.ret_to_src       = flit.rettosrc;
-    item.do_not_data_pull = flit.donotdatapull;
+    item.do_not_go_to_sd  = flit.donotgotosd;
     item.tracetag         = flit.tracetag;
     item.qos              = flit.qos;
 

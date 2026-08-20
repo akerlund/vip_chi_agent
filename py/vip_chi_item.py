@@ -221,7 +221,7 @@ class vip_chi_item(uvm_sequence_item):
     self.fwd_nid = 0
     self.fwd_txn_id = 0
     self.ret_to_src = False
-    self.do_not_data_pull = False
+    self.do_not_go_to_sd = False
     self.raw_override = False
     self.raw_flitpend = False
     self.raw_channel = int(RawChannel.NONE)
@@ -823,7 +823,7 @@ class vip_chi_item(uvm_sequence_item):
     for f in self._TIMESTAMPS:
       setattr(self, f, int(getattr(rhs, f)))
     self.t_dat_beats = list(rhs.t_dat_beats)
-    for f in ("is_snoop", "ret_to_src", "do_not_data_pull", "raw_override",
+    for f in ("is_snoop", "ret_to_src", "do_not_go_to_sd", "raw_override",
               "raw_flitpend"):
       setattr(self, f, bool(getattr(rhs, f)))
     for f in ("raw_req", "raw_rsp", "raw_dat", "raw_snp", "raw_channel"):
