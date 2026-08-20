@@ -1,10 +1,15 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **175 SystemVerilog** testcases (one
+The shared regression currently runs **176 SystemVerilog** testcases (one
 `` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **177 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
+
+One testcase is **SV only**: `tc_chi_e_hni_port1`, because the SV CHI-E proxy is
+2×2 and this port's is 1×1, so RN port 1 and SN target 1 have no interfaces to
+drive. That asymmetry is recorded where the binds are declared in both
+`chi_e_proxy_tb_env` files.
 
 The lists are otherwise identical apart from two Python-only testcases,
 `tc_chi_sva_smoke` and `tc_chi_reject_scope`. The second tests a mechanism
@@ -212,6 +217,8 @@ request — i.e. the proxy relayed rather than short-circuited.
 | `tc_chi_d_hni_atomic` | HNI | an `AtomicStore` relayed end-to-end (operand DAT forwarded to the SN, completion returned; exercises the write-settle path). |
 | `tc_chi_d_hni_persist` | HNI | a completion-only `CleanSharedPersist` relayed; exercises the forwarder's RSP-only settle path (no DAT in either direction). |
 | `tc_chi_d_hni_split_write_rsp` | HNI | proxied writes into an SN-F using split `DBIDResp` + deferred `Comp`; confirms the HN-I holds the RN REQ credit until both DAT and `Comp` have crossed. |
+| `tc_chi_e_hni_passthrough` | E-PROXY | the same 1×1 relay at CHI-E wide (64 B = one DAT beat): write + readback through the CHI-E HN-I proxy, SN target 0 observed both forwarded requests. |
+| `tc_chi_e_hni_port1` | E-PROXY | **SV only** — the CHI-E proxy's second RN port and second SN target, which nothing else drives. Requires the seven per-opcode REQ field rules to have been *evaluated* at all four port-1 vantages, so a bind that never runs cannot pass as a clean link. The Python CHI-E proxy is 1×1, so those binds do not exist there. |
 
 ## Coherent subsystem (RN-F / HN-F / SNP)
 

@@ -80,6 +80,16 @@ package chi_tb_pkg;
   // CHI-E HN-I proxy passthrough address; decodes to SN port 0 under the proxy's
   // default stride sn_port = (addr >> 12) % 2 = (0x..8) % 2 = 0.
   localparam item_e_t::addr_t    E_HNI_WRITE_READ_ADDR_C = item_e_t::addr_t'(52'h0012_3456_8000);
+  // CHI-E HN-I proxy port-1 path. Bit 12 is SET, so the proxy's default decode
+  // -- sn_port = (addr >> 12) % N_SN_PORTS -- sends it to SN target 1, where
+  // E_HNI_WRITE_READ_ADDR_C above lands on target 0. Its own 0x..3457_xxxx page
+  // so no other test's data predictor sees this line. PACKAGE scope for the
+  // reason given below on E_HNI_WRITE_READ_ADDR_C.
+  localparam item_e_t::addr_t    E_HNI_PORT1_ADDR_C        = item_e_t::addr_t'(52'h0012_3457_1000);
+  // Node id for proxy RN port 1, distinct from port 0's so a completion routed
+  // to the wrong RN is visible as a hang rather than as a pass.
+  localparam item_e_t::node_id_t E_HNI_PORT1_RNI_NODE_ID_C = item_e_t::node_id_t'('h013);
+
   // MTE tag-integrity addresses, one per test so the two never predict over each
   // other's tag image. PACKAGE scope for the reason given below on
   // E_HNI_WRITE_READ_ADDR_C: a class-scoped localparam of a

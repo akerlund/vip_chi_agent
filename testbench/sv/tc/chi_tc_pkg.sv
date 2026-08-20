@@ -94,6 +94,7 @@ package chi_tc_pkg;
   `include "tc_chi_d_hni_reset.sv"
   `include "tc_chi_d_hni_backpressure.sv"
   `include "tc_chi_e_hni_passthrough.sv"
+  `include "tc_chi_e_hni_port1.sv"
   `include "tc_chi_d_write_partial_smoke.sv"
   `include "tc_chi_d_decerr_smoke.sv"
   `include "tc_chi_d_derr_smoke.sv"

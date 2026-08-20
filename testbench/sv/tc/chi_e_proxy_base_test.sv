@@ -25,6 +25,11 @@ class chi_e_proxy_base_test extends uvm_test;
 
   vip_chi_write_seq #(CHI_E_WIDE_CFG_C) hrni0_wr_seq;
   vip_chi_read_seq  #(CHI_E_WIDE_CFG_C) hrni0_rd_seq;
+  // Port 1 gets its own pair. The env has built hrni1_agent since this base test
+  // was written, but nothing drove it, so every rule on the port-1 links and on
+  // the SN-1 links was dead -- see tc_chi_e_hni_port1.
+  vip_chi_write_seq #(CHI_E_WIDE_CFG_C) hrni1_wr_seq;
+  vip_chi_read_seq  #(CHI_E_WIDE_CFG_C) hrni1_rd_seq;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -117,6 +122,8 @@ class chi_e_proxy_base_test extends uvm_test;
 
     this.hrni0_wr_seq = vip_chi_write_seq #(CHI_E_WIDE_CFG_C)::type_id::create("hrni0_wr_seq");
     this.hrni0_rd_seq = vip_chi_read_seq  #(CHI_E_WIDE_CFG_C)::type_id::create("hrni0_rd_seq");
+    this.hrni1_wr_seq = vip_chi_write_seq #(CHI_E_WIDE_CFG_C)::type_id::create("hrni1_wr_seq");
+    this.hrni1_rd_seq = vip_chi_read_seq  #(CHI_E_WIDE_CFG_C)::type_id::create("hrni1_rd_seq");
   endfunction
 
   // ---------------------------------------------------------------------------
