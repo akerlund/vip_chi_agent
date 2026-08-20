@@ -979,6 +979,23 @@ module vip_chi_sva #(
           else begin
             chk_hit(VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E);
           end
+
+          // Order legality against Table 13-25 and Table 2-12 footnote a, from
+          // the sender's vantage. The classifier passes anything it does not
+          // object to, so this evaluates on every request and not only on the
+          // ones carrying an ordered value -- the distinction between "no
+          // ordered request went by" and "the classifier forgot this opcode" is
+          // one a tally cannot make afterwards.
+          if (!vip_chi_types_pkg::vip_chi_req_order_legal(
+                vip_chi_req_opcode_t'(vif.txreqflit.opcode),
+                vip_chi_req_order_t'(vif.txreqflit.order))) begin
+            chk_miss(VIP_CHI_CHK_REQ_ORDER_LEGAL_E, $sformatf(
+              "opcode 0x%0h was issued with Order 0b%02b, which the specification does not permit for it",
+              vif.txreqflit.opcode, vif.txreqflit.order));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_ORDER_LEGAL_E);
+          end
         end
 
         if (vif.rxrspflitv) begin
@@ -1129,6 +1146,19 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E);
+          end
+
+          // The same Order rule from the receiving end, one check ID across both
+          // vantages, for the reason given above the atomic-size mirror.
+          if (!vip_chi_types_pkg::vip_chi_req_order_legal(
+                vip_chi_req_opcode_t'(vif.rxreqflit.opcode),
+                vip_chi_req_order_t'(vif.rxreqflit.order))) begin
+            chk_miss(VIP_CHI_CHK_REQ_ORDER_LEGAL_E, $sformatf(
+              "opcode 0x%0h was received with Order 0b%02b, which the specification does not permit for it",
+              vif.rxreqflit.opcode, vif.rxreqflit.order));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_ORDER_LEGAL_E);
           end
 
           if (req_has_modeled_completion(req_opcode)) begin

@@ -299,6 +299,7 @@ CHECK_IDS = (
   # Stands down on a link whose testcase drives the recorded wide-operand
   # stress profile; see atomic_size_stress_allowed.
   "CHI_ATOMIC_SIZE_LEGAL",
+  "CHI_REQ_ORDER_LEGAL",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -1078,6 +1079,77 @@ def atomic_size_legal(opcode: int, size: int) -> bool:
   if req_opcode_is_atomic_compare(opcode):
     return 1 <= int(size) <= 5
   return int(size) <= 3
+
+
+# Order = 0b01 is applicable only in a READ request (Table 13-25). The modeled
+# read opcodes, named rather than derived, so an opcode added later has to be
+# classified here instead of silently inheriting the permissive answer.
+_ORDER_ACCEPTED_READ_OPCODES = frozenset({
+  int(ReqOpcode.READ_NO_SNP),
+  int(ReqOpcode.READ_NO_SNP_SEP),
+  int(ReqOpcode.READ_SHARED),
+  int(ReqOpcode.READ_CLEAN),
+  int(ReqOpcode.READ_UNIQUE),
+  int(ReqOpcode.READ_ONCE),
+})
+
+# Table 2-12 footnote a: Order = 0b10 is permitted in ReadOnce*, WriteUnique,
+# ReadNoSnp, WriteNoSnp and Atomic transactions only. Atomics and the Combined
+# Write family are added by predicate below.
+_ORDER_REQ_ORDER_OPCODES = frozenset({
+  int(ReqOpcode.READ_ONCE),
+  int(ReqOpcode.READ_NO_SNP),
+  int(ReqOpcode.READ_NO_SNP_SEP),
+  int(ReqOpcode.WRITE_UNIQUE_FULL),
+  int(ReqOpcode.WRITE_UNIQUE_PTL),
+  int(ReqOpcode.WRITE_UNIQUE_ZERO),
+  int(ReqOpcode.WRITE_NO_SNP_FULL),
+  int(ReqOpcode.WRITE_NO_SNP_PTL),
+  int(ReqOpcode.WRITE_NO_SNP_ZERO),
+})
+
+
+def req_order_legal(opcode: int, order: int) -> bool:
+  """TRUE when this REQ's Order value is one the spec permits for this opcode.
+
+  TOTAL: every opcode/Order pair it does not object to is TRUE, so the rule that
+  calls it evaluates on every request rather than only on the ones it can fault.
+  A classifier that answers only for the cases it judges cannot tell "no such
+  request went by" from "the classifier forgot this opcode".
+
+  Two normative restrictions, both opcode-only, so neither needs the node-class
+  model this VIP does not have:
+
+    Order = 0b01 "Request accepted" (IHI 0050 E Table 13-25) is applicable only in
+    a READ request from HN-F to SN-F, or HN-I to SN-I, and is "Reserved in all
+    other cases". Whether a given link is Home-to-Slave is not decidable here.
+    "The opcode is a read" is a necessary condition either way, so a WRITE
+    carrying 0b01 is Reserved on any link, and that much is checked.
+
+    Order = 0b10 "Request Order" (IHI 0050 E Table 2-12, footnote a) "is permitted
+    in ReadOnce*, WriteUnique, ReadNoSnp, WriteNoSnp and Atomic transactions
+    only". The footnote is a superscript and does not survive a text extraction of
+    the table, which is why the restriction reads as absent from the table body.
+
+  Deliberately permissive where the footnote's naming is: the families are read to
+  include their variants, and the Combined Write opcodes are counted as WriteNoSnp
+  because that is what their write half is. A whitelist read generously
+  under-reports; read narrowly it would fail conformant traffic, which is the
+  worse error for a rule that runs on every request in the sweep.
+
+  Order = 0b00 is legal everywhere. Order = 0b11 Endpoint Order is NOT judged
+  here: Table 2-12 admits it only on the two Device rows, so it is a constraint on
+  {MemAttr, Order} together and belongs to the attribute-combination rule.
+  """
+  order = int(order)
+  opcode = int(opcode)
+  if order == int(ReqOrder.REQ_ACCEPTED):
+    return opcode in _ORDER_ACCEPTED_READ_OPCODES
+  if order == int(ReqOrder.REQ_ORDER):
+    return (opcode in _ORDER_REQ_ORDER_OPCODES
+            or req_opcode_is_atomic(opcode)
+            or req_opcode_is_combined_write_cmo(opcode))
+  return True
 
 
 _COMBINED_WRITE_CMO_OPCODES = frozenset({

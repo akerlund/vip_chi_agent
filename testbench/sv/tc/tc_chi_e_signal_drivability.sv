@@ -56,6 +56,30 @@ class tc_chi_e_signal_drivability extends chi_e_base_test;
 
     phase.raise_objection(this);
 
+    // This test drives Order = 0b01 on a WRITE, which Table 13-25 marks
+    // "Request accepted" and applicable only in a READ request from HN-F to SN-F
+    // or HN-I to SN-I -- "Reserved in all other cases". That is deliberate and it
+    // is the point: what this test proves is that the field reaches the wire
+    // carrying the value the sequence asked for, whatever that value means.
+    //
+    // But a test whose passing criterion is "a non-conformant request was driven
+    // correctly" is indistinguishable, in a regression report, from a test that
+    // proves the VIP emits legal traffic. So the rule is turned down to
+    // VIP_CHI_CHK_SEV_OFF_E rather than left to fail the run, and the count is
+    // asserted at the end. OFF still evaluates and still tallies -- it only
+    // suppresses the report -- so the non-conformance stays visible in the
+    // end-of-test table and in the sweep's provoked list instead of being
+    // silenced.
+    //
+    // The assertion is the half that matters. If the stimulus is ever changed to
+    // a conformant Order, the rule stops firing, this assertion fails, and the
+    // waiver comes out with it. That is the intended failure mode: a silenced
+    // rule that stops firing must not look like a passing test.
+    super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_REQ_ORDER_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_REQ_ORDER_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+
     super.drain_observation_fifos();
 
     req_tag_vals = new[1];
@@ -237,6 +261,15 @@ class tc_chi_e_signal_drivability extends chi_e_base_test;
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] SN-F RSP fields did not reach the monitored RSP item",
         super.tc_name))
+    end
+
+    if ((super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ORDER_LEGAL_E] == 0) ||
+        (super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ORDER_LEGAL_E] == 0)) begin
+      `uvm_error(get_name(), $sformatf(
+        "ERROR [%s] %s did not report the deliberately Reserved Order this test drives: rni_e=%0d snf_e=%0d. Either the stimulus is now conformant -- in which case drop the waiver above -- or the rule stopped evaluating, which is worse",
+        super.tc_name, vip_chi_check_name(VIP_CHI_CHK_REQ_ORDER_LEGAL_E),
+        super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ORDER_LEGAL_E],
+        super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ORDER_LEGAL_E]))
     end
 
     phase.drop_objection(this);

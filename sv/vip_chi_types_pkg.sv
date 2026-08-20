@@ -481,6 +481,7 @@ package vip_chi_types_pkg;
     // Off by default on a link whose testcase drives the recorded wide-operand
     // stress profile; see atomic_size_stress_allowed.
     VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E,
+    VIP_CHI_CHK_REQ_ORDER_LEGAL_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -1492,6 +1493,91 @@ package vip_chi_types_pkg;
     end
 
     return (size <= 3'd3);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Return TRUE when this REQ's Order value is one the specification permits for
+  // this opcode. TOTAL: every opcode/Order pair it does not object to is TRUE, so
+  // the rule that calls it evaluates on every request rather than only on the
+  // ones it can fault. A classifier that answers only for the cases it judges
+  // cannot tell "no such request went by" from "the classifier forgot this
+  // opcode".
+  //
+  // Two normative restrictions, both opcode-only, so neither needs the node-class
+  // model this VIP does not have:
+  //
+  //   Order = 0b01 "Request accepted" (IHI 0050 E Table 13-25) is applicable only
+  //   in a READ request from HN-F to SN-F, or HN-I to SN-I, and is "Reserved in
+  //   all other cases". Whether a given link is Home-to-Slave is not decidable
+  //   here. "The opcode is a read" is a necessary condition either way, so a
+  //   WRITE carrying 0b01 is Reserved on any link, and that much is checked.
+  //
+  //   Order = 0b10 "Request Order" (IHI 0050 E Table 2-12, footnote a) "is
+  //   permitted in ReadOnce*, WriteUnique, ReadNoSnp, WriteNoSnp and Atomic
+  //   transactions only". The footnote is a superscript and does not survive a
+  //   text extraction of the table, which is why the restriction reads as absent
+  //   from the table body.
+  //
+  // Deliberately permissive where the footnote's naming is: the families are read
+  // to include their variants, and the Combined Write opcodes are counted as
+  // WriteNoSnp because that is what their write half is. A whitelist read
+  // generously under-reports; read narrowly it would fail conformant traffic,
+  // which is the worse error for a rule that runs on every request in the sweep.
+  //
+  // Order = 0b00 is legal everywhere. Order = 0b11 Endpoint Order is NOT judged
+  // here: Table 2-12 admits it only on the two Device rows, so it is a constraint
+  // on {MemAttr, Order} together and belongs to the attribute-combination rule,
+  // not to this one.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_req_order_legal(
+    input vip_chi_req_opcode_t opcode,
+    input vip_chi_req_order_t  order
+  );
+    case (order)
+
+      VIP_CHI_ORDER_REQ_ACCEPTED_E: begin
+        case (opcode)
+          VIP_CHI_REQ_READ_NO_SNP_E,
+          VIP_CHI_REQ_READ_NO_SNP_SEP_E,
+          VIP_CHI_REQ_READ_SHARED_E,
+          VIP_CHI_REQ_READ_CLEAN_E,
+          VIP_CHI_REQ_READ_UNIQUE_E,
+          VIP_CHI_REQ_READ_ONCE_E: begin
+            return 1'b1;
+          end
+          default: begin
+            return 1'b0;
+          end
+        endcase
+      end
+
+      VIP_CHI_ORDER_REQ_ORDER_E: begin
+        if (vip_chi_req_opcode_is_atomic(opcode) ||
+            vip_chi_req_opcode_is_combined_write_cmo(opcode)) begin
+          return 1'b1;
+        end
+        case (opcode)
+          VIP_CHI_REQ_READ_ONCE_E,
+          VIP_CHI_REQ_READ_NO_SNP_E,
+          VIP_CHI_REQ_READ_NO_SNP_SEP_E,
+          VIP_CHI_REQ_WRITE_UNIQUE_FULL_E,
+          VIP_CHI_REQ_WRITE_UNIQUE_PTL_E,
+          VIP_CHI_REQ_WRITE_UNIQUE_ZERO_E,
+          VIP_CHI_REQ_WRITE_NO_SNP_FULL_E,
+          VIP_CHI_REQ_WRITE_NO_SNP_PTL_E,
+          VIP_CHI_REQ_WRITE_NO_SNP_ZERO_E: begin
+            return 1'b1;
+          end
+          default: begin
+            return 1'b0;
+          end
+        endcase
+      end
+
+      default: begin
+        return 1'b1;
+      end
+    endcase
   endfunction
 
   // ---------------------------------------------------------------------------

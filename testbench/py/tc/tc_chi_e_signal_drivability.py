@@ -26,6 +26,7 @@ from chi_tb_pkg import (
 )
 
 NON_SECURE_C = 1
+ORDER_RULE_C = "CHI_REQ_ORDER_LEGAL"
 
 
 class tc_chi_e_signal_drivability(chi_e_base_test):
@@ -38,6 +39,26 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
 
   async def run_phase(self):
     self.raise_objection()
+
+    # This test drives Order = 0b01 on a WRITE, which Table 13-25 marks "Request
+    # accepted" and applicable only in a READ request from HN-F to SN-F or HN-I to
+    # SN-I -- "Reserved in all other cases". That is deliberate and it is the
+    # point: what this test proves is that the field reaches the wire carrying the
+    # value the sequence asked for, whatever that value means.
+    #
+    # But a test whose passing criterion is "a non-conformant request was driven
+    # correctly" is indistinguishable, in a regression report, from a test that
+    # proves the VIP emits legal traffic. So the rule is turned down to OFF rather
+    # than left to fail the run, and the count is asserted at the end. OFF still
+    # evaluates and still tallies -- it only suppresses the report -- so the
+    # non-conformance stays visible in the end-of-test table instead of silenced.
+    #
+    # The assertion is the half that matters. If the stimulus is ever changed to a
+    # conformant Order, the rule stops firing, that assertion fails, and the
+    # waiver comes out with it.
+    rni_sva, snf_sva = self.tb_env.rni_sva, self.tb_env.snf_sva
+    rni_sva.off_check(ORDER_RULE_C)
+    snf_sva.off_check(ORDER_RULE_C)
 
     self.drain_observation_fifos()
 
@@ -188,4 +209,12 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
     self.logger.info(
       "Test (tc_chi_e_signal_drivability) PASS: structured REQ/DAT setters and "
       "manual SN-F DAT/RSP fields all reached the wire")
+    rni_fails = rni_sva.fail_count.get(ORDER_RULE_C, 0)
+    snf_fails = snf_sva.fail_count.get(ORDER_RULE_C, 0)
+    assert rni_fails > 0 and snf_fails > 0, (
+      f"{ORDER_RULE_C} did not report the deliberately Reserved Order this test "
+      f"drives: rni_e={rni_fails} snf_e={snf_fails}. Either the stimulus is now "
+      f"conformant -- in which case drop the waiver above -- or the rule stopped "
+      f"evaluating, which is worse")
+
     self.drop_objection()

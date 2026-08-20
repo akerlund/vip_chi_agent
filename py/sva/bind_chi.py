@@ -80,6 +80,7 @@ from vip_chi_types_pkg import (
   lasm,
   lasm_legal_step,
   atomic_size_legal,
+  req_order_legal,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
   req_opcode_is_atomic_returning_data,
@@ -1537,6 +1538,15 @@ class bind_chi:
               atomic_size_legal(opcode, f["size"]),
               f"atomic opcode 0x{int(opcode):x} carried Size {int(f['size'])}, "
               f"which Table 2-17 does not permit for it", "Table 2-17")
+
+    # Order legality: Table 13-25 reserves Order = 0b01 outside a read, and Table
+    # 2-12's footnote a permits Order = 0b10 on ReadOnce*, WriteUnique, ReadNoSnp,
+    # WriteNoSnp and Atomic only. Total classifier again, same reason as above.
+    self._chk("CHI_REQ_ORDER_LEGAL",
+              req_order_legal(opcode, f["order"]),
+              f"opcode 0x{int(opcode):x} carried Order 0b{int(f['order']):02b}, "
+              f"which the specification does not permit for it",
+              "Table 13-25 / Table 2-12 footnote a")
 
   def _arm_completion(self, s: dict, f: dict) -> None:
     """Start the temporal attempts a request opens."""
