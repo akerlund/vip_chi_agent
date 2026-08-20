@@ -1461,6 +1461,13 @@ async def tc_chi_e_write_zero_readback(dut) -> None:
   await _run_e_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_e_write_unique_zero_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_write_unique_zero_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_write_unique_zero_negctl"
+  await _run_e_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_reject_scope", timeout_time=60, timeout_unit="ms")
 async def tc_chi_reject_scope(dut) -> None:
   """Run this public object-level testcase with no link topology."""

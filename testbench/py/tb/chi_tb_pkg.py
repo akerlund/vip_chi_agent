@@ -46,6 +46,11 @@ E_HNI_WRITE_READ_ADDR_C = 0x0012_3456_8000
 E_PERSIST_ADDR_C = 0x0012_3456_7900
 E_PERSIST_SEP_ADDR_C = 0x0012_3456_7A00
 E_DBID_RESP_ORD_ADDR_C = 0x0012_3456_7D00
+# WriteUniqueZero identifier control. Its own line, node-ID pair and TxnIDs so
+# nothing it injects can be confused with another testcase's traffic, and the two
+# TxnIDs are separated on purpose: one is completed cleanly and one is
+# deliberately reused while still outstanding.
+E_WUZ_NEGCTL_ADDR_C = 0x0012_3456_7E00
 E_WRITE_ZERO_ADDR_C = 0x0012_3456_9000
 
 E_MTE_WRITE_TXN_ID_C = 0x61
@@ -58,6 +63,10 @@ E_PERSIST_SEP_RNI_NODE_ID_C = 0x017
 E_PERSIST_SEP_SNF_NODE_ID_C = 0x02C
 E_DBID_RESP_ORD_RNI_NODE_ID_C = 0x01D
 E_DBID_RESP_ORD_SNF_NODE_ID_C = 0x026
+E_WUZ_NEGCTL_RNI_NODE_ID_C = 0x01E
+E_WUZ_NEGCTL_SNF_NODE_ID_C = 0x027
+E_WUZ_NEGCTL_TXN_ID_PASS_C = 0x71
+E_WUZ_NEGCTL_TXN_ID_DUP_C = 0x72
 E_MTE_WRITE_DATA_C = 0x1_2233_4455_6677_8899_AABB_CCDD_EEFF
 E_MTE_WRITE_TAGOP_C = 0x2
 E_MTE_WRITE_TAG_C = 0x3456

@@ -89,6 +89,15 @@ package chi_tb_pkg;
   localparam item_e_t::addr_t    E_PERSIST_ADDR_C     = item_e_t::addr_t'(52'h0012_3456_7900);
   localparam item_e_t::addr_t    E_PERSIST_SEP_ADDR_C = item_e_t::addr_t'(52'h0012_3456_7a00);
   localparam item_e_t::addr_t    E_DBID_RESP_ORD_ADDR_C = item_e_t::addr_t'(52'h0012_3456_7d00);
+  // WriteUniqueZero identifier control. Its own line, node-ID pair and TxnIDs so
+  // nothing it injects can be confused with another testcase's traffic, and the
+  // two TxnIDs are separated on purpose: one is completed cleanly and one is
+  // deliberately reused while still outstanding.
+  localparam item_e_t::addr_t    E_WUZ_NEGCTL_ADDR_C        = item_e_t::addr_t'(52'h0012_3456_7e00);
+  localparam item_e_t::node_id_t E_WUZ_NEGCTL_RNI_NODE_ID_C = item_e_t::node_id_t'('h01e);
+  localparam item_e_t::node_id_t E_WUZ_NEGCTL_SNF_NODE_ID_C = item_e_t::node_id_t'('h027);
+  localparam item_e_t::txn_id_t  E_WUZ_NEGCTL_TXN_ID_PASS_C = item_e_t::txn_id_t'(8'h71);
+  localparam item_e_t::txn_id_t  E_WUZ_NEGCTL_TXN_ID_DUP_C  = item_e_t::txn_id_t'(8'h72);
   // CHI-E WriteNoSnpZero readback address. Kept at PACKAGE scope (not a
   // class-scoped localparam) because a class-scoped `localparam item_e_t::addr_t`
   // hangs vcs1fe codegen at CHI-E flit width -- the same trap fixed earlier for

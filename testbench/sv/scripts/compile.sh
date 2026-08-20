@@ -73,6 +73,7 @@ TESTS=(
   tc_chi_e_rsp_field_legality
   tc_chi_e_persist
   tc_chi_e_write_zero_readback
+  tc_chi_e_write_unique_zero_negctl
   tc_chi_e_write_cmo
   tc_chi_d_split_write_rsp
   tc_chi_d_atomic

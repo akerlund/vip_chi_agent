@@ -64,6 +64,7 @@ package chi_tc_pkg;
   `include "tc_chi_e_rsp_field_legality.sv"
   `include "tc_chi_e_persist.sv"
   `include "tc_chi_e_write_zero_readback.sv"
+  `include "tc_chi_e_write_unique_zero_negctl.sv"
   `include "tc_chi_e_write_cmo.sv"
   `include "tc_chi_d_split_write_rsp.sv"
   `include "tc_chi_d_write_read_smoke.sv"
