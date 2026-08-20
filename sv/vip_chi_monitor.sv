@@ -1094,6 +1094,7 @@ class vip_chi_monitor #(
     item.ret_to_src       = flit.rettosrc;
     item.do_not_go_to_sd  = flit.donotgotosd;
     item.tracetag         = flit.tracetag;
+    item.mpam             = flit.mpam;
     item.qos              = flit.qos;
 
     begin

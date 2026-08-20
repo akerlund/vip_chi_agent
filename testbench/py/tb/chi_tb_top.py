@@ -1468,6 +1468,13 @@ async def tc_chi_e_write_unique_zero_negctl(dut) -> None:
   await _run_e_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_snp_flit_layout", timeout_time=60, timeout_unit="ms")
+async def tc_chi_snp_flit_layout(dut) -> None:
+  """Run this public object-level testcase with no link topology."""
+  test_name = "tc_chi_snp_flit_layout"
+  await _run_unit(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_reject_scope", timeout_time=60, timeout_unit="ms")
 async def tc_chi_reject_scope(dut) -> None:
   """Run this public object-level testcase with no link topology."""

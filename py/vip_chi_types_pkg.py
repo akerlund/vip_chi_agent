@@ -1821,6 +1821,7 @@ def flit_layout(cfg: ChiCfg, channel: str):
 
   if channel == "snp":
     return [
+      ("mpam", cfg.mpam_field_width),
       ("tracetag", 1), ("rettosrc", 1), ("donotgotosd", 1),
       ("ns", 1), ("addr", a), ("opcode", cfg.snp_opcode_width),
       ("fwdtxnid", txn), ("fwdnid", n), ("txnid", txn), ("srcid", n),

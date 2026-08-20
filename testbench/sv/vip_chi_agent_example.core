@@ -99,6 +99,7 @@ filesets:
       - tc/tc_chi_d_hni_backpressure.sv:                    {is_include_file: true}
       - tc/tc_chi_e_hni_passthrough.sv:                     {is_include_file: true}
       - tc/tc_chi_e_hni_port1.sv:                           {is_include_file: true}
+      - tc/tc_chi_snp_flit_layout.sv:                       {is_include_file: true}
       - tc/tc_chi_d_write_partial_smoke.sv:                 {is_include_file: true}
       - tc/tc_chi_d_decerr_smoke.sv:                        {is_include_file: true}
       - tc/tc_chi_d_derr_smoke.sv:                          {is_include_file: true}

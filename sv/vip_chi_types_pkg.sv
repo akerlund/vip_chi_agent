@@ -2536,6 +2536,7 @@ package vip_chi_types_pkg;
     // Snoop-request (SNP channel) flit. Home -> RN-F direction; carries no data,
     // BE, tag, or DBID (data returns on DAT as SnpRespData, response on RSP).
     typedef struct packed {
+      mpam_t           mpam;
       logic            tracetag;
       logic            rettosrc;
       logic            donotgotosd;
@@ -2649,6 +2650,7 @@ package vip_chi_types_pkg;
 
     typedef vip_chi_types #(CFG_P)::snp_opcode_t snp_opcode_t;
     typedef struct packed {
+      mpam_t           mpam;
       logic            tracetag;
       logic            rettosrc;
       logic            donotgotosd;
@@ -2772,6 +2774,7 @@ package vip_chi_types_pkg;
 
     typedef vip_chi_types #(CFG_P)::snp_opcode_t snp_opcode_t;
     typedef struct packed {
+      mpam_t           mpam;
       logic            tracetag;
       logic            rettosrc;
       logic            donotgotosd;

@@ -80,6 +80,23 @@ package chi_tb_pkg;
   // CHI-E HN-I proxy passthrough address; decodes to SN port 0 under the proxy's
   // default stride sn_port = (addr >> 12) % 2 = (0x..8) % 2 = 0.
   localparam item_e_t::addr_t    E_HNI_WRITE_READ_ADDR_C = item_e_t::addr_t'(52'h0012_3456_8000);
+  // A CHI-E configuration with MPAM enabled. Nothing in the regression sets
+  // MPAM_EN_P, so the wide-MPAM flit layout was unbuilt as well as unchecked --
+  // and MPAM is the one field whose WIDTH is configuration-dependent, so a
+  // layout test at MPAM_EN_P = 0 cannot see it. Package scope, and spelled out
+  // field by field because a localparam cannot be derived from another by
+  // modification.
+  localparam vip_chi_cfg_t CHI_E_MPAM_CFG_C = '{
+    ISSUE_P         : CHI_E_WIDE_CFG_C.ISSUE_P,
+    NODE_ID_WIDTH_P : CHI_E_WIDE_CFG_C.NODE_ID_WIDTH_P,
+    ADDR_WIDTH_P    : CHI_E_WIDE_CFG_C.ADDR_WIDTH_P,
+    DATA_BYTES_P    : CHI_E_WIDE_CFG_C.DATA_BYTES_P,
+    DATACHECK_EN_P  : CHI_E_WIDE_CFG_C.DATACHECK_EN_P,
+    POISON_EN_P     : CHI_E_WIDE_CFG_C.POISON_EN_P,
+    MPAM_EN_P       : 1'b1,
+    PARITY_EN_P     : CHI_E_WIDE_CFG_C.PARITY_EN_P
+  };
+
   // CHI-E HN-I proxy port-1 path. Bit 12 is SET, so the proxy's default decode
   // -- sn_port = (addr >> 12) % N_SN_PORTS -- sends it to SN target 1, where
   // E_HNI_WRITE_READ_ADDR_C above lands on target 0. Its own 0x..3457_xxxx page
