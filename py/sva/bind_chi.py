@@ -82,6 +82,7 @@ from vip_chi_types_pkg import (
   atomic_size_legal,
   req_order_legal,
   req_attr_combination_legal,
+  req_likely_shared_permitted,
   SnpAttrReq, snp_attr_requirement, req_bit17_is_dodwt,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
@@ -1591,6 +1592,16 @@ class bind_chi:
               f"{'Snoopable' if snp_req is SnpAttrReq.ONE else 'Non-snoopable'} "
               f"only",
               "Table 2-14")
+
+    # Section 2.9.5's LikelyShared whitelist. Narrower than the tuple rule above,
+    # which only knows the table's "LikelyShared implies Snoopable": this also
+    # faults the six Snoopable-only opcodes the section excludes.
+    self._chk("CHI_REQ_LIKELY_SHARED_LEGAL",
+              not (int(f["likelyshared"])
+                   and not req_likely_shared_permitted(opcode)),
+              f"opcode 0x{int(opcode):x} carried LikelyShared asserted, which "
+              f"section 2.9.5 does not permit for it",
+              "section 2.9.5")
 
   def _arm_completion(self, s: dict, f: dict) -> None:
     """Start the temporal attempts a request opens."""

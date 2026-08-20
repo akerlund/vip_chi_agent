@@ -91,6 +91,16 @@ class tc_chi_e_signal_drivability extends chi_e_base_test;
     super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E] =
       VIP_CHI_CHK_SEV_OFF_E;
 
+    // And for the LikelyShared whitelist. Section 2.9.5 names the opcodes that
+    // may assert the field and WriteNoSnpFull is not among them, so this is a
+    // second, independent reason the same wire bit is non-conformant here -- the
+    // tuple rule above faults it for being Non-snoopable, this one for the
+    // opcode. Two rules, two reasons, both silenced and both asserted below.
+    super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+
     super.drain_observation_fifos();
 
     req_tag_vals = new[1];
@@ -290,6 +300,15 @@ class tc_chi_e_signal_drivability extends chi_e_base_test;
         super.tc_name, vip_chi_check_name(VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E),
         super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E],
         super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E]))
+    end
+
+    if ((super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E] == 0) ||
+        (super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E] == 0)) begin
+      `uvm_error(get_name(), $sformatf(
+        "ERROR [%s] %s did not report the LikelyShared this test asserts on a WriteNoSnp: rni_e=%0d snf_e=%0d. Either the stimulus is now conformant -- in which case drop the waiver above -- or the rule stopped evaluating, which is worse",
+        super.tc_name, vip_chi_check_name(VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E),
+        super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E],
+        super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E]))
     end
 
     phase.drop_objection(this);

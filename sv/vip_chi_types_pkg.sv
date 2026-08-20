@@ -497,6 +497,7 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_REQ_ORDER_LEGAL_E,
     VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E,
     VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E,
+    VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -1796,6 +1797,49 @@ package vip_chi_types_pkg;
     // zero throughout: this VIP models no Device-memory stimulus, and a Device
     // request is a different Table 2-12 block entirely.
     return {allocate, cacheable, 1'b0, ewa};
+  endfunction
+
+  // TRUE when this opcode is permitted to assert LikelyShared.
+  //
+  // IHI 0050 E section 2.9.5. The section gives a named whitelist and then closes
+  // it twice over: "Must not be asserted in any other Read, Write or Combined
+  // Write transaction" and "Must not be asserted in any Dataless or Atomic
+  // transaction". DVMOp and PCrdReturn are inapplicable-and-must-be-zero;
+  // PrefetchTgt is inapplicable but may carry any value, so it is permitted here
+  // rather than faulted.
+  //
+  // This is STRICTLY NARROWER than what Table 2-12 implies, which is why it earns
+  // its own rule. The table shows LikelyShared as 0/1 only on its two Snoopable
+  // rows, so the tuple rule faults it on any Non-snoopable request -- but section
+  // 2.9.5 also forbids it on ReadOnce, ReadUnique, MakeReadUnique, CleanUnique,
+  // MakeUnique and Evict, every one of which is Snoopable only and therefore
+  // passes the tuple rule. A hint that means "this line is likely shared" is only
+  // meaningful where the transaction leaves a shareable copy behind, and those
+  // six do not.
+  //
+  // TOTAL: returns TRUE for everything it does not object to, so the rule that
+  // calls it evaluates on every request.
+  function automatic bit vip_chi_req_likely_shared_permitted(
+    input vip_chi_req_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_REQ_READ_CLEAN_E,
+      VIP_CHI_REQ_READ_SHARED_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_ZERO_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_E,
+      // Named in the list in its own right, alongside WriteEvictFull.
+      VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_E,
+      // Inapplicable, "can take any value" -- not a violation to assert.
+      VIP_CHI_REQ_PREFETCH_TGT_E: begin
+        return 1'b1;
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
   endfunction
 
   // TRUE when this request's {MemAttr, SnpAttr, LikelyShared, Order} tuple is one

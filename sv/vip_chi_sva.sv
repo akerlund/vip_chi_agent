@@ -1051,6 +1051,20 @@ module vip_chi_sva #(
           else begin
             chk_hit(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E);
           end
+
+          // Section 2.9.5's LikelyShared whitelist. Narrower than the tuple rule
+          // above, which only knows the table's "LikelyShared implies Snoopable":
+          // this also faults the six Snoopable-only opcodes the section excludes.
+          if (vif.txreqflit.likelyshared &&
+              !vip_chi_types_pkg::vip_chi_req_likely_shared_permitted(
+                 vip_chi_req_opcode_t'(vif.txreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E, $sformatf(
+              "opcode 0x%0h was issued with LikelyShared asserted, which section 2.9.5 does not permit for it",
+              vif.txreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E);
+          end
         end
 
         if (vif.rxrspflitv) begin
@@ -1263,6 +1277,20 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E);
+          end
+
+          // Section 2.9.5's LikelyShared whitelist. Narrower than the tuple rule
+          // above, which only knows the table's "LikelyShared implies Snoopable":
+          // this also faults the six Snoopable-only opcodes the section excludes.
+          if (vif.rxreqflit.likelyshared &&
+              !vip_chi_types_pkg::vip_chi_req_likely_shared_permitted(
+                 vip_chi_req_opcode_t'(vif.rxreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E, $sformatf(
+              "opcode 0x%0h was received with LikelyShared asserted, which section 2.9.5 does not permit for it",
+              vif.rxreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E);
           end
 
           if (req_has_modeled_completion(req_opcode)) begin

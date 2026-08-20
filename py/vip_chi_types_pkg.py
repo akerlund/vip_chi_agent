@@ -317,6 +317,7 @@ CHECK_IDS = (
   "CHI_REQ_ORDER_LEGAL",
   "CHI_REQ_ATTR_COMBINATION_LEGAL",
   "CHI_REQ_SNP_ATTR_LEGAL",
+  "CHI_REQ_LIKELY_SHARED_LEGAL",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -1334,6 +1335,49 @@ def req_mem_attr_default(opcode: int) -> int:
   # on the inapplicable-and-zero list.
   allocate = opcode == int(ReqOpcode.WRITE_EVICT_OR_EVICT)
   return (int(allocate) << 3) | (int(cacheable) << 2) | int(ewa)
+
+
+# Section 2.9.5's named whitelist, plus PrefetchTgt, which the section marks
+# inapplicable but free to take any value.
+_LIKELY_SHARED_PERMITTED = frozenset({
+  int(ReqOpcode.READ_CLEAN),
+  int(ReqOpcode.READ_SHARED),
+  int(ReqOpcode.WRITE_UNIQUE_PTL),
+  int(ReqOpcode.WRITE_UNIQUE_FULL),
+  int(ReqOpcode.WRITE_UNIQUE_ZERO),
+  int(ReqOpcode.WRITE_BACK_FULL),
+  int(ReqOpcode.WRITE_CLEAN_FULL),
+  # Named in the list in its own right, alongside WriteEvictFull.
+  int(ReqOpcode.WRITE_EVICT_OR_EVICT),
+  int(ReqOpcode.PREFETCH_TGT),
+})
+
+
+def req_likely_shared_permitted(opcode: int) -> bool:
+  """TRUE when this opcode is permitted to assert LikelyShared.
+
+  IHI 0050 E section 2.9.5. The section gives a named whitelist and then closes
+  it twice over: "Must not be asserted in any other Read, Write or Combined Write
+  transaction" and "Must not be asserted in any Dataless or Atomic transaction".
+  DVMOp and PCrdReturn are inapplicable-and-must-be-zero; PrefetchTgt is
+  inapplicable but may carry any value, so it is permitted here rather than
+  faulted.
+
+  This is STRICTLY NARROWER than what Table 2-12 implies, which is why it earns
+  its own rule. The table shows LikelyShared as 0/1 only on its two Snoopable
+  rows, so req_attr_combination_legal faults it on any Non-snoopable request --
+  but section 2.9.5 also forbids it on ReadOnce, ReadUnique, MakeReadUnique,
+  CleanUnique, MakeUnique and Evict, every one of which is Snoopable only and
+  therefore passes the tuple rule. A hint meaning "this line is likely shared" is
+  only meaningful where the transaction leaves a shareable copy behind, and those
+  six do not.
+
+  TOTAL: returns True for everything it does not object to.
+
+  The twin of vip_chi_req_likely_shared_permitted in the SystemVerilog types
+  package.
+  """
+  return int(opcode) in _LIKELY_SHARED_PERMITTED
 
 
 def req_attr_combination_legal(mem_attr: int, snp_attr: int,

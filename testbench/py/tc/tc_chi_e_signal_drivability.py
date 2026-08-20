@@ -28,6 +28,7 @@ from chi_tb_pkg import (
 NON_SECURE_C = 1
 ORDER_RULE_C = "CHI_REQ_ORDER_LEGAL"
 ATTR_RULE_C = "CHI_REQ_ATTR_COMBINATION_LEGAL"
+LS_RULE_C = "CHI_REQ_LIKELY_SHARED_LEGAL"
 
 
 class tc_chi_e_signal_drivability(chi_e_base_test):
@@ -69,6 +70,13 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
     # LikelyShared; WriteNoSnpFull is not among them.
     rni_sva.off_check(ATTR_RULE_C)
     snf_sva.off_check(ATTR_RULE_C)
+
+    # And for the LikelyShared whitelist. Section 2.9.5 names the opcodes that
+    # may assert the field and WriteNoSnpFull is not among them, so this is a
+    # second, independent reason the same wire bit is non-conformant here -- the
+    # tuple rule faults it for being Non-snoopable, this one for the opcode.
+    rni_sva.off_check(LS_RULE_C)
+    snf_sva.off_check(LS_RULE_C)
 
     self.drain_observation_fifos()
 
@@ -234,5 +242,13 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
       f"MemAttr/LikelyShared combination this test drives: rni_e={rni_attr} "
       f"snf_e={snf_attr}. Either the stimulus is now conformant -- in which case "
       f"drop the waiver above -- or the rule stopped evaluating, which is worse")
+
+    rni_ls = rni_sva.fail_count.get(LS_RULE_C, 0)
+    snf_ls = snf_sva.fail_count.get(LS_RULE_C, 0)
+    assert rni_ls > 0 and snf_ls > 0, (
+      f"{LS_RULE_C} did not report the LikelyShared this test asserts on a "
+      f"WriteNoSnp: rni_e={rni_ls} snf_e={snf_ls}. Either the stimulus is now "
+      f"conformant -- in which case drop the waiver above -- or the rule stopped "
+      f"evaluating, which is worse")
 
     self.drop_objection()
