@@ -320,6 +320,8 @@ CHECK_IDS = (
   "CHI_REQ_LIKELY_SHARED_LEGAL",
   "CHI_REQ_SIZE_LEGAL",
   "CHI_REQ_EXCL_LEGAL",
+  "CHI_REQ_ENDIAN_LEGAL",
+  "CHI_EXPCOMPACK_PROHIBITED_BUT_SET",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -1356,15 +1358,39 @@ _LIKELY_SHARED_PERMITTED = frozenset({
 
 
 # Section 6.3's closed list of transactions that support an Exclusive access.
-# "WriteNoSnp" is read as the family -- Full, Ptl and Zero -- since the section
-# does not qualify it and a permissive reading under-reports.
+# "WriteNoSnp" in that list means the Full and Ptl forms only, NOT
+# WriteNoSnpZero. Section 6.3 does not qualify the name, and a permissive reading
+# was the first thing tried here -- but Table A-3 does qualify it: the Excl column
+# gives WriteNoSnpFull and WriteNoSnpPtl "Y" and WriteNoSnpZero "0",
+# applicable-and-must-be-zero. The table is the finer authority on a per-opcode
+# question, and it makes sense: an Exclusive store has to write the data it was
+# granted exclusivity for, and WriteNoSnpZero carries none.
 _EXCL_PERMITTED_OPCODES = frozenset({
   int(ReqOpcode.READ_CLEAN), int(ReqOpcode.READ_SHARED),
   int(ReqOpcode.CLEAN_UNIQUE), int(ReqOpcode.MAKE_READ_UNIQUE),
   int(ReqOpcode.READ_NO_SNP),
   int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
-  int(ReqOpcode.WRITE_NO_SNP_ZERO),
 })
+
+
+def req_endian_applicable(opcode: int) -> bool:
+  """TRUE when Endian is a field this opcode carries at all.
+
+  IHI 0050 E Table A-3, Endian column: "Y" on the four Atomic opcodes, "X" --
+  inapplicable, any value -- on PrefetchTgt, and "0" on every other request this
+  VIP models. Endian selects the byte order of an Atomic's operand, so it has
+  nothing to say about a plain read or write, and the table says so by requiring
+  zero rather than by leaving it free.
+
+  PrefetchTgt is permitted here rather than faulted, for the reason the
+  LikelyShared rule gives: "X" means any value, so asserting it is not a
+  violation.
+
+  TOTAL: returns True for everything it does not object to.
+
+  The twin of vip_chi_req_endian_applicable in the SystemVerilog types package.
+  """
+  return req_opcode_is_atomic(opcode) or int(opcode) == int(ReqOpcode.PREFETCH_TGT)
 
 
 def req_excl_permitted(opcode: int) -> bool:

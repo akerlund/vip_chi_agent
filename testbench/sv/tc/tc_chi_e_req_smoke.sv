@@ -63,7 +63,12 @@ class tc_chi_e_req_smoke extends chi_e_base_test;
     // WriteNoSnpZero is one of those others. Table 2-12 agrees from the other
     // direction: LikelyShared is 0/1 only on its two Snoopable rows, and
     // WriteNoSnp is Non-snoopable only.
-    this.rni_wr_zero_seq.set_endian(1'b1);
+    // Endian too. Table A-3's Endian column is "Y" only on the Atomics: the field
+    // selects an Atomic operand's byte order, so on a WriteNoSnpZero it is
+    // inapplicable and must be zero. That is the THIRD field this testcase
+    // stamped onto an opcode that does not carry it, after DoDWT and
+    // LikelyShared -- the test was written as "drive every CHI-E-only REQ field"
+    // without asking which of them this opcode has.
     this.rni_wr_zero_seq.set_group_id_ext(item_t::groupidext_t'('h3));
     this.rni_wr_zero_seq.set_tagop(item_t::tagop_t'('h2));
     this.rni_wr_zero_seq.set_get_response(1'b1);
@@ -97,7 +102,7 @@ class tc_chi_e_req_smoke extends chi_e_base_test;
     if ((req_item.tracetag != 1'b1) ||
         (req_item.dodwt != 1'b0) ||
         (req_item.likelyshared != 1'b0) ||
-        (req_item.endian != 1'b1) ||
+        (req_item.endian != 1'b0) ||
         (req_item.group_id_ext != item_t::groupidext_t'('h3)) ||
         (req_item.tagop != item_t::tagop_t'('h2))) begin
       `uvm_fatal(get_name(), $sformatf(

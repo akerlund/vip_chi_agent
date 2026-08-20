@@ -29,6 +29,7 @@ NON_SECURE_C = 1
 ORDER_RULE_C = "CHI_REQ_ORDER_LEGAL"
 ATTR_RULE_C = "CHI_REQ_ATTR_COMBINATION_LEGAL"
 LS_RULE_C = "CHI_REQ_LIKELY_SHARED_LEGAL"
+ENDIAN_RULE_C = "CHI_REQ_ENDIAN_LEGAL"
 
 
 class tc_chi_e_signal_drivability(chi_e_base_test):
@@ -77,6 +78,11 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
     # tuple rule faults it for being Non-snoopable, this one for the opcode.
     rni_sva.off_check(LS_RULE_C)
     snf_sva.off_check(LS_RULE_C)
+
+    # And Endian, a fourth independent reason. Table A-3 makes the field
+    # applicable only on the Atomics, and this test drives it on a WriteNoSnp.
+    rni_sva.off_check(ENDIAN_RULE_C)
+    snf_sva.off_check(ENDIAN_RULE_C)
 
     self.drain_observation_fifos()
 
@@ -248,6 +254,14 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
     assert rni_ls > 0 and snf_ls > 0, (
       f"{LS_RULE_C} did not report the LikelyShared this test asserts on a "
       f"WriteNoSnp: rni_e={rni_ls} snf_e={snf_ls}. Either the stimulus is now "
+      f"conformant -- in which case drop the waiver above -- or the rule stopped "
+      f"evaluating, which is worse")
+
+    rni_en = rni_sva.fail_count.get(ENDIAN_RULE_C, 0)
+    snf_en = snf_sva.fail_count.get(ENDIAN_RULE_C, 0)
+    assert rni_en > 0 and snf_en > 0, (
+      f"{ENDIAN_RULE_C} did not report the Endian this test asserts on a "
+      f"WriteNoSnp: rni_e={rni_en} snf_e={snf_en}. Either the stimulus is now "
       f"conformant -- in which case drop the waiver above -- or the rule stopped "
       f"evaluating, which is worse")
 

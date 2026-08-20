@@ -504,6 +504,8 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E,
     VIP_CHI_CHK_REQ_SIZE_LEGAL_E,
     VIP_CHI_CHK_REQ_EXCL_LEGAL_E,
+    VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E,
+    VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -1805,6 +1807,28 @@ package vip_chi_types_pkg;
     return {allocate, cacheable, 1'b0, ewa};
   endfunction
 
+  // TRUE when Endian is a field this opcode carries at all.
+  //
+  // IHI 0050 E Table A-3, Endian column: "Y" on the four Atomic opcodes, "X" --
+  // inapplicable, any value -- on PrefetchTgt, and "0" on every other request
+  // this VIP models. Endian selects the byte order of an Atomic's operand, so it
+  // has nothing to say about a plain read or write, and the table says so by
+  // requiring zero rather than by leaving it free.
+  //
+  // PrefetchTgt is permitted here rather than faulted, for the reason the
+  // LikelyShared rule gives: "X" means any value, so asserting it is not a
+  // violation.
+  //
+  // TOTAL: returns TRUE for everything it does not object to.
+  function automatic bit vip_chi_req_endian_applicable(
+    input vip_chi_req_opcode_t opcode
+  );
+    if (vip_chi_req_opcode_is_atomic(opcode)) begin
+      return 1'b1;
+    end
+    return (opcode == VIP_CHI_REQ_PREFETCH_TGT_E);
+  endfunction
+
   // TRUE when this opcode supports an Exclusive access, so may assert Excl.
   //
   // IHI 0050 E section 6.3 "Exclusive transactions" opens with "The following
@@ -1824,10 +1848,13 @@ package vip_chi_types_pkg;
   // exercise with no way to tell a missed bullet from an opcode that genuinely
   // forbids it.
   //
-  // "WriteNoSnp" is read as the family -- Full, Ptl and Zero. The section does
-  // not qualify it, and a permissive reading under-reports rather than faulting
-  // conformant traffic, which is the right direction for a rule that runs on
-  // every request.
+  // "WriteNoSnp" in that list means the Full and Ptl forms only, NOT
+  // WriteNoSnpZero. Section 6.3 does not qualify the name, and a permissive
+  // reading was the first thing tried here -- but Table A-3 does qualify it: the
+  // Excl column gives WriteNoSnpFull and WriteNoSnpPtl "Y" and WriteNoSnpZero
+  // "0", applicable-and-must-be-zero. The table is the finer authority on a
+  // per-opcode question, and it makes sense: an Exclusive store has to write the
+  // data it was granted exclusivity for, and WriteNoSnpZero carries none.
   //
   // TOTAL: returns TRUE for everything it does not object to.
   function automatic bit vip_chi_req_excl_permitted(
@@ -1840,8 +1867,7 @@ package vip_chi_types_pkg;
       VIP_CHI_REQ_MAKE_READ_UNIQUE_E,
       VIP_CHI_REQ_READ_NO_SNP_E,
       VIP_CHI_REQ_WRITE_NO_SNP_FULL_E,
-      VIP_CHI_REQ_WRITE_NO_SNP_PTL_E,
-      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_E: begin
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_E: begin
         return 1'b1;
       end
       default: begin

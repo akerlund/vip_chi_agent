@@ -1093,6 +1093,44 @@ module vip_chi_sva #(
           else begin
             chk_hit(VIP_CHI_CHK_REQ_EXCL_LEGAL_E);
           end
+
+          // Table A-3's Endian column: applicable on the Atomics only. Endian
+          // selects an Atomic operand's byte order and has nothing to say about a
+          // plain read or write, which the table states as must-be-zero rather
+          // than as free.
+          if (vif.txreqflit.endian &&
+              !vip_chi_types_pkg::vip_chi_req_endian_applicable(
+                 vip_chi_req_opcode_t'(vif.txreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E, $sformatf(
+              "opcode 0x%0h was issued with Endian asserted, and Table A-3 makes the field inapplicable outside an Atomic",
+              vif.txreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E);
+          end
+
+          // The other half of Table 2-9, which nothing checked: the table marks
+          // ExpCompAck prohibited on a whole class of requests, and until now only
+          // the required-but-zero direction was reported. Table A-3's ExpCompAck
+          // column agrees, giving "0" on every opcode the requirement function
+          // classifies as prohibited.
+          //
+          // The role argument is a constant one for the same reason the required
+          // direction uses it, read the other way round: passing RN-F shrinks the
+          // prohibited set, because the opcodes an RN-F may acknowledge are
+          // exactly the ones lifted out of it. That is the under-reporting
+          // direction, which is what a rule on every request should prefer.
+          if (vif.txreqflit.expcompack &&
+              vip_chi_types_pkg::vip_chi_exp_comp_ack_prohibited(
+                vip_chi_req_opcode_t'(vif.txreqflit.opcode),
+                1'b1)) begin
+            chk_miss(VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E, $sformatf(
+              "opcode 0x%0h was issued with ExpCompAck asserted, and Table 2-9 prohibits the bit for it",
+              vif.txreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E);
+          end
         end
 
         if (vif.rxrspflitv) begin
@@ -1347,6 +1385,44 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_REQ_EXCL_LEGAL_E);
+          end
+
+          // Table A-3's Endian column: applicable on the Atomics only. Endian
+          // selects an Atomic operand's byte order and has nothing to say about a
+          // plain read or write, which the table states as must-be-zero rather
+          // than as free.
+          if (vif.rxreqflit.endian &&
+              !vip_chi_types_pkg::vip_chi_req_endian_applicable(
+                 vip_chi_req_opcode_t'(vif.rxreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E, $sformatf(
+              "opcode 0x%0h was received with Endian asserted, and Table A-3 makes the field inapplicable outside an Atomic",
+              vif.rxreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E);
+          end
+
+          // The other half of Table 2-9, which nothing checked: the table marks
+          // ExpCompAck prohibited on a whole class of requests, and until now only
+          // the required-but-zero direction was reported. Table A-3's ExpCompAck
+          // column agrees, giving "0" on every opcode the requirement function
+          // classifies as prohibited.
+          //
+          // The role argument is a constant one for the same reason the required
+          // direction uses it, read the other way round: passing RN-F shrinks the
+          // prohibited set, because the opcodes an RN-F may acknowledge are
+          // exactly the ones lifted out of it. That is the under-reporting
+          // direction, which is what a rule on every request should prefer.
+          if (vif.rxreqflit.expcompack &&
+              vip_chi_types_pkg::vip_chi_exp_comp_ack_prohibited(
+                vip_chi_req_opcode_t'(vif.rxreqflit.opcode),
+                1'b1)) begin
+            chk_miss(VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E, $sformatf(
+              "opcode 0x%0h was received with ExpCompAck asserted, and Table 2-9 prohibits the bit for it",
+              vif.rxreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E);
           end
 
           if (req_has_modeled_completion(req_opcode)) begin

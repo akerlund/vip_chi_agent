@@ -75,7 +75,7 @@ from vip_chi_types_pkg import (
   Role,
   RspOpcode,
   chi_xfer_dat_beats,
-  exp_comp_ack_required,
+  exp_comp_ack_required, exp_comp_ack_prohibited,
   flit_layout,
   lasm,
   lasm_legal_step,
@@ -84,7 +84,7 @@ from vip_chi_types_pkg import (
   req_attr_combination_legal,
   req_likely_shared_permitted,
   req_size_fixed_64b, REQ_SIZE_64B,
-  req_excl_permitted,
+  req_excl_permitted, req_endian_applicable,
   SnpAttrReq, snp_attr_requirement, req_bit17_is_dodwt,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
@@ -153,7 +153,7 @@ _COMPLETER_ROLES_C = (Role.SNF, Role.HNF, Role.HNI)
 # bit `data` field through a big-int shift for a checker that never looks at it.
 _FLIT_FIELDS_C = {
   "req": ("opcode", "txnid", "returntxnid", "size", "expcompack", "order",
-          "memattr", "snpattr", "likelyshared", "excl"),
+          "memattr", "snpattr", "likelyshared", "excl", "endian"),
   "rsp": ("opcode", "txnid", "dbid", "resperr", "resp"),
   "dat": ("opcode", "txnid", "dbid", "dataid"),
 }
@@ -1623,6 +1623,32 @@ class bind_chi:
               f"opcode 0x{int(opcode):x} carried Excl asserted, and section 6.3 "
               f"does not list it as supporting Exclusive accesses",
               "section 6.3")
+
+    # Table A-3's Endian column: applicable on the Atomics only. Endian selects an
+    # Atomic operand's byte order and has nothing to say about a plain read or
+    # write, which the table states as must-be-zero rather than as free.
+    self._chk("CHI_REQ_ENDIAN_LEGAL",
+              not (int(f["endian"]) and not req_endian_applicable(opcode)),
+              f"opcode 0x{int(opcode):x} carried Endian asserted, and Table A-3 "
+              f"makes the field inapplicable outside an Atomic",
+              "Table A-3")
+
+    # The other half of Table 2-9, which nothing checked: the table marks
+    # ExpCompAck prohibited on a whole class of requests, and until now only the
+    # required-but-zero direction was reported. Table A-3's ExpCompAck column
+    # agrees, giving "0" on every opcode the requirement function classifies as
+    # prohibited.
+    #
+    # The role argument is the constant True for the same reason the required
+    # direction above uses it, read the other way round: passing RN-F shrinks the
+    # prohibited set, because the opcodes an RN-F may acknowledge are exactly the
+    # ones lifted out of it. That is the under-reporting direction, which is what a
+    # rule running on every request should prefer.
+    self._chk("CHI_EXPCOMPACK_PROHIBITED_BUT_SET",
+              not (int(f["expcompack"]) and exp_comp_ack_prohibited(opcode, True)),
+              f"opcode 0x{int(opcode):x} carried ExpCompAck asserted, and "
+              f"Table 2-9 prohibits the bit for it",
+              "Table 2-9")
 
   def _arm_completion(self, s: dict, f: dict) -> None:
     """Start the temporal attempts a request opens."""

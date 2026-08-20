@@ -46,7 +46,12 @@ class tc_chi_e_req_smoke(chi_e_base_test):
     # WriteNoSnpZero is one of those others. Table 2-12 agrees from the other
     # direction: LikelyShared is 0/1 only on its two Snoopable rows, and
     # WriteNoSnp is Non-snoopable only.
-    seq.set_endian(1)
+    # Endian too. Table A-3's Endian column is "Y" only on the Atomics: the field
+    # selects an Atomic operand's byte order, so on a WriteNoSnpZero it is
+    # inapplicable and must be zero. That is the THIRD field this testcase
+    # stamped onto an opcode that does not carry it, after DoDWT and
+    # LikelyShared -- the test was written as "drive every CHI-E-only REQ field"
+    # without asking which of them this opcode has.
     seq.set_group_id_ext(0x3)
     seq.set_tagop(0x2)
     seq.set_get_response(True)
@@ -61,7 +66,7 @@ class tc_chi_e_req_smoke(chi_e_base_test):
     assert int(req_item.src_id) == 0x15 and int(req_item.tgt_id) == 0x2A
     assert int(req_item.lp_id) == 0x9 and int(req_item.qos) == 0xB
     assert int(req_item.tracetag) == 1 and int(req_item.dodwt) == 0
-    assert int(req_item.likelyshared) == 0 and int(req_item.endian) == 1
+    assert int(req_item.likelyshared) == 0 and int(req_item.endian) == 0
     assert int(req_item.group_id_ext) == 0x3 and int(req_item.tagop) == 0x2
     # WriteNoSnpZero completes with a combined CompDBIDResp (or DBIDResp then
     # Comp under cfg.split_write_rsp); a bare Comp is not a legal completion.
