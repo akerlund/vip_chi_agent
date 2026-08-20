@@ -1415,18 +1415,39 @@ class vip_chi_item #(
 
   // ---------------------------------------------------------------------------
   // Constraints: optional spec-size legality for atomics. The default stress mode
-  // allows full bus-beat atomics; when enabled, ordinary atomics are limited to an
-  // 8-byte operand (Size <= 3). AtomicCompare uses combined compare+swap Size, so
-  // the largest strict compare is 16 bytes total (two 8-byte operands).
+  // allows full bus-beat atomics; when enabled, the permitted Sizes are the ones
+  // IHI 0050 E Table 2-17 lists, and nothing else:
+  //
+  //   AtomicStore / AtomicLoad / AtomicSwap   1, 2, 4 or 8 byte   -> Size 0..3
+  //   AtomicCompare                           2, 4, 8, 16 or 32   -> Size 1..5
+  //
+  // D Table 2-17 is the same table with the same number, so this holds for both
+  // issues. The bounds are written out here rather than calling
+  // vip_chi_atomic_size_legal() because `size` is the random variable being
+  // solved: the classifier is the single source of truth for the CHECKER, which
+  // reads a Size off the wire, and this is the same table stated where the solver
+  // can use it.
+  //
+  // Two things about AtomicCompare, both following from its Size being the
+  // COMBINED compare+swap size. It has a FLOOR, which no other atomic has -- Size
+  // 0 would be half a byte per operand -- and its ceiling is one step HIGHER, 32
+  // bytes being two 16-byte operands. Deriving the ceiling from the ordinary
+  // 8-byte limit instead of from the table gives Size <= 4, which excludes the
+  // legal 32-byte compare, and on the 16-byte cut that is worse than conservative:
+  // con_atomic_compare_size requires Size >= clog2(DATA_BYTES)+1 = 5 there, so a
+  // <= 4 ceiling and a >= 5 floor left the strict mode with NO satisfiable Size
+  // and an AtomicCompare draw would have failed randomization outright. Reading
+  // the ceiling off Table 2-17 leaves exactly Size 5, which is the one value that
+  // is both legal and representable at beat granularity on that cut.
   // ---------------------------------------------------------------------------
   constraint con_atomic_strict_size {
     if (!raw_override && atomic_strict_size &&
         vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(vip_chi_req_opcode_t'(opcode))) {
       if (opcode == req_opcode_t'(VIP_CHI_REQ_ATOMIC_COMPARE_C)) {
-        size <= 4;
+        size inside {[3'd1 : 3'd5]};
       }
       else {
-        size <= 3;
+        size <= 3'd3;
       }
     }
   }

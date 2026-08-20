@@ -949,6 +949,36 @@ module vip_chi_sva #(
           else begin
             chk_hit(VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E);
           end
+
+          // Atomic operand Size against Table 2-17, from the sender's vantage.
+          //
+          // The classifier passes anything that is not an atomic, so this needs
+          // no opcode-family gate: the rule reads "if this is an atomic, its Size
+          // is one the table lists", and every other opcode records a pass
+          // trivially. That is the same shape as the ExpCompAck rule above and it
+          // is deliberate -- a rule that only evaluates for the family it judges
+          // cannot distinguish "no atomic went by" from "the classifier forgot
+          // this opcode", which is how the combined Write + CMO family went six
+          // opcodes unclaimed.
+          //
+          // The wide-operand stress profile that vip_chi_atomic_seq records as a
+          // deliberate decision violates this rule on purpose. Those testcases
+          // turn it down to VIP_CHI_CHK_SEV_OFF_E rather than being exempted
+          // here, for the reason the LASM illegal-transition test gives: OFF
+          // still evaluates and still tallies, so the rule stays visible as
+          // exercised-and-failing on exactly the links where the violation is
+          // intended, instead of publishing enabled = 0 and reading as a rule
+          // nothing ever reached.
+          if (!vip_chi_types_pkg::vip_chi_atomic_size_legal(
+                vip_chi_req_opcode_t'(vif.txreqflit.opcode),
+                vif.txreqflit.size)) begin
+            chk_miss(VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E, $sformatf(
+              "atomic opcode 0x%0h was issued with Size %0d, which Table 2-17 does not permit for it",
+              vif.txreqflit.opcode, vif.txreqflit.size));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E);
+          end
         end
 
         if (vif.rxrspflitv) begin
@@ -1083,6 +1113,22 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E);
+          end
+
+          // The same Table 2-17 rule from the receiving end. One rule, two
+          // vantages, one check ID -- the RSP_FIELD_ZERO pattern -- because a
+          // link may carry a bind at only one end, and on a link whose requester
+          // is the device under test the completer's vantage is the only one
+          // there is.
+          if (!vip_chi_types_pkg::vip_chi_atomic_size_legal(
+                vip_chi_req_opcode_t'(vif.rxreqflit.opcode),
+                vif.rxreqflit.size)) begin
+            chk_miss(VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E, $sformatf(
+              "atomic opcode 0x%0h was received with Size %0d, which Table 2-17 does not permit for it",
+              vif.rxreqflit.opcode, vif.rxreqflit.size));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E);
           end
 
           if (req_has_modeled_completion(req_opcode)) begin

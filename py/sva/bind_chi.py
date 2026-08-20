@@ -79,6 +79,7 @@ from vip_chi_types_pkg import (
   flit_layout,
   lasm,
   lasm_legal_step,
+  atomic_size_legal,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
   req_opcode_is_atomic_returning_data,
@@ -1514,6 +1515,28 @@ class bind_chi:
                    and not int(f["expcompack"])),
               "a request whose opcode requires CompAck was issued with "
               "ExpCompAck = 0", "section 2.8.3")
+
+    # Atomic operand Size against IHI 0050 E Table 2-17 / D Table 2-17.
+    #
+    # The classifier passes anything that is not an atomic, so this needs no
+    # opcode-family gate: the rule reads "if this is an atomic, its Size is one
+    # the table lists", and every other opcode records a pass trivially. That is
+    # the same shape as the ExpCompAck rule above and it is deliberate -- a rule
+    # that only evaluates for the family it judges cannot distinguish "no atomic
+    # went by" from "the classifier forgot this opcode", which is how the combined
+    # Write + CMO family went six opcodes unclaimed.
+    #
+    # The wide-operand stress profile that vip_chi_atomic_seq records as a
+    # deliberate decision violates this rule on purpose. Those testcases turn it
+    # down to CheckSeverity.OFF rather than being exempted here, for the reason
+    # the LASM illegal-transition test gives: OFF still evaluates and still
+    # tallies, so the rule stays visible as exercised-and-failing on exactly the
+    # links where the violation is intended, instead of publishing enabled = 0 and
+    # reading as a rule nothing ever reached.
+    self._chk("CHI_ATOMIC_SIZE_LEGAL",
+              atomic_size_legal(opcode, f["size"]),
+              f"atomic opcode 0x{int(opcode):x} carried Size {int(f['size'])}, "
+              f"which Table 2-17 does not permit for it", "Table 2-17")
 
   def _arm_completion(self, s: dict, f: dict) -> None:
     """Start the temporal attempts a request opens."""

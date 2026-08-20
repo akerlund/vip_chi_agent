@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from vip_chi_types_pkg import DatOpcode, clog2
 from chi_base_test import chi_base_test
+import chi_atomic_size_stress as atomic_size_stress
 from vip_chi_atomic_seq import vip_chi_atomic_load_seq
 
 N_C = 6
@@ -31,6 +32,11 @@ class tc_chi_d_multi_outstanding_atomic(chi_base_test):
 
   async def run_phase(self):
     self.raise_objection()
+    # The wide-operand stress profile is out of spec by Table 2-17, on purpose.
+    # arm() silences the rule and keeps its tally; assert_reported() below turns
+    # the waiver into its own control. See chi_atomic_size_stress.
+    _checkers = (self.tb_env.rni_sva, self.tb_env.snf_sva)
+    atomic_size_stress.arm(_checkers)
     dbytes = self.chi_cfg.data_bytes
     size = clog2(dbytes)      # widest single-beat operand (Size 4 on CHI-D)
     stride = dbytes
@@ -113,4 +119,5 @@ class tc_chi_d_multi_outstanding_atomic(chi_base_test):
     self.logger.info(
       f"Test (tc_chi_d_multi_outstanding_atomic) PASS: {N_C} returning atomics "
       f"pipelined, pre-op + RMW read-back verified, peak in-flight = {peak}")
+    atomic_size_stress.assert_reported(_checkers, "the atomic operands above")
     self.drop_objection()

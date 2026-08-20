@@ -293,6 +293,12 @@ CHECK_IDS = (
   # direction nobody was watching, because the item constraint made it
   # unreachable.
   "CHI_EXPCOMPACK_REQUIRED_BUT_ZERO",
+  # Atomic operand Size against IHI 0050 E Table 2-17 / D Table 2-17. The VIP
+  # has had an opinion about this since the first cut (con_atomic_strict_size)
+  # and no rule reading it, so the constraint was unverified in both ports.
+  # Stands down on a link whose testcase drives the recorded wide-operand
+  # stress profile; see atomic_size_stress_allowed.
+  "CHI_ATOMIC_SIZE_LEGAL",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -1043,6 +1049,35 @@ def req_opcode_is_atomic_returning_data(opcode: int) -> bool:
   op = int(opcode)
   return (int(ReqOpcode.ATOMIC_LOAD_0) <= op <= int(ReqOpcode.ATOMIC_LOAD_7)
           or op in (int(ReqOpcode.ATOMIC_SWAP), int(ReqOpcode.ATOMIC_COMPARE)))
+
+
+def atomic_size_legal(opcode: int, size: int) -> bool:
+  """TRUE when Size is one the specification permits for this atomic.
+
+  IHI 0050 E Table 2-17 (Atomic transaction outbound and inbound data sizes, in
+  section 2.10.4) is a closed list, and it is not the same list for every atomic:
+
+    AtomicStore / AtomicLoad / AtomicSwap   1, 2, 4 or 8 byte   -> Size 0..3
+    AtomicCompare                           2, 4, 8, 16 or 32   -> Size 1..5
+
+  D Table 2-17 is the same table, with the same number, so one function serves
+  both issues.
+
+  AtomicCompare is the exception at BOTH ends and for the same reason: its Size is
+  the COMBINED compare+swap size, so a 2-byte transaction carries two 1-byte
+  operands. That gives it a floor no other atomic has -- Size 0 would be half a
+  byte each -- and a ceiling one step higher, because 32 bytes is two 16-byte
+  operands. Deriving this from the ordinary <= 8-byte limit gets the ceiling wrong
+  in the direction that rejects legal traffic.
+
+  Returns TRUE for anything that is not an atomic, so a caller can apply it
+  unconditionally to a REQ opcode without first asking what kind it is.
+  """
+  if not req_opcode_is_atomic(opcode):
+    return True
+  if req_opcode_is_atomic_compare(opcode):
+    return 1 <= int(size) <= 5
+  return int(size) <= 3
 
 
 _COMBINED_WRITE_CMO_OPCODES = frozenset({

@@ -473,6 +473,14 @@ package vip_chi_types_pkg;
     // "Yes", and a zero in that field is a request that can never be
     // acknowledged.
     VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E,
+    // Atomic operand Size against IHI 0050 E Table 2-17 / D Table 2-17, appended
+    // for the same append-only reason. The VIP has had an opinion about this
+    // since the first cut -- con_atomic_strict_size -- and no rule reading it, so
+    // the constraint was unverified in both ports and the two mentions of the
+    // table in the checkers both compute a beat count rather than judge a Size.
+    // Off by default on a link whose testcase drives the recorded wide-operand
+    // stress profile; see atomic_size_stress_allowed.
+    VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -1446,6 +1454,44 @@ package vip_chi_types_pkg;
   // ---------------------------------------------------------------------------
   function automatic bit vip_chi_req_opcode_is_atomic_compare(input vip_chi_req_opcode_t opcode);
     return (opcode == VIP_CHI_REQ_ATOMIC_COMPARE_E);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Return TRUE when Size is one the specification permits for this atomic.
+  //
+  // IHI 0050 E Table 2-17 (Atomic transaction outbound and inbound data sizes,
+  // in section 2.10.4) is a closed list, and it is not the same list for every
+  // atomic:
+  //
+  //   AtomicStore / AtomicLoad / AtomicSwap   1, 2, 4 or 8 byte   -> Size 0..3
+  //   AtomicCompare                           2, 4, 8, 16 or 32   -> Size 1..5
+  //
+  // D Table 2-17 is the same table, with the same number, so one function serves
+  // both issues.
+  //
+  // AtomicCompare is the exception at BOTH ends and for the same reason: its Size
+  // is the COMBINED compare+swap size, so a 2-byte transaction carries two 1-byte
+  // operands. That gives it a floor no other atomic has -- Size 0 would be half a
+  // byte each -- and a ceiling one step higher, because 32 bytes is two 16-byte
+  // operands. Deriving this from the ordinary <= 8-byte limit gets the ceiling
+  // wrong in the direction that rejects legal traffic.
+  //
+  // Returns TRUE for anything that is not an atomic, so a caller can apply it
+  // unconditionally to a REQ opcode without first asking what kind it is.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_atomic_size_legal(
+    input vip_chi_req_opcode_t                     opcode,
+    input logic [VIP_CHI_REQ_SIZE_WIDTH_C - 1 : 0] size
+  );
+    if (!vip_chi_req_opcode_is_atomic(opcode)) begin
+      return 1'b1;
+    end
+
+    if (vip_chi_req_opcode_is_atomic_compare(opcode)) begin
+      return ((size >= 3'd1) && (size <= 3'd5));
+    end
+
+    return (size <= 3'd3);
   endfunction
 
   // ---------------------------------------------------------------------------

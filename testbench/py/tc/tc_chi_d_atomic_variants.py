@@ -16,6 +16,7 @@ from vip_chi_types_pkg import (
   AtomicOp, ReqOpcode, RspOpcode, DatOpcode, atomic_op_to_req_opcode, mask, clog2,
 )
 from chi_base_test import chi_base_test
+import chi_atomic_size_stress as atomic_size_stress
 from vip_chi_atomic_seq import (
   vip_chi_atomic_store_seq, vip_chi_atomic_load_seq,
   vip_chi_atomic_swap_seq, vip_chi_atomic_compare_seq,
@@ -179,6 +180,11 @@ class tc_chi_d_atomic_variants(chi_base_test):
 
   async def run_phase(self):
     self.raise_objection()
+    # The wide-operand stress profile is out of spec by Table 2-17, on purpose.
+    # arm() silences the rule and keeps its tally; assert_reported() below turns
+    # the waiver into its own control. See chi_atomic_size_stress.
+    _checkers = (self.tb_env.rni_sva, self.tb_env.snf_sva)
+    atomic_size_stress.arm(_checkers)
 
     beat_size = clog2(self.chi_cfg.data_bytes)
 
@@ -201,4 +207,5 @@ class tc_chi_d_atomic_variants(chi_base_test):
     self.logger.info(
       "Test (tc_chi_d_atomic_variants) PASS: all atomic store/load variants + "
       "swap + compare (hit/miss) RMW'd and read back correctly")
+    atomic_size_stress.assert_reported(_checkers, "the atomic operands above")
     self.drop_objection()

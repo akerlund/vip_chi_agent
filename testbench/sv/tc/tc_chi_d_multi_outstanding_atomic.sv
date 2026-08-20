@@ -72,6 +72,15 @@ class tc_chi_d_multi_outstanding_atomic extends chi_base_test;
     item_t         rd_rsp  [$];
     item_t         r;
 
+    // The wide-operand stress profile is out of spec by Table 2-17, on purpose.
+    // The rule is turned down to OFF -- still evaluated, still counted, not
+    // reported -- and required to have fired before this test ends. See the
+    // §22 L7 note in vip_chi_atomic_seq for why both halves are needed.
+    super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+
     phase.raise_objection(this);
 
     // Build N distinct (seed, operand) pairs keyed by their granule address.
@@ -191,6 +200,16 @@ class tc_chi_d_multi_outstanding_atomic extends chi_base_test;
     `uvm_info(get_name(), $sformatf(
       "INFO [%s] %0d returning atomics (AtomicLoad0) pipelined; pre-op values + RMW read-back verified; peak in-flight = %0d",
       super.tc_name, N_C, super.rni_cfg.observed_peak_outstanding), UVM_LOW)
+
+    // The waiver's second half: this traffic must have been out of spec in the
+    // way the profile claims. A silenced rule that stopped firing would look
+    // exactly like a passing test.
+    if ((super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] == 0) ||
+        (super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] == 0)) begin
+      `uvm_error(get_name(), $sformatf(
+        "ERROR [%s] %s recorded no violation at one or both ends, but this test drives the wide-operand stress profile on purpose; either the sizes are legal now and the waiver should go, or the rule stopped evaluating",
+        super.tc_name, vip_chi_check_name(VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E)))
+    end
 
     phase.drop_objection(this);
   endtask

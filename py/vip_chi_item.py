@@ -512,11 +512,34 @@ class vip_chi_item(uvm_sequence_item):
 
   @vsc.constraint
   def con_atomic_strict_size(self):
+    """The permitted Sizes are the ones IHI 0050 E Table 2-17 lists, and no others:
+
+      AtomicStore / AtomicLoad / AtomicSwap   1, 2, 4 or 8 byte   -> Size 0..3
+      AtomicCompare                           2, 4, 8, 16 or 32   -> Size 1..5
+
+    D Table 2-17 is the same table with the same number, so this holds for both
+    issues. The bounds are written out here rather than calling atomic_size_legal()
+    because `size` is the random variable being solved: the classifier is the
+    single source of truth for the CHECKER, which reads a Size off the wire, and
+    this is the same table stated where the solver can use it.
+
+    Two things about AtomicCompare, both following from its Size being the COMBINED
+    compare+swap size. It has a FLOOR, which no other atomic has -- Size 0 would be
+    half a byte per operand -- and its ceiling is one step HIGHER, 32 bytes being
+    two 16-byte operands. Deriving the ceiling from the ordinary 8-byte limit
+    instead of from the table gives Size <= 4, which excludes the legal 32-byte
+    compare, and on the 16-byte cut that is worse than conservative:
+    con_atomic_compare_size requires Size >= clog2(data_bytes)+1 = 5 there, so a
+    <= 4 ceiling and a >= 5 floor left the strict mode with NO satisfiable Size and
+    an AtomicCompare draw would have failed randomization outright. Reading the
+    ceiling off Table 2-17 leaves exactly Size 5, which is the one value that is
+    both legal and representable at beat granularity on that cut.
+    """
     with vsc.if_then(self.s_raw_override == 0):
       with vsc.if_then(self.s_atomic_strict == 1):
         with vsc.if_then(self.opcode.inside(vsc.rangelist((0x28, 0x39)))):
           with vsc.if_then(self.opcode == int(_RO.ATOMIC_COMPARE)):
-            self.size <= 4
+            self.size.inside(vsc.rangelist((1, 5)))
           with vsc.if_then(self.opcode != int(_RO.ATOMIC_COMPARE)):
             self.size <= 3
 

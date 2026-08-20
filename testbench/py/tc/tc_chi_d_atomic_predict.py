@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from vip_chi_types_pkg import AtomicOp, clog2, mask
 from chi_base_test import chi_base_test
+import chi_atomic_size_stress as atomic_size_stress
 from vip_chi_atomic_seq import vip_chi_atomic_seq
 
 STORE_ADDR_C = 0x3A00_0000
@@ -55,6 +56,11 @@ class tc_chi_d_atomic_predict(chi_base_test):
 
   async def run_phase(self):
     self.raise_objection()
+    # The wide-operand stress profile is out of spec by Table 2-17, on purpose.
+    # arm() silences the rule and keeps its tally; assert_reported() below turns
+    # the waiver into its own control. See chi_atomic_size_stress.
+    _checkers = (self.tb_env.rni_sva, self.tb_env.snf_sva)
+    atomic_size_stress.arm(_checkers)
 
     beat_size = clog2(self.chi_cfg.data_bytes)
     dw_mask = mask(self.chi_cfg.data_bytes * 8)
@@ -121,4 +127,5 @@ class tc_chi_d_atomic_predict(chi_base_test):
     self.logger.info(
       "Test (tc_chi_d_atomic_predict) PASS: atomic RMW prediction exercised "
       "(Store0 ADD, Swap, Compare match) seeded, applied, read back")
+    atomic_size_stress.assert_reported(_checkers, "the atomic operands above")
     self.drop_objection()

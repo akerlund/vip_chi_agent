@@ -14,12 +14,19 @@ from vip_chi_types_pkg import AtomicOp, clog2, req_opcode_is_atomic
 from chi_hni_base_test import chi_hni_base_test
 from vip_chi_atomic_seq import vip_chi_atomic_seq
 from chi_tb_pkg import WRITE_READ_ADDR_C
+import chi_atomic_size_stress as atomic_size_stress
 
 
 class tc_chi_d_hni_atomic(chi_hni_base_test):
 
   async def run_phase(self):
     self.raise_objection()
+    # The wide-operand stress profile is out of spec by Table 2-17, on purpose.
+    # arm() silences the rule and keeps its tally; assert_reported() below turns
+    # the waiver into its own control. Every proxy bind, because an atomic here
+    # crosses the RN-facing link, the proxy's own pair and the SN-facing link.
+    _checkers = tuple(self.tb_env.hni_sva)
+    atomic_size_stress.arm(_checkers)
     beat_size = clog2(self.chi_cfg.data_bytes)
 
     atomic_seq = vip_chi_atomic_seq("atomic_seq", cfg=self.chi_cfg)
@@ -47,4 +54,5 @@ class tc_chi_d_hni_atomic(chi_hni_base_test):
     self.logger.info(
       "Test (tc_chi_d_hni_atomic) PASS: HN-I relayed an AtomicStore end-to-end "
       "(RN-I -> HN-I -> SN-F)")
+    atomic_size_stress.assert_reported(_checkers, "the atomic operands above")
     self.drop_objection()

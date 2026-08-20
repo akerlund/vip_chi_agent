@@ -41,6 +41,23 @@ class tc_chi_d_hni_atomic extends chi_base_test;
     item_t         snf_req;
     item_t::size_t beat_size;
 
+    // The wide-operand stress profile is out of spec by Table 2-17, on purpose.
+    // The rule is turned down to OFF -- still evaluated, still counted, not
+    // reported -- and required to have fired before this test ends. See the
+    // §22 L7 note in vip_chi_atomic_seq for why both halves are needed.
+    // All FOUR binds on the chain, not just the two ends. One atomic crosses the
+    // RN-facing link, the proxy's own RN and SN ports, and the SN-facing link,
+    // and the rule fires wherever the flit is seen -- waiving at the ends only
+    // would leave the two middle binds reporting at ERROR.
+    super.tb_env.hrni0_agent.vif.check_severity[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.hni_agent.rn_vif[0].check_severity[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.hni_agent.sn_vif[0].check_severity[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.hsnf0_agent.vif.check_severity[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+
     phase.raise_objection(this);
 
     beat_size = item_t::size_t'($clog2(CHI_D_CFG_C.DATA_BYTES_P));
@@ -81,6 +98,18 @@ class tc_chi_d_hni_atomic extends chi_base_test;
     `uvm_info(get_name(), $sformatf(
       "INFO [%s] HN-I relayed an AtomicStore end-to-end (RN-I -> HN-I -> SN-F)",
       super.tc_name), UVM_LOW)
+
+    // The waiver's second half: this traffic must have been out of spec in the
+    // way the profile claims. A silenced rule that stopped firing would look
+    // exactly like a passing test.
+    if ((super.tb_env.hrni0_agent.vif.check_fail_count[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] == 0) ||
+        (super.tb_env.hni_agent.rn_vif[0].check_fail_count[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] == 0) ||
+        (super.tb_env.hni_agent.sn_vif[0].check_fail_count[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] == 0) ||
+        (super.tb_env.hsnf0_agent.vif.check_fail_count[VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E] == 0)) begin
+      `uvm_error(get_name(), $sformatf(
+        "ERROR [%s] %s recorded no violation on one of the four links the atomic crosses, but this test drives the wide-operand stress profile on purpose; the proxy relayed the request, so every bind on the chain should have judged its Size",
+        super.tc_name, vip_chi_check_name(VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E)))
+    end
 
     phase.drop_objection(this);
   endtask

@@ -86,6 +86,29 @@ class vip_chi_atomic_seq #(
   // operand DAT / RMW / return datapath at the widest beat. Call
   // set_atomic_strict_size(1) when a sequence should obey the CHI <=8-byte ordinary
   // atomic operand limit instead of the stress profile.
+  //
+  // What that decision costs, now that it is checked. IHI 0050 E Table 2-17 / D
+  // Table 2-17 permits at most 8 bytes for AtomicStore, AtomicLoad and AtomicSwap
+  // (Size 0..3), and 2 to 32 bytes for AtomicCompare (Size 1..5). A full bus-beat
+  // operand is above the ordinary limit on every geometry in this testbench, so
+  // every request this sequence issues at the default Size carries a Size the
+  // specification does not list for its opcode. That was invisible until
+  // CHI_ATOMIC_SIZE_LEGAL existed; it now reports, at both ends of every link the
+  // request crosses.
+  //
+  // The five testcases holding this profile therefore turn the rule down to
+  // VIP_CHI_CHK_SEV_OFF_E on the links they drive, and then REQUIRE that it fired.
+  // OFF still evaluates and still counts -- it only suppresses the report -- so
+  // the assertion is possible at all, and disabling instead would stop the
+  // counting and publish enabled = 0, which reads as a rule nothing reached rather
+  // than one deliberately not enforced here.
+  //
+  // The second half is what makes the waiver honest. A silenced rule that stopped
+  // firing -- because this default changed, or the classifier regressed -- would
+  // look exactly like a passing test. Each waiver is its own negative control: the
+  // testcase asserts that its traffic is out of spec in the way it claims to be,
+  // and a testcase moved to spec-legal sizes fails until the waiver comes out with
+  // it.
   // ---------------------------------------------------------------------------
   // Force the request opcode to the selected atomic variant.
   // ---------------------------------------------------------------------------
