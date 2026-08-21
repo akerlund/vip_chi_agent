@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **177 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **178 pyUVM/cocotb**
+The shared regression currently runs **178 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **179 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -220,6 +220,7 @@ request — i.e. the proxy relayed rather than short-circuited.
 | `tc_chi_e_hni_passthrough` | E-PROXY | the same 1×1 relay at CHI-E wide (64 B = one DAT beat): write + readback through the CHI-E HN-I proxy, SN target 0 observed both forwarded requests. |
 | `tc_chi_e_hni_port1` | E-PROXY | **SV only** — the CHI-E proxy's second RN port and second SN target, which nothing else drives. Requires the seven per-opcode REQ field rules to have been *evaluated* at all four port-1 vantages, so a bind that never runs cannot pass as a clean link. The Python CHI-E proxy is 1×1, so those binds do not exist there. |
 | `tc_chi_snp_flit_layout` | LAYOUT | the SNP flit's field order against D Table 12-8 / E Table 13-8, asserted twice: the declared order, and where the bits actually land when one field at a time is set to all ones. Includes `MPAM_EN_P`/`mpam_en` = 1, the only setting under which the 11-bit MPAM field exists. Topology-free — the flit types are what is under test. |
+| `tc_chi_coh_e_snp_field_negctl` | SNP-NEGCTL | one `SnpCleanInvalid` with three corrupted fields — it is in all three of the specification's sets at once — provoking `CHI_SNP_FWD_FIELDS_ZERO`, `CHI_SNP_RET_TO_SRC_LEGAL` and `CHI_SNP_DO_NOT_GO_TO_SD_LEGAL` exactly once each at **both** vantages, and requiring that no other check fired. CHI-E only: Issue D has no `DoNotGoToSD` must-be-one list, so one of the three has nothing to provoke there. |
 
 ## Coherent subsystem (RN-F / HN-F / SNP)
 

@@ -535,6 +535,40 @@ class vip_chi_cfg_agent extends uvm_object;
   // tc_chi_coh_{d,e}_expcompack_negctl uses it. Default 0.
   bit rn_drop_required_exp_comp_ack = 1'b0;
 
+  // Negative controls for the three per-opcode SNP field rules. One knob each,
+  // and each fires ONCE per RN port so the fail count a test asserts on is
+  // unambiguous. All three corrupt a single field of an otherwise ordinary
+  // snoop, which is what makes them useful: the snoop's opcode, address, state
+  // effect and response are untouched, so no coherency rule and no other field
+  // rule can be what fires.
+  //
+  // The SNP channel has no item-driven path at all -- the HN-F is a responder
+  // with no sequencer, so vip_chi_item's raw_snp has no consumer and a raw
+  // injection is not available here the way drive_raw_req is on REQ. A cfg knob
+  // is the mechanism, not a shortcut around one.
+  //
+  // Sets FwdNID on a snoop whose opcode is not a Forward type. IHI 0050 E
+  // 13.10.5 / 13.10.16: applicable in Forward type snoops, "Inapplicable and
+  // must be zero in all other Snoop requests". Proves
+  // CHI_SNP_FWD_FIELDS_ZERO fires. Default 0.
+  bit hnf_snp_fwd_fields_negctl = 1'b0;
+
+  // Sets RetToSrc on a snoop whose opcode must carry zero. IHI 0050 E 4.9 /
+  // D 4.9 names the set: Stash snoops, SnpCleanShared, SnpCleanInvalid,
+  // SnpMakeInvalid, SnpOnceFwd, SnpUniqueFwd. Proves
+  // CHI_SNP_RET_TO_SRC_LEGAL fires. Note it must land on one of THOSE opcodes:
+  // RetToSrc on a SnpShared or a SnpUnique is legal and would prove nothing.
+  // Default 0.
+  bit hnf_snp_ret_to_src_negctl = 1'b0;
+
+  // Clears DoNotGoToSD on a snoop whose opcode must carry one. IHI 0050 E
+  // 13.10.35 lists SnpUnique, SnpUniqueFwd, SnpCleanShared, SnpCleanInvalid and
+  // SnpMakeInvalid among the modelled opcodes. CHI-E only, and that is the
+  // point rather than a limitation: D 12.9.32 has no must-be-one list, so the
+  // same cleared bit is CONFORMANT under Issue D and the rule is right to stay
+  // quiet there. Proves CHI_SNP_DO_NOT_GO_TO_SD_LEGAL fires. Default 0.
+  bit hnf_snp_do_not_go_to_sd_negctl = 1'b0;
+
   // Master enable for exclusive (LL/SC) monitor modeling on the HN-F. When 0 the
   // home ignores req.excl entirely (no monitor set, every completion NormalOkay),
   // so a bench that never uses exclusives is byte-unaffected. Default 1: the home

@@ -137,6 +137,13 @@ class vip_chi_driver_hnf #(
   // once per link so the count a test asserts on is unambiguous.
   protected bit rn_flitpend_negctl_done [N_RNF_PORTS];
 
+  // One-shot latches for the three SNP field negative controls, per RN port and
+  // for the same reason: a control that fires on every snoop makes the count a
+  // test asserts on depend on how many snoops the traffic happened to produce.
+  protected bit rn_snp_fwd_negctl_done [N_RNF_PORTS];
+  protected bit rn_snp_rts_negctl_done [N_RNF_PORTS];
+  protected bit rn_snp_sd_negctl_done  [N_RNF_PORTS];
+
   // -------------------------------------------------------------------------
   // Downstream SN-facing side (requester polarity, RN-I role), present only when
   // N_SN_PORTS>0 and activated only when cfg.hnf_downstream_en. Mirrors the HN-I
@@ -1940,6 +1947,38 @@ class vip_chi_driver_hnf #(
     // leaves the CHI-D wire value as it was.
     flit.donotgotosd = vip_chi_types_pkg::vip_chi_snp_do_not_go_to_sd_required(
                          CFG_P.ISSUE_P, op);
+
+    // The three field negative controls. Each corrupts one field of an otherwise
+    // ordinary snoop and fires once per port, and each is gated on the opcode
+    // actually being one the rule judges -- a control that sets RetToSrc on a
+    // SnpShared, or clears DoNotGoToSD on a SnpOnce, would provoke nothing and
+    // pass for it.
+    if (this.cfg.hnf_snp_fwd_fields_negctl && !this.rn_snp_fwd_negctl_done[k] &&
+        !vip_chi_types_pkg::vip_chi_snp_opcode_is_forwarding(op)) begin
+      this.rn_snp_fwd_negctl_done[k] = 1'b1;
+      flit.fwdnid = node_id_t'('h1);
+      `uvm_info(get_name(), $sformatf(
+        "INFO [%s] SNP negctl: FwdNID on non-Forward snoop opcode 0x%0h",
+        get_name(), op), UVM_LOW)
+    end
+
+    if (this.cfg.hnf_snp_ret_to_src_negctl && !this.rn_snp_rts_negctl_done[k] &&
+        vip_chi_types_pkg::vip_chi_snp_ret_to_src_must_be_zero(op)) begin
+      this.rn_snp_rts_negctl_done[k] = 1'b1;
+      flit.rettosrc = 1'b1;
+      `uvm_info(get_name(), $sformatf(
+        "INFO [%s] SNP negctl: RetToSrc on snoop opcode 0x%0h, which must carry zero",
+        get_name(), op), UVM_LOW)
+    end
+
+    if (this.cfg.hnf_snp_do_not_go_to_sd_negctl && !this.rn_snp_sd_negctl_done[k] &&
+        vip_chi_types_pkg::vip_chi_snp_do_not_go_to_sd_required(CFG_P.ISSUE_P, op)) begin
+      this.rn_snp_sd_negctl_done[k] = 1'b1;
+      flit.donotgotosd = 1'b0;
+      `uvm_info(get_name(), $sformatf(
+        "INFO [%s] SNP negctl: DoNotGoToSD cleared on snoop opcode 0x%0h, which must carry one",
+        get_name(), op), UVM_LOW)
+    end
 
     this.wait_rn_snp_send_credit(k);
 

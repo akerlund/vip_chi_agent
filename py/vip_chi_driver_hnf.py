@@ -35,7 +35,8 @@ from pyuvm import uvm_component
 from vip_chi_types_pkg import (
   Dir, Resp, RespErr, Exclusive, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode,
   CACHE_LINE_BYTES, chi_xfer_dat_beats, mask, req_final_state, snoop_for_req,
-  snp_do_not_go_to_sd_required,
+  snp_do_not_go_to_sd_required, snp_opcode_is_forwarding,
+  snp_ret_to_src_must_be_zero,
 )
 from vip_chi_lcrd_mgr import VipChiLcrdMgr
 from vip_chi_cfg_agent import VipChiCfgAgent
@@ -117,6 +118,13 @@ class vip_chi_driver_hnf(uvm_component):
     self.directory = {}       # line -> [per-port state int]
     self.excl_monitor = {}    # line -> [per-port bool]
     self.snp_txn_ctr = 0
+    # One-shot latches for the three SNP field negative controls, per RN port and
+    # for the same reason as the SV driver's: a control that fires on every snoop
+    # makes the count a test asserts on depend on how many snoops the traffic
+    # happened to produce.
+    self._snp_fwd_negctl_done: set = set()
+    self._snp_rts_negctl_done: set = set()
+    self._snp_sd_negctl_done: set = set()
     self.dn_txn_ctr = 0
     # A CompAck taken off the RSP channel by collect_snp_response before
     # collect_comp_ack got to it. One slot per port is enough: an RN-F runs its
@@ -1122,6 +1130,36 @@ class vip_chi_driver_hnf(uvm_component):
       "fwdnid": fwd_nid, "fwdtxnid": fwd_txn,
       "donotgotosd": int(snp_do_not_go_to_sd_required(rn.cfg.issue, op)),
     }
+
+    # The three field negative controls. Each corrupts one field of an otherwise
+    # ordinary snoop and fires once per port, and each is gated on the opcode
+    # actually being one the rule judges -- a control that sets RetToSrc on a
+    # SnpShared, or clears DoNotGoToSD on a SnpOnce, would provoke nothing and
+    # pass for it.
+    if (self.cfg.hnf_snp_fwd_fields_negctl
+        and k not in self._snp_fwd_negctl_done
+        and not snp_opcode_is_forwarding(op)):
+      self._snp_fwd_negctl_done.add(k)
+      fields["fwdnid"] = 1
+      self.logger.info(
+        f"SNP negctl: FwdNID on non-Forward snoop opcode 0x{int(op):x}")
+
+    if (self.cfg.hnf_snp_ret_to_src_negctl
+        and k not in self._snp_rts_negctl_done
+        and snp_ret_to_src_must_be_zero(op)):
+      self._snp_rts_negctl_done.add(k)
+      fields["rettosrc"] = 1
+      self.logger.info(
+        f"SNP negctl: RetToSrc on snoop opcode 0x{int(op):x}, which must carry zero")
+
+    if (self.cfg.hnf_snp_do_not_go_to_sd_negctl
+        and k not in self._snp_sd_negctl_done
+        and snp_do_not_go_to_sd_required(rn.cfg.issue, op)):
+      self._snp_sd_negctl_done.add(k)
+      fields["donotgotosd"] = 0
+      self.logger.info(
+        f"SNP negctl: DoNotGoToSD cleared on snoop opcode 0x{int(op):x}, "
+        "which must carry one")
     await self.wait_rn_snp_send_credit(k)
     await self.announce_rn_flit(k, "snp")
     await rn.rising()

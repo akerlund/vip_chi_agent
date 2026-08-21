@@ -95,6 +95,8 @@ package chi_tc_pkg;
   `include "tc_chi_d_hni_backpressure.sv"
   `include "tc_chi_e_hni_passthrough.sv"
   `include "tc_chi_e_hni_port1.sv"
+  `include "chi_coh_snp_field_negctl_base_test.sv"
+  `include "tc_chi_coh_e_snp_field_negctl.sv"
   `include "tc_chi_snp_flit_layout.sv"
   `include "tc_chi_d_write_partial_smoke.sv"
   `include "tc_chi_d_decerr_smoke.sv"

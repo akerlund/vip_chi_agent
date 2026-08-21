@@ -426,6 +426,34 @@ class VipChiCfgAgent:
     # RN-F -- and then behaves consistently with the zero it sent, so the
     # required-but-zero rule is the only one that can fire.
     self.rn_drop_required_exp_comp_ack = False
+
+    # Negative controls for the three per-opcode SNP field rules. One knob each,
+    # each firing ONCE per RN port so the fail count a test asserts on is
+    # unambiguous, and each corrupting a single field of an otherwise ordinary
+    # snoop -- the opcode, address, state effect and response are untouched, so
+    # no coherency rule and no other field rule can be what fires.
+    #
+    # The SNP channel has no item-driven path at all: the HN-F is a responder
+    # with no sequencer, so vip_chi_item's raw_snp has no consumer and a raw
+    # injection is not available here the way it is on REQ. A cfg knob is the
+    # mechanism, not a shortcut around one.
+    #
+    # FwdNID on a snoop whose opcode is not a Forward type (E 13.10.5 /
+    # 13.10.16: applicable in Forward type snoops, inapplicable and must be zero
+    # in all others). Proves CHI_SNP_FWD_FIELDS_ZERO fires.
+    self.hnf_snp_fwd_fields_negctl = False
+
+    # RetToSrc on a snoop whose opcode must carry zero -- E 4.9 / D 4.9 names
+    # the set: Stash snoops, SnpCleanShared, SnpCleanInvalid, SnpMakeInvalid,
+    # SnpOnceFwd, SnpUniqueFwd. It must land on one of THOSE: RetToSrc on a
+    # SnpShared or SnpUnique is legal and would prove nothing.
+    self.hnf_snp_ret_to_src_negctl = False
+
+    # DoNotGoToSD cleared on a snoop whose opcode must carry one (E 13.10.35).
+    # CHI-E only, and that is the point rather than a limitation: D 12.9.32 has
+    # no must-be-one list, so the same cleared bit is CONFORMANT under Issue D
+    # and the rule is right to stay quiet there.
+    self.hnf_snp_do_not_go_to_sd_negctl = False
     self.exclusives_enabled = True
     self.hnf_force_excl_success = False
     self.hnf_enable_snoop_fwd = False
@@ -617,6 +645,9 @@ class VipChiCfgAgent:
       "hnf_snoop_shared_for_read_clean": self.hnf_snoop_shared_for_read_clean,
       "hnf_snoop_before_comp_ack": self.hnf_snoop_before_comp_ack,
       "rn_drop_required_exp_comp_ack": self.rn_drop_required_exp_comp_ack,
+      "hnf_snp_fwd_fields_negctl": self.hnf_snp_fwd_fields_negctl,
+      "hnf_snp_ret_to_src_negctl": self.hnf_snp_ret_to_src_negctl,
+      "hnf_snp_do_not_go_to_sd_negctl": self.hnf_snp_do_not_go_to_sd_negctl,
       "hnf_force_excl_success": self.hnf_force_excl_success,
       "hnf_corrupt_fwd_data": self.hnf_corrupt_fwd_data,
       "hnf_downstream_corrupt_data": self.hnf_downstream_corrupt_data,
