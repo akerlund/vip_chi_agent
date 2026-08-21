@@ -330,6 +330,7 @@ CHECK_IDS = (
   "CHI_REQ_TAGOP_LEGAL",
   "CHI_REQ_RETURN_PATH_LEGAL",
   "CHI_DAT_HOME_NID_LEGAL",
+  "CHI_DAT_CBUSY_LEGAL",
   "CHI_EXPCOMPACK_PROHIBITED_BUT_SET",
 )
 
@@ -1506,6 +1507,29 @@ _EXCL_PERMITTED_OPCODES = frozenset({
   int(ReqOpcode.READ_NO_SNP),
   int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
 })
+
+
+def dat_cbusy_applicable(opcode: int) -> bool:
+  """Whether CBusy is applicable to a DAT opcode.
+
+  From Table A-5 "Data message field mappings", parsed out of the PDF with the
+  bbox method in docs/review_claude/TABLE_A3_PARSE.md and checked in as
+  docs/review_claude/table_a5_parsed.json. The table gives CBusy "0" on
+  CopyBackWrData, NonCopyBackWrData, NCBWrDataCompAck and WriteDataCancel, and
+  "Y" on CompData, DataSepResp and the SnpRespData forms.
+
+  The table was necessary here in a way it was not for HomeNID: 13.10.47 defines
+  CBusy as a completer activity indicator with IMPLEMENTATION DEFINED encodings
+  and states no per-opcode rule at all. It makes sense in hindsight -- write data
+  flows requester to completer, and a requester has no completer-busy level to
+  report -- but that is an argument, and the table is an authority.
+
+  WriteDataCancel has no encoding here, so among modelled opcodes the set is the
+  three write-data forms.
+  """
+  return int(opcode) not in (int(DatOpcode.COPY_BACK_WR_DATA),
+                             int(DatOpcode.NON_COPY_BACK_WR_DATA),
+                             int(DatOpcode.NCB_WR_DATA_COMP_ACK))
 
 
 def dat_home_nid_applicable(opcode: int) -> bool:

@@ -514,6 +514,7 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_REQ_TAGOP_LEGAL_E,
     VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E,
     VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E,
+    VIP_CHI_CHK_DAT_CBUSY_LEGAL_E,
     VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
@@ -1904,6 +1905,38 @@ package vip_chi_types_pkg;
   // opcode: only a completer sends either message. The rule is opcode-keyed and
   // does not attempt to establish the peer's node class, for the same reason
   // vip_chi_req_return_nid_applicable does not.
+  // ---------------------------------------------------------------------------
+  // CBusy applicability on the DAT channel, from Table A-5 "Data message field
+  // mappings", parsed out of the PDF with the bbox method in TABLE_A3_PARSE.md
+  // and checked in as docs/review_claude/table_a5_parsed.json. The table gives
+  // CBusy "0" on CopyBackWrData, NonCopyBackWrData, NCBWrDataCompAck and
+  // WriteDataCancel, and "Y" on CompData, DataSepResp and the SnpRespData forms.
+  //
+  // The table was necessary here in a way it was not for HomeNID: 13.10.47
+  // defines CBusy as a completer activity indicator with IMPLEMENTATION DEFINED
+  // encodings and states no per-opcode rule at all, so the prose cannot settle
+  // this. It makes sense in hindsight -- write data flows requester to completer,
+  // and a requester has no completer-busy level to report -- but that is an
+  // argument, and the table is an authority.
+  //
+  // WriteDataCancel has no encoding constant here, so among modelled opcodes the
+  // set is the three write-data forms.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_dat_cbusy_applicable(
+    input vip_chi_dat_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_DAT_COPY_BACK_WR_DATA_E,
+      VIP_CHI_DAT_NON_COPY_BACK_WR_DATA_E,
+      VIP_CHI_DAT_NCB_WR_DATA_COMP_ACK_E: begin
+        return 1'b0;
+      end
+      default: begin
+        return 1'b1;
+      end
+    endcase
+  endfunction
+
   // ---------------------------------------------------------------------------
   function automatic bit vip_chi_dat_home_nid_applicable(
     input vip_chi_dat_opcode_t opcode

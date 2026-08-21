@@ -86,7 +86,7 @@ from vip_chi_types_pkg import (
   req_size_fixed_64b, REQ_SIZE_64B,
   req_excl_permitted, req_endian_applicable, req_tagop_permitted_mask,
   req_return_nid_applicable, req_return_txn_id_applicable,
-  dat_home_nid_applicable,
+  dat_home_nid_applicable, dat_cbusy_applicable,
   SnpAttrReq, snp_attr_requirement, req_bit17_is_dodwt,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
@@ -158,7 +158,7 @@ _FLIT_FIELDS_C = {
           "order", "memattr", "snpattr", "likelyshared", "excl", "endian",
           "tagop"),
   "rsp": ("opcode", "txnid", "dbid", "resperr", "resp"),
-  "dat": ("opcode", "txnid", "dbid", "dataid", "homenid"),
+  "dat": ("opcode", "txnid", "dbid", "dataid", "homenid", "cbusy"),
 }
 
 # Opcode classes, mirroring the SV req_opcode_is_* / is_write_* functions.
@@ -1877,6 +1877,15 @@ class bind_chi:
               f"0x{int(f['homenid']):x}, and section 13.10.3 makes the field "
               "inapplicable and zero outside CompData and DataSepResp",
               "E section 13.10.3")
+
+    # Table A-5 gives CBusy "0" on the write-data opcodes: a requester sending
+    # write data has no completer-busy level to report.
+    self._chk("CHI_DAT_CBUSY_LEGAL",
+              not (int(f["cbusy"]) and not dat_cbusy_applicable(f["opcode"])),
+              f"{d} DAT opcode 0x{int(f['opcode']):x} carried CBusy "
+              f"0x{int(f['cbusy']):x}, and Table A-5 makes the field "
+              "inapplicable and zero on write data",
+              "Table A-5")
 
     # Retire the transfer this beat belongs to, counted by TxnID, before the
     # run-shaped tracking below. See _retire_dat_transfer.

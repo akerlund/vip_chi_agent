@@ -1236,6 +1236,19 @@ module vip_chi_sva #(
           else begin
             chk_hit(VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E);
           end
+
+          // Table A-5 gives CBusy "0" on the write-data opcodes: a requester
+          // sending write data has no completer-busy level to report.
+          if ((vif.txdatflit.cbusy != '0) &&
+              !vip_chi_types_pkg::vip_chi_dat_cbusy_applicable(
+                 vip_chi_dat_opcode_t'(vif.txdatflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_DAT_CBUSY_LEGAL_E, $sformatf(
+              "sent DAT opcode 0x%0h carried CBusy 0x%0h, and Table A-5 makes the field inapplicable and zero on write data",
+              vif.txdatflit.opcode, vif.txdatflit.cbusy));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_DAT_CBUSY_LEGAL_E);
+          end
         end
 
         if (vif.rxdatflitv) begin
@@ -1248,6 +1261,19 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E);
+          end
+
+          // Table A-5 gives CBusy "0" on the write-data opcodes: a requester
+          // sending write data has no completer-busy level to report.
+          if ((vif.rxdatflit.cbusy != '0) &&
+              !vip_chi_types_pkg::vip_chi_dat_cbusy_applicable(
+                 vip_chi_dat_opcode_t'(vif.rxdatflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_DAT_CBUSY_LEGAL_E, $sformatf(
+              "received DAT opcode 0x%0h carried CBusy 0x%0h, and Table A-5 makes the field inapplicable and zero on write data",
+              vif.rxdatflit.opcode, vif.rxdatflit.cbusy));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_DAT_CBUSY_LEGAL_E);
           end
         end
 
