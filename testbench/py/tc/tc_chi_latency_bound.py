@@ -36,7 +36,6 @@ class tc_chi_latency_bound(chi_base_test):
     rd.set_requests(1)
     rd.set_initial_addr(_ADDR_C)
     rd.set_size(_SIZE_C)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     await rd.start(self.v_sqr.rni_sequencer)

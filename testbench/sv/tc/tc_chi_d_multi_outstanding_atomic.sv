@@ -102,7 +102,6 @@ class tc_chi_d_multi_outstanding_atomic extends chi_base_test;
     super.rni0_wr_seq.reset();
     super.rni0_wr_seq.set_initial_addr(BASE_ADDR_C);
     super.rni0_wr_seq.set_size(SIZE_C);
-    super.rni0_wr_seq.set_allow_retry(1'b0);
     super.rni0_wr_seq.set_data(seed_q);           // custom data => bounded by payload
     // Full byte enables for the seeded beat. This is what makes a sub-line write
     // legal: Table A-3 and Chapter 4 fix WriteNoSnpFull at a cache line length,
@@ -133,7 +132,6 @@ class tc_chi_d_multi_outstanding_atomic extends chi_base_test;
     this.atomic_seq.set_variant(0);              // Load0 => arithmetic ADD, returns pre-op value
     this.atomic_seq.set_initial_addr(BASE_ADDR_C);
     this.atomic_seq.set_size(SIZE_C);
-    this.atomic_seq.set_allow_retry(1'b0);
     this.atomic_seq.set_data(op_q);              // one operand beat per atomic
     this.atomic_seq.set_get_response(1'b1);
     this.atomic_seq.set_pipelined_send(1'b1);
@@ -175,7 +173,6 @@ class tc_chi_d_multi_outstanding_atomic extends chi_base_test;
     super.rni0_rd_seq.set_requests(N_C);
     super.rni0_rd_seq.set_initial_addr(BASE_ADDR_C);
     super.rni0_rd_seq.set_size(SIZE_C);
-    super.rni0_rd_seq.set_allow_retry(1'b0);
     super.rni0_rd_seq.set_get_response(1'b1);
     super.rni0_rd_seq.set_pipelined_send(1'b1);
     super.rni0_rd_seq.set_verbose(1'b0);

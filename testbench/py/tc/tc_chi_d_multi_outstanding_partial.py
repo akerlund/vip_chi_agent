@@ -54,7 +54,6 @@ class tc_chi_d_multi_outstanding_partial(chi_base_test):
     wr.reset()
     wr.set_initial_addr(BASE_ADDR_C)
     wr.set_size(SIZE_C)
-    wr.set_allow_retry(0)
     wr.set_data(data_q)                   # custom data => CUSTOM mode
     wr.set_be(be_q)                       # custom BE   => WriteNoSnpPtl
     wr.set_get_response(True)
@@ -78,7 +77,6 @@ class tc_chi_d_multi_outstanding_partial(chi_base_test):
     rd.set_requests(N_C)
     rd.set_initial_addr(BASE_ADDR_C)
     rd.set_size(SIZE_C)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_pipelined_send(True)
     rd.set_verbose(False)

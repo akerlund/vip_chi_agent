@@ -52,7 +52,6 @@ class tc_chi_d_link_reactivation(chi_base_test):
     rd.set_requests(1)
     rd.set_initial_addr(READ_ADDR_C + 0xC00)
     rd.set_size(6)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     await rd.start(self.v_sqr.rni_sequencer)

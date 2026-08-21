@@ -35,7 +35,6 @@ class tc_chi_d_hni_atomic(chi_hni_base_test):
     atomic_seq.set_requests(1)
     atomic_seq.set_initial_addr(WRITE_READ_ADDR_C)
     atomic_seq.set_size(beat_size)
-    atomic_seq.set_allow_retry(0)
     atomic_seq.set_get_response(True)
     atomic_seq.set_data([0x10])
     atomic_seq.set_verbose(False)

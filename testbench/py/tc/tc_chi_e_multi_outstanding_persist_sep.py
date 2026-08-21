@@ -40,7 +40,6 @@ class tc_chi_e_multi_outstanding_persist_sep(chi_e_base_test):
     persist_seq.set_size(6)
     persist_seq.set_src_id(E_PERSIST_SEP_RNI_NODE_ID_C)
     persist_seq.set_tgt_id(E_PERSIST_SEP_SNF_NODE_ID_C)
-    persist_seq.set_allow_retry(0)
     persist_seq.set_get_response(True)
     persist_seq.set_pipelined_send(True)
     persist_seq.set_verbose(False)

@@ -62,7 +62,6 @@ class tc_chi_d_multi_outstanding_persist extends chi_base_test;
     this.persist_seq.set_requests(N_C);
     this.persist_seq.set_initial_addr(BASE_ADDR_C);
     this.persist_seq.set_size(SIZE_C);
-    this.persist_seq.set_allow_retry(1'b0);
     this.persist_seq.set_get_response(1'b1);
     this.persist_seq.set_pipelined_send(1'b1);
     this.persist_seq.set_verbose(1'b0);

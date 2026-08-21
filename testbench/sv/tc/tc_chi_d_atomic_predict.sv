@@ -62,7 +62,6 @@ class tc_chi_d_atomic_predict extends chi_base_test;
     super.rni0_wr_seq.reset();
     super.rni0_wr_seq.set_initial_addr(addr);
     super.rni0_wr_seq.set_size(beat_size);
-    super.rni0_wr_seq.set_allow_retry(1'b0);
     super.rni0_wr_seq.set_data(data_q);
     // Full byte enables for the seeded beat. This is what makes a sub-line write
     // legal: Table A-3 and Chapter 4 fix WriteNoSnpFull at a cache line length,
@@ -104,7 +103,6 @@ class tc_chi_d_atomic_predict extends chi_base_test;
     super.rni0_rd_seq.set_requests(1);
     super.rni0_rd_seq.set_initial_addr(addr);
     super.rni0_rd_seq.set_size(beat_size);
-    super.rni0_rd_seq.set_allow_retry(1'b0);
     super.rni0_rd_seq.set_get_response(1'b1);
     super.rni0_rd_seq.set_verbose(1'b0);
     super.rni0_rd_seq.start(super.v_sqr.rni_sequencer);
@@ -159,7 +157,6 @@ class tc_chi_d_atomic_predict extends chi_base_test;
     this.atomic_seq.set_requests(1);
     this.atomic_seq.set_initial_addr(STORE_ADDR_C);
     this.atomic_seq.set_size(beat_size);
-    this.atomic_seq.set_allow_retry(1'b0);
     this.atomic_seq.set_get_response(1'b1);
     this.atomic_seq.set_verbose(1'b0);
 
@@ -187,7 +184,6 @@ class tc_chi_d_atomic_predict extends chi_base_test;
     this.atomic_seq.set_requests(1);
     this.atomic_seq.set_initial_addr(SWAP_ADDR_C);
     this.atomic_seq.set_size(beat_size);
-    this.atomic_seq.set_allow_retry(1'b0);
     this.atomic_seq.set_get_response(1'b1);
     this.atomic_seq.set_verbose(1'b0);
     data_q.delete();
@@ -217,7 +213,6 @@ class tc_chi_d_atomic_predict extends chi_base_test;
     // beat_size operands -> Size = beat_size + 1. Seed/read-back stay at the
     // per-operand granule (beat_size). [P2]
     this.atomic_seq.set_size(item_t::size_t'(beat_size + 1));
-    this.atomic_seq.set_allow_retry(1'b0);
     this.atomic_seq.set_get_response(1'b1);
     this.atomic_seq.set_verbose(1'b0);
     data_q.delete();

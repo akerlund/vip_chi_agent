@@ -53,7 +53,6 @@ class tc_chi_d_credit_starvation extends chi_base_test;
     seq.set_requests(2);
     seq.set_initial_addr(READ_ADDR_C + item_t::addr_t'(44'h400));
     seq.set_size(item_t::size_t'($clog2(CHI_D_CFG_C.DATA_BYTES_P)));
-    seq.set_allow_retry(1'b0);
     seq.set_get_response(1'b1);
     seq.set_verbose(1'b0);
 

@@ -54,7 +54,6 @@ class tc_chi_e_sep_read extends chi_e_base_test;
     super.rni_rd_seq.set_tgt_id(item_t::node_id_t'(SNF_NID_C));
     super.rni_rd_seq.set_return_nid(item_t::node_id_t'(RNI_NID_C));  // must == src_id (constraint)
     super.rni_rd_seq.set_return_txn_id(item_t::txn_id_t'(SEP_RETURN_TXN_ID_C));
-    super.rni_rd_seq.set_allow_retry(1'b0);
     super.rni_rd_seq.set_get_response(1'b1);
     super.rni_rd_seq.set_verbose(1'b0);
     super.rni_rd_seq.start(super.tb_env.rni_agent.sequencer);

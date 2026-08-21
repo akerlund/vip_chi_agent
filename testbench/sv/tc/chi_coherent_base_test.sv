@@ -154,7 +154,6 @@ class chi_coherent_base_test #(
     seq.set_requests(1);
     seq.set_initial_addr(addr);
     seq.set_size(3'd6);
-    seq.set_allow_retry(1'b0);
     seq.set_get_response(1'b1);
     seq.set_verbose(1'b0);
   endfunction

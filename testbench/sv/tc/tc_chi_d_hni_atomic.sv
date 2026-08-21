@@ -67,7 +67,6 @@ class tc_chi_d_hni_atomic extends chi_base_test;
     this.atomic_seq.set_requests(1);
     this.atomic_seq.set_initial_addr(ATOMIC_HNI_ADDR_C);
     this.atomic_seq.set_size(beat_size);
-    this.atomic_seq.set_allow_retry(1'b0);
     this.atomic_seq.set_get_response(1'b1);
     data_beats.delete();
     data_beats.push_back(item_t::data_t'('h10));

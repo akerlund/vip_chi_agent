@@ -32,7 +32,6 @@ class tc_chi_d_split_write_rsp(chi_base_test):
     wr.set_requests(1)
     wr.set_initial_addr(addr)
     wr.set_size(6)
-    wr.set_allow_retry(0)
     wr.set_data_type(DataType.COUNTER)
     wr.set_counter_value(0x70 if exp_comp_ack else 0x40)
     wr.set_counter_increment(0x1)

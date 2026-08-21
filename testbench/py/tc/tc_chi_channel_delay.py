@@ -75,7 +75,6 @@ class tc_chi_channel_delay(chi_base_test):
     seq.set_initial_addr(base)
     seq.set_addr_stride(STRIDE_C)
     seq.set_size(SIZE_C)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
     await seq.start(self.v_sqr.rni_sequencer)

@@ -117,7 +117,6 @@ class chi_coherent_base_test(uvm_test):
     seq.set_requests(1)
     seq.set_initial_addr(addr)
     seq.set_size(6)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
 

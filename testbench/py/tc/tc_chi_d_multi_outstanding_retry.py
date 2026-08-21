@@ -79,6 +79,12 @@ class tc_chi_d_multi_outstanding_retry(chi_base_test):
     rd.set_requests(N_C)
     rd.set_initial_addr(BASE_ADDR_C)
     rd.set_size(SIZE_C)
+    # The zero is load-bearing here, not determinism. force_retry_count above
+    # bounds the TOTAL bounces this SN-F will issue, and should_auto_retry only
+    # bounces a request whose AllowRetry is set -- so clearing it on the read
+    # reserves the single retry for the request this test is about. Every other
+    # testcase in the tree had this call for determinism it already had from
+    # force_retry_count = 0, and those were removed.
     rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_pipelined_send(True)

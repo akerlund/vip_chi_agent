@@ -33,7 +33,6 @@ class tc_chi_d_multi_outstanding_write(chi_base_test):
     wr.set_requests(N_WRITES_C)
     wr.set_initial_addr(WR_BASE_ADDR_C)
     wr.set_size(WRITE_SIZE_C)
-    wr.set_allow_retry(0)
     wr.set_get_response(True)
     wr.set_pipelined_send(True)
     wr.set_verbose(False)

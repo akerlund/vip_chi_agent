@@ -73,7 +73,6 @@ class tc_chi_lasm_deactivate(chi_base_test):
     rd.set_requests(1)
     rd.set_initial_addr(addr)
     rd.set_size(SIZE_C)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     await rd.start(self.v_sqr.rni_sequencer)

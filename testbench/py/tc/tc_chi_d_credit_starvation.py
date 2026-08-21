@@ -37,7 +37,6 @@ class tc_chi_d_credit_starvation(chi_base_test):
     seq.set_requests(2)
     seq.set_initial_addr(READ_ADDR_C + 0x400)
     seq.set_size(clog2(self.chi_cfg.data_bytes))
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
 

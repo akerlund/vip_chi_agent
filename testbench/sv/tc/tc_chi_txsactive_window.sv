@@ -187,7 +187,6 @@ class tc_chi_txsactive_window extends chi_base_test;
         super.rni0_rd_seq.set_requests(N_READS_C);
         super.rni0_rd_seq.set_initial_addr(TXSA_ADDR_C);
         super.rni0_rd_seq.set_size(READ_SIZE_C);
-        super.rni0_rd_seq.set_allow_retry(1'b0);
         super.rni0_rd_seq.set_get_response(1'b1);
         super.rni0_rd_seq.set_pipelined_send(1'b1);
         super.rni0_rd_seq.set_verbose(1'b0);

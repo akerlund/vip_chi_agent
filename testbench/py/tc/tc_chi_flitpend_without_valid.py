@@ -58,7 +58,6 @@ class tc_chi_flitpend_without_valid(chi_base_test):
     wr.set_initial_addr(ADDR_C)
     wr.set_size(SIZE_C)
     wr.set_exp_comp_ack(True)
-    wr.set_allow_retry(0)
     wr.set_get_response(True)
     wr.set_verbose(False)
     await wr.start(self.v_sqr.rni_sequencer)

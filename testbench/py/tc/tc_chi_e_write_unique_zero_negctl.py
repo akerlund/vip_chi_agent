@@ -160,7 +160,6 @@ class tc_chi_e_write_unique_zero_negctl(chi_e_base_test):
     wr.set_requests(1)
     wr.set_initial_addr(E_WUZ_NEGCTL_ADDR_C)
     wr.set_size(6)
-    wr.set_allow_retry(False)
     wr.set_get_response(True)
     wr.set_verbose(False)
     await wr.start(self.tb_env.rni_agent.sequencer)

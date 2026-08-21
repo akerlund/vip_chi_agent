@@ -39,7 +39,6 @@ class tc_chi_d_reset(chi_base_test):
     pre_reset_seq.set_requests(2)
     pre_reset_seq.set_initial_addr(READ_ADDR_C + 0x800)
     pre_reset_seq.set_size(clog2(self.chi_cfg.data_bytes))
-    pre_reset_seq.set_allow_retry(0)
     pre_reset_seq.set_get_response(True)
     pre_reset_seq.set_verbose(False)
 
@@ -82,7 +81,6 @@ class tc_chi_d_reset(chi_base_test):
     rd.set_requests(1)
     rd.set_initial_addr(READ_ADDR_C + 0xA00)
     rd.set_size(6)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     await rd.start(self.v_sqr.rni_sequencer)

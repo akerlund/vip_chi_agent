@@ -24,7 +24,6 @@ class tc_chi_d_read_smoke(chi_base_test):
     rd.set_requests(1)
     rd.set_initial_addr(READ_ADDR_C)
     rd.set_size(6)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     await rd.start(self.v_sqr.rni_sequencer)

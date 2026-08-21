@@ -32,7 +32,6 @@ class tc_chi_e_sep_read(chi_e_base_test):
     rd.set_tgt_id(SNF_NID_C)
     rd.set_return_nid(RNI_NID_C)          # must == src_id
     rd.set_return_txn_id(SEP_RETURN_TXN_ID_C)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     await rd.start(self.tb_env.rni_agent.sequencer)

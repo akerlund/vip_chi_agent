@@ -47,7 +47,6 @@ class chi_coh_write_unique_ptl_base_test(chi_coherent_base_test):
     wu_seq.set_partial(True)
     wu_seq.set_initial_addr(write_addr)
     wu_seq.set_size(_WRITE_SIZE)
-    wu_seq.set_allow_retry(0)
     wu_seq.set_data([payload])
     wu_seq.set_be([be])
     wu_seq.set_get_response(True)

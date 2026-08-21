@@ -101,7 +101,6 @@ class tc_chi_rsp_field_zero_negctl(chi_base_test):
     wr.set_requests(1)
     wr.set_initial_addr(WRITE_READ_ADDR_C)
     wr.set_size(6)
-    wr.set_allow_retry(0)
     wr.set_get_response(True)
     wr.set_verbose(False)
     await wr.start(self.v_sqr.rni_sequencer)

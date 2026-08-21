@@ -59,7 +59,6 @@ class tc_chi_ordered_stream_negctl(chi_base_test):
       rd.set_initial_addr(BASE_ADDR_C)
       rd.set_size(SIZE_C)
       rd.set_order(int(ReqOrder.REQ_ORDER))
-      rd.set_allow_retry(0)
       rd.set_get_response(True)
       rd.set_pipelined_send(True)
       rd.set_verbose(False)

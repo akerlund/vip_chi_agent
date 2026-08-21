@@ -55,7 +55,6 @@ class chi_coh_read_no_snoop_base_test #(
     super.hrnf0_rdshared_seq.set_requests(1);
     super.hrnf0_rdshared_seq.set_initial_addr(item_t::addr_t'(WRITE_READ_ADDR_C));
     super.hrnf0_rdshared_seq.set_size(3'd6);
-    super.hrnf0_rdshared_seq.set_allow_retry(1'b0);
     super.hrnf0_rdshared_seq.set_get_response(1'b1);
     super.hrnf0_rdshared_seq.set_verbose(1'b0);
     super.hrnf0_rdshared_seq.start(super.tb_env.hrnf0_agent.sequencer);

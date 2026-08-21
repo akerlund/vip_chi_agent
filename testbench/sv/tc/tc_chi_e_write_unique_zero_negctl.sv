@@ -218,7 +218,6 @@ class tc_chi_e_write_unique_zero_negctl extends chi_e_base_test;
     super.rni_wr_seq.set_requests(1);
     super.rni_wr_seq.set_initial_addr(E_WUZ_NEGCTL_ADDR_C);
     super.rni_wr_seq.set_size(3'd6);
-    super.rni_wr_seq.set_allow_retry(1'b0);
     super.rni_wr_seq.set_get_response(1'b1);
     super.rni_wr_seq.set_verbose(1'b0);
     super.rni_wr_seq.start(super.tb_env.rni_agent.sequencer);

@@ -39,7 +39,6 @@ class chi_coh_read_no_snoop_base_test(chi_coherent_base_test):
     seq.set_requests(1)
     seq.set_initial_addr(WRITE_READ_ADDR_C)
     seq.set_size(6)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
     await seq.start(self.tb_env.hrnf0_agent.sequencer)

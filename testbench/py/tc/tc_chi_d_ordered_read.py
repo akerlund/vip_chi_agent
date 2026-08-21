@@ -24,7 +24,6 @@ class tc_chi_d_ordered_read(chi_base_test):
     rd.set_initial_addr(READ_ADDR_C + 0x100)
     rd.set_size(6)
     rd.set_order(int(ReqOrder.REQ_ORDER))
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     await rd.start(self.v_sqr.rni_sequencer)

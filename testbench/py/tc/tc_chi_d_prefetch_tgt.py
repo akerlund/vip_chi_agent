@@ -24,7 +24,6 @@ class tc_chi_d_prefetch_tgt(chi_base_test):
     seq.set_requests(1)
     seq.set_initial_addr(READ_ADDR_C + 0x180)
     seq.set_size(6)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
     await seq.start(self.v_sqr.rni_sequencer)

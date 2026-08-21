@@ -34,7 +34,6 @@ class tc_chi_d_multi_outstanding(chi_base_test):
     rd.set_requests(N_READS_C)
     rd.set_initial_addr(MO_BASE_ADDR_C)
     rd.set_size(READ_SIZE_C)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_pipelined_send(True)
     rd.set_verbose(False)

@@ -28,7 +28,6 @@ class tc_chi_d_prefetch_tgt extends chi_base_test;
     seq.set_requests(1);
     seq.set_initial_addr(READ_ADDR_C + item_t::addr_t'(44'h180));
     seq.set_size(3'd6);
-    seq.set_allow_retry(1'b0);
     seq.set_get_response(1'b1);
     seq.set_verbose(1'b0);
     seq.start(super.v_sqr.rni_sequencer);

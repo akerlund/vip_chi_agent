@@ -46,7 +46,6 @@ class tc_chi_e_dbid_resp_ord extends chi_e_base_test;
     super.rni_wr_seq.set_tgt_id(E_DBID_RESP_ORD_SNF_NODE_ID_C);
     super.rni_wr_seq.set_qos(4'he);
     super.rni_wr_seq.set_order(VIP_CHI_ORDER_REQ_ORDER_E);
-    super.rni_wr_seq.set_allow_retry(1'b0);
     super.rni_wr_seq.set_exp_comp_ack(1'b1);
     super.rni_wr_seq.set_data_type(VIP_CHI_DATA_COUNTER_E);
     super.rni_wr_seq.set_counter_value(item_t::data_t'('h90));

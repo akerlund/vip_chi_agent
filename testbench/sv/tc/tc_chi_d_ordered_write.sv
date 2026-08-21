@@ -27,7 +27,6 @@ class tc_chi_d_ordered_write extends chi_base_test;
     super.rni0_wr_seq.set_requests(1);
     super.rni0_wr_seq.set_initial_addr(WRITE_ADDR_C + item_t::addr_t'(44'h100));
     super.rni0_wr_seq.set_size(3'd6);
-    super.rni0_wr_seq.set_allow_retry(1'b0);
     super.rni0_wr_seq.set_data_type(VIP_CHI_DATA_COUNTER_E);
     super.rni0_wr_seq.set_counter_value(item_t::data_t'('h20));
     super.rni0_wr_seq.set_counter_increment(item_t::data_t'('h1));

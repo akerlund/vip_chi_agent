@@ -64,7 +64,6 @@ class tc_chi_e_multi_outstanding_persist_sep extends chi_e_base_test;
     this.persist_seq.set_size(3'd6);
     this.persist_seq.set_src_id(E_PERSIST_SEP_RNI_NODE_ID_C);
     this.persist_seq.set_tgt_id(E_PERSIST_SEP_SNF_NODE_ID_C);
-    this.persist_seq.set_allow_retry(1'b0);
     this.persist_seq.set_get_response(1'b1);
     this.persist_seq.set_pipelined_send(1'b1);
     this.persist_seq.set_verbose(1'b0);

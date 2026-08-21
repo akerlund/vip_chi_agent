@@ -76,7 +76,6 @@ class tc_chi_e_link_lifecycle(chi_e_base_test):
     wr.set_requests(1)
     wr.set_initial_addr(addr)
     wr.set_size(SIZE_C)
-    wr.set_allow_retry(0)
     wr.set_get_response(True)
     wr.set_verbose(False)
     await wr.start(self.v_sqr.rni_sequencer)

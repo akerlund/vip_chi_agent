@@ -30,7 +30,6 @@ class tc_chi_d_atomic_predict(chi_base_test):
     wr.set_requests(1)
     wr.set_initial_addr(addr)
     wr.set_size(beat_size)
-    wr.set_allow_retry(0)
     wr.set_data([value])
     # Full byte enables for the seeded beat. This is what makes a sub-line write
     # legal: Table A-3 and Chapter 4 fix WriteNoSnpFull at a cache line length, so
@@ -52,7 +51,6 @@ class tc_chi_d_atomic_predict(chi_base_test):
     rd.set_requests(1)
     rd.set_initial_addr(addr)
     rd.set_size(beat_size)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     await rd.start(self.v_sqr.rni_sequencer)
@@ -83,7 +81,6 @@ class tc_chi_d_atomic_predict(chi_base_test):
     seq.set_requests(1)
     seq.set_initial_addr(STORE_ADDR_C)
     seq.set_size(beat_size)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
     seq.set_data([store_op])
@@ -101,7 +98,6 @@ class tc_chi_d_atomic_predict(chi_base_test):
     seq.set_requests(1)
     seq.set_initial_addr(SWAP_ADDR_C)
     seq.set_size(beat_size)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
     seq.set_data([swap_op])
@@ -120,7 +116,6 @@ class tc_chi_d_atomic_predict(chi_base_test):
     seq.set_requests(1)
     seq.set_initial_addr(COMPARE_ADDR_C)
     seq.set_size(beat_size + 1)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
     seq.set_data([cmp_seed, cmp_swap])  # compare == seed => match, swap stored

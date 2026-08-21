@@ -34,7 +34,6 @@ class tc_chi_e_dbid_resp_ord(chi_e_base_test):
     wr.set_tgt_id(E_DBID_RESP_ORD_SNF_NODE_ID_C)
     wr.set_qos(0xE)
     wr.set_order(int(ReqOrder.REQ_ORDER))
-    wr.set_allow_retry(0)
     wr.set_exp_comp_ack(1)
     wr.set_data_type(DataType.COUNTER)
     wr.set_counter_value(0x90)

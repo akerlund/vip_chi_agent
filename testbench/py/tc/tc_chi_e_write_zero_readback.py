@@ -28,7 +28,6 @@ class tc_chi_e_write_zero_readback(chi_e_base_test):
     wr.set_requests(1)
     wr.set_initial_addr(E_WRITE_ZERO_ADDR_C)
     wr.set_size(SIZE_C)
-    wr.set_allow_retry(0)
     wr.set_data_type(DataType.ONES)
     wr.set_get_response(True)
     wr.set_verbose(False)
@@ -50,7 +49,6 @@ class tc_chi_e_write_zero_readback(chi_e_base_test):
     zseq.set_requests(1)
     zseq.set_initial_addr(E_WRITE_ZERO_ADDR_C)
     zseq.set_size(SIZE_C)
-    zseq.set_allow_retry(0)
     zseq.set_get_response(True)
     zseq.set_verbose(False)
     await zseq.start(self.tb_env.rni_agent.sequencer)
@@ -79,7 +77,6 @@ class tc_chi_e_write_zero_readback(chi_e_base_test):
     rd.set_requests(1)
     rd.set_initial_addr(E_WRITE_ZERO_ADDR_C)
     rd.set_size(SIZE_C)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     return rd

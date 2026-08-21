@@ -127,7 +127,6 @@ class tc_chi_txsactive_window(chi_base_test):
     rd.set_requests(_READS_C)
     rd.set_initial_addr(READ_ADDR_C + 0x200)
     rd.set_size(6)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_pipelined_send(True)
     rd.set_verbose(False)

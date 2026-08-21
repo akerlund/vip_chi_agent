@@ -63,7 +63,6 @@ class tc_chi_d_atomic_variants(chi_base_test):
     rd.set_requests(1)
     rd.set_initial_addr(addr)
     rd.set_size(beat_size)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     await rd.start(self.v_sqr.rni_sequencer)
@@ -82,7 +81,6 @@ class tc_chi_d_atomic_variants(chi_base_test):
     seq.set_requests(1)
     seq.set_initial_addr(addr)
     seq.set_size(beat_size)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
 
@@ -109,7 +107,6 @@ class tc_chi_d_atomic_variants(chi_base_test):
     seq.set_requests(1)
     seq.set_initial_addr(addr)
     seq.set_size(beat_size)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
 
@@ -133,7 +130,6 @@ class tc_chi_d_atomic_variants(chi_base_test):
     seq.set_requests(1)
     seq.set_initial_addr(addr)
     seq.set_size(beat_size)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
 
@@ -161,7 +157,6 @@ class tc_chi_d_atomic_variants(chi_base_test):
     # AtomicCompare Size is the COMBINED compare+swap size: two beat_size operands
     # span Size = beat_size + 1. readback reads the per-operand granule (beat_size).
     seq.set_size(beat_size + 1)
-    seq.set_allow_retry(0)
     seq.set_get_response(True)
     seq.set_verbose(False)
 

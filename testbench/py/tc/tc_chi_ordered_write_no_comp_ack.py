@@ -59,7 +59,6 @@ class tc_chi_ordered_write_no_comp_ack(chi_base_test):
     wr.set_size(SIZE_C)
     wr.set_order(int(ReqOrder.REQ_ORDER))
     wr.set_exp_comp_ack(0)
-    wr.set_allow_retry(0)
     wr.set_get_response(True)
     wr.set_pipelined_send(True)
     wr.set_verbose(False)

@@ -54,7 +54,6 @@ class tc_chi_d_multi_outstanding_write extends chi_base_test;
     super.rni0_wr_seq.set_requests(N_WRITES_C);
     super.rni0_wr_seq.set_initial_addr(WR_BASE_ADDR_C);
     super.rni0_wr_seq.set_size(WRITE_SIZE_C);
-    super.rni0_wr_seq.set_allow_retry(1'b0);
     super.rni0_wr_seq.set_get_response(1'b1);
     super.rni0_wr_seq.set_pipelined_send(1'b1);
     super.rni0_wr_seq.set_verbose(1'b0);

@@ -156,7 +156,6 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
       this.write_cmo_seq.set_initial_addr(
         E_WRITE_CMO_ADDR_C + item_t::addr_t'(form * E_WRITE_CMO_STRIDE_C));
       this.write_cmo_seq.set_size(SIZE_C);
-      this.write_cmo_seq.set_allow_retry(1'b0);
       this.write_cmo_seq.set_get_response(1'b1);
       this.write_cmo_seq.set_verbose(1'b0);
       this.write_cmo_seq.start(super.tb_env.rni_agent.sequencer);
@@ -344,7 +343,6 @@ class tc_chi_e_write_cmo extends chi_e_base_test;
     super.rni_rd_seq.set_initial_addr(E_WRITE_CMO_ADDR_C);
     super.rni_rd_seq.set_addr_stride(E_WRITE_CMO_STRIDE_C);
     super.rni_rd_seq.set_size(SIZE_C);
-    super.rni_rd_seq.set_allow_retry(1'b0);
     super.rni_rd_seq.set_get_response(1'b1);
     super.rni_rd_seq.set_verbose(1'b0);
     super.rni_rd_seq.start(super.tb_env.rni_agent.sequencer);

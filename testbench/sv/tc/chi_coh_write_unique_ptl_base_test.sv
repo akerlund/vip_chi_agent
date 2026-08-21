@@ -91,7 +91,6 @@ class chi_coh_write_unique_ptl_base_test #(
     this.hrnf1_wu_ptl_seq.set_partial(1'b1);
     this.hrnf1_wu_ptl_seq.set_initial_addr(write_addr);
     this.hrnf1_wu_ptl_seq.set_size(WRITE_SIZE_C);
-    this.hrnf1_wu_ptl_seq.set_allow_retry(1'b0);
     this.hrnf1_wu_ptl_seq.set_data(write_payload);
     this.hrnf1_wu_ptl_seq.set_be(write_be);
     this.hrnf1_wu_ptl_seq.set_get_response(1'b1);

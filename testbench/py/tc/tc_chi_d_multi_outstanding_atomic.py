@@ -59,7 +59,6 @@ class tc_chi_d_multi_outstanding_atomic(chi_base_test):
     wr.reset()
     wr.set_initial_addr(BASE_ADDR_C)
     wr.set_size(size)
-    wr.set_allow_retry(0)
     wr.set_data(seed_q)               # custom data => bounded by payload
     # Full byte enables for the seeded beat. This is what makes a sub-line write
     # legal: Table A-3 and Chapter 4 fix WriteNoSnpFull at a cache line length, so
@@ -81,7 +80,6 @@ class tc_chi_d_multi_outstanding_atomic(chi_base_test):
     atomic_seq.set_variant(0)          # Load0 => arithmetic ADD, returns pre-op value
     atomic_seq.set_initial_addr(BASE_ADDR_C)
     atomic_seq.set_size(size)
-    atomic_seq.set_allow_retry(0)
     atomic_seq.set_data(op_q)          # one operand beat per atomic
     atomic_seq.set_get_response(True)
     atomic_seq.set_pipelined_send(True)
@@ -106,7 +104,6 @@ class tc_chi_d_multi_outstanding_atomic(chi_base_test):
     rd.set_requests(N_C)
     rd.set_initial_addr(BASE_ADDR_C)
     rd.set_size(size)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_pipelined_send(True)
     rd.set_verbose(False)

@@ -54,7 +54,6 @@ class tc_chi_check_disable(chi_base_test):
     wr.set_requests(2)
     wr.set_initial_addr(ADDR_C)
     wr.set_size(SIZE_C)
-    wr.set_allow_retry(0)
     wr.set_get_response(True)
     wr.set_verbose(False)
     await wr.start(self.v_sqr.rni_sequencer)

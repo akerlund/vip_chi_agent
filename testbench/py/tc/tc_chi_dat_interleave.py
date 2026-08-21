@@ -58,7 +58,6 @@ class tc_chi_dat_interleave(chi_base_test):
     rd.set_requests(N_C)
     rd.set_initial_addr(BASE_ADDR_C)
     rd.set_size(SIZE_C)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_pipelined_send(True)
     rd.set_verbose(False)

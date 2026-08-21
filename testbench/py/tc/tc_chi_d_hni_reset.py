@@ -43,7 +43,6 @@ class tc_chi_d_hni_reset(chi_hni_base_test):
     inflight_seq.set_requests(2)
     inflight_seq.set_initial_addr(WRITE_READ_ADDR_C)
     inflight_seq.set_size(6)
-    inflight_seq.set_allow_retry(0)
     inflight_seq.set_get_response(True)
     inflight_seq.set_verbose(False)
 
@@ -87,7 +86,6 @@ class tc_chi_d_hni_reset(chi_hni_base_test):
     wr.set_requests(1)
     wr.set_initial_addr(WRITE_READ_ADDR_C)
     wr.set_size(6)
-    wr.set_allow_retry(0)
     wr.set_get_response(True)
     wr.set_verbose(False)
     await wr.start(self.v_sqr.hrni0_sequencer)
@@ -97,7 +95,6 @@ class tc_chi_d_hni_reset(chi_hni_base_test):
     rd.set_requests(1)
     rd.set_initial_addr(WRITE_READ_ADDR_C)
     rd.set_size(6)
-    rd.set_allow_retry(0)
     rd.set_get_response(True)
     rd.set_verbose(False)
     await rd.start(self.v_sqr.hrni0_sequencer)

@@ -51,7 +51,6 @@ class tc_chi_d_reset extends chi_base_test;
     pre_reset_seq.set_requests(2);
     pre_reset_seq.set_initial_addr(READ_ADDR_C + item_t::addr_t'(44'h800));
     pre_reset_seq.set_size(item_t::size_t'($clog2(CHI_D_CFG_C.DATA_BYTES_P)));
-    pre_reset_seq.set_allow_retry(1'b0);
     pre_reset_seq.set_get_response(1'b1);
     pre_reset_seq.set_verbose(1'b0);
 
@@ -107,7 +106,6 @@ class tc_chi_d_reset extends chi_base_test;
     super.rni0_rd_seq.set_requests(1);
     super.rni0_rd_seq.set_initial_addr(READ_ADDR_C + item_t::addr_t'(44'hA00));
     super.rni0_rd_seq.set_size(3'd6);
-    super.rni0_rd_seq.set_allow_retry(1'b0);
     super.rni0_rd_seq.set_get_response(1'b1);
     super.rni0_rd_seq.set_verbose(1'b0);
     super.rni0_rd_seq.start(super.v_sqr.rni_sequencer);

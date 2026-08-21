@@ -69,7 +69,6 @@ class tc_chi_flit_without_flitpend extends chi_base_test;
     super.rni0_wr_seq.set_initial_addr(ADDR_C);
     super.rni0_wr_seq.set_size(SIZE_C);
     super.rni0_wr_seq.set_exp_comp_ack(1'b1);
-    super.rni0_wr_seq.set_allow_retry(1'b0);
     super.rni0_wr_seq.set_get_response(1'b1);
     super.rni0_wr_seq.set_verbose(1'b0);
     super.rni0_wr_seq.start(super.v_sqr.rni_sequencer);

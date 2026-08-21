@@ -25,7 +25,6 @@ class tc_chi_d_hni_persist(chi_hni_base_test):
     persist_seq.set_requests(1)
     persist_seq.set_initial_addr(WRITE_READ_ADDR_C)
     persist_seq.set_size(6)
-    persist_seq.set_allow_retry(0)
     persist_seq.set_get_response(True)
     persist_seq.set_verbose(False)
     await persist_seq.start(self.v_sqr.hrni0_sequencer)

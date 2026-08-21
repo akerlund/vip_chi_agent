@@ -37,7 +37,6 @@ class tc_chi_d_multi_outstanding_persist(chi_base_test):
     persist_seq.set_requests(N_C)
     persist_seq.set_initial_addr(BASE_ADDR_C)
     persist_seq.set_size(SIZE_C)
-    persist_seq.set_allow_retry(0)
     persist_seq.set_get_response(True)
     persist_seq.set_pipelined_send(True)
     persist_seq.set_verbose(False)
