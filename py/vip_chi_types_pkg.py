@@ -327,6 +327,7 @@ CHECK_IDS = (
   "CHI_REQ_SIZE_LEGAL",
   "CHI_REQ_EXCL_LEGAL",
   "CHI_REQ_ENDIAN_LEGAL",
+  "CHI_REQ_TAGOP_LEGAL",
   "CHI_EXPCOMPACK_PROHIBITED_BUT_SET",
 )
 
@@ -1503,6 +1504,65 @@ _EXCL_PERMITTED_OPCODES = frozenset({
   int(ReqOpcode.READ_NO_SNP),
   int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
 })
+
+
+def req_tagop_permitted_mask(issue: int, opcode: int) -> int:
+  """Which TagOp encodings an opcode may carry, as a 4-bit mask.
+
+  Bit 0 = Invalid (0b00), bit 1 = Transfer (0b01), bit 2 = Update (0b10),
+  bit 3 = 0b11.
+
+  From IHI 0050 E Table 12-2, "Permitted TagOp values for each request type",
+  read out of the PDF -- the markdown conversion drops the table entirely,
+  leaving five separate cross-references to a table that is not there.
+
+  The table has FIVE columns for a TWO-bit field: Invalid, Transfer, Update,
+  Match and Fetch. Match and Fetch are one encoding (Table 13-34 gives 0b11 as
+  "Match Fetch"), so bit 3 is permitted when EITHER column says Yes -- and the
+  two are not interchangeable in the table: ReadUnique has Fetch Yes and Match
+  No, WriteNoSnpFull has Match Yes and Fetch No. Collapsing them onto one bit is
+  what the field encoding forces, and it is why this returns a mask.
+
+  CleanUnique has NO ROW in Table 12-2 and ReqLCrdReturn's TagOp is a Don't Care
+  by the note under it, so both are returned unjudged rather than guessed. Under
+  Issue D there is no memory tagging and the item's issue-gated constraint
+  already holds the field at zero, so the rule stands down.
+  """
+  if int(issue) != int(Issue.E):
+    return 0b1111
+  op = int(opcode)
+  if op in (int(ReqOpcode.READ_ONCE), int(ReqOpcode.READ_CLEAN),
+            int(ReqOpcode.READ_SHARED), int(ReqOpcode.MAKE_READ_UNIQUE),
+            int(ReqOpcode.WRITE_EVICT_OR_EVICT), int(ReqOpcode.PREFETCH_TGT)):
+    return 0b0011
+  if op in (int(ReqOpcode.READ_UNIQUE), int(ReqOpcode.READ_NO_SNP),
+            int(ReqOpcode.READ_NO_SNP_SEP)):
+    return 0b1011
+  if op in (int(ReqOpcode.CLEAN_SHARED), int(ReqOpcode.CLEAN_SHARED_PERSIST),
+            int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP),
+            int(ReqOpcode.CLEAN_INVALID), int(ReqOpcode.MAKE_INVALID),
+            int(ReqOpcode.EVICT), int(ReqOpcode.WRITE_NO_SNP_ZERO),
+            int(ReqOpcode.WRITE_UNIQUE_ZERO), int(ReqOpcode.PCRD_RETURN)):
+    return 0b0001
+  if op in (int(ReqOpcode.MAKE_UNIQUE),
+            int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
+            int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
+            int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP)):
+    return 0b0101
+  if op == int(ReqOpcode.WRITE_NO_SNP_FULL):
+    return 0b1111
+  if op in (int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
+            int(ReqOpcode.WRITE_UNIQUE_PTL)):
+    return 0b1101
+  if op in (int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL),
+            int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
+            int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
+            int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP)):
+    return 0b0111
+  # Atomics: Invalid, Match. Section 12.4.1 says the same in prose.
+  if req_opcode_is_atomic(op):
+    return 0b1001
+  return 0b1111
 
 
 def req_endian_applicable(opcode: int) -> bool:

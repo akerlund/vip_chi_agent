@@ -217,7 +217,12 @@ class tc_chi_base_seq_smoke(uvm_test):
     read_seq_e.set_likelyshared(1)
     read_seq_e.set_endian(1)
     read_seq_e.set_group_id_ext(0x5)
-    read_seq_e.set_tagop(0x2)
+    # Transfer (0b01), not Update (0b10): IHI 0050 E Table 12-2 gives
+    # ReadNoSnp/ReadNoSnpSep Invalid, Transfer and Fetch, and Update is a No. The
+    # preview never reaches a wire, so nothing reported it -- but a sequence
+    # configured with a value the table forbids is a defect waiting for the day
+    # somebody starts it.
+    read_seq_e.set_tagop(0x1)
     preview_e = read_seq_e.preview_next_request()
 
     assert int(preview_e.opcode) == int(ReqOpcode.READ_NO_SNP_SEP), \
@@ -228,7 +233,7 @@ class tc_chi_base_seq_smoke(uvm_test):
     assert (int(preview_e.tracetag), int(preview_e.dodwt),
             int(preview_e.likelyshared), int(preview_e.endian),
             int(preview_e.group_id_ext), int(preview_e.tagop)) == \
-      (1, 0, 1, 1, 0x5, 0x2), \
+      (1, 0, 1, 1, 0x5, 0x1), \
       "read_seq CHI-E preview did not preserve control / tagop fields"
 
     # ---- CHI-E write preview carries the DAT tagging fields ----------------

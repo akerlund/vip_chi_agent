@@ -2606,6 +2606,70 @@ module vip_chi_sva #(
   else
     chk_miss(VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E, $sformatf("TXSACTIVE stayed asserted with nothing outstanding and no flit on any channel"));
 
+  // ---------------------------------------------------------------------------
+  // TagOp legality (IHI 0050 E Table 12-2), in its own generate-guarded block
+  // rather than alongside the other REQ field rules -- and the guard is the
+  // point. Memory tagging is an Issue E feature, so TagOp is not a member of
+  // vip_chi_types_d's REQ flit at all: a rule reading vif.*reqflit.tagop from
+  // the shared procedural block does not merely stand down on a CHI-D link, it
+  // fails to ELABORATE there. A generate-if is pruned before elaboration, which
+  // is what makes the field readable only where it exists.
+  //
+  // A concurrent assertion rather than a statement in the big always_ff, for a
+  // second reason worth recording: the per-check counters live on the interface
+  // and are written by that always_ff, and SystemVerilog forbids a second
+  // always_ff writing the same variable. An assertion action block is not a
+  // second procedural driver, which is why every rule in this file that needs
+  // its own sampling condition takes this form.
+  //
+  // Both vantages, matching the other per-opcode REQ rules: the tx side says
+  // this VIP does not generate an illegal TagOp, the rx side says it reports one
+  // arriving from a DUT.
+  // ---------------------------------------------------------------------------
+  if (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) begin : g_req_tagop_legal
+
+    // A helper because SystemVerilog does not permit a bit-select of a function
+    // call result, and the mask is the natural shape for a five-column table over
+    // a two-bit field.
+    function automatic bit tagop_permitted(
+      input vip_chi_req_opcode_t opcode,
+      input logic [1 : 0]        tagop
+    );
+      logic [3 : 0] mask;
+      mask = vip_chi_types_pkg::vip_chi_req_tagop_permitted_mask(
+               CFG_P.ISSUE_P, opcode);
+      return mask[tagop];
+    endfunction
+
+    property p_tx_req_tagop_legal;
+      @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+        (ROLE_IS_REQUESTER_C && vif.txreqflitv) |->
+          tagop_permitted(vip_chi_req_opcode_t'(vif.txreqflit.opcode),
+                          vif.txreqflit.tagop);
+    endproperty
+
+    property p_rx_req_tagop_legal;
+      @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+        (ROLE_IS_COMPLETER_C && vif.rxreqflitv) |->
+          tagop_permitted(vip_chi_req_opcode_t'(vif.rxreqflit.opcode),
+                          vif.rxreqflit.tagop);
+    endproperty
+
+    assert property (p_tx_req_tagop_legal)
+      chk_hit(VIP_CHI_CHK_REQ_TAGOP_LEGAL_E);
+    else
+      chk_miss(VIP_CHI_CHK_REQ_TAGOP_LEGAL_E, $sformatf(
+        "opcode 0x%0h was issued with TagOp 0x%0h, which Table 12-2 does not permit for it",
+        vif.txreqflit.opcode, vif.txreqflit.tagop));
+
+    assert property (p_rx_req_tagop_legal)
+      chk_hit(VIP_CHI_CHK_REQ_TAGOP_LEGAL_E);
+    else
+      chk_miss(VIP_CHI_CHK_REQ_TAGOP_LEGAL_E, $sformatf(
+        "opcode 0x%0h was received with TagOp 0x%0h, which Table 12-2 does not permit for it",
+        vif.rxreqflit.opcode, vif.rxreqflit.tagop));
+  end
+
 endmodule
 
 `endif

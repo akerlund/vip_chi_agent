@@ -511,6 +511,7 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_REQ_SIZE_LEGAL_E,
     VIP_CHI_CHK_REQ_EXCL_LEGAL_E,
     VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E,
+    VIP_CHI_CHK_REQ_TAGOP_LEGAL_E,
     VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
@@ -1828,6 +1829,102 @@ package vip_chi_types_pkg;
   endfunction
 
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Which TagOp encodings an opcode may carry, as a 4-bit mask indexed by the
+  // encoding: bit 0 = Invalid (0b00), bit 1 = Transfer (0b01), bit 2 = Update
+  // (0b10), bit 3 = 0b11.
+  //
+  // From IHI 0050 E Table 12-2, "Permitted TagOp values for each request type",
+  // read out of the PDF -- the markdown conversion drops the table entirely,
+  // leaving five separate cross-references to a table that is not there.
+  //
+  // The table has FIVE columns for a TWO-bit field: Invalid, Transfer, Update,
+  // Match and Fetch. Match and Fetch are one encoding (Table 13-34 gives 0b11 as
+  // "Match Fetch"), so bit 3 is permitted when EITHER column says Yes -- and the
+  // two are not interchangeable in the table. ReadUnique has Fetch Yes and Match
+  // No; WriteNoSnpFull has Match Yes and Fetch No. Collapsing them onto one bit
+  // is what the field encoding forces, and it is the reason this returns a mask
+  // rather than an enumerated legality.
+  //
+  // CleanUnique has NO ROW in Table 12-2, so it is returned as unjudged rather
+  // than guessed. Under Issue D there is no memory tagging at all and the item's
+  // issue-gated constraint already holds the field at zero, so the rule stands
+  // down rather than duplicating that.
+  // ---------------------------------------------------------------------------
+  function automatic logic [3 : 0] vip_chi_req_tagop_permitted_mask(
+    input vip_chi_issue_t      issue,
+    input vip_chi_req_opcode_t opcode
+  );
+    if (issue != VIP_CHI_ISSUE_E_E) begin
+      return 4'b1111;
+    end
+    case (opcode)
+      // Invalid, Transfer.
+      VIP_CHI_REQ_READ_ONCE_E,
+      VIP_CHI_REQ_READ_CLEAN_E,
+      VIP_CHI_REQ_READ_SHARED_E,
+      VIP_CHI_REQ_MAKE_READ_UNIQUE_E,
+      VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_E,
+      VIP_CHI_REQ_PREFETCH_TGT_E: begin
+        return 4'b0011;
+      end
+      // Invalid, Transfer, Fetch.
+      VIP_CHI_REQ_READ_UNIQUE_E,
+      VIP_CHI_REQ_READ_NO_SNP_E,
+      VIP_CHI_REQ_READ_NO_SNP_SEP_E: begin
+        return 4'b1011;
+      end
+      // Invalid only.
+      VIP_CHI_REQ_CLEAN_SHARED_E,
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_E,
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_E,
+      VIP_CHI_REQ_CLEAN_INVALID_E,
+      VIP_CHI_REQ_MAKE_INVALID_E,
+      VIP_CHI_REQ_EVICT_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_ZERO_E,
+      VIP_CHI_REQ_PCRD_RETURN_E: begin
+        return 4'b0001;
+      end
+      // Invalid, Update.
+      VIP_CHI_REQ_MAKE_UNIQUE_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E: begin
+        return 4'b0101;
+      end
+      // Invalid, Transfer, Update, Match.
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_E: begin
+        return 4'b1111;
+      end
+      // Invalid, Update, Match.
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_E: begin
+        return 4'b1101;
+      end
+      // Invalid, Transfer, Update.
+      VIP_CHI_REQ_WRITE_BACK_FULL_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E: begin
+        return 4'b0111;
+      end
+      default: begin
+        // Atomics: Invalid, Match. Section 12.4.1 says the same in prose --
+        // "TagOp is applicable in Atomic transactions. The permitted values for
+        // the field are Invalid and Match."
+        if (vip_chi_req_opcode_is_atomic(opcode)) begin
+          return 4'b1001;
+        end
+        // ReqLCrdReturn's TagOp is a Don't Care by the note under Table 12-2,
+        // and CleanUnique has no row at all. Unjudged rather than guessed.
+        return 4'b1111;
+      end
+    endcase
+  endfunction
+
   // ---------------------------------------------------------------------------
   // Three-valued because Table 2-14 is: its two columns give "Y -", "- Y" and
   // "Y Y", and collapsing those to a boolean loses the difference between "must

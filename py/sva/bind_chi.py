@@ -84,7 +84,7 @@ from vip_chi_types_pkg import (
   req_attr_combination_legal,
   req_likely_shared_permitted,
   req_size_fixed_64b, REQ_SIZE_64B,
-  req_excl_permitted, req_endian_applicable,
+  req_excl_permitted, req_endian_applicable, req_tagop_permitted_mask,
   SnpAttrReq, snp_attr_requirement, req_bit17_is_dodwt,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
@@ -153,7 +153,7 @@ _COMPLETER_ROLES_C = (Role.SNF, Role.HNF, Role.HNI)
 # bit `data` field through a big-int shift for a checker that never looks at it.
 _FLIT_FIELDS_C = {
   "req": ("opcode", "txnid", "returntxnid", "size", "expcompack", "order",
-          "memattr", "snpattr", "likelyshared", "excl", "endian"),
+          "memattr", "snpattr", "likelyshared", "excl", "endian", "tagop"),
   "rsp": ("opcode", "txnid", "dbid", "resperr", "resp"),
   "dat": ("opcode", "txnid", "dbid", "dataid"),
 }
@@ -1632,6 +1632,27 @@ class bind_chi:
               f"opcode 0x{int(opcode):x} carried Endian asserted, and Table A-3 "
               f"makes the field inapplicable outside an Atomic",
               "Table A-3")
+
+    # IHI 0050 E Table 12-2's per-opcode TagOp permission, as a mask indexed by
+    # the encoding. The table has five columns for a two-bit field -- Match and
+    # Fetch are both 0b11 -- so the mask is what the encoding forces. Total, and
+    # the opcodes Table 12-2 has no row for (CleanUnique) or calls a Don't Care
+    # (ReqLCrdReturn) are unjudged rather than guessed.
+    #
+    # Guarded on the field's PRESENCE, which is this port's equivalent of the SV
+    # checker's generate-if. Memory tagging is an Issue E feature, so a CHI-D REQ
+    # layout has no tagop at all: _flit_slices simply does not produce a slice for
+    # it, and reading f["tagop"] on a CHI-D link raises KeyError at run time
+    # rather than standing the rule down. Same asymmetry as SV's, where the field
+    # is not a struct member and the rule fails to elaborate instead.
+    if "tagop" in f:
+      self._chk("CHI_REQ_TAGOP_LEGAL",
+                bool(req_tagop_permitted_mask(self._issue, opcode)
+                     & (1 << int(f["tagop"]))),
+                f"opcode 0x{int(opcode):x} carried TagOp "
+                f"0x{int(f['tagop']):x}, which Table 12-2 does not permit "
+                "for it",
+                "Table 12-2")
 
     # The other half of Table 2-9, which nothing checked: the table marks
     # ExpCompAck prohibited on a whole class of requests, and until now only the

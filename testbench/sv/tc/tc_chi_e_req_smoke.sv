@@ -70,7 +70,6 @@ class tc_chi_e_req_smoke extends chi_e_base_test;
     // LikelyShared -- the test was written as "drive every CHI-E-only REQ field"
     // without asking which of them this opcode has.
     this.rni_wr_zero_seq.set_group_id_ext(item_t::groupidext_t'('h3));
-    this.rni_wr_zero_seq.set_tagop(item_t::tagop_t'('h2));
     this.rni_wr_zero_seq.set_get_response(1'b1);
     this.rni_wr_zero_seq.set_verbose(1'b0);
     this.rni_wr_zero_seq.start(super.tb_env.rni_agent.sequencer);
@@ -99,12 +98,19 @@ class tc_chi_e_req_smoke extends chi_e_base_test;
         super.tc_name))
     end
 
+    // TagOp joins DoDWT, LikelyShared and Endian as a field required to read
+    // ZERO here rather than one this test drives. IHI 0050 E Table 12-2 gives
+    // WriteNoSnpZero the Invalid column only, so the Update value this test used
+    // to stamp on it was non-conformant -- and CHI_REQ_TAGOP_LEGAL reported it at
+    // both vantages the first time the rule ran. Non-zero TagOp drivability is
+    // covered where the table permits it, on a WriteNoSnpFull in
+    // tc_chi_e_signal_drivability.
     if ((req_item.tracetag != 1'b1) ||
         (req_item.dodwt != 1'b0) ||
         (req_item.likelyshared != 1'b0) ||
         (req_item.endian != 1'b0) ||
         (req_item.group_id_ext != item_t::groupidext_t'('h3)) ||
-        (req_item.tagop != item_t::tagop_t'('h2))) begin
+        (req_item.tagop != item_t::tagop_t'('h0))) begin
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] Monitor observed wrong exact-CHI-E REQ-only fields",
         super.tc_name))

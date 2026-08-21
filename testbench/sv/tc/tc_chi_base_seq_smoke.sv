@@ -311,7 +311,12 @@ class tc_chi_base_seq_smoke extends uvm_test;
     read_seq_e.set_likelyshared(1'b1);
     read_seq_e.set_endian(1'b1);
     read_seq_e.set_group_id_ext(groupidext_e_t'('h5));
-    read_seq_e.set_tagop(tagop_e_t'('h2));
+    // Transfer (0b01), not Update (0b10): IHI 0050 E Table 12-2 gives
+    // ReadNoSnp/ReadNoSnpSep Invalid, Transfer and Fetch, and Update is a No.
+    // The preview never reaches a wire, so nothing reported it -- but a sequence
+    // configured with a value the table forbids is a defect waiting for the day
+    // somebody starts it.
+    read_seq_e.set_tagop(tagop_e_t'('h1));
     preview_item_e = read_seq_e.preview_next_request();
 
     if (preview_item_e.opcode != req_opcode_e_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C)) begin
@@ -333,7 +338,7 @@ class tc_chi_base_seq_smoke extends uvm_test;
         (preview_item_e.likelyshared != 1'b1) ||
         (preview_item_e.endian != 1'b1) ||
         (preview_item_e.group_id_ext != groupidext_e_t'('h5)) ||
-        (preview_item_e.tagop != tagop_e_t'('h2))) begin
+        (preview_item_e.tagop != tagop_e_t'('h1))) begin
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] vip_chi_read_seq CHI-E preview did not preserve stamped control/tagop fields",
         tc_name))

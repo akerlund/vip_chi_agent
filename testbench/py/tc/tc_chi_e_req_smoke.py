@@ -2,7 +2,7 @@
 # pyUVM/cocotb port of tc/tc_chi_e_req_smoke.sv.
 #
 # A CHI-E WriteNoSnpZero carrying the exact-CHI-E REQ fields (tracetag, endian,
-# group_id_ext, tagop, plus the common src/tgt/lpid/qos); the monitor must
+# group_id_ext, plus the common src/tgt/lpid/qos); the monitor must
 # observe every one of them on the REQ, and the SN-F completes with Comp.
 # DoDWT and LikelyShared are checked as zero rather than driven: this opcode
 # carries neither (E sections 13.10.25 and 2.9.5).
@@ -53,7 +53,6 @@ class tc_chi_e_req_smoke(chi_e_base_test):
     # LikelyShared -- the test was written as "drive every CHI-E-only REQ field"
     # without asking which of them this opcode has.
     seq.set_group_id_ext(0x3)
-    seq.set_tagop(0x2)
     seq.set_get_response(True)
     seq.set_verbose(False)
     await seq.start(self.tb_env.rni_agent.sequencer)
@@ -67,7 +66,13 @@ class tc_chi_e_req_smoke(chi_e_base_test):
     assert int(req_item.lp_id) == 0x9 and int(req_item.qos) == 0xB
     assert int(req_item.tracetag) == 1 and int(req_item.dodwt) == 0
     assert int(req_item.likelyshared) == 0 and int(req_item.endian) == 0
-    assert int(req_item.group_id_ext) == 0x3 and int(req_item.tagop) == 0x2
+    # TagOp joins DoDWT, LikelyShared and Endian as a field required to read
+    # ZERO here rather than one this test drives. IHI 0050 E Table 12-2 gives
+    # WriteNoSnpZero the Invalid column only, so the Update value this test used
+    # to stamp on it was non-conformant. Non-zero TagOp drivability is covered
+    # where the table permits it, on a WriteNoSnpFull in
+    # tc_chi_e_signal_drivability.
+    assert int(req_item.group_id_ext) == 0x3 and int(req_item.tagop) == 0x0
     # WriteNoSnpZero completes with a combined CompDBIDResp (or DBIDResp then
     # Comp under cfg.split_write_rsp); a bare Comp is not a legal completion.
     assert int(rsp_item.rsp_opcode) == int(RspOpcode.COMP_DBID_RESP)
