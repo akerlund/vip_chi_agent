@@ -108,6 +108,17 @@ class tc_chi_e_signal_drivability extends chi_e_base_test;
     super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E] =
       VIP_CHI_CHK_SEV_OFF_E;
 
+    // And a fifth: AllowRetry deasserted with PCrdType 0x5 on a FIRST attempt.
+    // Section 2.9.4 requires AllowRetry asserted the first time a transaction is
+    // sent, and permits it deasserted only where a pre-allocated P-Credit is
+    // being spent -- and nothing has granted this link a credit. Both halves of
+    // the pair are here to prove the wires carry them, which is precisely the
+    // non-conformance the rule exists to catch.
+    super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+
     super.drain_observation_fifos();
 
     req_tag_vals = new[1];
@@ -325,6 +336,15 @@ class tc_chi_e_signal_drivability extends chi_e_base_test;
         super.tc_name, vip_chi_check_name(VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E),
         super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E],
         super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E]))
+    end
+
+    if ((super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E] == 0) ||
+        (super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E] == 0)) begin
+      `uvm_error(get_name(), $sformatf(
+        "ERROR [%s] %s did not report the AllowRetry/PCrdType pair this test drives on a first attempt: rni_e=%0d snf_e=%0d. Either the stimulus is now conformant -- in which case drop the waiver above -- or the rule stopped evaluating, which is worse",
+        super.tc_name, vip_chi_check_name(VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E),
+        super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E],
+        super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E]))
     end
 
     phase.drop_objection(this);

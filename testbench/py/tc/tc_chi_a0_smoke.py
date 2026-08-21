@@ -94,6 +94,11 @@ async def tc_chi_a0_smoke(dut):
     "srcid": 0x3,
     "txnid": 0x2AA,
     "opcode": int(ReqOpcode.READ_NO_SNP),
+    # A first attempt, so AllowRetry is asserted: IHI 0050 E section 2.9.4
+    # permits it deasserted only where a pre-allocated P-Credit is being spent,
+    # and nothing has granted one here. Absent from the dict the bit reads zero,
+    # which would make this hand-driven REQ non-conformant.
+    "allowretry": 1,
     "addr": 0x0123_4567_89AB,
     "size": 6,
     "ns": 1,

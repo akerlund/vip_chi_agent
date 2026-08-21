@@ -346,6 +346,12 @@ CHECK_IDS = (
   # nothing, and the requester has no transaction to re-issue against the credit
   # that follows.
   "CHI_RSP_RETRY_ACK_TXN_ID",
+  # Section 2.9.4: "The AllowRetry field must be asserted the first time a
+  # transaction is sent." Checked as a credit pool rather than as a
+  # first-attempt pairing, because section 2.6.5 step 4 permits the re-issue's
+  # TxnID to differ from the bounced request's -- so the credit it spends is the
+  # only thing on the wire tying the two together.
+  "CHI_REQ_RETRY_SPENDS_GRANTED_CREDIT",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept

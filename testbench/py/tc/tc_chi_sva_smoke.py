@@ -93,6 +93,12 @@ def _flit(d: str, ch: str, pend: int = 0, **fields) -> dict:
 
 
 def _req(d="tx", pend=0, **fields):
+  # AllowRetry defaults to 1, not to the dict's implicit 0. Section 2.9.4
+  # requires it asserted the first time a transaction is sent, so a synthetic
+  # flit built without naming the field is meant to be well formed and a clear
+  # bit would make every positive control below a section 2.9.4 violation. A
+  # negative control that wants the field clear passes it explicitly.
+  fields.setdefault("allowretry", 1)
   return _sample(_RUN, **_flit(d, "req", pend, **fields))
 
 

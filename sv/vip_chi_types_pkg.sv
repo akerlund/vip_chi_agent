@@ -540,6 +540,26 @@ package vip_chi_types_pkg;
     // nothing, and the requester has no transaction to re-issue against the
     // credit that follows -- the flit is a response to nothing.
     VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E,
+    // Section 2.9.4: "The AllowRetry field must be asserted the first time a
+    // transaction is sent." It may be deasserted only on a transaction using a
+    // pre-allocated P-Credit, or on PrefetchTgt.
+    //
+    // Checked as a CREDIT POOL rather than as a first-attempt pairing, because
+    // section 2.6.5 step 4 permits the re-issue's TxnID to "be different from
+    // the original request that received a RetryAck response" -- so nothing on
+    // the wire ties a re-issue back to what it re-issues except the credit it
+    // spends. Section 2.10 closes the only apparent loophole: a request using a
+    // pre-allocated credit must take its TgtID from the RetryAck's SrcID or the
+    // original request's TgtID, both of which presuppose an earlier attempt sent
+    // with AllowRetry asserted. There is no path to holding a credit outside the
+    // retry flow.
+    //
+    // PCrdReturn spends from the pool without being judged against it: section
+    // 2.6.6 calls it a NOP that "uses the credit that is not required", so it
+    // consumes one, but a return of a credit this bind never saw granted is a
+    // bookkeeping error at the requester rather than an illegal flit, and the
+    // RN-I's own check_phase already reports it.
+    VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;

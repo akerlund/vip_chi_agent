@@ -158,7 +158,10 @@ _FLIT_FIELDS_C = {
           "order", "memattr", "snpattr", "likelyshared", "excl", "endian",
           "tagop", "addr", "ns", "allowretry", "pcrdtype", "lpid", "mpam",
           "groupidext"),
-  "rsp": ("opcode", "txnid", "dbid", "resperr", "resp"),
+  # pcrdtype is read by _credit_grants, not by a field-legality rule: a field
+  # this map omits raises KeyError at run time rather than standing its reader
+  # down, so every reader of a channel has to be represented here.
+  "rsp": ("opcode", "txnid", "dbid", "resperr", "resp", "pcrdtype"),
   "dat": ("opcode", "txnid", "dbid", "dataid", "homenid", "cbusy"),
 }
 
@@ -801,6 +804,18 @@ class bind_chi:
     # every completion path, and a slot cleared one step early would false-fail
     # the legitimate RetryAck that a permissive rule simply misses.
     self._req_txn_id_seen = {}
+    # P-Credits this link has seen granted and not yet seen spent, per PCrdType,
+    # with the same accumulator split as the SV checker and for the same reason:
+    # a grant can land in the cycle a credit is spent, and _post defers absolute
+    # values, so two writes in one cycle would lose one of them.
+    #
+    # Counted rather than flagged because section 2.6.5 is explicit that "there
+    # is no fixed relationship between credits and particular transactions" -- a
+    # requester holding several grants of one type picks freely which bounced
+    # transaction to re-issue against which. A count is the most the wire
+    # supports, and a request spending a credit nobody granted is visible in it.
+    self._pcrd_held = {}
+    self._pcrd_delta = {}
     # Which SrcID owns the TxnID currently occupying each slot.
     #
     # IHI 0050 E section 2.5 scopes the uniqueness rule to a source and says so
@@ -1386,7 +1401,44 @@ class bind_chi:
     return 0
 
   # ---------------------------------------------------------------------------
+  def _credit_grants(self, s: dict) -> None:
+    """Count PCrdGrants into the pool the requests on this link draw from.
+
+    Whichever direction carries it: at a requester bind the grant arrives on
+    rxrsp, at a completer bind it leaves on txrsp, and one link has one pool.
+    Run before the spend checks so a grant and the request that spends it in the
+    same cycle are not read out of order -- section 2.6.5 permits a grant to
+    arrive before the RetryAck that owed it, so there is nothing else to pair it
+    with.
+    """
+    self._pcrd_delta = {}
+    for d in ("rx", "tx"):
+      if not s[f"{d}rspflitv"]:
+        continue
+      f = s[f"{d}rspflit"]
+      if int(f["opcode"]) != int(RspOpcode.PCRD_GRANT):
+        continue
+      t = int(f["pcrdtype"])
+      self._pcrd_delta[t] = self._pcrd_delta.get(t, 0) + 1
+
+  def _pcrd_available(self, pcrd_type: int) -> int:
+    """The pool as of this cycle: settled count plus what has been taken in.
+
+    Reading the settled count alone would make a grant invisible to a spend in
+    the same cycle and false-fail it, which for a rule this strict is the one
+    direction that must not happen.
+    """
+    return (self._pcrd_held.get(pcrd_type, 0)
+            + self._pcrd_delta.get(pcrd_type, 0))
+
+  def _settle_credits(self) -> None:
+    for t, d in self._pcrd_delta.items():
+      self._pcrd_held[t] = self._pcrd_held.get(t, 0) + d
+    self._pcrd_delta = {}
+
   def _check_transactions(self, s: dict) -> None:
+    self._credit_grants(s)
+
     if self._is_requester:
       self._observe_request(s, "tx", "CHI_TXNID_REUSE_REQUESTER",
                             "requester reused a TxnID while the earlier "
@@ -1409,6 +1461,7 @@ class bind_chi:
     self._check_ordered_read_receipt(s)
     self._check_txsactive(s)
 
+    self._settle_credits()
     self._flush()
 
   # ---------------------------------------------------------------------------
@@ -1501,6 +1554,34 @@ class bind_chi:
     # real request can also use permanently unjudgeable.
     if opcode not in (int(ReqOpcode.PCRD_RETURN), int(ReqOpcode.LCRD_RETURN)):
       self._post(self._req_txn_id_seen, txn, True)
+
+    # Section 2.9.4's first-attempt rule, read through the credit pool. A request
+    # with AllowRetry deasserted is claiming to spend a pre-allocated P-Credit,
+    # so this link must have seen a PCrdGrant of that PCrdType still unspent.
+    #
+    # PrefetchTgt is exempt because section 2.9.4 REQUIRES its AllowRetry
+    # deasserted and it needs no credit; ReqLCrdReturn carries no transaction at
+    # all; PCrdReturn spends without being judged, because section 2.6.6 makes it
+    # a NOP that "uses the credit that is not required" while a return of a
+    # credit this bind never saw granted is a requester bookkeeping error that
+    # the driver's own check_phase already reports.
+    pcrd = int(f["pcrdtype"])
+    if (not int(f["allowretry"]) and opcode not in (
+          int(ReqOpcode.PREFETCH_TGT), int(ReqOpcode.LCRD_RETURN),
+          int(ReqOpcode.PCRD_RETURN))):
+      held = self._pcrd_available(pcrd)
+      self._chk("CHI_REQ_RETRY_SPENDS_GRANTED_CREDIT",
+                held != 0,
+                f"opcode 0x{int(opcode):x} carried AllowRetry deasserted with "
+                f"PCrdType 0x{pcrd:x}, and this link has seen no unspent "
+                f"PCrdGrant of that type; section 2.9.4 requires AllowRetry "
+                f"asserted on a first attempt",
+                "section 2.9.4")
+      if held != 0:
+        self._pcrd_delta[pcrd] = self._pcrd_delta.get(pcrd, 0) - 1
+    elif opcode == int(ReqOpcode.PCRD_RETURN):
+      if self._pcrd_available(pcrd) != 0:
+        self._pcrd_delta[pcrd] = self._pcrd_delta.get(pcrd, 0) - 1
 
     if _req_has_modeled_completion(opcode):
       # A TxnID identifies an outstanding transaction. Reusing one before its

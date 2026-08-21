@@ -795,6 +795,21 @@ class vip_chi_driver_hnf #(
     flit.srcid  = node_id_t'(0);                                // HN-F is the requester
     flit.tgtid  = node_id_t'(this.cfg.hnf_downstream_snf_id);   // SN-F target
 
+    // A first attempt, so AllowRetry must be asserted: IHI 0050 E section 2.9.4 /
+    // D section 2.9.4 permit it deasserted only on a transaction spending a
+    // pre-allocated P-Credit, or on PrefetchTgt. Building the flit from '0 left
+    // the bit clear, which told the SN-F this request was already carrying a
+    // credit it had never granted -- and made a RetryAck impossible for a
+    // completer that is entitled to give one.
+    //
+    // This HN-F does not yet absorb a RetryAck on its downstream link, so a
+    // completer that exercises the option will wedge it. That is a gap in the
+    // model rather than a reason to keep the flit non-conformant: nothing in the
+    // regression configures an SN-F to bounce these, and an SN-F only bounces a
+    // request whose AllowRetry is set, so the honest field value is the one that
+    // exposes the gap rather than the one that hides it.
+    flit.allowretry = 1'b1;
+
     this.wait_sn_req_send_credit(s);
     this.announce_sn_flit(s, ANNOUNCE_REQ_E);
     @(this.vif_sn[s].g_drv.rni_cb);
@@ -849,6 +864,21 @@ class vip_chi_driver_hnf #(
     req_flit.txnid  = this.alloc_dn_txn();
     req_flit.srcid  = node_id_t'(0);
     req_flit.tgtid  = node_id_t'(this.cfg.hnf_downstream_snf_id);
+
+    // A first attempt, so AllowRetry must be asserted: IHI 0050 E section 2.9.4 /
+    // D section 2.9.4 permit it deasserted only on a transaction spending a
+    // pre-allocated P-Credit, or on PrefetchTgt. Building the flit from '0 left
+    // the bit clear, which told the SN-F this request was already carrying a
+    // credit it had never granted -- and made a RetryAck impossible for a
+    // completer that is entitled to give one.
+    //
+    // This HN-F does not yet absorb a RetryAck on its downstream link, so a
+    // completer that exercises the option will wedge it. That is a gap in the
+    // model rather than a reason to keep the flit non-conformant: nothing in the
+    // regression configures an SN-F to bounce these, and an SN-F only bounces a
+    // request whose AllowRetry is set, so the honest field value is the one that
+    // exposes the gap rather than the one that hides it.
+    req_flit.allowretry = 1'b1;
 
     this.wait_sn_req_send_credit(s);
     this.announce_sn_flit(s, ANNOUNCE_REQ_E);

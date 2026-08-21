@@ -30,6 +30,7 @@ ORDER_RULE_C = "CHI_REQ_ORDER_LEGAL"
 ATTR_RULE_C = "CHI_REQ_ATTR_COMBINATION_LEGAL"
 LS_RULE_C = "CHI_REQ_LIKELY_SHARED_LEGAL"
 ENDIAN_RULE_C = "CHI_REQ_ENDIAN_LEGAL"
+RETRY_RULE_C = "CHI_REQ_RETRY_SPENDS_GRANTED_CREDIT"
 
 
 class tc_chi_e_signal_drivability(chi_e_base_test):
@@ -83,6 +84,15 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
     # applicable only on the Atomics, and this test drives it on a WriteNoSnp.
     rni_sva.off_check(ENDIAN_RULE_C)
     snf_sva.off_check(ENDIAN_RULE_C)
+
+    # And a fifth: AllowRetry deasserted with PCrdType 0x5 on a FIRST attempt.
+    # Section 2.9.4 requires AllowRetry asserted the first time a transaction is
+    # sent, and permits it deasserted only where a pre-allocated P-Credit is
+    # being spent -- and nothing has granted this link a credit. Both halves of
+    # the pair are here to prove the wires carry them, which is precisely the
+    # non-conformance the rule exists to catch.
+    rni_sva.off_check(RETRY_RULE_C)
+    snf_sva.off_check(RETRY_RULE_C)
 
     self.drain_observation_fifos()
 
@@ -264,5 +274,13 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
       f"WriteNoSnp: rni_e={rni_en} snf_e={snf_en}. Either the stimulus is now "
       f"conformant -- in which case drop the waiver above -- or the rule stopped "
       f"evaluating, which is worse")
+
+    rni_rt = rni_sva.fail_count.get(RETRY_RULE_C, 0)
+    snf_rt = snf_sva.fail_count.get(RETRY_RULE_C, 0)
+    assert rni_rt > 0 and snf_rt > 0, (
+      f"{RETRY_RULE_C} did not report the AllowRetry/PCrdType pair this test "
+      f"drives on a first attempt: rni_e={rni_rt} snf_e={snf_rt}. Either the "
+      f"stimulus is now conformant -- in which case drop the waiver above -- or "
+      f"the rule stopped evaluating, which is worse")
 
     self.drop_objection()

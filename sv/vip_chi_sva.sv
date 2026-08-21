@@ -799,6 +799,28 @@ module vip_chi_sva #(
   int unsigned req_outstanding_count;
   int          req_outstanding_delta;
 
+  // P-Credits this link has seen granted and not yet seen spent, per PCrdType,
+  // with the same blocking-accumulator shape as req_outstanding_delta above and
+  // for the same reason: a grant can land in the cycle a credit is spent, and
+  // two read-modify-writes would both read the same stale value.
+  //
+  // Counted rather than flagged because section 2.6.5 is explicit that "there is
+  // no fixed relationship between credits and particular transactions" -- a
+  // requester holding several grants of one type picks freely which bounced
+  // transaction to re-issue against which. A count is the most the wire
+  // supports, and it is enough: a request spending a credit nobody granted is
+  // visible in it, and that is the violation.
+  int unsigned pcrd_held_by_type[2 ** VIP_CHI_PCRD_TYPE_WIDTH_C];
+  int          pcrd_delta_by_type[2 ** VIP_CHI_PCRD_TYPE_WIDTH_C];
+
+  // The pool as of this cycle: the registered count plus whatever the
+  // accumulator has already taken in. Reading the register alone would make a
+  // grant invisible to a spend in the same cycle and false-fail it, which for a
+  // rule this strict is the one direction that must not happen.
+  function automatic int pcrd_available(input vip_chi_pcrd_type_t pcrd_type);
+    return int'(pcrd_held_by_type[pcrd_type]) + pcrd_delta_by_type[pcrd_type];
+  endfunction
+
   // Consecutive fully-idle cycles with TXSACTIVE still up, and a latch so one
   // stuck episode reports once rather than once per cycle.
   int unsigned txsactive_idle_cycles;
@@ -881,6 +903,10 @@ module vip_chi_sva #(
         dat_completion_req_txn_by_txn[txn_i] <= '0;
       end
 
+      for (int unsigned pcrd_i = 0;
+           pcrd_i < (2 ** VIP_CHI_PCRD_TYPE_WIDTH_C); pcrd_i++) begin
+        pcrd_held_by_type[pcrd_i] <= 0;
+      end
       req_outstanding_count <= 0;
       txsactive_idle_cycles <= 0;
       txsactive_bound_reported <= 1'b0;
@@ -898,6 +924,28 @@ module vip_chi_sva #(
     end
     else begin
       req_outstanding_delta = 0;
+      for (int unsigned pcrd_i = 0;
+           pcrd_i < (2 ** VIP_CHI_PCRD_TYPE_WIDTH_C); pcrd_i++) begin
+        pcrd_delta_by_type[pcrd_i] = 0;
+      end
+
+      // A PCrdGrant credits the pool the requests on this link draw from,
+      // whichever direction carries it: at a requester bind the grant arrives on
+      // rxrsp, at a completer bind it leaves on txrsp, and one link has one
+      // pool. Counted here rather than in the per-role response blocks further
+      // down so that the spend checks below read a pool this cycle's grant is
+      // already in -- section 2.6.5 permits a grant to arrive before the
+      // RetryAck that owed it, so there is nothing else to pair it with.
+      if (vif.rxrspflitv &&
+          (rsp_opcode_t'(vif.rxrspflit.opcode) ==
+           rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C))) begin
+        pcrd_delta_by_type[vif.rxrspflit.pcrdtype]++;
+      end
+      if (vif.txrspflitv &&
+          (rsp_opcode_t'(vif.txrspflit.opcode) ==
+           rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C))) begin
+        pcrd_delta_by_type[vif.txrspflit.pcrdtype]++;
+      end
 
       if (ROLE_IS_REQUESTER_C) begin
         if (vif.txreqflitv) begin
@@ -1187,6 +1235,39 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E);
+          end
+
+          // Section 2.9.4's first-attempt rule, read through the credit pool. A
+          // request with AllowRetry deasserted is claiming to spend a
+          // pre-allocated P-Credit, so this link must have seen a PCrdGrant of
+          // that PCrdType that is still unspent.
+          //
+          // PrefetchTgt is exempt because section 2.9.4 REQUIRES its AllowRetry
+          // deasserted and it needs no credit; ReqLCrdReturn carries no
+          // transaction at all; PCrdReturn spends without being judged, for the
+          // reason given at the check id.
+          if (!vif.txreqflit.allowretry &&
+              (req_opcode_t'(vif.txreqflit.opcode) !=
+                 req_opcode_t'(VIP_CHI_REQ_PREFETCH_TGT_C)) &&
+              (req_opcode_t'(vif.txreqflit.opcode) !=
+                 req_opcode_t'(VIP_CHI_REQ_LCRD_RETURN_C)) &&
+              (req_opcode_t'(vif.txreqflit.opcode) !=
+                 req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C))) begin
+            if (pcrd_available(vif.txreqflit.pcrdtype) == 0) begin
+              chk_miss(VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E, $sformatf(
+                "opcode 0x%0h was issued with AllowRetry deasserted and PCrdType 0x%0h, and this link has seen no unspent PCrdGrant of that type; section 2.9.4 requires AllowRetry asserted on a first attempt",
+                vif.txreqflit.opcode, vif.txreqflit.pcrdtype));
+            end
+            else begin
+              chk_hit(VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E);
+              pcrd_delta_by_type[vif.txreqflit.pcrdtype]--;
+            end
+          end
+          else if (req_opcode_t'(vif.txreqflit.opcode) ==
+                   req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C)) begin
+            if (pcrd_available(vif.txreqflit.pcrdtype) != 0) begin
+              pcrd_delta_by_type[vif.txreqflit.pcrdtype]--;
+            end
           end
         end
 
@@ -1576,6 +1657,39 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E);
+          end
+
+          // Section 2.9.4's first-attempt rule, read through the credit pool. A
+          // request with AllowRetry deasserted is claiming to spend a
+          // pre-allocated P-Credit, so this link must have seen a PCrdGrant of
+          // that PCrdType that is still unspent.
+          //
+          // PrefetchTgt is exempt because section 2.9.4 REQUIRES its AllowRetry
+          // deasserted and it needs no credit; ReqLCrdReturn carries no
+          // transaction at all; PCrdReturn spends without being judged, for the
+          // reason given at the check id.
+          if (!vif.rxreqflit.allowretry &&
+              (req_opcode_t'(vif.rxreqflit.opcode) !=
+                 req_opcode_t'(VIP_CHI_REQ_PREFETCH_TGT_C)) &&
+              (req_opcode_t'(vif.rxreqflit.opcode) !=
+                 req_opcode_t'(VIP_CHI_REQ_LCRD_RETURN_C)) &&
+              (req_opcode_t'(vif.rxreqflit.opcode) !=
+                 req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C))) begin
+            if (pcrd_available(vif.rxreqflit.pcrdtype) == 0) begin
+              chk_miss(VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E, $sformatf(
+                "opcode 0x%0h was received with AllowRetry deasserted and PCrdType 0x%0h, and this link has seen no unspent PCrdGrant of that type; section 2.9.4 requires AllowRetry asserted on a first attempt",
+                vif.rxreqflit.opcode, vif.rxreqflit.pcrdtype));
+            end
+            else begin
+              chk_hit(VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E);
+              pcrd_delta_by_type[vif.rxreqflit.pcrdtype]--;
+            end
+          end
+          else if (req_opcode_t'(vif.rxreqflit.opcode) ==
+                   req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C)) begin
+            if (pcrd_available(vif.rxreqflit.pcrdtype) != 0) begin
+              pcrd_delta_by_type[vif.rxreqflit.pcrdtype]--;
+            end
           end
 
           // Not gated on req_has_modeled_completion: see the declaration.
@@ -1979,6 +2093,11 @@ module vip_chi_sva #(
 
       // One NBA update carrying the net change every site above contributed.
       req_outstanding_count <= req_outstanding_count + req_outstanding_delta;
+      for (int unsigned pcrd_i = 0;
+           pcrd_i < (2 ** VIP_CHI_PCRD_TYPE_WIDTH_C); pcrd_i++) begin
+        pcrd_held_by_type[pcrd_i] <=
+          unsigned'(int'(pcrd_held_by_type[pcrd_i]) + pcrd_delta_by_type[pcrd_i]);
+      end
 
       // An episode ends the moment anything happens on the link, which is what
       // keeps the bound clear of a sender's own retire tail.

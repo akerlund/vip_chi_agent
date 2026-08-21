@@ -482,10 +482,24 @@ class vip_chi_driver_hnf(uvm_component):
     self.dn_dat_valid = False
     self.dn_dat_beats = []
 
+    # A first attempt, so AllowRetry must be asserted: IHI 0050 E section 2.9.4 /
+    # D section 2.9.4 permit it deasserted only on a transaction spending a
+    # pre-allocated P-Credit, or on PrefetchTgt. Leaving it out of the field dict
+    # left the bit clear, which told the SN-F this request was already carrying a
+    # credit it had never granted -- and made a RetryAck impossible for a
+    # completer that is entitled to give one.
+    #
+    # This HN-F does not yet absorb a RetryAck on its downstream link, so a
+    # completer that exercises the option will wedge it. That is a gap in the
+    # model rather than a reason to keep the flit non-conformant: nothing in the
+    # regression configures an SN-F to bounce these, and an SN-F only bounces a
+    # request whose AllowRetry is set, so the honest field value is the one that
+    # exposes the gap rather than the one that hides it.
     fields = {
       "opcode": int(ReqOpcode.READ_NO_SNP), "addr": _I(addr), "size": _I(size),
       "txnid": self.alloc_dn_txn(), "srcid": 0,
       "tgtid": _I(self.cfg.hnf_downstream_snf_id),
+      "allowretry": 1,
     }
     await self.wait_sn_req_send_credit(s)
     await self.announce_sn_flit(s, "req")
@@ -506,10 +520,24 @@ class vip_chi_driver_hnf(uvm_component):
     n_beats = len(beats)
     self.dn_rsp_q = []
 
+    # A first attempt, so AllowRetry must be asserted: IHI 0050 E section 2.9.4 /
+    # D section 2.9.4 permit it deasserted only on a transaction spending a
+    # pre-allocated P-Credit, or on PrefetchTgt. Leaving it out of the field dict
+    # left the bit clear, which told the SN-F this request was already carrying a
+    # credit it had never granted -- and made a RetryAck impossible for a
+    # completer that is entitled to give one.
+    #
+    # This HN-F does not yet absorb a RetryAck on its downstream link, so a
+    # completer that exercises the option will wedge it. That is a gap in the
+    # model rather than a reason to keep the flit non-conformant: nothing in the
+    # regression configures an SN-F to bounce these, and an SN-F only bounces a
+    # request whose AllowRetry is set, so the honest field value is the one that
+    # exposes the gap rather than the one that hides it.
     req_fields = {
       "opcode": int(ReqOpcode.WRITE_NO_SNP_FULL), "addr": _I(addr), "size": _I(size),
       "txnid": self.alloc_dn_txn(), "srcid": 0,
       "tgtid": _I(self.cfg.hnf_downstream_snf_id),
+      "allowretry": 1,
     }
     await self.wait_sn_req_send_credit(s)
     await self.announce_sn_flit(s, "req")

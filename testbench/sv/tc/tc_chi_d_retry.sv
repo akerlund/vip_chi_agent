@@ -112,13 +112,6 @@ class tc_chi_d_retry extends chi_base_test;
     super.rni0_rd_seq.set_requests(1);
     super.rni0_rd_seq.set_initial_addr(ADDR_C);
     super.rni0_rd_seq.set_size(SIZE_C);
-    // The zero is load-bearing here, not determinism. force_retry_count above
-    // bounds the TOTAL bounces this SN-F will issue, and should_auto_retry only
-    // bounces a request whose AllowRetry is set -- so clearing it on the read
-    // reserves the single retry for the request this test is about. Every other
-    // testcase in the tree had this call for determinism it already had from
-    // force_retry_count = 0, and those were removed.
-    super.rni0_rd_seq.set_allow_retry(1'b0);
     super.rni0_rd_seq.set_get_response(1'b1);
     super.rni0_rd_seq.set_verbose(1'b0);
     super.rni0_rd_seq.start(super.v_sqr.rni_sequencer);

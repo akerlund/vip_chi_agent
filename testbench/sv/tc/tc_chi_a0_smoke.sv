@@ -110,6 +110,11 @@ class tc_chi_a0_smoke extends uvm_test;
     flit.size        = 3'd6;
     flit.ns          = 1'b1;
     flit.order       = VIP_CHI_ORDER_REQ_ORDER_E;
+    // A first attempt, so AllowRetry is asserted: IHI 0050 E section 2.9.4
+    // permits it deasserted only where a pre-allocated P-Credit is being spent,
+    // and nothing has granted one here. The flit is built from '0, so the bit
+    // has to be named or this hand-driven REQ is non-conformant.
+    flit.allowretry  = 1'b1;
     flit.qos         = 4'ha;
     flit.returnnid   = 'h7;
     flit.returntxnid = 'h15;
