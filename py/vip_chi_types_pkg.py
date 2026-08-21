@@ -290,6 +290,12 @@ CHECK_IDS = (
   "CHI_SNP_IDLE_IN_RESET",
   "CHI_SNP_LCRD_OVERFLOW",
   "CHI_SNP_LCRD_UNDERFLOW",
+  # Per-opcode SNP field applicability. Named CHI_SNP_* so CHECK_IDS_SNP -- a
+  # name-prefix filter here, a range test in SV -- puts them in the SNP bind's
+  # set, and placed inside the SNP block so the SV range test agrees.
+  "CHI_SNP_FWD_FIELDS_ZERO",
+  "CHI_SNP_RET_TO_SRC_LEGAL",
+  "CHI_SNP_DO_NOT_GO_TO_SD_LEGAL",
   # Link layer, appended. These belong with the link rules above and are down
   # here only because the order is append-only; putting them where they read best
   # would renumber the SNP block. They sit AFTER it deliberately, so the SNP
@@ -1288,6 +1294,48 @@ _SNP_ATTR_ZERO_OPCODES = frozenset({
 # named rather than implied so that adding SnpStashUnique means adding it here
 # and nowhere else.
 _SNP_STASH_OPCODES_C: tuple = ()
+
+
+def snp_opcode_is_forwarding(opcode: int) -> bool:
+  """Whether the snoop is a Forward type, the only kind carrying Fwd* fields.
+
+  E 13.10.5: FwdNID is "Applicable in Forward type snoops", "Inapplicable and
+  must be zero in all other Snoop requests". E 13.10.16 says the same of
+  FwdTxnID and adds that the same bits carry StashLPID in stash snoops and
+  VMIDExt in SnpDVMOp -- neither modelled, so among the opcodes here the field
+  is FwdTxnID or it is zero.
+
+  Encoding-derived rather than listed: Chapter 12/13 give every Forward snoop
+  its non-forward opcode with bit[4] set, so a Forward opcode added later is
+  classified without touching this function.
+  """
+  return bool(int(opcode) & 0x10)
+
+
+def snp_ret_to_src_must_be_zero(opcode: int) -> bool:
+  """Whether RetToSrc must be zero for an opcode.
+
+  IHI 0050 E 4.9 / D 4.9, identical text in both issues: "RetToSrc is applicable
+  and must be set to zero in: Stash snoops. SnpCleanShared, SnpCleanInvalid, and
+  SnpMakeInvalid, SnpOnceFwd and SnpUniqueFwd", any value in all other snoops
+  except SnpDVMOp, and zero in SnpDVMOp.
+
+  Note what that list is NOT. It is not "the invalidating snoops": SnpUnique
+  invalidates and may carry ANY RetToSrc value, while SnpCleanShared and
+  SnpOnceFwd do not invalidate and must carry zero. A rule written from the
+  shape of the opcode rather than from 4.9 would both miss two opcodes and
+  false-fail conformant SnpUnique traffic.
+
+  4.9 carries one further rule deliberately not modelled here: "Home must only
+  set RetToSrc on the Snoop request to a single Request Node." That is a
+  constraint across the several snoops of one transaction, and no single
+  interface sees them all.
+  """
+  return int(opcode) in (
+    int(SnpOpcode.CLEAN_SHARED), int(SnpOpcode.CLEAN_INVALID),
+    int(SnpOpcode.MAKE_INVALID), int(SnpOpcode.ONCE_FWD),
+    int(SnpOpcode.UNIQUE_FWD),
+  )
 
 
 def snp_bit_is_do_not_data_pull(issue: int, opcode: int) -> bool:

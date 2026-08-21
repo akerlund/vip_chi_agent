@@ -210,6 +210,85 @@ module vip_chi_snp_sva #(
     endcase
   endfunction
 
+  // ---------------------------------------------------------------------------
+  // Per-opcode field applicability, judged at BOTH ends of the link. The three
+  // rules below are total: every snoop flit records a pass or a fail, so a zero
+  // count means no snoop reached this checker rather than "the classifier
+  // declined this opcode". That distinction is the whole reason the tallies are
+  // readable -- see the CHI_REQ_* field rules in vip_chi_sva for the same shape.
+  //
+  // Both vantages because they answer different questions. The tx side says this
+  // VIP does not GENERATE an illegal snoop; the rx side says it REPORTS one
+  // arriving from a DUT, which is the half an integration depends on. This
+  // module is bound to both ends of every coherent link, so one property pair
+  // covers both without a role parameter.
+  // ---------------------------------------------------------------------------
+  typedef FLIT_TYPES_T::vip_chi_snp_flit_t snp_flit_view_t;
+
+  function automatic snp_flit_view_t tx_snp_view();
+    return snp_flit_view_t'(vif.txsnpflit);
+  endfunction
+
+  function automatic snp_flit_view_t rx_snp_view();
+    return snp_flit_view_t'(vif.rxsnpflit);
+  endfunction
+
+  // FwdNID and FwdTxnID are applicable only in Forward type snoops and must be
+  // zero in every other snoop request (E 13.10.5 / 13.10.16).
+  function automatic bit snp_fwd_fields_legal(input snp_flit_view_t flit);
+    if (vip_chi_types_pkg::vip_chi_snp_opcode_is_forwarding(
+          vip_chi_snp_opcode_t'(flit.opcode))) begin
+      return 1'b1;
+    end
+    return (flit.fwdnid == '0) && (flit.fwdtxnid == '0);
+  endfunction
+
+  function automatic bit snp_ret_to_src_legal(input snp_flit_view_t flit);
+    if (vip_chi_types_pkg::vip_chi_snp_ret_to_src_must_be_zero(
+          vip_chi_snp_opcode_t'(flit.opcode))) begin
+      return (flit.rettosrc == 1'b0);
+    end
+    return 1'b1;
+  endfunction
+
+  function automatic bit snp_do_not_go_to_sd_legal(input snp_flit_view_t flit);
+    if (vip_chi_types_pkg::vip_chi_snp_do_not_go_to_sd_required(
+          CFG_P.ISSUE_P, vip_chi_snp_opcode_t'(flit.opcode))) begin
+      return (flit.donotgotosd == 1'b1);
+    end
+    return 1'b1;
+  endfunction
+
+  property p_tx_snp_fwd_fields_zero;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      vif.txsnpflitv |-> snp_fwd_fields_legal(tx_snp_view());
+  endproperty
+
+  property p_rx_snp_fwd_fields_zero;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      vif.rxsnpflitv |-> snp_fwd_fields_legal(rx_snp_view());
+  endproperty
+
+  property p_tx_snp_ret_to_src_legal;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      vif.txsnpflitv |-> snp_ret_to_src_legal(tx_snp_view());
+  endproperty
+
+  property p_rx_snp_ret_to_src_legal;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      vif.rxsnpflitv |-> snp_ret_to_src_legal(rx_snp_view());
+  endproperty
+
+  property p_tx_snp_do_not_go_to_sd_legal;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      vif.txsnpflitv |-> snp_do_not_go_to_sd_legal(tx_snp_view());
+  endproperty
+
+  property p_rx_snp_do_not_go_to_sd_legal;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      vif.rxsnpflitv |-> snp_do_not_go_to_sd_legal(rx_snp_view());
+  endproperty
+
   // Structural properties (tx side: the SNP source drives txsnp*/receives credit
   // returns; on an RN-F interface these are idle so the checks are vacuous).
   property p_snp_flit_requires_link;
@@ -276,6 +355,48 @@ module vip_chi_snp_sva #(
     chk_hit(VIP_CHI_CHK_SNP_IDLE_IN_RESET_E);
   else
     chk_miss(VIP_CHI_CHK_SNP_IDLE_IN_RESET_E, $sformatf("SNP outputs not idle during reset"));
+
+  assert property (p_tx_snp_fwd_fields_zero)
+    chk_hit(VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E, $sformatf(
+      "sent snoop opcode 0x%0h is not a Forward type but carries FwdNID=0x%0h FwdTxnID=0x%0h",
+      tx_snp_view().opcode, tx_snp_view().fwdnid, tx_snp_view().fwdtxnid));
+
+  assert property (p_rx_snp_fwd_fields_zero)
+    chk_hit(VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E, $sformatf(
+      "received snoop opcode 0x%0h is not a Forward type but carries FwdNID=0x%0h FwdTxnID=0x%0h",
+      rx_snp_view().opcode, rx_snp_view().fwdnid, rx_snp_view().fwdtxnid));
+
+  assert property (p_tx_snp_ret_to_src_legal)
+    chk_hit(VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E, $sformatf(
+      "sent snoop opcode 0x%0h must carry RetToSrc = 0 (IHI 0050 E 4.9 / D 4.9)",
+      tx_snp_view().opcode));
+
+  assert property (p_rx_snp_ret_to_src_legal)
+    chk_hit(VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E, $sformatf(
+      "received snoop opcode 0x%0h must carry RetToSrc = 0 (IHI 0050 E 4.9 / D 4.9)",
+      rx_snp_view().opcode));
+
+  assert property (p_tx_snp_do_not_go_to_sd_legal)
+    chk_hit(VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E, $sformatf(
+      "sent snoop opcode 0x%0h must carry DoNotGoToSD = 1 (IHI 0050 E 13.10.35)",
+      tx_snp_view().opcode));
+
+  assert property (p_rx_snp_do_not_go_to_sd_legal)
+    chk_hit(VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E, $sformatf(
+      "received snoop opcode 0x%0h must carry DoNotGoToSD = 1 (IHI 0050 E 13.10.35)",
+      rx_snp_view().opcode));
 
 endmodule
 

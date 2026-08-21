@@ -33,10 +33,34 @@ from sva.bind_chi import claim_export_tag
 
 from vip_chi_types_pkg import (
   LasmState, lasm, CheckSeverity, CHECK_IDS_SNP, CHECK_IDS_SV_ONLY,
+  flit_layout, snp_do_not_go_to_sd_required, snp_opcode_is_forwarding,
+  snp_ret_to_src_must_be_zero,
 )
 
 # Mirrors SNP_SEND_CAP_C in the SV checker.
 _SNP_SEND_CAP_C = 64
+
+# SNP flit fields this checker reads. Only these are sliced out of the raw flit,
+# matching bind_chi's _FLIT_FIELDS_C -- and carrying the same trap: a rule that
+# reads a field missing from this tuple raises KeyError at run time, not at
+# import. Add the field with the rule.
+_SNP_FLIT_FIELDS_C = ("opcode", "fwdnid", "fwdtxnid", "rettosrc", "donotgotosd")
+
+
+def _snp_flit_slices(cfg) -> dict:
+  """{field: (shift, mask)} for the SNP fields this checker reads.
+
+  Flits are packed MSB-first, so a field's shift is the total width of every
+  field below it -- the same arithmetic as bind_chi._flit_slices.
+  """
+  layout = flit_layout(cfg, "snp")
+  pos = sum(w for _, w in layout)
+  out = {}
+  for name, width in layout:
+    pos -= width
+    if name in _SNP_FLIT_FIELDS_C:
+      out[name] = (pos, (1 << width) - 1)
+  return out
 
 
 class bind_chi_snp:
@@ -46,6 +70,8 @@ class bind_chi_snp:
                checks_enable: bool | None = None):
     self.bus = bus
     self.log = logging.getLogger(name)
+    self._slices = _snp_flit_slices(bus.cfg)
+    self._issue = bus.cfg.issue
     self.errors = 0
     self.fail_count: dict[str, int] = {}
     self.pass_count: dict[str, int] = {}
@@ -231,6 +257,53 @@ class bind_chi_snp:
       "rxsnpflitv", "rxsnpflitpend", "rxsnplcrdv",
     )}
 
+  def _snp_flit_fields(self, direction: str) -> dict:
+    raw = self.bus.get_or(f"{direction}snpflit")
+    return {name: (raw >> shift) & bits
+            for name, (shift, bits) in self._slices.items()}
+
+  def _check_snp_fields(self, direction: str) -> None:
+    """Per-opcode SNP field applicability, at whichever end saw the flit.
+
+    Three total rules -- every snoop flit records a pass or a fail -- so a zero
+    count means no snoop reached this checker rather than "the classifier
+    declined this opcode".
+
+    Called for both directions because they answer different questions: the tx
+    side says this VIP does not GENERATE an illegal snoop, the rx side says it
+    REPORTS one arriving from a DUT, which is the half an integration depends
+    on. Each bind sits on one end of a link, and the checker is bound to both
+    ends of every coherent link, so one method covers both.
+    """
+    f = self._snp_flit_fields(direction)
+    op = f["opcode"]
+    seen = "sent" if direction == "tx" else "received"
+
+    # FwdNID and FwdTxnID are applicable only in Forward type snoops and must be
+    # zero in every other snoop request (E 13.10.5 / 13.10.16).
+    self._chk(
+      "CHI_SNP_FWD_FIELDS_ZERO",
+      snp_opcode_is_forwarding(op) or (f["fwdnid"] == 0 and f["fwdtxnid"] == 0),
+      f"{seen} snoop opcode 0x{op:x} is not a Forward type but carries "
+      f"FwdNID=0x{f['fwdnid']:x} FwdTxnID=0x{f['fwdtxnid']:x}",
+      "E section 13.10.5 / 13.10.16",
+    )
+
+    self._chk(
+      "CHI_SNP_RET_TO_SRC_LEGAL",
+      (not snp_ret_to_src_must_be_zero(op)) or f["rettosrc"] == 0,
+      f"{seen} snoop opcode 0x{op:x} must carry RetToSrc = 0",
+      "E section 4.9 / D section 4.9",
+    )
+
+    self._chk(
+      "CHI_SNP_DO_NOT_GO_TO_SD_LEGAL",
+      (not snp_do_not_go_to_sd_required(self._issue, op))
+      or f["donotgotosd"] == 1,
+      f"{seen} snoop opcode 0x{op:x} must carry DoNotGoToSD = 1",
+      "E section 13.10.35",
+    )
+
   def _enabled(self, s: dict) -> bool:
     if self._checks_enable is not None:
       return self._checks_enable
@@ -292,6 +365,10 @@ class bind_chi_snp:
             "txsnpflitv sent without txsnpflitpend in the preceding cycle",
             "E section 14.4 / D section 13.4",
           )
+        if cur["txsnpflitv"]:
+          self._check_snp_fields("tx")
+        if cur["rxsnpflitv"]:
+          self._check_snp_fields("rx")
         self._check_lcrd(cur)
 
       prev, prev_rst = cur, rst

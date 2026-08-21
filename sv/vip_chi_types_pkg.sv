@@ -468,6 +468,12 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_SNP_IDLE_IN_RESET_E,
     VIP_CHI_CHK_SNP_LCRD_OVERFLOW_E,
     VIP_CHI_CHK_SNP_LCRD_UNDERFLOW_E,
+    // Per-opcode SNP field applicability. Inside the SNP block on purpose: this
+    // range is what vip_chi_snp_sva owns, and a field rule judged by the main
+    // checker would clear the other's plusarg settings on every coherent run.
+    VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E,
+    VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E,
+    VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E,
     // Link layer, appended. These belong with the link rules above and are down
     // here only because the order is append-only; putting them where they read
     // best would renumber the SNP block. They sit AFTER it deliberately, so
@@ -527,7 +533,7 @@ package vip_chi_types_pkg;
   // never exercised on every non-coherent run.
   function automatic bit vip_chi_check_is_snp(input vip_chi_check_id_t id);
     return (id >= VIP_CHI_CHK_SNP_FLITV_REQUIRES_LINK_E) &&
-           (id <= VIP_CHI_CHK_SNP_LCRD_UNDERFLOW_E);
+           (id <= VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E);
   endfunction
 
   // The rule's canonical name, shared with the Python checker verbatim.
@@ -1723,6 +1729,61 @@ package vip_chi_types_pkg;
   // SnpPreferUnique*, SnpNotSharedDirty and the stash forms have no encoding in
   // this package, so naming them would assert a reading no traffic here can
   // confirm or refute.
+  // ---------------------------------------------------------------------------
+  // Return TRUE when the snoop is a Forward type, the only kind in which FwdNID
+  // and FwdTxnID are applicable. E 13.10.5: FwdNID is "Applicable in Forward
+  // type snoops", "Inapplicable and must be zero in all other Snoop requests".
+  // E 13.10.16 says the same of FwdTxnID and adds that the same bits carry
+  // StashLPID in stash snoops and VMIDExt in SnpDVMOp -- neither of which is
+  // modelled, so among the opcodes here the field is FwdTxnID or it is zero.
+  //
+  // Encoding-derived rather than listed: Chapter 12/13 give every Forward snoop
+  // its non-forward opcode with bit[4] set. Reading the bit means a Forward
+  // opcode added later is classified without touching this function -- and the
+  // opcode constants carry that relationship in their own comment.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_snp_opcode_is_forwarding(
+    input vip_chi_snp_opcode_t opcode
+  );
+    return opcode[4];
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Return TRUE when RetToSrc must be zero for an opcode. IHI 0050 E 4.9 / D 4.9
+  // -- identical text in both issues -- "RetToSrc is applicable and must be set
+  // to zero in: Stash snoops. SnpCleanShared, SnpCleanInvalid, and
+  // SnpMakeInvalid, SnpOnceFwd and SnpUniqueFwd", any value in all other snoops
+  // except SnpDVMOp, and zero in SnpDVMOp.
+  //
+  // Note what that list is NOT. It is not "the invalidating snoops": SnpUnique
+  // invalidates and may carry ANY RetToSrc value, while SnpCleanShared and
+  // SnpOnceFwd do not invalidate and must carry zero. A rule written from the
+  // shape of the opcode rather than from 4.9 would both miss two opcodes and
+  // false-fail conformant SnpUnique traffic.
+  //
+  // The section carries one further rule that is deliberately not here: "Home
+  // must only set RetToSrc on the Snoop request to a single Request Node." That
+  // is a constraint across the several snoops of one transaction, and no single
+  // interface sees them all -- it belongs to a component with a transaction
+  // view, not to a link checker.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_snp_ret_to_src_must_be_zero(
+    input vip_chi_snp_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_SNP_CLEAN_SHARED_E,
+      VIP_CHI_SNP_CLEAN_INVALID_E,
+      VIP_CHI_SNP_MAKE_INVALID_E,
+      VIP_CHI_SNP_ONCE_FWD_E,
+      VIP_CHI_SNP_UNIQUE_FWD_E: begin
+        return 1'b1;
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
+  endfunction
+
   // ---------------------------------------------------------------------------
   function automatic bit vip_chi_snp_do_not_go_to_sd_required(
     input vip_chi_issue_t      issue,
