@@ -67,6 +67,16 @@ E_WUZ_NEGCTL_RNI_NODE_ID_C = 0x01E
 E_WUZ_NEGCTL_SNF_NODE_ID_C = 0x027
 E_WUZ_NEGCTL_TXN_ID_PASS_C = 0x71
 E_WUZ_NEGCTL_TXN_ID_DUP_C = 0x72
+# Retry field control. Its own line, node-ID pair and TxnID, so nothing it
+# injects can be confused with another testcase's traffic. PCRD_TYPE is non-zero
+# and that is the point: phase A pairs it with AllowRetry asserted, which
+# section 2.9.4 forbids, and phase B returns it on a PCrdReturn where the field
+# is the one thing that must NOT be zero.
+E_RETRY_NEGCTL_ADDR_C = 0x0012_3456_7F00
+E_RETRY_NEGCTL_RNI_NODE_ID_C = 0x019
+E_RETRY_NEGCTL_SNF_NODE_ID_C = 0x02E
+E_RETRY_NEGCTL_TXN_ID_C = 0x73
+E_RETRY_NEGCTL_PCRD_TYPE_C = 0x5
 E_MTE_WRITE_DATA_C = 0x1_2233_4455_6677_8899_AABB_CCDD_EEFF
 E_MTE_WRITE_TAGOP_C = 0x2
 E_MTE_WRITE_TAG_C = 0x3456

@@ -125,6 +125,17 @@ package chi_tb_pkg;
   localparam item_e_t::node_id_t E_WUZ_NEGCTL_SNF_NODE_ID_C = item_e_t::node_id_t'('h027);
   localparam item_e_t::txn_id_t  E_WUZ_NEGCTL_TXN_ID_PASS_C = item_e_t::txn_id_t'(8'h71);
   localparam item_e_t::txn_id_t  E_WUZ_NEGCTL_TXN_ID_DUP_C  = item_e_t::txn_id_t'(8'h72);
+  // Retry field control. Its own line, node-ID pair and TxnIDs, for the same
+  // reason as the WriteUniqueZero pair above. Two TxnIDs because the two phases
+  // inject on different opcodes and neither may retire the other's transaction.
+  // PCRD_TYPE is non-zero and that is the whole point: phase A pairs it with
+  // AllowRetry asserted, which section 2.9.4 forbids, and phase B returns it on
+  // a PCrdReturn where the field is the one thing that must NOT be zero.
+  localparam item_e_t::addr_t    E_RETRY_NEGCTL_ADDR_C        = item_e_t::addr_t'(52'h0012_3456_7f00);
+  localparam item_e_t::node_id_t E_RETRY_NEGCTL_RNI_NODE_ID_C = item_e_t::node_id_t'('h019);
+  localparam item_e_t::node_id_t E_RETRY_NEGCTL_SNF_NODE_ID_C = item_e_t::node_id_t'('h02e);
+  localparam item_e_t::txn_id_t  E_RETRY_NEGCTL_TXN_ID_C      = item_e_t::txn_id_t'(8'h73);
+  localparam logic [3 : 0]       E_RETRY_NEGCTL_PCRD_TYPE_C   = 4'h5;
   // CHI-E WriteNoSnpZero readback address. Kept at PACKAGE scope (not a
   // class-scoped localparam) because a class-scoped `localparam item_e_t::addr_t`
   // hangs vcs1fe codegen at CHI-E flit width -- the same trap fixed earlier for
