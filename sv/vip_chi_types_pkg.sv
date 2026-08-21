@@ -512,6 +512,7 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_REQ_EXCL_LEGAL_E,
     VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E,
     VIP_CHI_CHK_REQ_TAGOP_LEGAL_E,
+    VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E,
     VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
@@ -1850,6 +1851,81 @@ package vip_chi_types_pkg;
   // than guessed. Under Issue D there is no memory tagging at all and the item's
   // issue-gated constraint already holds the field at zero, so the rule stands
   // down rather than duplicating that.
+  // ---------------------------------------------------------------------------
+  // ReturnNID and ReturnTxnID applicability. IHI 0050 E 13.10.4 and 13.10.15,
+  // and note that the two sets are NOT the same -- collapsing them into one
+  // classifier is what would make this rule false-fail:
+  //
+  //   ReturnNID    "Applicable from Home to Slave in ReadNoSnp, ReadNoSnpSep,
+  //                 CleanSharedPersistSep, WriteNoSnp, Combined Write, and
+  //                 Atomic requests. Inapplicable and must be zero for all
+  //                 other requests."
+  //   ReturnTxnID  "Applicable only in ReadNoSnp, ReadNoSnpSep, WriteNoSnp,
+  //                 Combined Write, and Atomic requests from Home to Slave.
+  //                 Inapplicable and must be set to zero for all other
+  //                 requests."
+  //
+  // CleanSharedPersistSep is in the first list and not the second, which follows
+  // from what each field is for: ReturnNID names the node a CompData, DataSepResp
+  // or PERSIST is sent to, while ReturnTxnID names the TxnID of a CompData or
+  // DataSepResp only. A separated persist gets an RSP, which needs a target and
+  // no data TxnID.
+  //
+  // Table A-3 cannot settle this: it has no ReturnNID column at all. These bits
+  // appear there as StashNID, marked "-" on every non-stash opcode -- "assigned
+  // to another protocol message field that shares the same set of bits" -- so the
+  // must-be-zero obligation is in the prose and the table alone understates it.
+  //
+  // The "from Home to Slave" half is deliberately NOT modelled. No bind can
+  // establish that its peer is a Home, and this VIP drives ReadNoSnp from an RN-I
+  // (F-CORR-013's illegal topology), so a rule enforcing the node pair would fire
+  // on the VIP's own traffic for a reason that belongs to a different fix.
+  //
+  // WriteNoSnpZero is treated as APPLICABLE, and that is a judgement rather than
+  // a reading. "WriteNoSnp" is generic in both definitions, and a Zero write's
+  // completion is an RSP rather than CompData, so a strict reading might exclude
+  // it. Where the wording is genuinely ambiguous this errs toward applicable,
+  // because a rule that is permissive on an ambiguous case cannot false-fail
+  // conformant traffic, and a rule that is strict can -- which has already
+  // happened twice in this checker.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_req_return_txn_id_applicable(
+    input vip_chi_req_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_REQ_READ_NO_SNP_E,
+      VIP_CHI_REQ_READ_NO_SNP_SEP_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_E,
+      // Combined Write, every modelled form.
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E: begin
+        return 1'b1;
+      end
+      default: begin
+        return vip_chi_req_opcode_is_atomic(opcode);
+      end
+    endcase
+  endfunction
+
+  function automatic bit vip_chi_req_return_nid_applicable(
+    input vip_chi_req_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_E: begin
+        return 1'b1;
+      end
+      default: begin
+        return vip_chi_req_return_txn_id_applicable(opcode);
+      end
+    endcase
+  endfunction
+
   // ---------------------------------------------------------------------------
   function automatic logic [3 : 0] vip_chi_req_tagop_permitted_mask(
     input vip_chi_issue_t      issue,

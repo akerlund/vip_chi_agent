@@ -328,6 +328,7 @@ CHECK_IDS = (
   "CHI_REQ_EXCL_LEGAL",
   "CHI_REQ_ENDIAN_LEGAL",
   "CHI_REQ_TAGOP_LEGAL",
+  "CHI_REQ_RETURN_PATH_LEGAL",
   "CHI_EXPCOMPACK_PROHIBITED_BUT_SET",
 )
 
@@ -1504,6 +1505,66 @@ _EXCL_PERMITTED_OPCODES = frozenset({
   int(ReqOpcode.READ_NO_SNP),
   int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
 })
+
+
+def req_return_txn_id_applicable(opcode: int) -> bool:
+  """Whether ReturnTxnID is applicable to a request opcode.
+
+  IHI 0050 E 13.10.15: "Applicable only in ReadNoSnp, ReadNoSnpSep, WriteNoSnp,
+  Combined Write, and Atomic requests from Home to Slave. Inapplicable and must
+  be set to zero for all other requests."
+
+  See req_return_nid_applicable for why the two sets differ, why the
+  Home-to-Slave half is not modelled, and why WriteNoSnpZero is treated as
+  applicable.
+  """
+  op = int(opcode)
+  if op in (int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP),
+            int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
+            int(ReqOpcode.WRITE_NO_SNP_ZERO),
+            int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
+            int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
+            int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+            int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
+            int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
+            int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP)):
+    return True
+  return req_opcode_is_atomic(op)
+
+
+def req_return_nid_applicable(opcode: int) -> bool:
+  """Whether ReturnNID is applicable to a request opcode.
+
+  IHI 0050 E 13.10.4: "Applicable from Home to Slave in ReadNoSnp,
+  ReadNoSnpSep, CleanSharedPersistSep, WriteNoSnp, Combined Write, and Atomic
+  requests. Inapplicable and must be zero for all other requests."
+
+  The two sets are NOT the same, and collapsing them is what would make this
+  rule false-fail: CleanSharedPersistSep is here and not in ReturnTxnID's list.
+  That follows from what each field is for -- ReturnNID names the node a
+  CompData, DataSepResp or PERSIST is sent to, ReturnTxnID names the TxnID of a
+  CompData or DataSepResp only, and a separated persist gets an RSP.
+
+  Table A-3 cannot settle this: it has no ReturnNID column. These bits appear
+  there as StashNID, marked "-" on every non-stash opcode -- assigned to another
+  field that shares the same bits -- so the must-be-zero obligation is in the
+  prose and the table alone understates it.
+
+  The "from Home to Slave" half is deliberately not modelled: no bind can
+  establish that its peer is a Home, and this VIP drives ReadNoSnp from an RN-I
+  (F-CORR-013's illegal topology), so enforcing the node pair would fire for a
+  reason belonging to a different fix.
+
+  WriteNoSnpZero is treated as APPLICABLE, which is a judgement rather than a
+  reading: "WriteNoSnp" is generic in both definitions, and a Zero write's
+  completion is an RSP rather than CompData, so a strict reading might exclude
+  it. Where the wording is genuinely ambiguous this errs toward applicable,
+  because a permissive rule cannot false-fail conformant traffic and a strict
+  one can -- which has already happened twice in this checker.
+  """
+  if int(opcode) == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP):
+    return True
+  return req_return_txn_id_applicable(opcode)
 
 
 def req_tagop_permitted_mask(issue: int, opcode: int) -> int:

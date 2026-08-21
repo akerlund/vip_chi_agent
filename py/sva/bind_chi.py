@@ -85,6 +85,7 @@ from vip_chi_types_pkg import (
   req_likely_shared_permitted,
   req_size_fixed_64b, REQ_SIZE_64B,
   req_excl_permitted, req_endian_applicable, req_tagop_permitted_mask,
+  req_return_nid_applicable, req_return_txn_id_applicable,
   SnpAttrReq, snp_attr_requirement, req_bit17_is_dodwt,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
@@ -152,8 +153,9 @@ _COMPLETER_ROLES_C = (Role.SNF, Role.HNF, Role.HNI)
 # raw flit: unpacking the whole DAT flit every beat would drag the multi-hundred
 # bit `data` field through a big-int shift for a checker that never looks at it.
 _FLIT_FIELDS_C = {
-  "req": ("opcode", "txnid", "returntxnid", "size", "expcompack", "order",
-          "memattr", "snpattr", "likelyshared", "excl", "endian", "tagop"),
+  "req": ("opcode", "txnid", "returnnid", "returntxnid", "size", "expcompack",
+          "order", "memattr", "snpattr", "likelyshared", "excl", "endian",
+          "tagop"),
   "rsp": ("opcode", "txnid", "dbid", "resperr", "resp"),
   "dat": ("opcode", "txnid", "dbid", "dataid"),
 }
@@ -1623,6 +1625,27 @@ class bind_chi:
               f"opcode 0x{int(opcode):x} carried Excl asserted, and section 6.3 "
               f"does not list it as supporting Exclusive accesses",
               "section 6.3")
+
+    # ReturnNID and ReturnTxnID are inapplicable and must be zero outside the
+    # request sets E 13.10.4 / 13.10.15 name, and the two sets differ:
+    # CleanSharedPersistSep may carry a ReturnNID and must not carry a
+    # ReturnTxnID, because a separated persist gets an RSP rather than data.
+    # Folded into ONE check id because it is one obligation -- the return path is
+    # not in use, so neither half of it may be set.
+    if (int(f["returnnid"]) and not req_return_nid_applicable(opcode)):
+      self._chk("CHI_REQ_RETURN_PATH_LEGAL", False,
+                f"opcode 0x{int(opcode):x} carried ReturnNID "
+                f"0x{int(f['returnnid']):x}, and section 13.10.4 makes the "
+                "field inapplicable and zero for it",
+                "E section 13.10.4")
+    else:
+      self._chk("CHI_REQ_RETURN_PATH_LEGAL",
+                not (int(f["returntxnid"])
+                     and not req_return_txn_id_applicable(opcode)),
+                f"opcode 0x{int(opcode):x} carried ReturnTxnID "
+                f"0x{int(f['returntxnid']):x}, and section 13.10.15 makes the "
+                "field inapplicable and zero for it",
+                "E section 13.10.15")
 
     # Table A-3's Endian column: applicable on the Atomics only. Endian selects an
     # Atomic operand's byte order and has nothing to say about a plain read or

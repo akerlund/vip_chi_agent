@@ -1109,6 +1109,31 @@ module vip_chi_sva #(
             chk_hit(VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E);
           end
 
+          // ReturnNID and ReturnTxnID are inapplicable and must be zero outside
+          // the request sets IHI 0050 E 13.10.4 / 13.10.15 name, and the two sets
+          // differ: CleanSharedPersistSep may carry a ReturnNID and must not
+          // carry a ReturnTxnID, because a separated persist gets an RSP rather
+          // than data. Folded into ONE check id because it is one obligation --
+          // the return path is not in use, so neither half of it may be set --
+          // and a user standing it down wants both halves quiet.
+          if ((vif.txreqflit.returnnid != '0) &&
+              !vip_chi_types_pkg::vip_chi_req_return_nid_applicable(
+                 vip_chi_req_opcode_t'(vif.txreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E, $sformatf(
+              "opcode 0x%0h was issued with ReturnNID 0x%0h, and section 13.10.4 makes the field inapplicable and zero for it",
+              vif.txreqflit.opcode, vif.txreqflit.returnnid));
+          end
+          else if ((vif.txreqflit.returntxnid != '0) &&
+                   !vip_chi_types_pkg::vip_chi_req_return_txn_id_applicable(
+                      vip_chi_req_opcode_t'(vif.txreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E, $sformatf(
+              "opcode 0x%0h was issued with ReturnTxnID 0x%0h, and section 13.10.15 makes the field inapplicable and zero for it",
+              vif.txreqflit.opcode, vif.txreqflit.returntxnid));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E);
+          end
+
           // The other half of Table 2-9, which nothing checked: the table marks
           // ExpCompAck prohibited on a whole class of requests, and until now only
           // the required-but-zero direction was reported. Table A-3's ExpCompAck
@@ -1400,6 +1425,31 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E);
+          end
+
+          // ReturnNID and ReturnTxnID are inapplicable and must be zero outside
+          // the request sets IHI 0050 E 13.10.4 / 13.10.15 name, and the two sets
+          // differ: CleanSharedPersistSep may carry a ReturnNID and must not
+          // carry a ReturnTxnID, because a separated persist gets an RSP rather
+          // than data. Folded into ONE check id because it is one obligation --
+          // the return path is not in use, so neither half of it may be set --
+          // and a user standing it down wants both halves quiet.
+          if ((vif.rxreqflit.returnnid != '0) &&
+              !vip_chi_types_pkg::vip_chi_req_return_nid_applicable(
+                 vip_chi_req_opcode_t'(vif.rxreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E, $sformatf(
+              "opcode 0x%0h was received with ReturnNID 0x%0h, and section 13.10.4 makes the field inapplicable and zero for it",
+              vif.rxreqflit.opcode, vif.rxreqflit.returnnid));
+          end
+          else if ((vif.rxreqflit.returntxnid != '0) &&
+                   !vip_chi_types_pkg::vip_chi_req_return_txn_id_applicable(
+                      vip_chi_req_opcode_t'(vif.rxreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E, $sformatf(
+              "opcode 0x%0h was received with ReturnTxnID 0x%0h, and section 13.10.15 makes the field inapplicable and zero for it",
+              vif.rxreqflit.opcode, vif.rxreqflit.returntxnid));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E);
           end
 
           // The other half of Table 2-9, which nothing checked: the table marks
