@@ -34,6 +34,7 @@ package chi_tc_pkg;
   `include "tc_chi_d_read_smoke.sv"
   `include "tc_chi_d_reset.sv"
   `include "tc_chi_d_credit_starvation.sv"
+  `include "tc_chi_d_lcrd_overgrant.sv"
   `include "tc_chi_d_link_reactivation.sv"
   `include "chi_prefetch_tgt_seq.sv"
   `include "tc_chi_d_prefetch_tgt.sv"

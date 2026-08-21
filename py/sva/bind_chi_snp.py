@@ -37,8 +37,19 @@ from vip_chi_types_pkg import (
   snp_ret_to_src_must_be_zero,
 )
 
-# Mirrors SNP_SEND_CAP_C in the SV checker.
-_SNP_SEND_CAP_C = 64
+# The protocol maximum, not a shadow-counter bound. IHI 0050 E 14.2.1 /
+# D 13.2.1: "The minimum number of L-Credits that a receiver can provide is one.
+# The maximum number of L-Credits that a receiver can provide is 15." One LCRDV
+# signal per channel, so the bound is per channel.
+#
+# This was 64, which is not a number the specification contains -- and the
+# comment that stood here said so, calling it a bound on "the shadow counter, not
+# the protocol". At 64 the overflow rule could not fire on any
+# conformant-looking peer: a receiver granting 16 through 64 credits was
+# over-granting and reported as fine, so the rule was a false NEGATIVE rather
+# than a false alarm.
+_LCRD_MAX_C = 15
+_SNP_SEND_CAP_C = _LCRD_MAX_C
 
 # SNP flit fields this checker reads. Only these are sliced out of the raw flit,
 # matching bind_chi's _FLIT_FIELDS_C -- and carrying the same trap: a rule that

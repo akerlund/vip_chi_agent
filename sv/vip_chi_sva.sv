@@ -120,9 +120,20 @@ module vip_chi_sva #(
   typedef FLIT_TYPES_T::vip_chi_req_flit_t     req_flit_t;
 
   localparam int TXN_ID_COUNT_C = 2 ** $bits(txn_id_t);
-  localparam int unsigned REQ_SEND_CAP_C = 64;
-  localparam int unsigned RSP_SEND_CAP_C = 64;
-  localparam int unsigned DAT_SEND_CAP_C = 64;
+  // The protocol maximum, not a shadow-counter bound. IHI 0050 E 14.2.1 /
+  // D 13.2.1: "The minimum number of L-Credits that a receiver can provide is
+  // one. The maximum number of L-Credits that a receiver can provide is 15."
+  // One LCRDV signal per channel, so the bound is per channel.
+  //
+  // This was 64, which is not a number the specification contains. At 64 the
+  // overflow rule could not fire on any conformant-looking peer -- a receiver
+  // granting 16 through 64 credits was over-granting and reported as fine, so
+  // the rule was a false NEGATIVE rather than a false alarm. 15 is the value
+  // that makes it a protocol check.
+  localparam int unsigned LCRD_MAX_C = 15;
+  localparam int unsigned REQ_SEND_CAP_C = LCRD_MAX_C;
+  localparam int unsigned RSP_SEND_CAP_C = LCRD_MAX_C;
+  localparam int unsigned DAT_SEND_CAP_C = LCRD_MAX_C;
   // Which end of a link this bind sits on, which is what decides whether a
   // request arrives on rxreq or leaves on txreq. Every transaction-level rule
   // below is gated on one of these two, so a role in NEITHER set leaves a bind

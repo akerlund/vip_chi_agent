@@ -94,12 +94,21 @@ from vip_chi_types_pkg import (
   req_opcode_is_combined_write_cmo,
 )
 
-# L-credit tracking caps, mirroring REQ/RSP/DAT_SEND_CAP_C in the SV checker.
-# These bound the shadow counter, not the protocol: a grant past the cap means
-# the peer is granting more credit than any sane pool holds.
-_REQ_SEND_CAP_C = 64
-_RSP_SEND_CAP_C = 64
-_DAT_SEND_CAP_C = 64
+# The protocol maximum, not a shadow-counter bound. IHI 0050 E 14.2.1 /
+# D 13.2.1: "The minimum number of L-Credits that a receiver can provide is one.
+# The maximum number of L-Credits that a receiver can provide is 15." One LCRDV
+# signal per channel, so the bound is per channel.
+#
+# This was 64, which is not a number the specification contains -- and the
+# comment that stood here said so, calling it a bound on "the shadow counter, not
+# the protocol". At 64 the overflow rule could not fire on any
+# conformant-looking peer: a receiver granting 16 through 64 credits was
+# over-granting and reported as fine, so the rule was a false NEGATIVE rather
+# than a false alarm.
+_LCRD_MAX_C = 15
+_REQ_SEND_CAP_C = _LCRD_MAX_C
+_RSP_SEND_CAP_C = _LCRD_MAX_C
+_DAT_SEND_CAP_C = _LCRD_MAX_C
 
 # Cycles allowed between reset release and the link activating, mirroring the
 # SV LINK_ACT_WINDOW_P default. Must comfortably exceed

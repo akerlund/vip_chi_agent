@@ -54,7 +54,18 @@ module vip_chi_snp_sva #(
     input bit  checks_enable
   );
 
-  localparam int unsigned SNP_SEND_CAP_C = 64;
+  // The protocol maximum, not a shadow-counter bound. IHI 0050 E 14.2.1 /
+  // D 13.2.1: "The minimum number of L-Credits that a receiver can provide is
+  // one. The maximum number of L-Credits that a receiver can provide is 15."
+  // One LCRDV signal per channel, and SNP is a channel like any other.
+  //
+  // This was 64, which is not a number the specification contains. At 64 the
+  // overflow rule could not fire on any conformant-looking peer -- a receiver
+  // granting 16 through 64 credits was over-granting and reported as fine, so
+  // the rule was a false NEGATIVE rather than a false alarm. 15 is the value
+  // that makes it a protocol check.
+  localparam int unsigned LCRD_MAX_C = 15;
+  localparam int unsigned SNP_SEND_CAP_C = LCRD_MAX_C;
 
   // This link's LASM as seen from this endpoint, matching vip_chi_sva -- one
   // state machine per link, formed from the live request/acknowledge pair

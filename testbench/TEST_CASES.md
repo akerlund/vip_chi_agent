@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **179 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **180 pyUVM/cocotb**
+The shared regression currently runs **180 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **181 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -181,6 +181,7 @@ serial. See [../docs/IMPLEMENTATION_PLAN.md](../docs/IMPLEMENTATION_PLAN.md).
 | --- | --- | --- |
 | `tc_chi_d_retry` | INT | a retryable write (`AllowRetry=1`) against an SN-F armed with `cfg.force_retry_count` is bounced with `RetryAck` + `PCrdGrant`; the RN-I holds the request, consumes the credit grant, re-issues to a normal `CompDBIDResp`, and the data is confirmed committed on read-back. |
 | `tc_chi_d_credit_starvation` | INT | hold SN-F DAT credit to stall a second read completion, then release it. |
+| `tc_chi_d_lcrd_overgrant` | D | Negative control for `CHI_LCRD_OVERFLOW`, which could not fire before. §14.2.1 caps a receiver at **15** L-Credits per channel; the checker's bound was 64 — a number the specification does not contain — so a receiver granting 16–64 was over-granting and reported as fine, a false *negative*. The SN-F advertises 16 REQ credits and the sixteenth grant must be reported exactly once at each vantage, with the fifteen legal grants passing first and no further reports once traffic starts spending credits. The cfg validator still accepts 16 on purpose: a configuration that cannot express a broken peer cannot model one. |
 | `tc_chi_d_reset` | INT | reset while traffic is in flight, including held-credit recovery. |
 | `tc_chi_d_link_reactivation` | INT | synthetic reset pulse, link drop, reactivation, and post-reset forward progress. |
 | `tc_chi_e_signal_drivability` | INT | structured REQ/DAT/RSP field setters, separated return routing, and exact-E tagging fields reach the wire and are observed. |
