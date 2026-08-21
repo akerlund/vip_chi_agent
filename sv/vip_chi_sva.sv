@@ -1220,6 +1220,37 @@ module vip_chi_sva #(
           endcase
         end
 
+        // HomeNID is applicable in CompData and DataSepResp and inapplicable
+        // and zero in every other Data message (IHI 0050 E 13.10.3). Judged on
+        // whichever direction carries a DAT flit, so one rule covers both the
+        // sending and the receiving vantage without a role test: the requester
+        // sends write data and receives completions, the completer the reverse.
+        if (vif.txdatflitv) begin
+          if ((vif.txdatflit.homenid != '0) &&
+              !vip_chi_types_pkg::vip_chi_dat_home_nid_applicable(
+                 vip_chi_dat_opcode_t'(vif.txdatflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E, $sformatf(
+              "sent DAT opcode 0x%0h carried HomeNID 0x%0h, and section 13.10.3 makes the field inapplicable and zero outside CompData and DataSepResp",
+              vif.txdatflit.opcode, vif.txdatflit.homenid));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E);
+          end
+        end
+
+        if (vif.rxdatflitv) begin
+          if ((vif.rxdatflit.homenid != '0) &&
+              !vip_chi_types_pkg::vip_chi_dat_home_nid_applicable(
+                 vip_chi_dat_opcode_t'(vif.rxdatflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E, $sformatf(
+              "received DAT opcode 0x%0h carried HomeNID 0x%0h, and section 13.10.3 makes the field inapplicable and zero outside CompData and DataSepResp",
+              vif.rxdatflit.opcode, vif.rxdatflit.homenid));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E);
+          end
+        end
+
         if (vif.txdatflitv && is_write_dat_opcode(dat_opcode_t'(vif.txdatflit.opcode))) begin
           if (!write_grant_seen_by_dbid[txn_id_to_index(txn_id_t'(vif.txdatflit.dbid))]) begin
             chk_miss(VIP_CHI_CHK_WRITE_DAT_BEFORE_DBID_E, $sformatf("write DAT was sent before a DBID-bearing grant response"));

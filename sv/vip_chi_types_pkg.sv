@@ -513,6 +513,7 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E,
     VIP_CHI_CHK_REQ_TAGOP_LEGAL_E,
     VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E,
+    VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E,
     VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
@@ -1888,6 +1889,36 @@ package vip_chi_types_pkg;
   // because a rule that is permissive on an ambiguous case cannot false-fail
   // conformant traffic, and a rule that is strict can -- which has already
   // happened twice in this checker.
+  // ---------------------------------------------------------------------------
+  // HomeNID applicability on the DAT channel. IHI 0050 E 13.10.3: "Applicable in
+  // CompData and DataSepResp from the Slave and Home. Inapplicable and must be
+  // zero in all other Data messages."
+  //
+  // Read from the field definition rather than from Table A-5, deliberately. The
+  // table's headers are rotated, and a plain text dump of it lists them in an
+  // order that is NOT the column order -- the hazard TABLE_A3_PARSE.md exists to
+  // avoid -- so mapping a cell to HomeNID needs the bbox parse. The prose says
+  // the same thing without that risk, and it says it unambiguously.
+  //
+  // "From the Slave and Home" is the sender, not a further condition on the
+  // opcode: only a completer sends either message. The rule is opcode-keyed and
+  // does not attempt to establish the peer's node class, for the same reason
+  // vip_chi_req_return_nid_applicable does not.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_dat_home_nid_applicable(
+    input vip_chi_dat_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_DAT_COMP_DATA_E,
+      VIP_CHI_DAT_DATA_SEP_RESP_E: begin
+        return 1'b1;
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
+  endfunction
+
   // ---------------------------------------------------------------------------
   function automatic bit vip_chi_req_return_txn_id_applicable(
     input vip_chi_req_opcode_t opcode

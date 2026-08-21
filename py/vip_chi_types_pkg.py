@@ -329,6 +329,7 @@ CHECK_IDS = (
   "CHI_REQ_ENDIAN_LEGAL",
   "CHI_REQ_TAGOP_LEGAL",
   "CHI_REQ_RETURN_PATH_LEGAL",
+  "CHI_DAT_HOME_NID_LEGAL",
   "CHI_EXPCOMPACK_PROHIBITED_BUT_SET",
 )
 
@@ -1505,6 +1506,24 @@ _EXCL_PERMITTED_OPCODES = frozenset({
   int(ReqOpcode.READ_NO_SNP),
   int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
 })
+
+
+def dat_home_nid_applicable(opcode: int) -> bool:
+  """Whether HomeNID is applicable to a DAT opcode.
+
+  IHI 0050 E 13.10.3: "Applicable in CompData and DataSepResp from the Slave and
+  Home. Inapplicable and must be zero in all other Data messages."
+
+  Read from the field definition rather than from Table A-5, deliberately: that
+  table's headers are rotated, and a plain text dump lists them in an order that
+  is NOT the column order, so mapping a cell to HomeNID needs the bbox parse. The
+  prose says the same thing without that risk.
+
+  "From the Slave and Home" is the sender, not a further condition on the opcode:
+  only a completer sends either message. The rule is opcode-keyed and does not
+  attempt to establish the peer's node class.
+  """
+  return int(opcode) in (int(DatOpcode.COMP_DATA), int(DatOpcode.DATA_SEP_RESP))
 
 
 def req_return_txn_id_applicable(opcode: int) -> bool:

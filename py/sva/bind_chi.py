@@ -86,6 +86,7 @@ from vip_chi_types_pkg import (
   req_size_fixed_64b, REQ_SIZE_64B,
   req_excl_permitted, req_endian_applicable, req_tagop_permitted_mask,
   req_return_nid_applicable, req_return_txn_id_applicable,
+  dat_home_nid_applicable,
   SnpAttrReq, snp_attr_requirement, req_bit17_is_dodwt,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
@@ -157,7 +158,7 @@ _FLIT_FIELDS_C = {
           "order", "memattr", "snpattr", "likelyshared", "excl", "endian",
           "tagop"),
   "rsp": ("opcode", "txnid", "dbid", "resperr", "resp"),
-  "dat": ("opcode", "txnid", "dbid", "dataid"),
+  "dat": ("opcode", "txnid", "dbid", "dataid", "homenid"),
 }
 
 # Opcode classes, mirroring the SV req_opcode_is_* / is_write_* functions.
@@ -1863,6 +1864,19 @@ class bind_chi:
     more = bool(s[f"{d}datflitpend"])
     interleaved = self._dat_interleave_allowed()
     reorder = self._dat_reorder_allowed() or interleaved
+
+    # HomeNID is applicable in CompData and DataSepResp and inapplicable and zero
+    # in every other Data message (IHI 0050 E 13.10.3). Checked on whichever
+    # direction carries the beat, so one rule covers both vantages without a role
+    # test: the requester sends write data and receives completions, the completer
+    # the reverse.
+    self._chk("CHI_DAT_HOME_NID_LEGAL",
+              not (int(f["homenid"])
+                   and not dat_home_nid_applicable(f["opcode"])),
+              f"{d} DAT opcode 0x{int(f['opcode']):x} carried HomeNID "
+              f"0x{int(f['homenid']):x}, and section 13.10.3 makes the field "
+              "inapplicable and zero outside CompData and DataSepResp",
+              "E section 13.10.3")
 
     # Retire the transfer this beat belongs to, counted by TxnID, before the
     # run-shaped tracking below. See _retire_dat_transfer.
