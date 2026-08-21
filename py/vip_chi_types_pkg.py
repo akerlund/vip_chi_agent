@@ -332,6 +332,15 @@ CHECK_IDS = (
   "CHI_DAT_HOME_NID_LEGAL",
   "CHI_DAT_CBUSY_LEGAL",
   "CHI_EXPCOMPACK_PROHIBITED_BUT_SET",
+  # Retry field legality, IHI 0050 E section 2.9.4 / D section 2.9.4. Both pass
+  # on this VIP today: they guard the retry machinery, which has been built
+  # since the first cut with nothing judging the fields it drives.
+  #
+  # The grant half of the same flow needs nothing here: section 2.6.5 pins
+  # PCrdGrant's TxnID and DBID at zero, and CHI_RSP_FIELD_ZERO already asserts
+  # both.
+  "CHI_REQ_ALLOW_RETRY_PCRD_ZERO",
+  "CHI_REQ_PCRD_RETURN_FIELDS_ZERO",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept

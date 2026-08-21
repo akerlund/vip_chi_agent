@@ -113,6 +113,11 @@ module vip_chi_sva #(
   typedef vip_chi_types #(CFG_P)::dat_opcode_t dat_opcode_t;
   typedef vip_chi_types #(CFG_P)::size_t       size_t;
   typedef vip_chi_types #(CFG_P)::node_id_t    node_id_t;
+  // Through FLIT_TYPES_T, not through vip_chi_types #(CFG_P): the interface
+  // declares txreqflit with the ISSUE-SPECIFIC type, so a CHI-D bind's REQ flit
+  // genuinely has no TagOp or GroupIDExt member and naming one here would fail
+  // elaboration rather than read zero.
+  typedef FLIT_TYPES_T::vip_chi_req_flit_t     req_flit_t;
 
   localparam int TXN_ID_COUNT_C = 2 ** $bits(txn_id_t);
   localparam int unsigned REQ_SEND_CAP_C = 64;
@@ -2733,6 +2738,167 @@ module vip_chi_sva #(
   // this VIP does not generate an illegal TagOp, the rx side says it reports one
   // arriving from a DUT.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Retry field legality -- IHI 0050 E section 2.9.4 / D section 2.9.4, and the
+  // PCrdReturn rows of E Table A-2 / Table A-3 (D's equivalents agree: D drops
+  // only the TagOp column, and D's part-2 row is uniformly "0a", so column
+  // identity does not even have to be resolved there).
+  //
+  // Both rules pass on this VIP today. They are here because the retry
+  // machinery has been built since the first cut with nothing judging the
+  // fields it drives, and because the PCrdReturn one guards a specific and
+  // plausible regression: the driver builds the flit from '0 and fills in five
+  // fields, and the obvious "simplification" is to copy the retried request and
+  // overwrite the opcode.
+  // ---------------------------------------------------------------------------
+
+  // Every column Table A-2 and Table A-3 mark inapplicable-and-zero for
+  // PCrdReturn, restricted to the members both issues carry. What is NOT here
+  // matters as much as what is:
+  //
+  //   QoS, TgtID, SrcID, Opcode  applicable -- the transaction's identity
+  //   PCrdType                   applicable, and section 2.6.6 requires it to
+  //                              match the grant being returned, so a zero here
+  //                              would be the bug
+  //   TraceTag                   Table A-2 gives it "Y". A conformant PCrdReturn
+  //                              may carry a trace tag and asserting zero would
+  //                              false-fail it.
+  //   RSVDC                      "Y", and not modelled on this flit anyway
+  //   DoDWT                      "-" in Table A-3: it shares SnpAttr's bit, and
+  //                              the VIP models the bit as snpattr, which IS
+  //                              asserted zero just below
+  //
+  // The shared-bit columns reach their VIP names the same way: StashNID lands on
+  // returnnid, StashLPIDValid on returntxnid, and TagGroupID[4:0] with
+  // GroupIDExt on lpid (plus the separate groupidext member on Issue E, checked
+  // in g_req_pcrd_return_tagged_fields below).
+  function automatic bit req_pcrd_return_fields_zero(input req_flit_t f);
+    return ((f.txnid        == '0)   &&
+            (f.returnnid    == '0)   &&
+            (f.returntxnid  == '0)   &&
+            (f.endian       == 1'b0) &&
+            (f.size         == '0)   &&
+            (f.addr         == '0)   &&
+            (f.ns           == '0)   &&
+            (f.likelyshared == 1'b0) &&
+            (f.allowretry   == 1'b0) &&
+            (f.order        == '0)   &&
+            (f.memattr      == '0)   &&
+            (f.snpattr      == '0)   &&
+            (f.lpid         == '0)   &&
+            (f.excl         == '0)   &&
+            (f.expcompack   == 1'b0) &&
+            (f.mpam         == '0));
+  endfunction
+
+  function automatic bit req_is_pcrd_return(input req_opcode_t opcode);
+    return (opcode == req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C));
+  endfunction
+
+  property p_tx_req_allow_retry_pcrd_zero;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      (ROLE_IS_REQUESTER_C && vif.txreqflitv && vif.txreqflit.allowretry) |->
+        (vif.txreqflit.pcrdtype == '0);
+  endproperty
+
+  property p_rx_req_allow_retry_pcrd_zero;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      (ROLE_IS_COMPLETER_C && vif.rxreqflitv && vif.rxreqflit.allowretry) |->
+        (vif.rxreqflit.pcrdtype == '0);
+  endproperty
+
+  property p_tx_req_pcrd_return_fields_zero;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      (ROLE_IS_REQUESTER_C && vif.txreqflitv &&
+       req_is_pcrd_return(req_opcode_t'(vif.txreqflit.opcode))) |->
+        req_pcrd_return_fields_zero(vif.txreqflit);
+  endproperty
+
+  property p_rx_req_pcrd_return_fields_zero;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      (ROLE_IS_COMPLETER_C && vif.rxreqflitv &&
+       req_is_pcrd_return(req_opcode_t'(vif.rxreqflit.opcode))) |->
+        req_pcrd_return_fields_zero(vif.rxreqflit);
+  endproperty
+
+  assert property (p_tx_req_allow_retry_pcrd_zero)
+    chk_hit(VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E);
+  else
+    chk_miss(VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E, $sformatf(
+      "opcode 0x%0h was issued with AllowRetry set and PCrdType 0x%0h; section 2.9.4 requires PCrdType zero while a Retry response is still allowed",
+      $sampled(vif.txreqflit.opcode), $sampled(vif.txreqflit.pcrdtype)));
+
+  assert property (p_rx_req_allow_retry_pcrd_zero)
+    chk_hit(VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E);
+  else
+    chk_miss(VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E, $sformatf(
+      "opcode 0x%0h was received with AllowRetry set and PCrdType 0x%0h; section 2.9.4 requires PCrdType zero while a Retry response is still allowed",
+      $sampled(vif.rxreqflit.opcode), $sampled(vif.rxreqflit.pcrdtype)));
+
+  assert property (p_tx_req_pcrd_return_fields_zero)
+    chk_hit(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E);
+  else
+    chk_miss(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E, $sformatf(
+      "PCrdReturn was issued with a Table A-2/A-3 zero-marked field non-zero (TxnID=0x%0h Addr=0x%0h Size=0x%0h NS=%0b AllowRetry=%0b Order=0x%0h MemAttr=0x%0h SnpAttr=%0b LPID=0x%0h Excl=%0b ExpCompAck=%0b Endian=%0b ReturnNID=0x%0h ReturnTxnID=0x%0h LikelyShared=%0b MPAM=0x%0h)",
+      $sampled(vif.txreqflit.txnid), $sampled(vif.txreqflit.addr),
+      $sampled(vif.txreqflit.size), $sampled(vif.txreqflit.ns),
+      $sampled(vif.txreqflit.allowretry), $sampled(vif.txreqflit.order),
+      $sampled(vif.txreqflit.memattr), $sampled(vif.txreqflit.snpattr),
+      $sampled(vif.txreqflit.lpid), $sampled(vif.txreqflit.excl),
+      $sampled(vif.txreqflit.expcompack), $sampled(vif.txreqflit.endian),
+      $sampled(vif.txreqflit.returnnid), $sampled(vif.txreqflit.returntxnid),
+      $sampled(vif.txreqflit.likelyshared), $sampled(vif.txreqflit.mpam)));
+
+  assert property (p_rx_req_pcrd_return_fields_zero)
+    chk_hit(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E);
+  else
+    chk_miss(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E, $sformatf(
+      "PCrdReturn was received with a Table A-2/A-3 zero-marked field non-zero (TxnID=0x%0h Addr=0x%0h Size=0x%0h NS=%0b AllowRetry=%0b Order=0x%0h MemAttr=0x%0h SnpAttr=%0b LPID=0x%0h Excl=%0b ExpCompAck=%0b Endian=%0b ReturnNID=0x%0h ReturnTxnID=0x%0h LikelyShared=%0b MPAM=0x%0h)",
+      $sampled(vif.rxreqflit.txnid), $sampled(vif.rxreqflit.addr),
+      $sampled(vif.rxreqflit.size), $sampled(vif.rxreqflit.ns),
+      $sampled(vif.rxreqflit.allowretry), $sampled(vif.rxreqflit.order),
+      $sampled(vif.rxreqflit.memattr), $sampled(vif.rxreqflit.snpattr),
+      $sampled(vif.rxreqflit.lpid), $sampled(vif.rxreqflit.excl),
+      $sampled(vif.rxreqflit.expcompack), $sampled(vif.rxreqflit.endian),
+      $sampled(vif.rxreqflit.returnnid), $sampled(vif.rxreqflit.returntxnid),
+      $sampled(vif.rxreqflit.likelyshared), $sampled(vif.rxreqflit.mpam)));
+
+  // The two PCrdReturn columns that exist only on Issue E, under the same check
+  // id: TagOp is absent from Table A-2 on Issue D, and GroupIDExt is folded into
+  // the LPID member there rather than carried separately. Split out because a
+  // CHI-D bind's REQ flit has neither member, so naming them above would fail
+  // elaboration on every D bind rather than read zero.
+  if (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) begin : g_req_pcrd_return_tagged_fields
+
+    property p_tx_req_pcrd_return_e_fields_zero;
+      @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+        (ROLE_IS_REQUESTER_C && vif.txreqflitv &&
+         req_is_pcrd_return(req_opcode_t'(vif.txreqflit.opcode))) |->
+          ((vif.txreqflit.tagop == '0) && (vif.txreqflit.groupidext == '0));
+    endproperty
+
+    property p_rx_req_pcrd_return_e_fields_zero;
+      @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+        (ROLE_IS_COMPLETER_C && vif.rxreqflitv &&
+         req_is_pcrd_return(req_opcode_t'(vif.rxreqflit.opcode))) |->
+          ((vif.rxreqflit.tagop == '0) && (vif.rxreqflit.groupidext == '0));
+    endproperty
+
+    assert property (p_tx_req_pcrd_return_e_fields_zero)
+      chk_hit(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E);
+    else
+      chk_miss(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E, $sformatf(
+        "PCrdReturn was issued with TagOp 0x%0h GroupIDExt 0x%0h, and Table A-2/A-3 make both inapplicable and zero for it",
+        $sampled(vif.txreqflit.tagop), $sampled(vif.txreqflit.groupidext)));
+
+    assert property (p_rx_req_pcrd_return_e_fields_zero)
+      chk_hit(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E);
+    else
+      chk_miss(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E, $sformatf(
+        "PCrdReturn was received with TagOp 0x%0h GroupIDExt 0x%0h, and Table A-2/A-3 make both inapplicable and zero for it",
+        $sampled(vif.rxreqflit.tagop), $sampled(vif.rxreqflit.groupidext)));
+  end
+
   if (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) begin : g_req_tagop_legal
 
     // A helper because SystemVerilog does not permit a bit-select of a function

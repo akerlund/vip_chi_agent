@@ -156,7 +156,8 @@ _COMPLETER_ROLES_C = (Role.SNF, Role.HNF, Role.HNI)
 _FLIT_FIELDS_C = {
   "req": ("opcode", "txnid", "returnnid", "returntxnid", "size", "expcompack",
           "order", "memattr", "snpattr", "likelyshared", "excl", "endian",
-          "tagop"),
+          "tagop", "addr", "ns", "allowretry", "pcrdtype", "lpid", "mpam",
+          "groupidext"),
   "rsp": ("opcode", "txnid", "dbid", "resperr", "resp"),
   "dat": ("opcode", "txnid", "dbid", "dataid", "homenid", "cbusy"),
 }
@@ -1677,6 +1678,49 @@ class bind_chi:
                 f"0x{int(f['tagop']):x}, which Table 12-2 does not permit "
                 "for it",
                 "Table 12-2")
+
+    # Section 2.9.4: "If the AllowRetry field is asserted, the PCrdType field
+    # must be set to 0b0000." A request that still allows a Retry response
+    # cannot also be spending a credit. The converse -- AllowRetry deasserted
+    # carries the RetryAck's PCrdType -- needs the credit tracker and is not
+    # this rule.
+    self._chk("CHI_REQ_ALLOW_RETRY_PCRD_ZERO",
+              not (int(f["allowretry"]) and int(f["pcrdtype"])),
+              f"opcode 0x{int(opcode):x} carried AllowRetry set with PCrdType "
+              f"0x{int(f['pcrdtype']):x}, and section 2.9.4 requires PCrdType "
+              "zero while a Retry response is still allowed",
+              "section 2.9.4")
+
+    # Every column Table A-2 and Table A-3 mark inapplicable-and-zero for
+    # PCrdReturn. Issue D's tables agree: D drops only the TagOp column, and
+    # D's part-2 row is uniformly "0a", so column identity does not even have
+    # to be resolved there.
+    #
+    # What is NOT here matters as much as what is. QoS, TgtID, SrcID and Opcode
+    # are the transaction's identity; PCrdType is applicable and section 2.6.6
+    # requires it to match the grant being returned, so a zero there would be
+    # the bug; TraceTag reads "Y" in Table A-2, so a conformant PCrdReturn may
+    # carry one and asserting zero would false-fail it; and DoDWT reads "-",
+    # sharing SnpAttr's bit, which is the name checked below.
+    #
+    # The tagop, groupidext and mpam terms are guarded on field PRESENCE, the
+    # same way CHI_REQ_TAGOP_LEGAL is: memory tagging and the separate
+    # GroupIDExt member are Issue E only, and mpam_field_width is zero on a
+    # link with no MPAM bus, so _flit_slices produces no slice and reading the
+    # key would raise KeyError rather than stand the term down.
+    if opcode == int(ReqOpcode.PCRD_RETURN):
+      offenders = [n for n in ("txnid", "returnnid", "returntxnid", "endian",
+                               "size", "addr", "ns", "likelyshared",
+                               "allowretry", "order", "memattr", "snpattr",
+                               "lpid", "excl", "expcompack",
+                               "tagop", "groupidext", "mpam")
+                   if n in f and int(f[n])]
+      self._chk("CHI_REQ_PCRD_RETURN_FIELDS_ZERO",
+                not offenders,
+                "PCrdReturn carried a Table A-2/A-3 zero-marked field "
+                "non-zero: "
+                + ", ".join(f"{n}=0x{int(f[n]):x}" for n in offenders),
+                "Table A-2 / Table A-3")
 
     # The other half of Table 2-9, which nothing checked: the table marks
     # ExpCompAck prohibited on a whole class of requests, and until now only the

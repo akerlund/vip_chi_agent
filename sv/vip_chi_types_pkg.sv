@@ -516,6 +516,25 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E,
     VIP_CHI_CHK_DAT_CBUSY_LEGAL_E,
     VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E,
+    // Retry field legality, IHI 0050 E section 2.9.4 / D section 2.9.4. The
+    // retry machinery has been built since the first cut and nothing judged the
+    // fields it drives, so both of these are guards rather than repairs.
+    //
+    // The grant half of the same flow needs nothing here: section 2.6.5 pins
+    // PCrdGrant's TxnID and DBID at zero, and RSP_FIELD_ZERO already asserts
+    // both through rsp_a4_txnid_is_zero_field and rsp_a4_dbid_is_zero_field.
+    //
+    // A request that still allows a Retry response cannot also be spending a
+    // credit, so its PCrdType must be zero. The converse -- AllowRetry
+    // deasserted -- carries the PCrdType from the RetryAck and is checked by
+    // REQ_FIRST_ATTEMPT_ALLOW_RETRY, which owns the credit tracker.
+    VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E,
+    // PCrdReturn is a NOP that names a credit and nothing else, so Table A-2 and
+    // Table A-3 mark every field but QoS, TgtID, SrcID, Opcode and PCrdType
+    // inapplicable-and-zero. One check id for all of them: they are one
+    // obligation -- this transaction addresses nothing and carries no attributes
+    // -- and a user standing it down wants the whole row quiet.
+    VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
