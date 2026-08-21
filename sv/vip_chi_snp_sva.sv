@@ -244,6 +244,17 @@ module vip_chi_snp_sva #(
     return snp_flit_view_t'(vif.rxsnpflit);
   endfunction
 
+  // The six report messages below run in the REACTIVE region, where the wire may
+  // already carry the next snoop, so reading the views live names the wrong flit.
+  // The views cannot be $sampled() as a whole -- they read the interface inside a
+  // function -- so each action block samples the raw flit and casts it here. Same
+  // cast, one region earlier.
+  function automatic snp_flit_view_t snp_view_of(
+    input logic [$bits(snp_flit_view_t)-1:0] raw
+  );
+    return snp_flit_view_t'(raw);
+  endfunction
+
   // FwdNID and FwdTxnID are applicable only in Forward type snoops and must be
   // zero in every other snoop request (E 13.10.5 / 13.10.16).
   function automatic bit snp_fwd_fields_legal(input snp_flit_view_t flit);
@@ -374,45 +385,63 @@ module vip_chi_snp_sva #(
 
   assert property (p_tx_snp_fwd_fields_zero)
     chk_hit(VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E);
-  else
+  else begin : b_snp_fwd_fields_zero_tx_miss
+    snp_flit_view_t judged;
+    judged = snp_view_of($sampled(vif.txsnpflit));
     chk_miss(VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E, $sformatf(
       "sent snoop opcode 0x%0h is not a Forward type but carries FwdNID=0x%0h FwdTxnID=0x%0h",
-      tx_snp_view().opcode, tx_snp_view().fwdnid, tx_snp_view().fwdtxnid));
+      judged.opcode, judged.fwdnid, judged.fwdtxnid));
+  end
 
   assert property (p_rx_snp_fwd_fields_zero)
     chk_hit(VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E);
-  else
+  else begin : b_snp_fwd_fields_zero_rx_miss
+    snp_flit_view_t judged;
+    judged = snp_view_of($sampled(vif.rxsnpflit));
     chk_miss(VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E, $sformatf(
       "received snoop opcode 0x%0h is not a Forward type but carries FwdNID=0x%0h FwdTxnID=0x%0h",
-      rx_snp_view().opcode, rx_snp_view().fwdnid, rx_snp_view().fwdtxnid));
+      judged.opcode, judged.fwdnid, judged.fwdtxnid));
+  end
 
   assert property (p_tx_snp_ret_to_src_legal)
     chk_hit(VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E);
-  else
+  else begin : b_vip_chi_chk_snp_ret_to_src_legal_e_tx_1_miss
+    snp_flit_view_t judged;
+    judged = snp_view_of($sampled(vif.txsnpflit));
     chk_miss(VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E, $sformatf(
       "sent snoop opcode 0x%0h must carry RetToSrc = 0 (IHI 0050 E 4.9 / D 4.9)",
-      tx_snp_view().opcode));
+      judged.opcode));
+  end
 
   assert property (p_rx_snp_ret_to_src_legal)
     chk_hit(VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E);
-  else
+  else begin : b_vip_chi_chk_snp_ret_to_src_legal_e_rx_2_miss
+    snp_flit_view_t judged;
+    judged = snp_view_of($sampled(vif.rxsnpflit));
     chk_miss(VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E, $sformatf(
       "received snoop opcode 0x%0h must carry RetToSrc = 0 (IHI 0050 E 4.9 / D 4.9)",
-      rx_snp_view().opcode));
+      judged.opcode));
+  end
 
   assert property (p_tx_snp_do_not_go_to_sd_legal)
     chk_hit(VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E);
-  else
+  else begin : b_vip_chi_chk_snp_do_not_go_to_sd_legal_e_tx_3_miss
+    snp_flit_view_t judged;
+    judged = snp_view_of($sampled(vif.txsnpflit));
     chk_miss(VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E, $sformatf(
       "sent snoop opcode 0x%0h must carry DoNotGoToSD = 1 (IHI 0050 E 13.10.35)",
-      tx_snp_view().opcode));
+      judged.opcode));
+  end
 
   assert property (p_rx_snp_do_not_go_to_sd_legal)
     chk_hit(VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E);
-  else
+  else begin : b_vip_chi_chk_snp_do_not_go_to_sd_legal_e_rx_4_miss
+    snp_flit_view_t judged;
+    judged = snp_view_of($sampled(vif.rxsnpflit));
     chk_miss(VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E, $sformatf(
       "received snoop opcode 0x%0h must carry DoNotGoToSD = 1 (IHI 0050 E 13.10.35)",
-      rx_snp_view().opcode));
+      judged.opcode));
+  end
 
 endmodule
 

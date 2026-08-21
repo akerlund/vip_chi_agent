@@ -2770,25 +2770,41 @@ module vip_chi_sva #(
                       (rsp_opcode_t'(vif.txrspflit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_READ_RECEIPT_C)));
   endproperty
 
+  // The action block runs in the REACTIVE region, where lasm_state has already
+  // taken the value the property was comparing against and the sideband may have
+  // moved again. Reading them live reports a step that did not happen: this rule
+  // printed "RUN -> RUN" -- a legal hold -- for an actual STOP -> RUN, and cost a
+  // full bisection to see past. $sampled() returns what the property judged.
+  //
+  // link_lasm() cannot be sampled as a whole because it reads the interface
+  // inside a function, so the state is rebuilt here from sampled signals. It is
+  // the same expression, term for term.
   assert property (p_lasm_legal_transition)
     chk_hit(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E);
-  else
+  else begin : b_lasm_legal_transition_miss
+    vip_chi_lasm_state_t judged_cur;
+    vip_chi_lasm_state_t judged_nxt;
+    judged_cur = $sampled(lasm_state);
+    judged_nxt = vip_chi_lasm(
+      ($sampled(vif.txlinkactivereq) || $sampled(vif.rxlinkactivereq)),
+      ($sampled(vif.txlinkactiveack) || $sampled(vif.rxlinkactiveack)));
     chk_miss(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E, $sformatf("link stepped %s -> %s; the LASM may only hold or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
-      lasm_state.name(), link_lasm().name()));
+      judged_cur.name(), judged_nxt.name()));
+  end
 
   assert property (p_lasm_activation_timeout)
     chk_hit(VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E);
   else
     chk_miss(VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E, $sformatf(
       "link stuck in ACTIVATE for %0d cycles (tx bring-up unacknowledged, limit %0d)",
-      lasm_dwell, link_activation_timeout_cycles));
+      $sampled(lasm_dwell), link_activation_timeout_cycles));
 
   assert property (p_lasm_deactivation_timeout)
     chk_hit(VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E);
   else
     chk_miss(VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E, $sformatf(
       "link stuck in DEACTIVATE for %0d cycles (tx tear-down unacknowledged, limit %0d)",
-      lasm_dwell, link_deactivation_timeout_cycles));
+      $sampled(lasm_dwell), link_deactivation_timeout_cycles));
 
   assert property (p_lcrd_quiescent_in_stop)
     chk_hit(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E);
@@ -2937,8 +2953,13 @@ module vip_chi_sva #(
 
   assert property (p_link_deactivate_when_idle)
     chk_hit(VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E);
-  else
-    chk_miss(VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E, $sformatf("txsactive was asserted with the link in %s; nothing can be outstanding once a tear-down has begun", link_lasm().name()));
+  else begin : b_link_deactivate_when_idle_miss
+    vip_chi_lasm_state_t judged;
+    judged = vip_chi_lasm(
+      ($sampled(vif.txlinkactivereq) || $sampled(vif.rxlinkactivereq)),
+      ($sampled(vif.txlinkactiveack) || $sampled(vif.rxlinkactiveack)));
+    chk_miss(VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E, $sformatf("txsactive was asserted with the link in %s; nothing can be outstanding once a tear-down has begun", judged.name()));
+  end
 
   assert property (p_txsactive_covers_outstanding)
     chk_hit(VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E);
@@ -3165,14 +3186,14 @@ module vip_chi_sva #(
     else
       chk_miss(VIP_CHI_CHK_REQ_TAGOP_LEGAL_E, $sformatf(
         "opcode 0x%0h was issued with TagOp 0x%0h, which Table 12-2 does not permit for it",
-        vif.txreqflit.opcode, vif.txreqflit.tagop));
+        $sampled(vif.txreqflit.opcode), $sampled(vif.txreqflit.tagop)));
 
     assert property (p_rx_req_tagop_legal)
       chk_hit(VIP_CHI_CHK_REQ_TAGOP_LEGAL_E);
     else
       chk_miss(VIP_CHI_CHK_REQ_TAGOP_LEGAL_E, $sformatf(
         "opcode 0x%0h was received with TagOp 0x%0h, which Table 12-2 does not permit for it",
-        vif.rxreqflit.opcode, vif.rxreqflit.tagop));
+        $sampled(vif.rxreqflit.opcode), $sampled(vif.rxreqflit.tagop)));
   end
 
 endmodule
