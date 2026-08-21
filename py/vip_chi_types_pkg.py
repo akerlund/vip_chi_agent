@@ -341,6 +341,11 @@ CHECK_IDS = (
   # both.
   "CHI_REQ_ALLOW_RETRY_PCRD_ZERO",
   "CHI_REQ_PCRD_RETURN_FIELDS_ZERO",
+  # Section 2.6.5 step 2: "The TxnID is set to the same value as the TxnID of
+  # the request." A RetryAck naming a TxnID no request is holding bounces
+  # nothing, and the requester has no transaction to re-issue against the credit
+  # that follows.
+  "CHI_RSP_RETRY_ACK_TXN_ID",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept

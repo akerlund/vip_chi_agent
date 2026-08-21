@@ -136,6 +136,8 @@ package chi_tb_pkg;
   localparam item_e_t::node_id_t E_RETRY_NEGCTL_SNF_NODE_ID_C = item_e_t::node_id_t'('h02e);
   localparam item_e_t::txn_id_t  E_RETRY_NEGCTL_TXN_ID_C      = item_e_t::txn_id_t'(8'h73);
   localparam logic [3 : 0]       E_RETRY_NEGCTL_PCRD_TYPE_C   = 4'h5;
+  // A TxnID no request in this test ever uses, for the stray RetryAck of phase C.
+  localparam item_e_t::txn_id_t  E_RETRY_NEGCTL_STRAY_TXN_ID_C = item_e_t::txn_id_t'(8'h74);
   // CHI-E WriteNoSnpZero readback address. Kept at PACKAGE scope (not a
   // class-scoped localparam) because a class-scoped `localparam item_e_t::addr_t`
   // hangs vcs1fe codegen at CHI-E flit width -- the same trap fixed earlier for

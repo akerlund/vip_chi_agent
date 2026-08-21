@@ -25,6 +25,11 @@
 #            carrying an address. return_unused_pcrds builds its flit from zero
 #            and fills in five fields, so the violation is a refactor away
 #            rather than present today -- which is what a guard is for.
+#   phase C  Section 2.6.5 step 2: "The TxnID is set to the same value as the
+#            TxnID of the request." One RetryAck naming a TxnID no request has
+#            used. The RN-I driver already fatals on this for its own
+#            bookkeeping, but only while waiting on a specific request and only
+#            at the requester -- nothing judges the SN-F end at all.
 #
 # Both phases inject rather than configure. A cfg knob would have to reach into
 # the driver's retry path to corrupt a field the driver computes correctly, and
@@ -42,7 +47,8 @@ from chi_e_base_test import chi_e_base_test
 from vip_chi_raw_seq import vip_chi_raw_seq
 from chi_tb_pkg import (E_RETRY_NEGCTL_ADDR_C, E_RETRY_NEGCTL_PCRD_TYPE_C,
                         E_RETRY_NEGCTL_RNI_NODE_ID_C,
-                        E_RETRY_NEGCTL_SNF_NODE_ID_C, E_RETRY_NEGCTL_TXN_ID_C)
+                        E_RETRY_NEGCTL_SNF_NODE_ID_C,
+                        E_RETRY_NEGCTL_STRAY_TXN_ID_C, E_RETRY_NEGCTL_TXN_ID_C)
 
 NON_SECURE_C = 1
 SETTLE_C = 40
@@ -54,6 +60,7 @@ SETTLE_C = 40
 TXSACTIVE_EXTEND_C = 32
 ALLOW_RETRY_C = "CHI_REQ_ALLOW_RETRY_PCRD_ZERO"
 PCRD_RETURN_C = "CHI_REQ_PCRD_RETURN_FIELDS_ZERO"
+RETRY_ACK_TXN_ID_C = "CHI_RSP_RETRY_ACK_TXN_ID"
 # One report per vantage, not "at least one". More would mean the rule is also
 # firing on the compliant traffic that brought the link up.
 EXPECTED_FAILS_C = 1
@@ -111,6 +118,21 @@ class tc_chi_e_retry_field_negctl(chi_e_base_test):
       "srcid": E_RETRY_NEGCTL_SNF_NODE_ID_C,
       "tgtid": E_RETRY_NEGCTL_RNI_NODE_ID_C,
       "qos": 0x7,
+    }
+
+  # Phase C's flit: a RetryAck for a transaction that does not exist. Well
+  # formed in every other respect -- Table A-4 gives RetryAck RespErr and Resp
+  # both "0", and DBID is not valid on it -- so the only thing wrong with the
+  # flit is the one thing under test.
+  def _stray_retry_ack(self) -> dict:
+    return {
+      "opcode": int(RspOpcode.RETRY_ACK),
+      "srcid": E_RETRY_NEGCTL_SNF_NODE_ID_C,
+      "tgtid": E_RETRY_NEGCTL_RNI_NODE_ID_C,
+      "pcrdtype": E_RETRY_NEGCTL_PCRD_TYPE_C,
+      "qos": 0x7,
+      # The violation: no request on this link has carried this TxnID.
+      "txnid": E_RETRY_NEGCTL_STRAY_TXN_ID_C,
     }
 
   # Phase B's flit: a PCrdReturn carrying an address. AllowRetry stays zero and
@@ -183,6 +205,12 @@ class tc_chi_e_retry_field_negctl(chi_e_base_test):
     seq.add_raw_rsp(self._comp_dbid_resp())
     await seq.start(self.tb_env.snf_agent.sequencer)
 
+  async def _inject_rsp(self, flit: dict) -> None:
+    seq = vip_chi_raw_seq("snf_raw_seq", cfg=self.chi_cfg)
+    seq.reset()
+    seq.add_raw_rsp(flit)
+    await seq.start(self.tb_env.snf_agent.sequencer)
+
   async def run_phase(self):
     self.raise_objection()
 
@@ -205,6 +233,7 @@ class tc_chi_e_retry_field_negctl(chi_e_base_test):
 
     self._require_silent(ALLOW_RETRY_C)
     self._require_silent(PCRD_RETURN_C)
+    self._require_silent(RETRY_ACK_TXN_ID_C)
 
     allow_retry_pass_before = rni_sva.pass_count.get(ALLOW_RETRY_C, 0)
     pcrd_return_pass_before = rni_sva.pass_count.get(PCRD_RETURN_C, 0)
@@ -246,11 +275,25 @@ class tc_chi_e_retry_field_negctl(chi_e_base_test):
     assert rni_sva.pass_count.get(PCRD_RETURN_C, 0) >= pcrd_return_pass_before, (
       f"{PCRD_RETURN_C} pass count went backwards")
 
-    self._require_nothing_else_fired(ALLOW_RETRY_C, PCRD_RETURN_C)
+    # -- Phase C: a RetryAck for a transaction nobody opened. -----------------
+    rni_sva.off_check(RETRY_ACK_TXN_ID_C)
+    snf_sva.off_check(RETRY_ACK_TXN_ID_C)
+
+    await self._inject_rsp(self._stray_retry_ack())
+    await self.wait_clocks(SETTLE_C)
+
+    self._require_provoked(RETRY_ACK_TXN_ID_C)
+    # The earlier two must still stand at one each: a RetryAck is an RSP and
+    # neither REQ rule has anything to say about it.
+    self._require_provoked(ALLOW_RETRY_C)
+    self._require_provoked(PCRD_RETURN_C)
+
+    self._require_nothing_else_fired(ALLOW_RETRY_C, PCRD_RETURN_C,
+                                     RETRY_ACK_TXN_ID_C)
 
     self.logger.info(
-      f"Test (tc_chi_e_retry_field_negctl) PASS: {ALLOW_RETRY_C} and "
-      f"{PCRD_RETURN_C} each provoked once at both vantages, and nothing else "
-      f"in the registry fired")
+      f"Test (tc_chi_e_retry_field_negctl) PASS: {ALLOW_RETRY_C}, "
+      f"{PCRD_RETURN_C} and {RETRY_ACK_TXN_ID_C} each provoked once at both "
+      f"vantages, and nothing else in the registry fired")
 
     self.drop_objection()

@@ -769,6 +769,23 @@ module vip_chi_sva #(
   node_id_t req_src_by_txn[TXN_ID_COUNT_C];
   bit       req_src_valid_by_txn[TXN_ID_COUNT_C];
 
+  // Which TxnIDs a request has actually put on the wire, tracked SEPARATELY from
+  // req_inflight_by_txn and deliberately so.
+  //
+  // req_inflight_by_txn is set only for req_has_modeled_completion's opcodes,
+  // because what it exists for is pairing a request with the completion that
+  // retires it. RETRY_ACK_TXN_ID asks a different question -- did any request
+  // carry this TxnID -- and gating it on that whitelist would make a RetryAck for
+  // a coherent read unjudgeable rather than judged, which is the shape of failure
+  // the total-classifier rule exists to prevent.
+  //
+  // Cleared on the RetryAck that consumes it and nowhere else. That leaves the
+  // rule blind to a stray RetryAck naming a TxnID whose transaction completed
+  // normally, and blind is the right direction: the alternative is a clear in
+  // every completion arm, and a slot cleared one cycle early would false-fail
+  // the legitimate RetryAck that a permissive rule simply misses.
+  bit       req_txn_id_seen_by_txn[TXN_ID_COUNT_C];
+
   // Running population count of req_inflight_by_txn. Maintained alongside the
   // array rather than reduced from it: the TxnID space is 1024 entries on CHI-D
   // and 4096 on CHI-E, and p_txsactive_covers_outstanding needs the answer on
@@ -859,6 +876,7 @@ module vip_chi_sva #(
         req_inflight_by_txn[txn_i] <= 1'b0;
         req_src_valid_by_txn[txn_i] <= 1'b0;
         req_src_by_txn[txn_i]       <= '0;
+        req_txn_id_seen_by_txn[txn_i] <= 1'b0;
         dat_completion_req_valid_by_txn[txn_i] <= 1'b0;
         dat_completion_req_txn_by_txn[txn_i] <= '0;
       end
@@ -890,6 +908,15 @@ module vip_chi_sva #(
 
           req_opcode = req_opcode_t'(vif.txreqflit.opcode);
           txn_idx = txn_id_to_index(txn_id_t'(vif.txreqflit.txnid));
+          // Not gated on req_has_modeled_completion: see the declaration.
+          // ReqLCrdReturn and PCrdReturn are excluded because both are required
+          // to drive TxnID zero, so marking slot 0 for them would leave the one
+          // slot a real request can also use permanently unjudgeable.
+          if ((req_opcode != req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C)) &&
+              (req_opcode != req_opcode_t'(VIP_CHI_REQ_LCRD_RETURN_C))) begin
+            req_txn_id_seen_by_txn[txn_idx] <= 1'b1;
+          end
+
           if (req_has_modeled_completion(req_opcode)) begin
             // Same SrcID reusing a live slot is the violation. A DIFFERENT SrcID
             // landing on the same slot is a pass, not a decline: section 2.5's
@@ -1218,6 +1245,20 @@ module vip_chi_sva #(
                 req_outstanding_delta--;
               end
               req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
+
+              // Section 2.6.5 requires this flit to carry the bounced request's
+              // TxnID, so a RetryAck landing on a slot no request has used
+              // bounced nothing -- and the credit that follows it would have no
+              // transaction to re-issue.
+              if (req_txn_id_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
+                chk_hit(VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E);
+              end
+              else begin
+                chk_miss(VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E, $sformatf(
+                  "RetryAck arrived with TxnID 0x%0h, which no request on this link has used; section 2.6.5 requires the bounced request's TxnID",
+                  txn_id_t'(vif.rxrspflit.txnid)));
+              end
+              req_txn_id_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
             end
 
             default: begin
@@ -1537,6 +1578,15 @@ module vip_chi_sva #(
             chk_hit(VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E);
           end
 
+          // Not gated on req_has_modeled_completion: see the declaration.
+          // ReqLCrdReturn and PCrdReturn are excluded because both are required
+          // to drive TxnID zero, so marking slot 0 for them would leave the one
+          // slot a real request can also use permanently unjudgeable.
+          if ((req_opcode != req_opcode_t'(VIP_CHI_REQ_PCRD_RETURN_C)) &&
+              (req_opcode != req_opcode_t'(VIP_CHI_REQ_LCRD_RETURN_C))) begin
+            req_txn_id_seen_by_txn[txn_idx] <= 1'b1;
+          end
+
           if (req_has_modeled_completion(req_opcode)) begin
             // Same SrcID reusing a live slot is the violation. A DIFFERENT SrcID
             // landing on the same slot is a pass, not a decline: section 2.5's
@@ -1594,6 +1644,19 @@ module vip_chi_sva #(
                 req_outstanding_delta--;
               end
               req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
+
+              // Section 2.6.5 read at the sending vantage: a completer must
+              // bounce a request it received, and the TxnID is the only thing
+              // naming which one.
+              if (req_txn_id_seen_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))]) begin
+                chk_hit(VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E);
+              end
+              else begin
+                chk_miss(VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E, $sformatf(
+                  "RetryAck was sent with TxnID 0x%0h, which no request received on this link has used; section 2.6.5 requires the bounced request's TxnID",
+                  txn_id_t'(vif.txrspflit.txnid)));
+              end
+              req_txn_id_seen_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
             end
             default: begin
             end

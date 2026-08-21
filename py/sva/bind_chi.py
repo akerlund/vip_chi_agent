@@ -786,6 +786,21 @@ class bind_chi:
     # space and clears them on reset; a dict with a zero default is the same
     # thing without allocating the whole space up front.
     self._req_inflight = {}
+    # Which TxnIDs a request has actually put on the wire, tracked SEPARATELY
+    # from _req_inflight and deliberately so.
+    #
+    # _req_inflight is set only for _req_has_modeled_completion's opcodes,
+    # because what it exists for is pairing a request with the completion that
+    # retires it. CHI_RSP_RETRY_ACK_TXN_ID asks a different question -- did any
+    # request carry this TxnID -- and gating it on that whitelist would make a
+    # RetryAck for a coherent read unjudgeable rather than judged.
+    #
+    # Cleared on the RetryAck that consumes it and nowhere else. That leaves the
+    # rule blind to a stray RetryAck naming a TxnID whose transaction completed
+    # normally, and blind is the right direction: the alternative is a clear in
+    # every completion path, and a slot cleared one step early would false-fail
+    # the legitimate RetryAck that a permissive rule simply misses.
+    self._req_txn_id_seen = {}
     # Which SrcID owns the TxnID currently occupying each slot.
     #
     # IHI 0050 E section 2.5 scopes the uniqueness rule to a source and says so
@@ -1480,6 +1495,13 @@ class bind_chi:
     opcode = f["opcode"]
     txn = f["txnid"]
 
+    # Not gated on _req_has_modeled_completion: see the shadow's comment.
+    # ReqLCrdReturn and PCrdReturn are excluded because both are required to
+    # drive TxnID zero, so marking slot 0 for them would leave the one slot a
+    # real request can also use permanently unjudgeable.
+    if opcode not in (int(ReqOpcode.PCRD_RETURN), int(ReqOpcode.LCRD_RETURN)):
+      self._post(self._req_txn_id_seen, txn, True)
+
     if _req_has_modeled_completion(opcode):
       # A TxnID identifies an outstanding transaction. Reusing one before its
       # first use retires makes the two indistinguishable to every downstream
@@ -1782,6 +1804,17 @@ class bind_chi:
       # matching PCrdGrant. Clearing the marker keeps that legitimate re-issue
       # from reading as a TxnID reuse.
       self._post(self._req_inflight, txn, False)
+      # And section 2.6.5 requires the flit to carry the bounced request's
+      # TxnID, so a RetryAck landing on a slot no request has used bounced
+      # nothing -- and the credit that follows it would have no transaction to
+      # re-issue.
+      self._chk("CHI_RSP_RETRY_ACK_TXN_ID",
+                self._req_txn_id_seen.get(txn, False),
+                f"RetryAck arrived with TxnID 0x{int(txn):x}, which no request "
+                f"on this link has used; section 2.6.5 requires the bounced "
+                f"request's TxnID",
+                "section 2.6.5")
+      self._post(self._req_txn_id_seen, txn, False)
 
   # ---------------------------------------------------------------------------
   # Responses driven by a completer: the grants it issues, outbound.
@@ -1801,6 +1834,15 @@ class bind_chi:
       # Mirror of the requester side: a RetryAck this node drove retires the
       # bounced request's TxnID.
       self._post(self._req_inflight, f["txnid"], False)
+      # Section 2.6.5 read at the sending vantage: a completer must bounce a
+      # request it received, and the TxnID is the only thing naming which one.
+      self._chk("CHI_RSP_RETRY_ACK_TXN_ID",
+                self._req_txn_id_seen.get(f["txnid"], False),
+                f"RetryAck was sent with TxnID 0x{int(f['txnid']):x}, which no "
+                f"request received on this link has used; section 2.6.5 "
+                f"requires the bounced request's TxnID",
+                "section 2.6.5")
+      self._post(self._req_txn_id_seen, f["txnid"], False)
 
   def _record_write_grant(self, f: dict, mark_grant_seen: bool) -> None:
     """Carry a request's expected write size across to its granted DBID.

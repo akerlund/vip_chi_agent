@@ -20,6 +20,13 @@
 //            guards against is a refactor away rather than present today --
 //            which is exactly what a guard is for.
 //            CHI_REQ_PCRD_RETURN_FIELDS_ZERO is asked for the same.
+//   phase C  Section 2.6.5 step 2: "The TxnID is set to the same value as the
+//            TxnID of the request." One RetryAck naming a TxnID no request has
+//            used. The RN-I driver already fatals on this for its own
+//            bookkeeping, but only while it is waiting on a specific request,
+//            and only at the requester -- nothing judges the SN-F end at all.
+//            CHI_RSP_RETRY_ACK_TXN_ID is asked for the same one report per
+//            vantage.
 //
 // Both phases inject rather than configure. A cfg knob would have to reach into
 // the driver's retry path to corrupt a field the driver computes correctly, and
@@ -157,6 +164,29 @@ class tc_chi_e_retry_field_negctl extends chi_e_base_test;
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Phase C's flit: a RetryAck for a transaction that does not exist.
+  //
+  // Well formed in every other respect -- Table A-4 gives RetryAck RespErr and
+  // Resp both "0", and DBID is not valid on it -- so the only thing wrong with
+  // the flit is the one thing under test.
+  // ---------------------------------------------------------------------------
+  protected function item_t::raw_rsp_t stray_retry_ack();
+
+    item_t::raw_rsp_t raw_rsp;
+
+    raw_rsp          = '0;
+    raw_rsp.opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C);
+    raw_rsp.srcid    = E_RETRY_NEGCTL_SNF_NODE_ID_C;
+    raw_rsp.tgtid    = E_RETRY_NEGCTL_RNI_NODE_ID_C;
+    raw_rsp.pcrdtype = E_RETRY_NEGCTL_PCRD_TYPE_C;
+    raw_rsp.qos      = 4'h7;
+    // The violation: no request on this link has carried this TxnID.
+    raw_rsp.txnid    = E_RETRY_NEGCTL_STRAY_TXN_ID_C;
+
+    return raw_rsp;
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Phase B's flit: a PCrdReturn carrying an address.
   //
   // AllowRetry stays zero and PCrdType stays set, so this flit does NOT also
@@ -240,14 +270,13 @@ class tc_chi_e_retry_field_negctl extends chi_e_base_test;
   // several ways at once.
   // ---------------------------------------------------------------------------
   protected function void require_nothing_else_fired(
-    input vip_chi_check_id_t allowed_a,
-    input vip_chi_check_id_t allowed_b
+    input vip_chi_check_id_t allowed[$]
   );
 
     for (int unsigned i = 0; i < VIP_CHI_CHK_NUM_E; i++) begin
       vip_chi_check_id_t id;
       id = vip_chi_check_id_t'(i);
-      if ((id == allowed_a) || (id == allowed_b)) begin
+      if (id inside {allowed}) begin
         continue;
       end
       if ((super.tb_env.rni_agent.vif.check_fail_count[id] != 0) ||
@@ -287,6 +316,7 @@ class tc_chi_e_retry_field_negctl extends chi_e_base_test;
 
     this.require_silent(VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E);
     this.require_silent(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E);
+    this.require_silent(VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E);
 
     allow_retry_pass_before =
       super.tb_env.rni_agent.vif.check_pass_count[VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E];
@@ -345,14 +375,31 @@ class tc_chi_e_retry_field_negctl extends chi_e_base_test;
         vip_chi_check_name(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E)))
     end
 
-    this.require_nothing_else_fired(VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E,
-                                   VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E);
+    // -- Phase C: a RetryAck for a transaction nobody opened. ----------------
+    this.waive(VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E);
+
+    this.snf_raw_seq.reset();
+    this.snf_raw_seq.add_raw_rsp(this.stray_retry_ack());
+    this.snf_raw_seq.start(super.tb_env.snf_agent.sequencer);
+
+    super.wait_clocks(SETTLE_C);
+
+    this.require_provoked(VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E);
+    // The earlier two must still stand at one each: a RetryAck is an RSP and
+    // neither REQ rule has anything to say about it.
+    this.require_provoked(VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E);
+    this.require_provoked(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E);
+
+    this.require_nothing_else_fired('{VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E,
+                                     VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E,
+                                     VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E});
 
     `uvm_info(get_name(), $sformatf(
-      "INFO [%s] %s and %s each provoked once at both vantages, and nothing else in the registry fired",
+      "INFO [%s] %s, %s and %s each provoked once at both vantages, and nothing else in the registry fired",
       super.tc_name,
       vip_chi_check_name(VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E),
-      vip_chi_check_name(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E)), UVM_LOW)
+      vip_chi_check_name(VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E),
+      vip_chi_check_name(VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E)), UVM_LOW)
 
     phase.drop_objection(this);
   endtask

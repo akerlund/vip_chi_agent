@@ -535,6 +535,11 @@ package vip_chi_types_pkg;
     // obligation -- this transaction addresses nothing and carries no attributes
     // -- and a user standing it down wants the whole row quiet.
     VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E,
+    // Section 2.6.5 step 2: "The TxnID is set to the same value as the TxnID of
+    // the request." A RetryAck naming a TxnID no request is holding bounces
+    // nothing, and the requester has no transaction to re-issue against the
+    // credit that follows -- the flit is a response to nothing.
+    VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
