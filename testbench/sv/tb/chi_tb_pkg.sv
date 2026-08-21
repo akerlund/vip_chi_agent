@@ -71,6 +71,10 @@ package chi_tb_pkg;
   localparam item_t::addr_t DERR_ADDR_C       = item_t::addr_t'(44'h3000_B000);
   localparam item_t::addr_t READ_ADDR_C       = item_t::addr_t'(44'h2000_4000);
   localparam item_t::addr_t AUTO_READ_ADDR_C  = item_t::addr_t'(44'h1000_2000);
+  // tc_chi_reset_idle_scope: one write before each reset pulse, so
+  // link_ever_active latches and the reset-idle rules are armed when the pulse
+  // arrives. An unarmed rule reports nothing and reads as a pass.
+  localparam item_t::addr_t RESET_IDLE_ADDR_C  = item_t::addr_t'(44'h3000_C000);
 
   localparam item_t::txn_id_t  AUTO_READ_TXN_ID_C = item_t::txn_id_t'(8'h44);
   localparam item_t::node_id_t RNI_NODE_ID_C      = item_t::node_id_t'(11'h012);

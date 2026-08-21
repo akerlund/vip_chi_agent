@@ -1072,18 +1072,48 @@ class bind_chi:
   # Reset: sideband and every channel must be idle while rst_n is low.
   # ---------------------------------------------------------------------------
   def _check_reset_idle(self, s: dict) -> None:
+    """The reset-idle set is CLOSED, and this is the list.
+
+    E section 14.1.3 / D section 13.1.3, word for word in both issues:
+
+      "During reset the following interface signals must be deasserted by the
+       component:  TX***LCRDV.  TX***FLITV.  TXLINKACTIVEREQ and
+       RXLINKACTIVEACK. [...] All other signals can be any value."
+
+    Four items and then a sentence that closes the set, so FLITPEND and
+    TXSACTIVE are not merely unmentioned -- they are excluded, and requiring
+    them low rejects two behaviors the specification permits outright:
+
+      FLITPEND -- E section 14.4 / D section 13.4: "A transmitter is permitted
+      to keep the signal permanently asserted."
+
+      TXSACTIVE -- E section 14.7 / D section 13.7 gives it no reset
+      requirement, section 14.7.4 calls SACTIVE signaling "orthogonal to the
+      LINKACTIVE states", and section 14.7.2 permits an interconnect interface
+      to "use the RXSACTIVE input signal to directly generate the TXSACTIVE
+      output signal" -- and RXSACTIVE, being an input, may be any value during
+      reset.
+
+    The two LINKACTIVE terms below ARE the spec's two, despite reading as one.
+    This VIP names signals by direction (`tx*` is what this component drives);
+    the specification names them by channel group. So the component's two
+    driven LINKACTIVE outputs -- spec TXLINKACTIVEREQ and spec RXLINKACTIVEACK
+    -- are this interface's `txlinkactivereq` and `txlinkactiveack`. The
+    signals named `rxlinkactive*` here are the peer's outputs, which this bind
+    cannot hold low and must not judge.
+    """
     self._chk(
       "CHI_LINK_SIDEBAND_IDLE_IN_RESET",
-      not (s["txlinkactivereq"] or s["txlinkactiveack"] or s["txsactive"]),
+      not (s["txlinkactivereq"] or s["txlinkactiveack"]),
       "link sideband was not held idle during reset",
-      "section 13.4",
+      "E section 14.1.3 / D section 13.1.3",
     )
     for ch in _CHANNELS_C:
       self._chk(
         f"CHI_{ch.upper()}_IDLE_IN_RESET",
-        not (s[f"tx{ch}flitv"] or s[f"tx{ch}flitpend"] or s[f"tx{ch}lcrdv"]),
+        not (s[f"tx{ch}flitv"] or s[f"tx{ch}lcrdv"]),
         f"{ch.upper()} channel was not held idle during reset",
-        "section 13.4",
+        "E section 14.1.3 / D section 13.1.3",
       )
 
   # ---------------------------------------------------------------------------

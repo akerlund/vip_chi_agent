@@ -250,6 +250,15 @@ class vip_chi_driver_snf(uvm_driver):
     bus.drive_flit("rsp", {})
     bus.drive(txdatflitpend=0, txdatflitv=0, txdatlcrdv=0)
     bus.drive_flit("dat", {})
+    # Reset-idle controls, applied last so they overwrite the parked values. The
+    # completer half of the same pair -- the rules are per bind, so a control
+    # armed at one end proves nothing about the other. See the RN-I twin and
+    # E section 14.1.3 / D section 13.1.3.
+    if self.cfg is not None:
+      if self.cfg.reset_permitted_high:
+        bus.drive(txsactive=1, txrspflitpend=1, txdatflitpend=1)
+      if self.cfg.reset_idle_violation:
+        bus.drive(txrsplcrdv=1)
     if self.mem is not None:
       self.mem.reset()
     self.mem_rows_written = set()
@@ -389,6 +398,12 @@ class vip_chi_driver_snf(uvm_driver):
 
   # ==========================================================================
   async def driver_start(self):
+    # See the RN-I twin: the reset-window txsactive is permitted during reset and
+    # must not survive the release, because the LASM sits in STOP until the
+    # activation handshake completes.
+    if self.cfg is not None:
+      if self.cfg.reset_permitted_high:
+        self.bus.drive(txsactive=0)
     self._spawn(self.credit_loop())
     self._spawn(self.deactivate_drain())
     await self.activate_link()

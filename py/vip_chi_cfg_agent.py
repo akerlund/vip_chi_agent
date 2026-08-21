@@ -228,6 +228,35 @@ class VipChiCfgAgent:
     # to prove the rule fires, and every later flit should still be legal.
     self.flit_without_flitpend = False
 
+    # -- Reset-idle controls ---------------------------------------------------
+    # E section 14.1.3 / D section 13.1.3 names four signals that must be
+    # deasserted during reset -- TX***LCRDV, TX***FLITV, TXLINKACTIVEREQ and
+    # RXLINKACTIVEACK -- and then closes the set: "All other signals can be any
+    # value." These two knobs sit on either side of that sentence, which is the
+    # only way a closed list can be verified: one drives what the sentence
+    # permits and must be reported nowhere, the other drives what the list names
+    # and must be reported exactly.
+
+    # POSITIVE control: hold every FLITPEND this role transmits, and TXSACTIVE,
+    # high for the whole reset window. Both are outside the list and both are
+    # permitted high by name elsewhere -- section 14.4 / D 13.4, "a transmitter
+    # is permitted to keep the signal permanently asserted", and section 14.7.2 /
+    # D 13.7.2, which permits an interconnect interface to "use the RXSACTIVE
+    # input signal to directly generate the TXSACTIVE output signal", RXSACTIVE
+    # being an input that the closing sentence leaves free during reset.
+    # Nothing may be reported while this is set; before the reset-idle rules
+    # were narrowed to the list, it made all five of them fail.
+    self.reset_permitted_high = False
+
+    # NEGATIVE control: hold txrsplcrdv high for the whole reset window.
+    # TX***LCRDV is the first item on the list, and the RSP credit is the one
+    # every role here drives, so one knob arms both vantages. A credit rather
+    # than a FLITV because the other rules that would judge it are all gated on
+    # rst_n -- a control that trips three rules cannot say which one it proved.
+    # The report count equals the reset window minus one: the check needs rst_n
+    # low in this cycle and the previous one, so it cannot evaluate on the first.
+    self.reset_idle_violation = False
+
     # -- Graceful link deactivation -------------------------------------------
     # Raised by a test, not by the driver: there is no such thing as an idle
     # moment a driver can detect for itself. Its sequence loop blocks on the
@@ -564,6 +593,14 @@ class VipChiCfgAgent:
           "the pulse: the requester emits it on REQ/RSP and the home on SNP, so "
           "on any other role it would set a flag nothing reads")
 
+    # Both reset-idle knobs are honored in the RN-I and SN-F reset_outputs, the
+    # two roles the reset-idle control drives. On any other role they would park
+    # the outputs normally and the test would assert on a window nothing drove.
+    for knob in ("reset_permitted_high", "reset_idle_violation"):
+      if getattr(self, knob) and self.role not in (Role.RNI, Role.SNF):
+        err(f"{knob} is set on a role whose reset_outputs does not honor it: "
+            f"only the RN-I and SN-F drive the reset window this control needs")
+
     # Same reasoning as the abort above, and the same failure if it is ignored:
     # deactivation is driven by whoever raised the request in the first place.
     if (self.lasm_reactivate_during_deactivate
@@ -658,6 +695,7 @@ class VipChiCfgAgent:
       "lasm_abort_activation": self.lasm_abort_activation,
       "lasm_reactivate_during_deactivate": self.lasm_reactivate_during_deactivate,
       "flit_without_flitpend": self.flit_without_flitpend,
+      "reset_idle_violation": self.reset_idle_violation,
     }
     on = [k for k, v in negctl.items() if v]
     if on:

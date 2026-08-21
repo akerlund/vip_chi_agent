@@ -283,6 +283,18 @@ class vip_chi_driver_rni(uvm_driver):
     bus.drive_flit("rsp", {})
     bus.drive(txdatflitpend=0, txdatflitv=0, txdatlcrdv=0)
     bus.drive_flit("dat", {})
+    # Reset-idle controls, applied last so they overwrite the parked values
+    # rather than racing them. E section 14.1.3 / D section 13.1.3 requires
+    # exactly TX***LCRDV, TX***FLITV, TXLINKACTIVEREQ and RXLINKACTIVEACK
+    # deasserted during reset and then says "All other signals can be any
+    # value", so the first knob drives what that sentence permits and the second
+    # drives what the list names.
+    if self.cfg is not None:
+      if self.cfg.reset_permitted_high:
+        bus.drive(txsactive=1, txreqflitpend=1, txrspflitpend=1,
+                  txdatflitpend=1)
+      if self.cfg.reset_idle_violation:
+        bus.drive(txrsplcrdv=1)
 
   def reset_vif(self):
     self.reset_outputs()
@@ -481,6 +493,15 @@ class vip_chi_driver_rni(uvm_driver):
 
   # ==========================================================================
   async def driver_start(self):
+    # cfg.reset_permitted_high parks txsactive high for the reset window, which
+    # E section 14.1.3 / D section 13.1.3 permits. It must not survive the
+    # release: the deactivate-when-idle rule requires the sideband low while the
+    # LASM sits in STOP, and the link sits in STOP from reset release until the
+    # activation handshake completes. FLITPEND is left alone -- section 14.4 /
+    # D 13.4 permits holding it permanently asserted.
+    if self.cfg is not None:
+      if self.cfg.reset_permitted_high:
+        self.bus.drive(txsactive=0)
     self._spawn(self.credit_loop())
     # Watches cfg.link_deactivate_request. A separate task rather than a step in
     # the sequence loop, because the loop blocks on the sequencer: a test that

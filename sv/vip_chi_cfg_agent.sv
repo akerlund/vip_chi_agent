@@ -283,6 +283,53 @@ class vip_chi_cfg_agent extends uvm_object;
   bit flit_without_flitpend = 1'b0;
 
   // ---------------------------------------------------------------------------
+  // Reset-idle controls. IHI 0050 E §14.1.3 / D §13.1.3 names four signals that
+  // must be deasserted during reset -- TX***LCRDV, TX***FLITV, TXLINKACTIVEREQ
+  // and RXLINKACTIVEACK -- and then closes the set: "All other signals can be
+  // any value." These two knobs sit on either side of that sentence, which is
+  // the only way a closed list can be verified: one drives what the sentence
+  // permits and must be reported nowhere, the other drives what the list names
+  // and must be reported exactly.
+  // ---------------------------------------------------------------------------
+
+  // POSITIVE control: hold every FLITPEND this role transmits, and TXSACTIVE,
+  // HIGH for the whole reset window.
+  //
+  // Both are outside §14.1.3's list, and both are permitted high by name
+  // elsewhere: §14.4 / D §13.4 -- "a transmitter is permitted to keep the signal
+  // permanently asserted"; §14.7.2 / D §13.7.2 permits an interconnect
+  // interface to "use the RXSACTIVE input signal to directly generate the
+  // TXSACTIVE output signal", and RXSACTIVE is an input, so §14.1.3's closing
+  // sentence lets it be anything during reset. A component built that way drives
+  // TXSACTIVE high in reset as a direct consequence of a permitted choice.
+  //
+  // Nothing may be reported while this is set. Before the reset-idle rules were
+  // narrowed to the list, this knob made all five of them fail.
+  //
+  // Default 0 parks the outputs low, which is also conformant -- the list is a
+  // floor on what must be low, not a ceiling.
+  bit reset_permitted_high = 1'b0;
+
+  // NEGATIVE control: hold txrsplcrdv HIGH for the whole reset window.
+  //
+  // TX***LCRDV is the first item on §14.1.3's list, and the RSP credit is the
+  // one every role in this VIP drives -- a requester credits the responses it
+  // receives and a completer credits the ones it receives -- so the same knob
+  // arms the control at both vantages instead of only one.
+  //
+  // A credit is chosen over a FLITV because the rules that would otherwise also
+  // judge it -- CHI_RSP_LCRDV_REQUIRES_LINK, CHI_LCRD_* -- are all gated on
+  // rst_n, so nothing but the reset-idle rule can see this. A control that trips
+  // three rules cannot say which one it proved.
+  //
+  // Report count is deterministic and equals the reset window minus one: the
+  // property's antecedent is `!rst_n && $past(!rst_n)`, so it cannot evaluate on
+  // the first low cycle.
+  //
+  // Default 0 grants no credit during reset.
+  bit reset_idle_violation = 1'b0;
+
+  // ---------------------------------------------------------------------------
   // Graceful link deactivation.
   //
   // Raised by a test, not by the driver: there is no such thing as an idle
@@ -1043,6 +1090,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
         this.snf_corrupt_tag ||
         this.lasm_abort_activation || this.flit_without_flitpend ||
+        this.reset_idle_violation ||
         this.lasm_reactivate_during_deactivate) begin
       if (!silent) begin
         `uvm_warning("VIP_CHI_CFG", $sformatf(
@@ -1089,6 +1137,28 @@ class vip_chi_cfg_agent extends uvm_object;
       if (!silent) begin
         `uvm_error("VIP_CHI_CFG",
           "flitpend_without_valid is set on a role whose driver does not run the pulse: the requester emits it on REQ/RSP and the home on SNP, so on any other role it would set a flag nothing reads")
+      end
+      is_valid = 1'b0;
+    end
+
+    // Both reset-idle knobs are honored in the RN-I and SN-F reset_outputs, the
+    // two roles the reset-idle control drives. On any other role the outputs
+    // would be parked normally and the test would assert on a reset window
+    // nothing drove -- which is the failure mode that reads as a pass.
+    if (this.reset_permitted_high &&
+        (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_SNF_E)) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG",
+          "reset_permitted_high is set on a role whose reset_outputs does not honor it: only the RN-I and SN-F drive the reset window this control needs")
+      end
+      is_valid = 1'b0;
+    end
+
+    if (this.reset_idle_violation &&
+        (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_SNF_E)) begin
+      if (!silent) begin
+        `uvm_error("VIP_CHI_CFG",
+          "reset_idle_violation is set on a role whose reset_outputs does not honor it: only the RN-I and SN-F drive the reset window this control needs")
       end
       is_valid = 1'b0;
     end

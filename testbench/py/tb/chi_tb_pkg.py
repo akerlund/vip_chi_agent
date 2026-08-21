@@ -31,6 +31,10 @@ DECERR_ADDR_C = 0x3000_A000
 DERR_ADDR_C = 0x3000_B000
 READ_ADDR_C = 0x2000_4000
 AUTO_READ_ADDR_C = 0x1000_2000
+# tc_chi_reset_idle_scope: one write before each reset pulse, so
+# link_ever_active latches and the reset-idle rules are armed when the pulse
+# arrives. An unarmed rule reports nothing and reads as a pass.
+RESET_IDLE_ADDR_C = 0x3000_C000
 
 AUTO_READ_TXN_ID_C = 0x44
 RNI_NODE_ID_C = 0x012

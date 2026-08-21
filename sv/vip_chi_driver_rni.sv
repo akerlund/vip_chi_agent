@@ -364,6 +364,24 @@ class vip_chi_driver_rni #(
     this.vif_rni.g_drv.rni_cb.txdatflitv      <= 1'b0;
     this.vif_rni.g_drv.rni_cb.txdatflit       <= '0;
     this.vif_rni.g_drv.rni_cb.txdatlcrdv      <= 1'b0;
+
+    // Reset-idle controls, applied last so they overwrite the parked values
+    // rather than racing them. IHI 0050 E §14.1.3 / D §13.1.3 requires exactly
+    // TX***LCRDV, TX***FLITV, TXLINKACTIVEREQ and RXLINKACTIVEACK deasserted
+    // during reset and then says "All other signals can be any value", so the
+    // first knob drives what that sentence permits and the second drives what
+    // the list names.
+    if (this.cfg != null) begin
+      if (this.cfg.reset_permitted_high) begin
+        this.vif_rni.g_drv.rni_cb.txsactive     <= 1'b1;
+        this.vif_rni.g_drv.rni_cb.txreqflitpend <= 1'b1;
+        this.vif_rni.g_drv.rni_cb.txrspflitpend <= 1'b1;
+        this.vif_rni.g_drv.rni_cb.txdatflitpend <= 1'b1;
+      end
+      if (this.cfg.reset_idle_violation) begin
+        this.vif_rni.g_drv.rni_cb.txrsplcrdv    <= 1'b1;
+      end
+    end
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -563,6 +581,18 @@ class vip_chi_driver_rni #(
   // Main RN-I request-driving loop after the parent agent releases reset.
   // ---------------------------------------------------------------------------
   task driver_start();
+
+    // cfg.reset_permitted_high parks TXSACTIVE high for the reset window, which
+    // IHI 0050 E §14.1.3 / D §13.1.3 permits. It must not survive the release:
+    // p_link_deactivate_when_idle requires the sideband low while the LASM sits
+    // in STOP, and the link sits in STOP from reset release until the activation
+    // handshake completes. FLITPEND is left as it is -- §14.4 / D §13.4 permits
+    // a transmitter to hold it permanently asserted, so nothing objects.
+    if (this.cfg != null) begin
+      if (this.cfg.reset_permitted_high) begin
+        this.vif_rni.g_drv.rni_cb.txsactive <= 1'b0;
+      end
+    end
 
     fork
 

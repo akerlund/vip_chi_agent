@@ -460,6 +460,21 @@ class vip_chi_driver_snf #(
     this.vif_snf.g_drv.snf_cb.txdatflit       <= '0;
     this.vif_snf.g_drv.snf_cb.txdatlcrdv      <= 1'b0;
 
+    // Reset-idle controls, applied last so they overwrite the parked values.
+    // The completer half of the same pair -- the rules are per bind, so a
+    // control armed at one end proves nothing about the other. See the RN-I
+    // twin and IHI 0050 E §14.1.3 / D §13.1.3.
+    if (this.cfg != null) begin
+      if (this.cfg.reset_permitted_high) begin
+        this.vif_snf.g_drv.snf_cb.txsactive     <= 1'b1;
+        this.vif_snf.g_drv.snf_cb.txrspflitpend <= 1'b1;
+        this.vif_snf.g_drv.snf_cb.txdatflitpend <= 1'b1;
+      end
+      if (this.cfg.reset_idle_violation) begin
+        this.vif_snf.g_drv.snf_cb.txrsplcrdv    <= 1'b1;
+      end
+    end
+
     if (this.mem != null) begin
       this.mem.reset();
     end
@@ -523,6 +538,26 @@ class vip_chi_driver_snf #(
   // Main SN-F response-driving loop after the parent agent releases reset.
   // ---------------------------------------------------------------------------
   task driver_start();
+
+    // See the RN-I twin: the reset-window TXSACTIVE is permitted during reset
+    // and must not survive the release, because the LASM sits in STOP until the
+    // activation handshake completes and p_link_deactivate_when_idle requires
+    // the sideband low there.
+    //
+    // cfg.reset_idle_violation's credit is deliberately NOT cleared here, and
+    // that is a measured decision rather than an omission. Clearing it at this
+    // point -- a clocking-block NBA before the first edge this task waits on --
+    // shifted the activation handshake by a cycle and collapsed
+    // STOP -> ACTIVATE -> RUN into a single STOP -> RUN step, which
+    // CHI_LASM_LEGAL_TRANSITION then reported, correctly and about a bug this
+    // driver had introduced. Measured: the pulse carrying the credit failed and
+    // a knob-free pulse either side of it did not. The credit loop lowers the
+    // signal on its own first tick, so the clear bought nothing.
+    if (this.cfg != null) begin
+      if (this.cfg.reset_permitted_high) begin
+        this.vif_snf.g_drv.snf_cb.txsactive <= 1'b0;
+      end
+    end
 
     fork
       this.credit_loop();

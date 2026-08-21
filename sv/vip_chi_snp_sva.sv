@@ -335,11 +335,16 @@ module vip_chi_snp_sva #(
   // sources snoops and never drives txsnplcrdv, an RN-F grants SNP credits and
   // never drives the snoop flit signals -- so those nets sit at X, and `!x` is
   // x. The rule's content is that nothing is ASSERTED during reset.
+  // IHI 0050 E 14.1.3 / D 13.1.3 lists exactly TX***LCRDV, TX***FLITV,
+  // TXLINKACTIVEREQ and RXLINKACTIVEACK, then closes the set with "All other
+  // signals can be any value." FLITPEND is not in it, and 14.4 / D 13.4 permits
+  // a transmitter "to keep the signal permanently asserted" -- so a conformant
+  // snoop transmitter may hold TXSNPFLITPEND high through reset. The REQ, RSP
+  // and DAT twins in vip_chi_sva.sv carry the full reasoning.
   property p_snp_idle_during_reset;
     @(posedge vif.clk) disable iff (!link_ever_active)
       (!vif.rst_n && $past(!vif.rst_n, 1, 1'b1)) |->
-        ((vif.txsnpflitv !== 1'b1) && (vif.txsnpflitpend !== 1'b1) &&
-         (vif.txsnplcrdv !== 1'b1));
+        ((vif.txsnpflitv !== 1'b1) && (vif.txsnplcrdv !== 1'b1));
   endproperty
 
   assert property (p_snp_flit_requires_link)

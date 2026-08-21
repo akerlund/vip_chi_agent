@@ -2486,32 +2486,71 @@ module vip_chi_sva #(
   // fixed -- four reports per reset on a link doing nothing wrong. The rule's
   // content is that nothing is ASSERTED during reset; a net this node does not
   // drive at all is a different question, and not this rule's.
+  // WHAT MUST BE DEASSERTED, and it is a closed list. IHI 0050 E 14.1.3 /
+  // D 13.1.3:
+  //
+  //   "During reset the following interface signals must be deasserted by the
+  //    component:  TX***LCRDV.  TX***FLITV.  TXLINKACTIVEREQ and
+  //    RXLINKACTIVEACK. [...] All other signals can be any value."
+  //
+  // Four items, then a sentence that closes the set. Both issues carry it
+  // word for word. So FLITPEND and TXSACTIVE are NOT in it, and requiring them
+  // low rejects two behaviors the specification permits in as many words:
+  //
+  //   FLITPEND -- 14.4 / D 13.4: "A transmitter is permitted to keep the signal
+  //   permanently asserted." A transmitter that does is conformant and holds it
+  //   through reset, and the old rule reported it every cycle.
+  //
+  //   TXSACTIVE -- 14.7 / D 13.7 places no reset requirement on it, 14.7.4 calls
+  //   SACTIVE signaling "orthogonal to the LINKACTIVE states", and 14.7.2
+  //   permits an interconnect interface to "use the RXSACTIVE input signal to
+  //   directly generate the TXSACTIVE output signal". RXSACTIVE is an input, so
+  //   by the sentence above it may be any value during reset -- which makes a
+  //   high TXSACTIVE in reset not merely permitted but the direct consequence of
+  //   a permitted implementation choice.
+  //
+  // THE TWO LINKACTIVE TERMS BELOW ARE THE RIGHT TWO, and the naming is what
+  // makes that non-obvious. This interface names signals by DIRECTION -- `tx*`
+  // is what this component drives -- while the specification names them by
+  // CHANNEL GROUP, where TXLINKACTIVEACK is the peer's acknowledge of our
+  // transmit link. Mapping the modports onto 14.5.1's four wires:
+  //
+  //   spec TXLINKACTIVEREQ (our output)  == vif.txlinkactivereq
+  //   spec RXLINKACTIVEACK (our output)  == vif.txlinkactiveack
+  //   spec TXLINKACTIVEACK (peer drives) == vif.rxlinkactiveack
+  //   spec RXLINKACTIVEREQ (peer drives) == vif.rxlinkactivereq
+  //
+  // So `txlinkactivereq && txlinkactiveack` is exactly the spec's
+  // "TXLINKACTIVEREQ and RXLINKACTIVEACK" -- the two LINKACTIVE signals a
+  // component drives, which are the only two it could deassert. Checking
+  // vif.rxlinkactiveack instead would judge the peer's output at this bind and
+  // report a component that is not this one.
+  //
+  // TX***LCRDV keeps its term for the same reason: a credit is driven by the
+  // receiver of the channel it credits, so the LCRDV signals in the modports
+  // that are outputs are the ones this component can hold low.
   property p_link_sideband_idle_during_reset;
     @(posedge vif.clk) disable iff (!link_ever_active)
       (!vif.rst_n && $past(!vif.rst_n, 1, 1'b1)) |->
-        ((vif.txlinkactivereq !== 1'b1) && (vif.txlinkactiveack !== 1'b1) &&
-         (vif.txsactive !== 1'b1));
+        ((vif.txlinkactivereq !== 1'b1) && (vif.txlinkactiveack !== 1'b1));
   endproperty
 
   property p_req_idle_during_reset;
     @(posedge vif.clk) disable iff (!link_ever_active)
       (!vif.rst_n && $past(!vif.rst_n, 1, 1'b1)) |->
-        ((vif.txreqflitv !== 1'b1) && (vif.txreqflitpend !== 1'b1) &&
-         (vif.txreqlcrdv !== 1'b1));
+        ((vif.txreqflitv !== 1'b1) && (vif.txreqlcrdv !== 1'b1));
   endproperty
 
   property p_rsp_idle_during_reset;
     @(posedge vif.clk) disable iff (!link_ever_active)
       (!vif.rst_n && $past(!vif.rst_n, 1, 1'b1)) |->
-        ((vif.txrspflitv !== 1'b1) && (vif.txrspflitpend !== 1'b1) &&
-         (vif.txrsplcrdv !== 1'b1));
+        ((vif.txrspflitv !== 1'b1) && (vif.txrsplcrdv !== 1'b1));
   endproperty
 
   property p_dat_idle_during_reset;
     @(posedge vif.clk) disable iff (!link_ever_active)
       (!vif.rst_n && $past(!vif.rst_n, 1, 1'b1)) |->
-        ((vif.txdatflitv !== 1'b1) && (vif.txdatflitpend !== 1'b1) &&
-         (vif.txdatlcrdv !== 1'b1));
+        ((vif.txdatflitv !== 1'b1) && (vif.txdatlcrdv !== 1'b1));
   endproperty
 
   // NOT gated on checks_enable, unlike every other property here, and the

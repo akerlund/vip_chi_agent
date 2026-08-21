@@ -341,12 +341,18 @@ class bind_chi_snp:
         # the link is never active while this rule applies. Under that gate it
         # could not fire at all.
         if self._link_ever_active and prev_rst == 0:
+          # E section 14.1.3 / D section 13.1.3 lists exactly TX***LCRDV,
+          # TX***FLITV, TXLINKACTIVEREQ and RXLINKACTIVEACK, then closes the
+          # set: "All other signals can be any value." FLITPEND is not in it,
+          # and E section 14.4 / D section 13.4 permits a transmitter "to keep
+          # the signal permanently asserted", so a conformant snoop transmitter
+          # may hold txsnpflitpend high through reset. Full reasoning is on the
+          # REQ/RSP/DAT twins in bind_chi.py.
           self._chk(
             "CHI_SNP_IDLE_IN_RESET",
-            not (cur["txsnpflitv"] or cur["txsnpflitpend"]
-                 or cur["txsnplcrdv"]),
+            not (cur["txsnpflitv"] or cur["txsnplcrdv"]),
             "SNP outputs not idle during reset",
-            "section 13.4",
+            "E section 14.1.3 / D section 13.1.3",
           )
         self._lcrd = {"txsnp": 0, "rxsnp": 0}
         prev, prev_rst = cur, rst
