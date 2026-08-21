@@ -685,16 +685,27 @@ SNP_INVALIDATING_OPCODES = frozenset({
   int(SnpOpcode.MAKE_INVALID), int(SnpOpcode.UNIQUE_FWD),
 })
 
-# Snoops that forbid the snoopee from RETAINING Unique. A shared snoop exists to
-# create a sharer, so Table 4-9's responses to SnpShared and SnpSharedFwd carry
-# Invalid or SharedClean and never a Unique state.
+# Snoops that forbid the snoopee from RETAINING Unique. The set is IHI 0050 E
+# 4.3's, not a reading of the response tables: it names "Must not leave the cache
+# line in Unique state" under SnpClean/SnpCleanFwd,
+# SnpNotSharedDirty/SnpNotSharedDirtyFwd and SnpShared/SnpSharedFwd. D 4.3 is
+# identical.
 #
-# SnpClean, SnpCleanShared and the remaining fwd forms are deliberately absent:
-# this VIP's home never originates them, so listing them would assert a reading
-# of Table 4-9 that no traffic here can confirm or refute. Add them with the
-# stimulus that exercises them.
+# SnpClean and SnpCleanFwd are listed because this home DOES originate them,
+# which is a correction: they were left out on the stated grounds that "this VIP's
+# home never originates them", and snoop_for_req maps ReadClean to SnpClean on the
+# ordinary path and to SnpCleanFwd on the direct-cache-transfer path, both of
+# which several coherent testcases drive. The omission was a rule that could have
+# been evaluated and was not.
+#
+# SnpNotSharedDirty and SnpNotSharedDirtyFwd stay out, and now for a reason that
+# holds: snoop_for_req has no ReadNotSharedDirty case, so no request in this model
+# produces either. SnpCleanShared stays out for the same kind of reason -- there
+# is no CleanShared sequence in seq_lib, so nothing can issue the request that
+# would produce it. Both are unreachable rather than unexamined.
 SNP_NO_RETAIN_UNIQUE_OPCODES = frozenset({
   int(SnpOpcode.SHARED), int(SnpOpcode.SHARED_FWD),
+  int(SnpOpcode.CLEAN), int(SnpOpcode.CLEAN_FWD),
 })
 
 

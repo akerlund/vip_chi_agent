@@ -862,17 +862,34 @@ package vip_chi_types_pkg;
   // Unique state -- if the snoopee kept Unique there would be two Unique holders
   // the moment the requester was granted Shared.
   //
-  // SnpClean, SnpCleanShared and the remaining fwd forms are deliberately NOT
-  // listed. This VIP's home never originates them (see the HN-F snoop sites), so
-  // including them would assert a reading of Table 4-9 that no traffic here can
-  // confirm or refute. Add them with the stimulus that exercises them.
+  // The set is IHI 0050 E 4.3's, not a reading of the response tables: it names
+  // "Must not leave the cache line in Unique state" under SnpClean/SnpCleanFwd,
+  // SnpNotSharedDirty/SnpNotSharedDirtyFwd and SnpShared/SnpSharedFwd. D 4.3 is
+  // identical.
+  //
+  // SnpClean and SnpCleanFwd are listed because this home DOES originate them,
+  // which is a correction: they were left out on the stated grounds that "this
+  // VIP's home never originates them", and vip_chi_snoop_for_req maps ReadClean
+  // to SnpClean on the ordinary path and to SnpCleanFwd on the direct-cache-
+  // transfer path, both of which several coherent testcases drive. The omission
+  // was a rule that could have been evaluated and was not.
+  //
+  // SnpNotSharedDirty and SnpNotSharedDirtyFwd stay out, and now for a reason
+  // that holds: vip_chi_snoop_for_req has no ReadNotSharedDirty case, so no
+  // request in this model produces either. SnpCleanShared stays out for the same
+  // kind of reason -- there is no CleanShared sequence in seq_lib, so nothing can
+  // issue the request that would produce it. Both are unreachable rather than
+  // unexamined, and adding them would be a rule no traffic here can confirm or
+  // refute.
   // ---------------------------------------------------------------------------
   function automatic bit vip_chi_snp_opcode_forbids_retaining_unique(
     input vip_chi_snp_opcode_t opcode
   );
     case (opcode)
       VIP_CHI_SNP_SHARED_E,
-      VIP_CHI_SNP_SHARED_FWD_E: begin
+      VIP_CHI_SNP_SHARED_FWD_E,
+      VIP_CHI_SNP_CLEAN_E,
+      VIP_CHI_SNP_CLEAN_FWD_E: begin
         return 1'b1;
       end
       default: begin
