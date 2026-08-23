@@ -38,6 +38,10 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
   localparam int            ABORT_REPORTS_C     = 2;
   localparam int            RACE_REPORTS_RNI_C  = 2;
   localparam int            RACE_REPORTS_SNF_C  = 0;
+  // 14.6.3's companion requirement, on the OBSERVER rather than the driver. The
+  // completer is where it lands, and where it currently fails -- see the check.
+  localparam int            HOLD_REPORTS_RNI_C  = 0;
+  localparam int            HOLD_REPORTS_SNF_C  = 1;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -67,6 +71,8 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
     int unsigned snf_fails;
     int unsigned rni_race;
     int unsigned snf_race;
+    int unsigned rni_hold;
+    int unsigned snf_hold;
 
     phase.raise_objection(this);
 
@@ -84,6 +90,10 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
     super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_LASM_OUTPUT_RACE_E] =
       VIP_CHI_CHK_SEV_OFF_E;
     super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_LASM_OUTPUT_RACE_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E] =
       VIP_CHI_CHK_SEV_OFF_E;
 
     // Ordinary traffic after the aborted bring-up: the link must have come up
@@ -173,6 +183,28 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] the aborted activation produced %0d (RN-I) / %0d (SN-F) banned-output-race report(s), expected exactly %0d / %0d; a report at the completer means its own two outputs stopped being ordered against each other",
         super.tc_name, rni_race, snf_race, RACE_REPORTS_RNI_C, RACE_REPORTS_SNF_C))
+    end
+
+    // 14.6.3's companion requirement, and this one is on the OBSERVER: "a
+    // component that observes the input race is required to wait for both
+    // signals before changing any output signals."
+    //
+    // The requester's abort reaches the completer as an input race -- its two
+    // inputs step out of the order the four orderings require -- and the
+    // completer does NOT wait: its acknowledge, one cycle behind its own
+    // request, rises in the middle of the race. That is a real gap in this VIP,
+    // recorded rather than waived, and the count is pinned at 1 so the fix shows
+    // up here as this dropping to zero and nowhere else.
+    //
+    // The requester reports NONE: its own inputs are the completer's two
+    // outputs, and those stay ordered.
+    rni_hold = super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E];
+    snf_hold = super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E];
+
+    if ((rni_hold != HOLD_REPORTS_RNI_C) || (snf_hold != HOLD_REPORTS_SNF_C)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] the input race produced %0d (RN-I) / %0d (SN-F) hold violation(s), expected exactly %0d / %0d",
+        super.tc_name, rni_hold, snf_hold, HOLD_REPORTS_RNI_C, HOLD_REPORTS_SNF_C))
     end
 
     `uvm_info(get_name(), $sformatf(

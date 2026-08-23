@@ -306,6 +306,109 @@ module vip_chi_sva #(
     end
   end
 
+  // ---------------------------------------------------------------------------
+  // The observed input race, tracked because it cannot be read off the wires.
+  //
+  // 14.6.3's companion requirement constrains the OBSERVER: "For all input race
+  // conditions, a component that observes the input race is required to wait for
+  // both signals before changing any output signals." A race state is NOT a
+  // static combination of the two inputs -- the Rx machine's four states already
+  // use all four combinations -- so what identifies one is the STEP that reached
+  // it, and a step is not visible in a single sample.
+  //
+  // Hence a registered flag, armed by an input step that breaks one of the four
+  // orderings and cleared by the next input change of any kind. That clearing
+  // rule is the whole correctness of this: the next change IS the arrival of the
+  // other signal, and the second half of a raced pair is itself out of order
+  // almost by definition, so arming on it would turn one race into an unbroken
+  // chain and one illegal act by the peer into a report every cycle.
+  // ---------------------------------------------------------------------------
+  bit       rxreq_q;
+  bit       rxack_q;
+  bit       txreq_q;
+  bit       txack_q;
+  bit       input_race_armed;
+  int unsigned input_race_why;
+
+  // Which of the four orderings the peer's two outputs broke on arrival, or 0.
+  // Edges are matched on two-state values for the same reason the output-race
+  // properties are: X -> 0 is not a deassertion.
+  function automatic int unsigned input_race_step();
+    if ((rxack_q === 1'b0) && (vif.rxlinkactiveack === 1'b1) &&
+        (vif.rxlinkactivereq !== 1'b1)) begin
+      return 1;
+    end
+    if ((rxack_q === 1'b1) && (vif.rxlinkactiveack === 1'b0) &&
+        (vif.rxlinkactivereq !== 1'b0)) begin
+      return 2;
+    end
+    if ((rxreq_q === 1'b0) && (vif.rxlinkactivereq === 1'b1) &&
+        (vif.rxlinkactiveack !== 1'b0)) begin
+      return 3;
+    end
+    if ((rxreq_q === 1'b1) && (vif.rxlinkactivereq === 1'b0) &&
+        (vif.rxlinkactiveack !== 1'b1)) begin
+      return 4;
+    end
+    return 0;
+  endfunction
+
+  function automatic string input_race_name(input int unsigned why);
+    case (why)
+      1:       return "their acknowledge rose with their request low";
+      2:       return "their acknowledge fell with their request still high";
+      3:       return "their request rose with their acknowledge still high";
+      4:       return "their request fell with their acknowledge low";
+      default: return "no race recorded";
+    endcase
+  endfunction
+
+  always_ff @(posedge vif.clk) begin : b_input_race
+    bit inputs_changed;
+    bit outputs_moved;
+    int unsigned step;
+
+    if (!vif.rst_n) begin
+      // A race cannot survive a reset: 14.1.3 has both peers holding the
+      // sideband idle while rst_n is asserted, so whatever was in flight is
+      // gone, and a flag carried across would demand stable outputs through the
+      // bring-up that follows.
+      rxreq_q          <= 1'b0;
+      rxack_q          <= 1'b0;
+      txreq_q          <= 1'b0;
+      txack_q          <= 1'b0;
+      input_race_armed <= 1'b0;
+      input_race_why   <= 0;
+    end
+    else begin
+      rxreq_q <= (vif.rxlinkactivereq === 1'b1);
+      rxack_q <= (vif.rxlinkactiveack === 1'b1);
+      txreq_q <= (vif.txlinkactivereq === 1'b1);
+      txack_q <= (vif.txlinkactiveack === 1'b1);
+
+      inputs_changed = ((vif.rxlinkactivereq === 1'b1) !== rxreq_q) ||
+                       ((vif.rxlinkactiveack === 1'b1) !== rxack_q);
+      outputs_moved  = ((vif.txlinkactivereq === 1'b1) !== txreq_q) ||
+                       ((vif.txlinkactiveack === 1'b1) !== txack_q);
+      step           = input_race_step();
+
+      if (inputs_changed) begin
+        // RESOLVE TAKES PRECEDENCE OVER ARM. An armed race is resolved by this
+        // change whatever it is; only an unarmed step can arm a new one.
+        input_race_armed <= !input_race_armed && (step != 0);
+        if (!input_race_armed && (step != 0)) begin
+          input_race_why <= step;
+        end
+      end
+      else if (input_race_armed && outputs_moved) begin
+        // Already broken, and the inputs have not moved to resolve it. Dropping
+        // the flag keeps this to ONE report; holding it would repeat every
+        // remaining cycle and bury the line that says what happened.
+        input_race_armed <= 1'b0;
+      end
+    end
+  end
+
   // LASM coverage lives here rather than in vip_chi_coverage, and the reason is
   // structural: that component is a pure analysis-port subscriber with no
   // interface handle at all. Link state is a wire property, so carrying it there
@@ -2447,6 +2550,25 @@ module vip_chi_sva #(
         (vif.txlinkactiveack === 1'b1);
   endproperty
 
+  // The companion requirement, and a different rule from the four above: they
+  // constrain a driver's own two outputs, this constrains the OBSERVER.
+  //
+  // "For all input race conditions, a component that observes the input race is
+  // required to wait for both signals before changing any output signals. This
+  // is represented in Figure 14-5 by the fact that the only permitted output
+  // transition from a race state is caused by the arrival of the other signal
+  // associated with the race condition."
+  //
+  // input_race_armed is registered, so the value sampled here is the one
+  // computed last cycle -- a race observed at T-1 -- and $stable compares this
+  // cycle's outputs against T-1's. That is the obligation exactly: our outputs
+  // for cycle T were decided at T-1, when the race had just been seen.
+  property p_input_race_hold;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      input_race_armed |->
+        ($stable(vif.txlinkactivereq) && $stable(vif.txlinkactiveack));
+  endproperty
+
   // A link that never leaves ACTIVATE or DEACTIVATE is stuck, and stuck is the
   // one failure mode no other rule here can see: every cycle of it is legal.
   // The transition rule is satisfied (holding is always a legal step), no flit
@@ -3023,6 +3145,15 @@ module vip_chi_sva #(
     chk_miss(VIP_CHI_CHK_LASM_OUTPUT_RACE_E, $sformatf(
       "banned output race: our request fell with our acknowledge low (txreq 1->0, txack=%0b); 14.6.3 forbids the deassertion of TXREQ before the assertion of RXACK",
       $sampled(vif.txlinkactiveack)));
+
+  assert property (p_input_race_hold)
+    chk_hit(VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E, $sformatf(
+      "our sideband moved while an input race was unresolved (%s; txreq %0b->%0b txack %0b->%0b); 14.6.3 requires a component that observes the race to wait for both signals before changing any output",
+      input_race_name($sampled(input_race_why)),
+      $sampled(txreq_q), $sampled(vif.txlinkactivereq),
+      $sampled(txack_q), $sampled(vif.txlinkactiveack)));
 
   assert property (p_tx_lasm_activation_timeout)
     chk_hit(VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E);

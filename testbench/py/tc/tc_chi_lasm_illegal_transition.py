@@ -39,6 +39,11 @@ _RACE_RULE_C = "CHI_LASM_OUTPUT_RACE"
 _ABORT_REPORTS_C = 2
 _RACE_REPORTS_RNI_C = 2
 _RACE_REPORTS_SNF_C = 0
+# 14.6.3's companion requirement, on the OBSERVER rather than the driver. The
+# completer is where it lands, and where it currently fails -- see the check.
+_HOLD_RULE_C = "CHI_LASM_INPUT_RACE_HOLD"
+_HOLD_REPORTS_RNI_C = 0
+_HOLD_REPORTS_SNF_C = 1
 ADDR_C = 0x3D40_0000
 SIZE_C = 6                      # 64 B = 4 beats on the CHI-D cut
 SETTLE_C = 20
@@ -61,6 +66,7 @@ class tc_chi_lasm_illegal_transition(chi_base_test):
       # below rather than on the generic "unexpected violation" assertion --
       # which would say nothing about which rule moved.
       checker.expect_failure(_RACE_RULE_C)
+      checker.expect_failure(_HOLD_RULE_C)
 
   async def run_phase(self):
     self.raise_objection()
@@ -148,6 +154,26 @@ class tc_chi_lasm_illegal_transition(chi_base_test):
       f"banned-output-race report(s), expected exactly {_RACE_REPORTS_RNI_C} / "
       f"{_RACE_REPORTS_SNF_C}; a report at the completer means its own two "
       f"outputs stopped being ordered against each other")
+
+    # 14.6.3's companion requirement, and this one is on the OBSERVER: "a
+    # component that observes the input race is required to wait for both
+    # signals before changing any output signals."
+    #
+    # The requester's abort reaches the completer as an input race -- its two
+    # inputs step out of the order the four orderings require -- and the
+    # completer does NOT wait: its acknowledge, one cycle behind its own
+    # request, rises in the middle of the race. That is a real gap in this VIP
+    # (F-CORR-025) and the count is pinned at 1 rather than waived, so the fix
+    # will show up here as this dropping to 0 and nowhere else.
+    #
+    # The requester reports NONE: its own inputs are the completer's two
+    # outputs, and those stay ordered.
+    rni_hold = rni.fail_count.get(_HOLD_RULE_C, 0)
+    snf_hold = snf.fail_count.get(_HOLD_RULE_C, 0)
+    assert rni_hold == _HOLD_REPORTS_RNI_C and snf_hold == _HOLD_REPORTS_SNF_C, (
+      f"the input race produced {rni_hold} (RN-I) / {snf_hold} (SN-F) hold "
+      f"violation(s), expected exactly {_HOLD_REPORTS_RNI_C} / "
+      f"{_HOLD_REPORTS_SNF_C}")
 
     # The deliberate failures are demoted, so nothing else may have fired.
     assert rni.errors == 0 and snf.errors == 0, (

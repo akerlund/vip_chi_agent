@@ -576,6 +576,16 @@ package vip_chi_types_pkg;
     // graceful deactivation at the requester and the first and third had
     // antecedents that never moved.
     VIP_CHI_CHK_LASM_OUTPUT_RACE_E,
+    // The companion to the four, from the same section, and a DIFFERENT rule:
+    // they constrain a driver's own two outputs, this constrains the OBSERVER.
+    // "For all input race conditions, a component that observes the input race
+    // is required to wait for both signals before changing any output signals."
+    //
+    // Its own id rather than a fifth ordering under the one above, because
+    // standing the two down are different decisions: one says "do not judge how
+    // this component drives its sideband", the other "do not judge how it reacts
+    // to a peer whose sideband arrived out of order".
+    VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;

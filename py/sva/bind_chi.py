@@ -434,6 +434,11 @@ class bind_chi:
     # gate, which is what the negative-control test uses.
     self._checks_enable = checks_enable
     self._lcrd = {}
+    # An observed, unresolved input race, and what it was. See
+    # _check_input_race: the state is what distinguishes a race from an ordinary
+    # step, because the four input combinations are all legal Rx states.
+    self._input_race_pending = False
+    self._input_race_why = ""
     # Sticky "this interface has carried link traffic at least once". Gates the
     # reset-restart check only; deliberately NOT cleared by _reset_state, since
     # surviving reset is exactly what makes it usable as that gate.
@@ -760,6 +765,13 @@ class bind_chi:
   # ---------------------------------------------------------------------------
   def _reset_state(self) -> None:
     self._reset_tracking_state()
+
+    # An input race cannot survive a reset: both peers drive the sideband low
+    # while rst_n is asserted (14.1.3), so whatever was in flight is gone and a
+    # flag carried across would demand stable outputs through the bring-up that
+    # follows.
+    self._input_race_pending = False
+    self._input_race_why = ""
 
     # The L-credit shadow. One pool per channel per direction, each starting at
     # 0 and capturing its initial pool automatically, because that pool arrives
@@ -1089,6 +1101,7 @@ class bind_chi:
       # against in SV, so the first post-release cycle is judged in both ports.
       if prev is not None:
         self._check_output_race(prev, cur)
+        self._check_input_race(prev, cur)
 
       # Judged on _link_ever_active rather than on the enable gate, and the
       # reason is the same for all three: the gate is this interface's ACTIVATION
@@ -1275,6 +1288,90 @@ class bind_chi:
         f"{int(cur[other])}; 14.6.3 forbids {sentence}",
         "E section 14.6.3 / D section 13.6.3",
       )
+
+  # The same four orderings mirrored onto the INPUT pair -- the peer's two
+  # outputs as they arrive here. Observing them out of order is not a peer
+  # violation this bind may report: 14.6.3 says an asynchronous race can make
+  # two signals driven in one cycle arrive in different ones, and those are the
+  # yellow Async Input Race states of Figure 14-5. What the section requires
+  # instead is of the OBSERVER, and that is the rule below.
+  _INPUT_RACE_C = (
+    (True, "rxlinkactiveack", "rxlinkactivereq", 1,
+     "their acknowledge rose with their request low"),
+    (False, "rxlinkactiveack", "rxlinkactivereq", 0,
+     "their acknowledge fell with their request still high"),
+    (True, "rxlinkactivereq", "rxlinkactiveack", 0,
+     "their request rose with their acknowledge still high"),
+    (False, "rxlinkactivereq", "rxlinkactiveack", 1,
+     "their request fell with their acknowledge low"),
+  )
+
+  @classmethod
+  def _input_race_step(cls, prev: dict, cur: dict) -> str | None:
+    """Name the forbidden-order input step taken this cycle, or None."""
+    for rising, moved, other, need, sentence in cls._INPUT_RACE_C:
+      was, now = int(prev[moved]), int(cur[moved])
+      if now != (1 if rising else 0) or was == now:
+        continue
+      if int(cur[other]) != need:
+        return sentence
+    return None
+
+  def _check_input_race(self, prev: dict, cur: dict) -> None:
+    """While an input race is unresolved, neither of our outputs may move.
+
+    Section 14.6.3, and it is a different rule from the four: those constrain a
+    driver's own two outputs, this constrains the OBSERVER.
+
+    "For all input race conditions, a component that observes the input race is
+    required to wait for both signals before changing any output signals. This
+    is represented in Figure 14-5 by the fact that the only permitted output
+    transition from a race state is caused by the arrival of the other signal
+    associated with the race condition."
+
+    A race state is not a static combination of the two inputs -- the Rx machine
+    already uses all four -- so it is identified by the STEP that reached it, and
+    has to be tracked. The flag arms on a forbidden-order input step and is
+    cleared by the next input change of any kind, because that change IS the
+    arrival of the other signal: a peer's two outputs driven in one cycle and
+    observed in two produce one race seen as two steps, not two races.
+
+    It is also cleared on a violation. Once the component has moved an output the
+    obligation has already been broken, and holding the flag would report every
+    remaining cycle of the run -- burying the one report that says what happened.
+    """
+    armed = self._input_race_pending
+    moved = [n for n in ("txlinkactivereq", "txlinkactiveack")
+             if int(cur[n]) != int(prev[n])]
+
+    if armed:
+      self._chk(
+        "CHI_LASM_INPUT_RACE_HOLD", not moved,
+        f"{' and '.join(moved)} moved while an input race was unresolved "
+        f"({self._input_race_why}); 14.6.3 requires a component that observes "
+        f"the race to wait for both signals before changing any output",
+        "E section 14.6.3 / D section 13.6.3",
+      )
+
+    changed = (int(cur["rxlinkactivereq"]) != int(prev["rxlinkactivereq"]) or
+               int(cur["rxlinkactiveack"]) != int(prev["rxlinkactiveack"]))
+
+    if changed:
+      # RESOLVE TAKES PRECEDENCE OVER ARM, and that ordering is the whole
+      # correctness of the flag. An armed race is resolved by this change
+      # whatever the change is -- it is the arrival of the other signal -- and
+      # the second half of a raced pair is itself out of order almost by
+      # definition, so arming on it would turn one race into an unbroken chain
+      # and one illegal act by the peer into a report every cycle.
+      why = None if armed else self._input_race_step(prev, cur)
+      self._input_race_pending = why is not None
+      if why is not None:
+        self._input_race_why = why
+    elif armed and moved:
+      # Already broken, and the inputs have not moved to resolve it. Dropping
+      # the flag keeps this to ONE report; holding it would repeat every
+      # remaining cycle and bury the one line that says what happened.
+      self._input_race_pending = False
 
   def _check_lcrd_quiescent_in_stop(self, state: LasmState) -> None:
     """No L-credit may still be outstanding while the link is in STOP.

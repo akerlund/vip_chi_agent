@@ -359,6 +359,11 @@ CHECK_IDS = (
   # RXACK. One id for all four: they are one statement about one pair of
   # signals, and the report names which ordering broke.
   "CHI_LASM_OUTPUT_RACE",
+  # The companion to the four, and a different rule: they constrain a driver's
+  # own two outputs, this constrains the OBSERVER. "For all input race
+  # conditions, a component that observes the input race is required to wait for
+  # both signals before changing any output signals."
+  "CHI_LASM_INPUT_RACE_HOLD",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
