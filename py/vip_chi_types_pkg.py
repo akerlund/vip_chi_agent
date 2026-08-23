@@ -352,6 +352,13 @@ CHECK_IDS = (
   # TxnID to differ from the bounced request's -- so the credit it spends is the
   # only thing on the wire tying the two together.
   "CHI_REQ_RETRY_SPENDS_GRANTED_CREDIT",
+  # IHI 0050 E section 14.6.3 / D section 13.6.3, the Banned Output Race. A
+  # component's two LINKACTIVE outputs have a defined relationship -- "Output X
+  # must change after or at the same time as output Y, but it is not permitted
+  # to change before output Y" -- instantiated as four orderings on TXREQ and
+  # RXACK. One id for all four: they are one statement about one pair of
+  # signals, and the report names which ordering broke.
+  "CHI_LASM_OUTPUT_RACE",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept

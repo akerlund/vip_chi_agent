@@ -312,18 +312,33 @@ class vip_chi_driver_hnf #(
   // ... for all the receive channels".
   //
   // 14.6.3 / D 13.6.3 orders the two outputs against each other -- the
-  // acknowledge may not assert before the request, nor deassert before it -- so
-  // they rise together here (permitted: "or at the same time as") and the
-  // acknowledge is held one cycle past the request on the way down. Falling
-  // together is also permitted by the specification, but while this VIP's LASM
-  // is still the OR of both directions it would step the collapsed state
-  // RUN -> STOP with no DEACTIVATE in between, which CHI_LASM_LEGAL_TRANSITION
-  // would then report against the model.
+  // acknowledge may not assert before the request, nor deassert before it. The
+  // acknowledge here lags the request by exactly one cycle in BOTH directions,
+  // which satisfies both. Rising together would also be permitted -- the section
+  // bans only changing BEFORE -- but it is not what this drives.
   protected task drive_rn_idle_sideband(input int p);
 
     bit want_link;
 
     want_link = this.vif_rn[p].g_drv.hnf_cb.rxlinkactivereq;
+
+    // 14.6.3's fourth ordering binds US, not the peer: "the deassertion of TXREQ
+    // must not occur before the assertion of RXACK". The acknowledge lags the
+    // request by one cycle by construction, so a request held for only ONE cycle
+    // is withdrawn before its own acknowledge has risen -- which breaks that
+    // ordering and then, a cycle later, the first one as the acknowledge rises
+    // against a request that is already down. Reachable whenever the peer
+    // withdraws its request the cycle after raising it, which
+    // tc_chi_lasm_illegal_transition does on purpose. Table 14-2 says the same
+    // thing from the state machine's side: the transmitter "remains in the
+    // ACTIVATE state while it is waiting for the receiver to acknowledge".
+    //
+    // Holding the request until our own acknowledge is up is the minimum that
+    // satisfies the section, and it cannot stall -- the acknowledge IS this
+    // request, one cycle later.
+    if (this.vif_rn[p].txlinkactivereq && !this.vif_rn[p].txlinkactiveack) begin
+      want_link = 1'b1;
+    end
 
     this.vif_rn[p].g_drv.hnf_cb.txlinkactivereq <= want_link;
     // The acknowledge is a ONE-CYCLE DELAY of our own request, off the wire: the

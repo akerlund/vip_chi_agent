@@ -71,7 +71,28 @@ class tc_chi_a0_smoke extends uvm_test;
     wait (this.rn_vif.rst_n === 1'b1);
     @(this.rn_vif.g_drv.rni_cb);
 
-    // --- Link activation: RN raises the request, SN mirrors the ack ----------
+    // --- Link activation, all FOUR signals -----------------------------------
+    //
+    // Each endpoint owns two LINKACTIVE outputs, not one (E 14.5.1 / D 13.5.1:
+    // "two signals are used for all the transmit channels and two signals are
+    // used for all the receive channels"), and this test drives the link by hand
+    // rather than through the agents -- so it has to drive all four itself.
+    //
+    // Both outputs are driven LOW first, and that is not tidiness. An output
+    // left undriven reads X, and 14.6.3 orders a component's two outputs against
+    // each other, so an X on either one makes the ordering rules unjudgeable at
+    // the exact moment they matter: a request rising against an X acknowledge
+    // cannot be shown conformant. The pyUVM twin never saw this because its
+    // signals default to zero rather than to X.
+    this.rn_vif.g_drv.rni_cb.txlinkactivereq <= 1'b0;
+    this.rn_vif.g_drv.rni_cb.txlinkactiveack <= 1'b0;
+    this.sn_vif.g_drv.snf_cb.txlinkactivereq <= 1'b0;
+    this.sn_vif.g_drv.snf_cb.txlinkactiveack <= 1'b0;
+    @(this.rn_vif.g_drv.rni_cb);
+
+    // The RN asks for its transmit link. Its own acknowledge is low, which is
+    // 14.6.3's third ordering -- the assertion of TXREQ must not occur before
+    // the deassertion of RXACK.
     this.rn_vif.g_drv.rni_cb.txlinkactivereq <= 1'b1;
     this.rn_vif.g_drv.rni_cb.txsactive       <= 1'b1;
 
@@ -86,8 +107,14 @@ class tc_chi_a0_smoke extends uvm_test;
         tc_name))
     end
 
-    this.sn_vif.g_drv.snf_cb.txlinkactiveack <= 1'b1;
+    // The SN asks for ITS transmit link before acknowledging the RN's, because
+    // 14.6.3's first ordering forbids the acknowledge to assert before the
+    // request. One cycle apart rather than together, so the two orderings are
+    // exercised separately.
+    this.sn_vif.g_drv.snf_cb.txlinkactivereq <= 1'b1;
     this.sn_vif.g_drv.snf_cb.txsactive       <= 1'b1;
+    @(this.sn_vif.g_drv.snf_cb);
+    this.sn_vif.g_drv.snf_cb.txlinkactiveack <= 1'b1;
 
     seen = 1'b0;
     for (int i = 0; (i < 10) && !seen; i++) begin
@@ -99,6 +126,11 @@ class tc_chi_a0_smoke extends uvm_test;
         "FATAL [%s] RN-I never saw rxlinkactiveack across the link adapter",
         tc_name))
     end
+
+    // The RN completes the other direction: it has the SN's request by now, and
+    // its own request is up, so acknowledging is ordered.
+    this.rn_vif.g_drv.rni_cb.txlinkactiveack <= 1'b1;
+    @(this.rn_vif.g_drv.rni_cb);
 
     // --- One REQ flit, checked verbatim on the far side ---------------------
     flit             = '0;

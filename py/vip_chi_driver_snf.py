@@ -308,11 +308,10 @@ class vip_chi_driver_snf(uvm_driver):
     #
     # Ordering, section 14.6.3: "Output X must change after or at the same time
     # as output Y, but it is not permitted to change before output Y" -- the
-    # acknowledge may not assert before the request, nor deassert before it. So
-    # they rise together (permitted) and the acknowledge is held one cycle past
-    # the request on the way down. Falling together is also permitted by the
-    # specification, but while the LASM is still the OR of both directions it
-    # would step the collapsed state RUN -> STOP with no DEACTIVATE in between.
+    # acknowledge may not assert before the request, nor deassert before it. The
+    # acknowledge here lags the request by exactly one cycle in BOTH directions,
+    # which satisfies both. Rising together would also be permitted -- the
+    # section bans only changing BEFORE -- but it is not what this drives.
     #
     # The acknowledge is a ONE-CYCLE DELAY of our own request, taken off the
     # wire. That is the whole trick, and it took two wrong attempts to find:
@@ -333,6 +332,24 @@ class vip_chi_driver_snf(uvm_driver):
       want_link = self.activate_stall_remaining == 0
     else:
       want_link = not self._link_drained()
+
+    # 14.6.3's fourth ordering binds US, not the peer: "the deassertion of TXREQ
+    # must not occur before the assertion of RXACK". The acknowledge lags the
+    # request by one cycle by construction, so a request held for only ONE cycle
+    # is withdrawn before its own acknowledge has risen -- breaking that ordering
+    # and then, a cycle later, the first one as the acknowledge rises against a
+    # request that is already down. Reachable whenever the peer withdraws its
+    # request the cycle after raising it, which tc_chi_lasm_illegal_transition
+    # does on purpose. Table 14-2 says the same from the state machine's side:
+    # the transmitter "remains in the ACTIVATE state while it is waiting for the
+    # receiver to acknowledge".
+    #
+    # Holding the request until our own acknowledge is up is the minimum that
+    # satisfies the section, and it cannot stall -- the acknowledge IS this
+    # request, one cycle later.
+    if self.bus.get("txlinkactivereq") and not self.bus.get("txlinkactiveack"):
+      want_link = True
+
     self.ack_driven = bool(self.bus.get("txlinkactivereq"))
     self.bus.drive(txlinkactivereq=1 if want_link else 0,
                    txlinkactiveack=1 if self.ack_driven else 0)

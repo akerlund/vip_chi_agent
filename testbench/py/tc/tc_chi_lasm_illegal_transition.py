@@ -32,8 +32,13 @@ from __future__ import annotations
 from chi_base_test import chi_base_test
 
 _RULE_C = "CHI_LASM_LEGAL_TRANSITION"
-# See the assertion below for the three steps this decomposes into.
-_ABORT_REPORTS_C = 3
+# 14.6.3's Banned Output Race, which the same abort violates -- see the second
+# assertion below for why the two ends do not report it symmetrically.
+_RACE_RULE_C = "CHI_LASM_OUTPUT_RACE"
+# See the assertions below for the steps each of these decomposes into.
+_ABORT_REPORTS_C = 2
+_RACE_REPORTS_RNI_C = 2
+_RACE_REPORTS_SNF_C = 0
 ADDR_C = 0x3D40_0000
 SIZE_C = 6                      # 64 B = 4 beats on the CHI-D cut
 SETTLE_C = 20
@@ -51,6 +56,11 @@ class tc_chi_lasm_illegal_transition(chi_base_test):
     super().connect_phase()
     for checker in (self.tb_env.rni_sva, self.tb_env.snf_sva):
       checker.expect_failure(_RULE_C)
+      # Declared at BOTH binds even though only the requester is expected to
+      # report it, so a stray report at the completer fails on its own count
+      # below rather than on the generic "unexpected violation" assertion --
+      # which would say nothing about which rule moved.
+      checker.expect_failure(_RACE_RULE_C)
 
   async def run_phase(self):
     self.raise_objection()
@@ -85,27 +95,31 @@ class tc_chi_lasm_illegal_transition(chi_base_test):
       f"deliberately aborted activation -- the transition check may be vacuous")
 
     # Exactly one aborted bring-up, so the run must not be littered with them --
-    # one aborted activation is now THREE reports per bind, and the
-    # decomposition is the point rather than a number to tune. The requester
-    # raises its request and withdraws it before the acknowledge, which Table
-    # 14-2 forbids -- "the transmitter remains in the ACTIVATE state while it is
-    # waiting for the receiver to acknowledge" -- and that one illegal act leaves
-    # three off-axis steps behind, spread across the two machines this bind now
-    # judges separately:
+    # one aborted activation is TWO reports per bind, and the decomposition is
+    # the point rather than a number to tune. The requester raises its request
+    # and withdraws it before the acknowledge, which Table 14-2 forbids -- "the
+    # transmitter remains in the ACTIVATE state while it is waiting for the
+    # receiver to acknowledge" -- and that one illegal act leaves two off-axis
+    # steps behind on the machine that owns the aborted request, which each end
+    # sees from its own side (TX at the requester, RX at the completer):
     #
-    #   ACTIVATE -> STOP        the abort itself: our request up, then down,
-    #                           with no acknowledge in between
-    #   STOP -> DEACTIVATE      the acknowledge arriving after the request it
-    #                           answers has already gone
-    #   ACTIVATE -> DEACTIVATE  request and acknowledge crossing in one cycle
+    #   ACTIVATE -> STOP      the abort itself: the request up, then down, with
+    #                         no acknowledge in between
+    #   STOP -> DEACTIVATE    the acknowledge arriving a cycle later, for a
+    #                         request that is already gone
     #
-    # None of the three is a permitted race. Figure 14-5's coloured states are
-    # COMBINED (Tx,Rx) states reached by diagonals where two signals move at
-    # once; each machine's own axis is a strictly one-way cycle with no
-    # exceptions, and these are single-machine steps. Under the old OR-collapsed
-    # model the second and third were merged with the other direction and never
-    # appeared -- so the count went up because the checker got sharper, not
-    # because the stimulus changed.
+    # Neither is a permitted race. Figure 14-5's coloured states are COMBINED
+    # (Tx,Rx) states reached by diagonals where two signals move at once; each
+    # machine's own axis is a strictly one-way cycle with no exceptions, and
+    # these are single-machine steps.
+    #
+    # It was THREE until the completer stopped withdrawing its own request
+    # before its own acknowledge had risen (14.6.3's fourth ordering, fixed in
+    # the SN-F/HN-F/HN-I sideband drivers). That defect added a third step,
+    # ACTIVATE -> DEACTIVATE, where the request and the acknowledge crossed in
+    # one cycle. The count fell because the VIP got more conformant, not because
+    # the checker got quieter -- and CHI_LASM_OUTPUT_RACE below is what holds
+    # that fix in place.
     #
     # Asserted EXACTLY, not as a ceiling: a drift in either direction means the
     # handshake changed shape and should be read, not absorbed.
@@ -114,6 +128,26 @@ class tc_chi_lasm_illegal_transition(chi_base_test):
       f"reports, expected exactly {_ABORT_REPORTS_C} at each end; more means the "
       f"legal bring-up that followed is being flagged too, fewer means a machine "
       f"stopped judging its own axis")
+
+    # The same abort is a Banned Output Race, and 14.6.3 attributes it to ONE
+    # component: the requester deasserts TXREQ before RXACK is asserted (the
+    # fourth ordering), and a cycle later its acknowledge rises against a
+    # request that is already down (the first). Two reports, both at the RN-I.
+    #
+    # The completer must report NONE, and that asymmetry is the assertion worth
+    # having: 14.6.3 binds each component's own two outputs, so a completer
+    # dragged into an illegal handshake by its peer still has to keep its own
+    # pair ordered. It did not, until the sideband drivers were made to hold
+    # their request until their own acknowledge had risen -- before that fix the
+    # SN-F reported one of these too. A non-zero count here means that
+    # regressed.
+    rni_race = rni.fail_count.get(_RACE_RULE_C, 0)
+    snf_race = snf.fail_count.get(_RACE_RULE_C, 0)
+    assert rni_race == _RACE_REPORTS_RNI_C and snf_race == _RACE_REPORTS_SNF_C, (
+      f"the aborted activation produced {rni_race} (RN-I) / {snf_race} (SN-F) "
+      f"banned-output-race report(s), expected exactly {_RACE_REPORTS_RNI_C} / "
+      f"{_RACE_REPORTS_SNF_C}; a report at the completer means its own two "
+      f"outputs stopped being ordered against each other")
 
     # The deliberate failures are demoted, so nothing else may have fired.
     assert rni.errors == 0 and snf.errors == 0, (

@@ -64,7 +64,24 @@ async def tc_chi_a0_smoke(dut):
   dut.rst_n.value = 1
   await rni.clocks(2)
 
-  # -- 2. link activation handshake (RN-I requests, SN-F acks) ---------------
+  # -- 2. link activation handshake, all FOUR signals ------------------------
+  #
+  # Each endpoint owns two LINKACTIVE outputs, not one (E 14.5.1 / D 13.5.1:
+  # "two signals are used for all the transmit channels and two signals are used
+  # for all the receive channels"), and this test drives the link by hand rather
+  # than through the agents -- so it has to drive all four itself.
+  #
+  # Both are driven low first. Here that is only tidiness, because these signals
+  # default to zero; in the SystemVerilog twin an undriven output reads X, and
+  # 14.6.3 orders a component's two outputs against each other, so an X on either
+  # makes the ordering rules unjudgeable at the moment they matter.
+  await _drive_edge(rni)
+  rni.drive(txlinkactivereq=0, txlinkactiveack=0)
+  snf.drive(txlinkactivereq=0, txlinkactiveack=0)
+
+  # The RN asks for its transmit link. Its own acknowledge is low, which is
+  # 14.6.3's third ordering -- the assertion of TXREQ must not occur before the
+  # deassertion of RXACK.
   await _drive_edge(rni)
   rni.drive(txlinkactivereq=1, txsactive=1)
 
@@ -76,8 +93,14 @@ async def tc_chi_a0_smoke(dut):
       break
   assert seen, "SN-F never saw rxlinkactivereq across the link adapter"
 
+  # The SN asks for ITS transmit link before acknowledging the RN's: 14.6.3's
+  # first ordering forbids the acknowledge to assert before the request. One
+  # cycle apart rather than together, so the two orderings are exercised
+  # separately.
   await _drive_edge(snf)
-  snf.drive(txlinkactiveack=1, txsactive=1)
+  snf.drive(txlinkactivereq=1, txsactive=1)
+  await _drive_edge(snf)
+  snf.drive(txlinkactiveack=1)
 
   acked = False
   for _ in range(10):
@@ -86,6 +109,11 @@ async def tc_chi_a0_smoke(dut):
       acked = True
       break
   assert acked, "RN-I never saw rxlinkactiveack (activation did not complete)"
+
+  # The RN completes the other direction: it has the SN's request by now, and
+  # its own request is up, so acknowledging is ordered.
+  await _drive_edge(rni)
+  rni.drive(txlinkactiveack=1)
   cocotb.log.info("link activation handshake completed")
 
   # -- 3. flit round-trip through the codec + link adapter -------------------

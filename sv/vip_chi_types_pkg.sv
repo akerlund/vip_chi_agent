@@ -560,6 +560,22 @@ package vip_chi_types_pkg;
     // bookkeeping error at the requester rather than an illegal flit, and the
     // RN-I's own check_phase already reports it.
     VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E,
+    // IHI 0050 E section 14.6.3 / D section 13.6.3, Asynchronous race condition:
+    // the Banned Output Race. A component's two LINKACTIVE outputs have a
+    // defined relationship -- "Output X must change after or at the same time as
+    // output Y, but it is not permitted to change before output Y" -- which the
+    // section then instantiates as four orderings on TXREQ and RXACK.
+    //
+    // ONE id for all four, because they are one statement written four times
+    // about the same pair of signals: together they say the two outputs walk a
+    // single cycle, and standing down one of the four while keeping the rest is
+    // not a coherent thing to want. Which ordering broke is in the report.
+    //
+    // Not expressible until the two link state machines were split: with the
+    // completer never raising its own request, the fourth ordering failed every
+    // graceful deactivation at the requester and the first and third had
+    // antecedents that never moved.
+    VIP_CHI_CHK_LASM_OUTPUT_RACE_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;

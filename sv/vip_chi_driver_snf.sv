@@ -253,6 +253,25 @@ class vip_chi_driver_snf #(
       want_link = !this.link_drained();
     end
 
+
+    // 14.6.3's fourth ordering binds US, not the peer: "the deassertion of TXREQ
+    // must not occur before the assertion of RXACK". The acknowledge lags the
+    // request by one cycle by construction, so a request held for only ONE cycle
+    // is withdrawn before its own acknowledge has risen -- which breaks that
+    // ordering and then, a cycle later, the first one as the acknowledge rises
+    // against a request that is already down. Reachable whenever the peer
+    // withdraws its request the cycle after raising it, which
+    // tc_chi_lasm_illegal_transition does on purpose. Table 14-2 says the same
+    // thing from the state machine's side: the transmitter "remains in the
+    // ACTIVATE state while it is waiting for the receiver to acknowledge".
+    //
+    // Holding the request until our own acknowledge is up is the minimum that
+    // satisfies the section, and it cannot stall -- the acknowledge IS this
+    // request, one cycle later.
+    if (this.vif_snf.txlinkactivereq && !this.vif_snf.txlinkactiveack) begin
+      want_link = 1'b1;
+    end
+
     // The acknowledge is a ONE-CYCLE DELAY of our own request, taken off the
     // wire, and that is the whole trick. The drive is non-blocking, so the wire
     // read here carries what was driven last cycle and the acknowledge lands

@@ -2362,6 +2362,91 @@ module vip_chi_sva #(
       vip_chi_lasm_legal_step(rx_lasm_state, rx_lasm());
   endproperty
 
+  // ---------------------------------------------------------------------------
+  // IHI 0050 E 14.6.3 / D 13.6.3, Asynchronous race condition.
+  //
+  // "There are situations where two output signals, X and Y, have a defined
+  // relationship such that: Output X must change after or at the same time as
+  // output Y, but it is not permitted to change before output Y."
+  //
+  // The section instantiates that on a component's OWN TWO OUTPUTS, and at this
+  // bind those are the tx* pair. Read the specification's names against this
+  // interface's rather than against each other -- the specification names
+  // LINKACTIVE by CHANNEL GROUP, this interface names it by DIRECTION, so both
+  // driven outputs are tx* here:
+  //
+  //   spec TXLINKACTIVEREQ  ==  vif.txlinkactivereq   our transmit request
+  //   spec RXLINKACTIVEACK  ==  vif.txlinkactiveack   our acknowledge to them
+  //   spec RXLINKACTIVEREQ  ==  vif.rxlinkactivereq   their request  (input)
+  //   spec TXLINKACTIVEACK  ==  vif.rxlinkactiveack   their acknowledge (input)
+  //
+  // The rx* pair is NOT judged, and that is the section's own instruction rather
+  // than a gap. Those two are the peer's outputs arriving here as inputs, and
+  // 14.6.3 says an observer may legitimately see them out of order: "race
+  // conditions can result in two signals, that are asserted within the same
+  // cycle, are observed in different clock cycles ... A component that is on the
+  // other side of the interface, and has the two signals as inputs, can see the
+  // state transition if an asynchronous input race occurs." Those are the YELLOW
+  // states in Figure 14-5. A rule on the input pair would report conformant
+  // behaviour, which is the defect class this checker exists to remove. Each end
+  // is judged by its own bind instead, where its outputs are outputs.
+  //
+  // Together the four orderings say the two outputs walk one cycle:
+  //
+  //   TXREQ rises (RXACK low) -> RXACK rises -> TXREQ falls (RXACK high)
+  //   -> RXACK falls -> ...
+  //
+  // "OR AT THE SAME TIME" is load-bearing and decides the shape of every one of
+  // them. Only changing BEFORE is banned, so each is a SAME-CYCLE implication,
+  // not a next-cycle ordering: when both signals move on one edge the
+  // antecedent's $rose/$fell holds and the consequent reads the value the other
+  // signal has already taken, so the simultaneous case passes by construction.
+  // Written as a strict ordering instead, all four would false-fail a component
+  // that changes both together -- which the section expressly permits.
+  //
+  // These could not be written before the two machines were split, and the
+  // reason is worth keeping: with the completer never raising its own request,
+  // the fourth failed every graceful deactivation at the requester (RXACK sat at
+  // zero while TXREQ fell) and the first and third were permanently vacuous
+  // (their antecedents are transitions of a signal that never moved).
+  // ---------------------------------------------------------------------------
+  // The EDGE is matched on two-state values, written out rather than with
+  // $rose/$fell, and that is not pedantry. $fell is true whenever the previous
+  // value was not 0 and the current one is -- so an output that was never driven
+  // and comes up at reset release steps X -> 0 and registers as a deassertion.
+  // A testbench that leaves one of its two LINKACTIVE outputs undriven would
+  // then be reported under a rule about the ordering of two real edges, which
+  // sends the reader to the wrong place. An X on a driven output is a defect,
+  // but it is not a race.
+  //
+  // The CONSEQUENT stays strict: if the OTHER output is X when a real edge
+  // arrives, the ordering cannot be shown to hold, so it fails and the report
+  // prints the x. That half is worth keeping -- it is the case where the race
+  // question is genuinely unanswerable.
+  property p_output_race_ack_rise_after_req;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      (($past(vif.txlinkactiveack) === 1'b0) && (vif.txlinkactiveack === 1'b1)) |->
+        (vif.txlinkactivereq === 1'b1);
+  endproperty
+
+  property p_output_race_ack_fall_after_req;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      (($past(vif.txlinkactiveack) === 1'b1) && (vif.txlinkactiveack === 1'b0)) |->
+        (vif.txlinkactivereq === 1'b0);
+  endproperty
+
+  property p_output_race_req_rise_after_ack;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      (($past(vif.txlinkactivereq) === 1'b0) && (vif.txlinkactivereq === 1'b1)) |->
+        (vif.txlinkactiveack === 1'b0);
+  endproperty
+
+  property p_output_race_req_fall_after_ack;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      (($past(vif.txlinkactivereq) === 1'b1) && (vif.txlinkactivereq === 1'b0)) |->
+        (vif.txlinkactiveack === 1'b1);
+  endproperty
+
   // A link that never leaves ACTIVATE or DEACTIVATE is stuck, and stuck is the
   // one failure mode no other rule here can see: every cycle of it is legal.
   // The transition rule is satisfied (holding is always a legal step), no flit
@@ -2907,6 +2992,37 @@ module vip_chi_sva #(
       judged_cur.name(), judged_nxt.name(),
       $sampled(vif.rxlinkactivereq), $sampled(vif.txlinkactiveack)));
   end
+
+  // The report names WHICH of the four broke and prints both outputs, because
+  // "an output race" without the ordering is not actionable: the four differ
+  // only in which signal moved and which way, and the fix is different for each.
+  assert property (p_output_race_ack_rise_after_req)
+    chk_hit(VIP_CHI_CHK_LASM_OUTPUT_RACE_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_OUTPUT_RACE_E, $sformatf(
+      "banned output race: our acknowledge rose with our request low (txack 0->1, txreq=%0b); 14.6.3 forbids the assertion of RXACK before the assertion of TXREQ",
+      $sampled(vif.txlinkactivereq)));
+
+  assert property (p_output_race_ack_fall_after_req)
+    chk_hit(VIP_CHI_CHK_LASM_OUTPUT_RACE_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_OUTPUT_RACE_E, $sformatf(
+      "banned output race: our acknowledge fell with our request still high (txack 1->0, txreq=%0b); 14.6.3 forbids the deassertion of RXACK before the deassertion of TXREQ",
+      $sampled(vif.txlinkactivereq)));
+
+  assert property (p_output_race_req_rise_after_ack)
+    chk_hit(VIP_CHI_CHK_LASM_OUTPUT_RACE_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_OUTPUT_RACE_E, $sformatf(
+      "banned output race: our request rose with our acknowledge still high (txreq 0->1, txack=%0b); 14.6.3 forbids the assertion of TXREQ before the deassertion of RXACK",
+      $sampled(vif.txlinkactiveack)));
+
+  assert property (p_output_race_req_fall_after_ack)
+    chk_hit(VIP_CHI_CHK_LASM_OUTPUT_RACE_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_OUTPUT_RACE_E, $sformatf(
+      "banned output race: our request fell with our acknowledge low (txreq 1->0, txack=%0b); 14.6.3 forbids the deassertion of TXREQ before the assertion of RXACK",
+      $sampled(vif.txlinkactiveack)));
 
   assert property (p_tx_lasm_activation_timeout)
     chk_hit(VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E);

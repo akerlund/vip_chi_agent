@@ -1080,6 +1080,16 @@ class bind_chi:
       self._check_lasm(cur)
       self._check_lasm_timeouts()
 
+      # Outside the enable gate and outside _link_ever_active, matching the SV
+      # form's `disable iff (!vif.rst_n)`. An interface whose agent is never
+      # built never moves either output, so no edge occurs and nothing is
+      # judged -- the gate would buy nothing and would blind the tear-down,
+      # where two of the four orderings live. `prev` carries the last reset
+      # sample when reset has just released, which is what $rose/$fell compare
+      # against in SV, so the first post-release cycle is judged in both ports.
+      if prev is not None:
+        self._check_output_race(prev, cur)
+
       # Judged on _link_ever_active rather than on the enable gate, and the
       # reason is the same for all three: the gate is this interface's ACTIVATION
       # REQUEST, so it is low in both DEACTIVATE and STOP -- exactly the two
@@ -1203,6 +1213,68 @@ class bind_chi:
     # direction: a credit left behind is a disagreement about what the peer may
     # send, whichever machine took the link down. Judged on the reduction.
     self._check_lcrd_quiescent_in_stop(self._lasm_of(s))
+
+  # ---------------------------------------------------------------------------
+  # E section 14.6.3 / D section 13.6.3, Asynchronous race condition.
+  # ---------------------------------------------------------------------------
+  # Four orderings on ONE component's two outputs. The signal-name mapping is
+  # the whole difficulty, so it is written out: the specification names
+  # LINKACTIVE by CHANNEL GROUP and this interface names it by DIRECTION, which
+  # puts both of a component's driven outputs under tx* here.
+  #
+  #   spec TXLINKACTIVEREQ == txlinkactivereq   our transmit request
+  #   spec RXLINKACTIVEACK == txlinkactiveack   our acknowledge to them
+  #   spec RXLINKACTIVEREQ == rxlinkactivereq   their request     (input)
+  #   spec TXLINKACTIVEACK == rxlinkactiveack   their acknowledge (input)
+  #
+  # Each entry is (rising?, the signal that moved, the other output, the value
+  # the other output must already hold, the section's own sentence).
+  _OUTPUT_RACE_C = (
+    (True, "txlinkactiveack", "txlinkactivereq", 1,
+     "the assertion of RXACK before the assertion of TXREQ"),
+    (False, "txlinkactiveack", "txlinkactivereq", 0,
+     "the deassertion of RXACK before the deassertion of TXREQ"),
+    (True, "txlinkactivereq", "txlinkactiveack", 0,
+     "the assertion of TXREQ before the deassertion of RXACK"),
+    (False, "txlinkactivereq", "txlinkactiveack", 1,
+     "the deassertion of TXREQ before the assertion of RXACK"),
+  )
+
+  def _check_output_race(self, prev: dict, cur: dict) -> None:
+    """No banned output race on this component's two LINKACTIVE outputs.
+
+    "Output X must change after or at the same time as output Y, but it is not
+    permitted to change before output Y."
+
+    The peer's two outputs -- the rx* pair, inputs here -- are deliberately NOT
+    judged. Section 14.6.3 permits an observer to see those arrive out of order:
+    "race conditions can result in two signals, that are asserted within the
+    same cycle, are observed in different clock cycles", the yellow Async Input
+    Race states of Figure 14-5. A rule on them would report conformant traffic.
+    Each end is judged by its own bind, where its outputs are outputs.
+
+    "OR AT THE SAME TIME" decides the shape: only changing BEFORE is banned, so
+    the other output is read in the SAME sample as the edge. When both move on
+    one edge the other output already carries its new value and the case passes,
+    which is what the section requires. A strict ordering would false-fail every
+    component that changes both together.
+    """
+    # The edge is matched on two-state values. Here that costs nothing -- this
+    # port's signals are ints -- but the SystemVerilog twin writes the same
+    # comparison out longhand instead of using $rose/$fell, because $fell is
+    # true for X -> 0 and an undriven output coming up at reset release would
+    # otherwise be reported as a deassertion.
+    for rising, moved, other, need, sentence in self._OUTPUT_RACE_C:
+      was, now = int(prev[moved]), int(cur[moved])
+      if now != (1 if rising else 0) or was == now:
+        continue
+      edge = "0->1" if rising else "1->0"
+      self._chk(
+        "CHI_LASM_OUTPUT_RACE", int(cur[other]) == need,
+        f"banned output race: {moved} {edge} with {other}="
+        f"{int(cur[other])}; 14.6.3 forbids {sentence}",
+        "E section 14.6.3 / D section 13.6.3",
+      )
 
   def _check_lcrd_quiescent_in_stop(self, state: LasmState) -> None:
     """No L-credit may still be outstanding while the link is in STOP.

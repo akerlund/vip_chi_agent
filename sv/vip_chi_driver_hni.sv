@@ -289,14 +289,31 @@ class vip_chi_driver_hni #(
   // over.
   //
   // 14.6.3 / D 13.6.3 orders the two outputs -- the acknowledge may not assert
-  // before the request, nor deassert before it -- so they rise together
-  // (permitted) and the acknowledge is held one cycle past the request on the
-  // way down, which also keeps DEACTIVATE visible to the OR-collapsed LASM.
+  // before the request, nor deassert before it. The acknowledge here lags the
+  // request by exactly one cycle in BOTH directions, which satisfies both.
   protected task drive_rn_idle_sideband(input int p);
 
     bit want_link;
 
     want_link = this.vif_rn[p].g_drv.hni_cb.rxlinkactivereq;
+
+    // 14.6.3's fourth ordering binds US, not the peer: "the deassertion of TXREQ
+    // must not occur before the assertion of RXACK". The acknowledge lags the
+    // request by one cycle by construction, so a request held for only ONE cycle
+    // is withdrawn before its own acknowledge has risen -- which breaks that
+    // ordering and then, a cycle later, the first one as the acknowledge rises
+    // against a request that is already down. Reachable whenever the peer
+    // withdraws its request the cycle after raising it, which
+    // tc_chi_lasm_illegal_transition does on purpose. Table 14-2 says the same
+    // thing from the state machine's side: the transmitter "remains in the
+    // ACTIVATE state while it is waiting for the receiver to acknowledge".
+    //
+    // Holding the request until our own acknowledge is up is the minimum that
+    // satisfies the section, and it cannot stall -- the acknowledge IS this
+    // request, one cycle later.
+    if (this.vif_rn[p].txlinkactivereq && !this.vif_rn[p].txlinkactiveack) begin
+      want_link = 1'b1;
+    end
 
     this.vif_rn[p].g_drv.hni_cb.txlinkactivereq <= want_link;
     // The acknowledge is a ONE-CYCLE DELAY of our own request, off the wire: the

@@ -34,6 +34,10 @@ class tc_chi_lasm_race extends chi_base_test;
   localparam bit [2:0]      SIZE_C   = 3'd6;   // 64 B = 4 beats on the CHI-D cut
   localparam int            SETTLE_C = 20;
   localparam int            DEACT_TIMEOUT_C = 4000;
+  // The same re-request is a Banned Output Race, and only at the requester --
+  // see the check below for why the two ends differ.
+  localparam int            RACE_REPORTS_RNI_C = 1;
+  localparam int            RACE_REPORTS_SNF_C = 0;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -88,12 +92,21 @@ class tc_chi_lasm_race extends chi_base_test;
 
     int unsigned rni_fails;
     int unsigned snf_fails;
+    int unsigned rni_race;
+    int unsigned snf_race;
 
     phase.raise_objection(this);
 
     super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E] =
       VIP_CHI_CHK_SEV_OFF_E;
     super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    // Suppressed at BOTH ends although only the requester is expected to report
+    // it, so an unexpected report at the completer is caught by its own count
+    // below rather than by an $error that reads like a real one.
+    super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_LASM_OUTPUT_RACE_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_LASM_OUTPUT_RACE_E] =
       VIP_CHI_CHK_SEV_OFF_E;
 
     // Traffic first, so the tear-down has something real to tear down.
@@ -112,6 +125,25 @@ class tc_chi_lasm_race extends chi_base_test;
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] a request raised inside the tear-down window produced %0d (RN-I) / %0d (SN-F) illegal-transition report(s); the rule does not see the race",
         super.tc_name, rni_fails, snf_fails))
+    end
+
+    // The re-request is a Banned Output Race as well as an illegal step, and
+    // 14.6.3's THIRD ordering is the one it breaks: "the assertion of TXREQ must
+    // not occur before the deassertion of RXACK". The requester raises its
+    // request while it is still acknowledging the peer's, which is exactly the
+    // tear-down window this test aims at -- so the two rules catch one act from
+    // two directions, one as a state step and one as an output ordering.
+    //
+    // Only the requester reports it. 14.6.3 constrains each component's OWN two
+    // outputs, and the completer never changes its mind mid-tear-down, so its
+    // pair stays ordered throughout.
+    rni_race = super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_LASM_OUTPUT_RACE_E];
+    snf_race = super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_LASM_OUTPUT_RACE_E];
+
+    if ((rni_race != RACE_REPORTS_RNI_C) || (snf_race != RACE_REPORTS_SNF_C)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] the tear-down-window re-request produced %0d (RN-I) / %0d (SN-F) banned-output-race report(s), expected exactly %0d / %0d",
+        super.tc_name, rni_race, snf_race, RACE_REPORTS_RNI_C, RACE_REPORTS_SNF_C))
     end
 
     // Bring it back and prove the link survived the race.

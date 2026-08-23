@@ -34,8 +34,10 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
   localparam item_t::addr_t ADDR_C   = item_t::addr_t'(44'h3D40_0000);
   localparam bit [2:0]      SIZE_C   = 3'd6;   // 64 B = 4 beats on the CHI-D cut
   localparam int            SETTLE_C = 20;
-  // See the check below for the three steps this decomposes into.
-  localparam int            ABORT_REPORTS_C = 3;
+  // See the checks below for the steps each of these decomposes into.
+  localparam int            ABORT_REPORTS_C     = 2;
+  localparam int            RACE_REPORTS_RNI_C  = 2;
+  localparam int            RACE_REPORTS_SNF_C  = 0;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -63,6 +65,8 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
 
     int unsigned rni_fails;
     int unsigned snf_fails;
+    int unsigned rni_race;
+    int unsigned snf_race;
 
     phase.raise_objection(this);
 
@@ -72,6 +76,14 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
     super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E] =
       VIP_CHI_CHK_SEV_OFF_E;
     super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    // Suppressed at BOTH ends although only the requester is expected to report
+    // it, so an unexpected report at the completer is caught by its own count
+    // below -- naming the rule -- rather than by an $error indistinguishable
+    // from a real one.
+    super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_LASM_OUTPUT_RACE_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_LASM_OUTPUT_RACE_E] =
       VIP_CHI_CHK_SEV_OFF_E;
 
     // Ordinary traffic after the aborted bring-up: the link must have come up
@@ -109,26 +121,31 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
         super.tc_name, snf_fails))
     end
 
-    // One aborted bring-up is now THREE reports per bind, and the decomposition
-    // is the point rather than a number to tune. The requester raises its
-    // request and withdraws it before the acknowledge, which Table 14-2 forbids
-    // -- "the transmitter remains in the ACTIVATE state while it is waiting for
-    // the receiver to acknowledge" -- and that one illegal act leaves three
-    // off-axis steps behind, across the two machines this bind judges separately:
+    // One aborted bring-up is TWO reports per bind, and the decomposition is the
+    // point rather than a number to tune. The requester raises its request and
+    // withdraws it before the acknowledge, which Table 14-2 forbids -- "the
+    // transmitter remains in the ACTIVATE state while it is waiting for the
+    // receiver to acknowledge" -- and that one illegal act leaves two off-axis
+    // steps behind on the machine that owns the aborted request, which each end
+    // sees from its own side (TX at the requester, RX at the completer):
     //
-    //   ACTIVATE -> STOP        the abort itself: our request up, then down,
-    //                           with no acknowledge in between
-    //   STOP -> DEACTIVATE      the acknowledge arriving after the request it
-    //                           answers has already gone
-    //   ACTIVATE -> DEACTIVATE  request and acknowledge crossing in one cycle
+    //   ACTIVATE -> STOP      the abort itself: the request up, then down, with
+    //                         no acknowledge in between
+    //   STOP -> DEACTIVATE    the acknowledge arriving a cycle later, for a
+    //                         request that is already gone
     //
-    // None of the three is a permitted race. Figure 14-5's coloured states are
-    // COMBINED (Tx,Rx) states reached by diagonals where two signals move at
-    // once; each machine's own axis is a strictly one-way cycle with no
-    // exceptions, and these are single-machine steps. Under the OR-collapsed
-    // model the second and third were merged with the other direction and never
-    // appeared -- the count went up because the checker got sharper, not because
-    // the stimulus changed.
+    // Neither is a permitted race. Figure 14-5's coloured states are COMBINED
+    // (Tx,Rx) states reached by diagonals where two signals move at once; each
+    // machine's own axis is a strictly one-way cycle with no exceptions, and
+    // these are single-machine steps.
+    //
+    // It was THREE until the completer stopped withdrawing its own request
+    // before its own acknowledge had risen -- 14.6.3's fourth ordering, fixed in
+    // the SN-F, HN-F and HN-I sideband drivers. That defect added a third step,
+    // ACTIVATE -> DEACTIVATE, where request and acknowledge crossed in one
+    // cycle. The count fell because the VIP got more conformant, not because the
+    // checker got quieter, and the output-race count below is what holds the fix
+    // in place.
     //
     // Checked EXACTLY, not as a ceiling: drift either way means the handshake
     // changed shape and wants reading, not absorbing.
@@ -136,6 +153,26 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] one aborted activation produced %0d (RN-I) / %0d (SN-F) counts, expected exactly %0d at each end; more means the legal bring-up that followed is being flagged too, fewer means a machine stopped judging its own axis",
         super.tc_name, rni_fails, snf_fails, ABORT_REPORTS_C))
+    end
+
+    // The same abort is a Banned Output Race, and 14.6.3 attributes it to ONE
+    // component: the requester deasserts TXREQ before RXACK is asserted (the
+    // fourth ordering), and a cycle later its own acknowledge rises against a
+    // request that is already down (the first).
+    //
+    // The completer must report NONE, and that asymmetry is the assertion worth
+    // having: 14.6.3 binds each component's own two outputs, so a completer
+    // dragged into an illegal handshake by its peer still has to keep its own
+    // pair ordered. This one did not, until its sideband driver was made to hold
+    // its request until its own acknowledge had risen. A non-zero count here
+    // means that regressed.
+    rni_race = super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_LASM_OUTPUT_RACE_E];
+    snf_race = super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_LASM_OUTPUT_RACE_E];
+
+    if ((rni_race != RACE_REPORTS_RNI_C) || (snf_race != RACE_REPORTS_SNF_C)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] the aborted activation produced %0d (RN-I) / %0d (SN-F) banned-output-race report(s), expected exactly %0d / %0d; a report at the completer means its own two outputs stopped being ordered against each other",
+        super.tc_name, rni_race, snf_race, RACE_REPORTS_RNI_C, RACE_REPORTS_SNF_C))
     end
 
     `uvm_info(get_name(), $sformatf(

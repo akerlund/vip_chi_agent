@@ -31,6 +31,11 @@ from __future__ import annotations
 from chi_base_test import chi_base_test
 
 _RULE_C = "CHI_LASM_LEGAL_TRANSITION"
+# The same re-request is also a Banned Output Race, and only at the requester --
+# see the assertion below.
+_RACE_RULE_C = "CHI_LASM_OUTPUT_RACE"
+_RACE_REPORTS_RNI_C = 1
+_RACE_REPORTS_SNF_C = 0
 ADDR_C = 0x3E80_0000
 SIZE_C = 6                      # 64 B = 4 beats on the CHI-D cut
 SETTLE_C = 20
@@ -46,6 +51,10 @@ class tc_chi_lasm_race(chi_base_test):
     super().connect_phase()
     for checker in (self.tb_env.rni_sva, self.tb_env.snf_sva):
       checker.expect_failure(_RULE_C)
+      # Declared at both binds so an unexpected report at the completer fails
+      # on its own count below, naming the rule, rather than on the generic
+      # "unexpected violation" assertion.
+      checker.expect_failure(_RACE_RULE_C)
 
   async def _wait_deactivate_done(self, want):
     waited = 0
@@ -99,9 +108,27 @@ class tc_chi_lasm_race(chi_base_test):
     await self._one_read(ADDR_C + 64)
     await self.wait_clocks(SETTLE_C)
 
+    # The re-request is a Banned Output Race as well as an illegal step, and
+    #14.6.3's third ordering is the one it breaks: "the assertion of TXREQ must
+    # not occur before the deassertion of RXACK". The requester raises its
+    # request while it is still acknowledging the peer's, which is precisely the
+    # tear-down window this test aims at -- so the two rules catch the same act
+    # from different directions, one as a state step and one as an output
+    # ordering.
+    #
+    # Only the requester reports it. The completer's two outputs stay ordered
+    # throughout, because 14.6.3 constrains each component's own pair and the
+    # completer never changes its mind mid-tear-down.
+    rni_race = rni.fail_count.get(_RACE_RULE_C, 0)
+    snf_race = snf.fail_count.get(_RACE_RULE_C, 0)
+    assert rni_race == _RACE_REPORTS_RNI_C and snf_race == _RACE_REPORTS_SNF_C, (
+      f"the tear-down-window re-request produced {rni_race} (RN-I) / {snf_race} "
+      f"(SN-F) banned-output-race report(s), expected exactly "
+      f"{_RACE_REPORTS_RNI_C} / {_RACE_REPORTS_SNF_C}")
+
     assert rni.errors == 0 and snf.errors == 0, (
       f"checkers reported {rni.errors} (RN-I) / {snf.errors} (SN-F) unexpected "
-      f"violation(s) beyond the declared {_RULE_C}")
+      f"violation(s) beyond the declared {_RULE_C} and {_RACE_RULE_C}")
 
     self.logger.info(
       f"Test (tc_chi_lasm_race) PASS: a request raised inside the tear-down "
