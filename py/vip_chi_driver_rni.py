@@ -322,6 +322,16 @@ class vip_chi_driver_rni(uvm_driver):
     self.reset_outputs()
 
   def drive_idle_sideband(self):
+    # The plain mirror, deliberately: it is ALREADY the one-cycle delay that
+    # E section 14.6.3 / D 13.6.3 wants. The drive is non-blocking, so the
+    # acknowledge lands one cycle behind the request it mirrors, rising and
+    # falling -- which is exactly "RXACK must not change before TXREQ".
+    #
+    # An earlier attempt gated this on self._req_driven to enforce the same rule
+    # explicitly. That was over-engineering and it BROKE the invariant: an
+    # attribute is not a wire, so two callers in one cycle could disagree, and
+    # the acknowledge fell a cycle early. Reading only wires is what makes this
+    # call-order independent.
     self.bus.drive(txlinkactiveack=self.bus.get("rxlinkactivereq"))
 
   # ==========================================================================

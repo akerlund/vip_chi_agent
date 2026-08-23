@@ -34,6 +34,8 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
   localparam item_t::addr_t ADDR_C   = item_t::addr_t'(44'h3D40_0000);
   localparam bit [2:0]      SIZE_C   = 3'd6;   // 64 B = 4 beats on the CHI-D cut
   localparam int            SETTLE_C = 20;
+  // See the check below for the three steps this decomposes into.
+  localparam int            ABORT_REPORTS_C = 3;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -107,12 +109,33 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
         super.tc_name, snf_fails))
     end
 
-    // Exactly one aborted bring-up, so the run must not be littered with them:
-    // a check that fired on the legal activation that followed would count more.
-    if ((rni_fails > 2) || (snf_fails > 2)) begin
+    // One aborted bring-up is now THREE reports per bind, and the decomposition
+    // is the point rather than a number to tune. The requester raises its
+    // request and withdraws it before the acknowledge, which Table 14-2 forbids
+    // -- "the transmitter remains in the ACTIVATE state while it is waiting for
+    // the receiver to acknowledge" -- and that one illegal act leaves three
+    // off-axis steps behind, across the two machines this bind judges separately:
+    //
+    //   ACTIVATE -> STOP        the abort itself: our request up, then down,
+    //                           with no acknowledge in between
+    //   STOP -> DEACTIVATE      the acknowledge arriving after the request it
+    //                           answers has already gone
+    //   ACTIVATE -> DEACTIVATE  request and acknowledge crossing in one cycle
+    //
+    // None of the three is a permitted race. Figure 14-5's coloured states are
+    // COMBINED (Tx,Rx) states reached by diagonals where two signals move at
+    // once; each machine's own axis is a strictly one-way cycle with no
+    // exceptions, and these are single-machine steps. Under the OR-collapsed
+    // model the second and third were merged with the other direction and never
+    // appeared -- the count went up because the checker got sharper, not because
+    // the stimulus changed.
+    //
+    // Checked EXACTLY, not as a ceiling: drift either way means the handshake
+    // changed shape and wants reading, not absorbing.
+    if ((rni_fails != ABORT_REPORTS_C) || (snf_fails != ABORT_REPORTS_C)) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] one aborted activation produced %0d (RN-I) / %0d (SN-F) counts; the legal bring-up that followed is being flagged too",
-        super.tc_name, rni_fails, snf_fails))
+        "FATAL [%s] one aborted activation produced %0d (RN-I) / %0d (SN-F) counts, expected exactly %0d at each end; more means the legal bring-up that followed is being flagged too, fewer means a machine stopped judging its own axis",
+        super.tc_name, rni_fails, snf_fails, ABORT_REPORTS_C))
     end
 
     `uvm_info(get_name(), $sformatf(

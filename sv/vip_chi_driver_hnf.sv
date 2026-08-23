@@ -133,6 +133,10 @@ class vip_chi_driver_hnf #(
 
   protected bit rn_link_up [N_RNF_PORTS];
 
+  // Last cycle's value of this home's OWN transmit-link request on each
+  // RN-facing port, so the acknowledge can be held one cycle past it on the way
+  // down. See drive_rn_idle_sideband.
+
   // One-shot latch per RN port for cfg.flitpend_without_valid: the control fires
   // once per link so the count a test asserts on is unambiguous.
   protected bit rn_flitpend_negctl_done [N_RNF_PORTS];
@@ -161,6 +165,7 @@ class vip_chi_driver_hnf #(
   protected int unsigned sn_dat_lcrdv_pending [SN_ARR_C];
 
   protected bit sn_link_up [SN_ARR_C];
+
 
   // Rolling downstream TxnID + single-outstanding completion capture (filled by
   // the independent SN capture threads, drained by the blocking downstream
@@ -297,8 +302,38 @@ class vip_chi_driver_hnf #(
     ANNOUNCE_SNP_E
   } announce_ch_t;
 
+  // The home transmits RSP, DAT and SNP toward each RN, so those channels are
+  // its TXLINK on that port and IHI 0050 E 14.6.1 / D 13.6.1 makes their state
+  // "controlled by" this component -- it has to ask for the link. Until now
+  // txlinkactivereq was written in exactly one place on this port, as 1'b0 in
+  // reset_outputs, and the home sent snoops and responses on the strength of the
+  // RN's request. E 14.5.1 / D 13.5.1 is explicit that an interface carries two
+  // handshakes, "two signals ... for all the transmit channels and two signals
+  // ... for all the receive channels".
+  //
+  // 14.6.3 / D 13.6.3 orders the two outputs against each other -- the
+  // acknowledge may not assert before the request, nor deassert before it -- so
+  // they rise together here (permitted: "or at the same time as") and the
+  // acknowledge is held one cycle past the request on the way down. Falling
+  // together is also permitted by the specification, but while this VIP's LASM
+  // is still the OR of both directions it would step the collapsed state
+  // RUN -> STOP with no DEACTIVATE in between, which CHI_LASM_LEGAL_TRANSITION
+  // would then report against the model.
   protected task drive_rn_idle_sideband(input int p);
-    this.vif_rn[p].g_drv.hnf_cb.txlinkactiveack <= this.vif_rn[p].g_drv.hnf_cb.rxlinkactivereq;
+
+    bit want_link;
+
+    want_link = this.vif_rn[p].g_drv.hnf_cb.rxlinkactivereq;
+
+    this.vif_rn[p].g_drv.hnf_cb.txlinkactivereq <= want_link;
+    // The acknowledge is a ONE-CYCLE DELAY of our own request, off the wire: the
+    // drive is non-blocking, so a wire read carries last cycle's value and the
+    // acknowledge lands exactly one cycle behind the request in both directions.
+    // Reading only wires is what makes it independent of how many threads call
+    // this in one cycle.
+    this.vif_rn[p].g_drv.hnf_cb.txlinkactiveack <=
+      this.vif_rn[p].txlinkactivereq;
+
   endtask
 
   // ---------------------------------------------------------------------------
@@ -660,8 +695,13 @@ class vip_chi_driver_hnf #(
   // ===========================================================================
 
   // Mirror the SN's link-activation request onto our ack (bidirectional bring-up).
+  // Ordered against our OWN request rather than mirrored, now that the SN raises
+  // one. IHI 0050 E 14.6.3 / D 13.6.3: "the assertion of RXACK must not occur
+  // before the assertion of TXREQ", and the deassertion likewise. Mirroring was
+  // safe only while the peer's request was identically zero.
   protected task drive_sn_idle_sideband(input int s);
-    this.vif_sn[s].g_drv.rni_cb.txlinkactiveack <= this.vif_sn[s].g_drv.rni_cb.rxlinkactivereq;
+    this.vif_sn[s].g_drv.rni_cb.txlinkactiveack <=
+      this.vif_sn[s].g_drv.rni_cb.rxlinkactivereq;
   endtask
 
   // Per-SN credit/link loop: advertise our RSP/DAT receive credits to the SN and

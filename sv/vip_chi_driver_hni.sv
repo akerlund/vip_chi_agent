@@ -94,6 +94,10 @@ class vip_chi_driver_hni #(
   int unsigned arb_window_cycles = 0;
 
   // Per-RN send-side budgets (HN -> RN).
+  // Last cycle's value of this proxy's OWN transmit-link request on each
+  // RN-facing port, so the acknowledge can be held one cycle past it on the way
+  // down. See drive_rn_idle_sideband.
+
   protected vip_chi_lcrd_mgr rn_rsp_send_mgr [N_RN_PORTS];
   protected vip_chi_lcrd_mgr rn_dat_send_mgr [N_RN_PORTS];
 
@@ -113,6 +117,7 @@ class vip_chi_driver_hni #(
 
   protected bit rn_link_up [N_RN_PORTS];
   protected bit sn_link_up [N_SN_PORTS];
+
 
   // Return-path routing: RN srcid -> RN port (learned when the REQ is forwarded).
   protected int port_of_node [longint];
@@ -275,12 +280,42 @@ class vip_chi_driver_hni #(
   // ---------------------------------------------------------------------------
   // Idle sidebands (mirror each peer's link-activation request onto our ack).
   // ---------------------------------------------------------------------------
+  // The proxy transmits RSP and DAT toward each RN, so those channels are its
+  // TXLINK on that port and IHI 0050 E 14.6.1 / D 13.6.1 makes their state
+  // "controlled by" this component -- it has to ask for the link. Until now
+  // txlinkactivereq was written in exactly one place on this port, as 1'b0 in
+  // reset_outputs. The SN-facing port already does this correctly, which is what
+  // made the omission easy to miss: the same driver gets it right one direction
+  // over.
+  //
+  // 14.6.3 / D 13.6.3 orders the two outputs -- the acknowledge may not assert
+  // before the request, nor deassert before it -- so they rise together
+  // (permitted) and the acknowledge is held one cycle past the request on the
+  // way down, which also keeps DEACTIVATE visible to the OR-collapsed LASM.
   protected task drive_rn_idle_sideband(input int p);
-    this.vif_rn[p].g_drv.hni_cb.txlinkactiveack <= this.vif_rn[p].g_drv.hni_cb.rxlinkactivereq;
+
+    bit want_link;
+
+    want_link = this.vif_rn[p].g_drv.hni_cb.rxlinkactivereq;
+
+    this.vif_rn[p].g_drv.hni_cb.txlinkactivereq <= want_link;
+    // The acknowledge is a ONE-CYCLE DELAY of our own request, off the wire: the
+    // drive is non-blocking, so a wire read carries last cycle's value and the
+    // acknowledge lands exactly one cycle behind the request in both directions.
+    // Reading only wires is what makes it independent of how many threads call
+    // this in one cycle.
+    this.vif_rn[p].g_drv.hni_cb.txlinkactiveack <=
+      this.vif_rn[p].txlinkactivereq;
+
   endtask
 
+  // Ordered against our OWN request rather than mirrored, now that the SN raises
+  // one. IHI 0050 E 14.6.3 / D 13.6.3: "the assertion of RXACK must not occur
+  // before the assertion of TXREQ", and the deassertion likewise. Mirroring was
+  // safe only while the peer's request was identically zero.
   protected task drive_sn_idle_sideband(input int s);
-    this.vif_sn[s].g_drv.rni_cb.txlinkactiveack <= this.vif_sn[s].g_drv.rni_cb.rxlinkactivereq;
+    this.vif_sn[s].g_drv.rni_cb.txlinkactiveack <=
+      this.vif_sn[s].g_drv.rni_cb.rxlinkactivereq;
   endtask
 
   // ---------------------------------------------------------------------------

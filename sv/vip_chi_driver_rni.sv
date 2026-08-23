@@ -176,6 +176,7 @@ class vip_chi_driver_rni #(
   // cannot disagree.
   protected bit req_driven;
 
+
   // Graceful-deactivation state (see deactivate_watch).
   //
   // link_deactivating suppresses NEW receive-credit grants: a receiver may not
@@ -245,8 +246,31 @@ class vip_chi_driver_rni #(
   // Keep the always-on link acknowledgement and completion credits coherent
   // while the RN-I is waiting or driving traffic.
   // ---------------------------------------------------------------------------
+  // Gated on req_driven, which matters now that the peer raises a request of its
+  // own. IHI 0050 E 14.6.3 / D 13.6.3 orders this component's two outputs: "the
+  // assertion of RXACK must not occur before the assertion of TXREQ". Mirroring
+  // the peer's request straight onto the acknowledge would break that at a reset
+  // release where the completer's request rises first -- and it was safe only
+  // while rxlinkactivereq was identically zero, which is the gap this change
+  // closes.
+  //
+  // The acknowledge is held one cycle past our own request on the way down for
+  // the same reason the completer holds its own: 14.6.3 also says the
+  // deassertion of RXACK must not precede the deassertion of TXREQ, and while
+  // the LASM is still the OR of both directions a same-cycle fall would step the
+  // collapsed state RUN -> STOP with no DEACTIVATE in between.
   protected task drive_idle_sideband();
-    this.vif_rni.g_drv.rni_cb.txlinkactiveack <= this.vif_rni.g_drv.rni_cb.rxlinkactivereq;
+    // The plain mirror, deliberately: it is ALREADY the one-cycle delay
+    // IHI 0050 E 14.6.3 / D 13.6.3 asks for. The drive is non-blocking, so the
+    // acknowledge lands one cycle behind the request it mirrors, rising AND
+    // falling -- which is exactly "RXACK must not change before TXREQ".
+    //
+    // An earlier attempt gated this on req_driven to enforce the rule
+    // explicitly, and that BROKE it: a class member is not a wire, this task
+    // runs from several threads in a cycle, and two callers could disagree.
+    // Reading only wires is what makes the ordering call-order independent.
+    this.vif_rni.g_drv.rni_cb.txlinkactiveack <=
+      this.vif_rni.g_drv.rni_cb.rxlinkactivereq;
   endtask
 
   // ---------------------------------------------------------------------------

@@ -32,6 +32,8 @@ from __future__ import annotations
 from chi_base_test import chi_base_test
 
 _RULE_C = "CHI_LASM_LEGAL_TRANSITION"
+# See the assertion below for the three steps this decomposes into.
+_ABORT_REPORTS_C = 3
 ADDR_C = 0x3D40_0000
 SIZE_C = 6                      # 64 B = 4 beats on the CHI-D cut
 SETTLE_C = 20
@@ -82,11 +84,36 @@ class tc_chi_lasm_illegal_transition(chi_base_test):
       f"the SN-F checker reported {snf_fails} illegal LASM transition(s) on a "
       f"deliberately aborted activation -- the transition check may be vacuous")
 
-    # Exactly one aborted bring-up, so the run must not be littered with them:
-    # a check that fired on the legal activation that followed would report more.
-    assert rni_fails <= 2 and snf_fails <= 2, (
+    # Exactly one aborted bring-up, so the run must not be littered with them --
+    # one aborted activation is now THREE reports per bind, and the
+    # decomposition is the point rather than a number to tune. The requester
+    # raises its request and withdraws it before the acknowledge, which Table
+    # 14-2 forbids -- "the transmitter remains in the ACTIVATE state while it is
+    # waiting for the receiver to acknowledge" -- and that one illegal act leaves
+    # three off-axis steps behind, spread across the two machines this bind now
+    # judges separately:
+    #
+    #   ACTIVATE -> STOP        the abort itself: our request up, then down,
+    #                           with no acknowledge in between
+    #   STOP -> DEACTIVATE      the acknowledge arriving after the request it
+    #                           answers has already gone
+    #   ACTIVATE -> DEACTIVATE  request and acknowledge crossing in one cycle
+    #
+    # None of the three is a permitted race. Figure 14-5's coloured states are
+    # COMBINED (Tx,Rx) states reached by diagonals where two signals move at
+    # once; each machine's own axis is a strictly one-way cycle with no
+    # exceptions, and these are single-machine steps. Under the old OR-collapsed
+    # model the second and third were merged with the other direction and never
+    # appeared -- so the count went up because the checker got sharper, not
+    # because the stimulus changed.
+    #
+    # Asserted EXACTLY, not as a ceiling: a drift in either direction means the
+    # handshake changed shape and should be read, not absorbed.
+    assert rni_fails == _ABORT_REPORTS_C and snf_fails == _ABORT_REPORTS_C, (
       f"one aborted activation produced {rni_fails} (RN-I) / {snf_fails} (SN-F) "
-      f"reports; the legal bring-up that followed is being flagged too")
+      f"reports, expected exactly {_ABORT_REPORTS_C} at each end; more means the "
+      f"legal bring-up that followed is being flagged too, fewer means a machine "
+      f"stopped judging its own axis")
 
     # The deliberate failures are demoted, so nothing else may have fired.
     assert rni.errors == 0 and snf.errors == 0, (

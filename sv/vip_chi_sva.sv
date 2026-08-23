@@ -183,9 +183,45 @@ module vip_chi_sva #(
   //   RN-I RUN => txlinkactivereq & rxlinkactiveack
   //   SN-F RUN => rxlinkactivereq & txlinkactiveack
   // and both reduce to {req_either, ack_either} == RUN.
+  // TWO machines, per IHI 0050 E 14.6.1 / D 13.6.1, which defines them by the
+  // direction of the PAYLOAD: TXLINK is every channel whose payload is an output
+  // of this component and RXLINK every channel whose payload is an input, with
+  // the TXLINK state "controlled by" this component and the RXLINK state
+  // "controlled by the component on the other side of the interface". 14.5.1 is
+  // explicit about the count -- "An entire interface uses a total of four
+  // signals, two signals are used for all the transmit channels and two signals
+  // are used for all the receive channels" -- and 14.6.2 says Figure 14-5 "is
+  // formatted so that the independent nature of the Tx and Rx state machines can
+  // be seen".
+  //
+  // Each machine is the request/acknowledge pair for ONE direction, taken at
+  // this endpoint:
+  //
+  //   TX: our own request, and the acknowledge that comes back for it
+  //   RX: the peer's request to us, and the acknowledge we give it
+  //
+  // This replaces an OR of both directions onto one four-state machine. The OR
+  // was not a shortcut -- it was the only expression that could read a link
+  // where the completer never raised a request of its own and the requester's
+  // acknowledge was therefore permanently zero. With both handshakes live the OR
+  // can no longer represent either machine: it hides an aborted activation
+  // behind the other direction's request, which is how three negative controls
+  // came back reporting zero.
+  function automatic vip_chi_lasm_state_t tx_lasm();
+    return vip_chi_lasm(vif.txlinkactivereq, vif.rxlinkactiveack);
+  endfunction
+
+  function automatic vip_chi_lasm_state_t rx_lasm();
+    return vip_chi_lasm(vif.rxlinkactivereq, vif.txlinkactiveack);
+  endfunction
+
+  // "Anything is up", which is the right gate for the CHANNEL rules: a flit may
+  // cross as soon as its own direction is running, and the credit rules need the
+  // link out of STOP in either direction. Deliberately still a reduction -- the
+  // per-direction distinction matters to the handshake rules below, not to the
+  // question "is this interface carrying anything".
   function automatic vip_chi_lasm_state_t link_lasm();
-    return vip_chi_lasm((vif.txlinkactivereq || vif.rxlinkactivereq),
-                        (vif.txlinkactiveack || vif.rxlinkactiveack));
+    return (tx_lasm() != VIP_CHI_LASM_STOP_E) ? tx_lasm() : rx_lasm();
   endfunction
 
   // Anywhere but STOP (ACTIVATE / RUN / DEACTIVATE). The correct gate for the
@@ -243,23 +279,30 @@ module vip_chi_sva #(
   // the link came back and the first transition after every deactivation would
   // be measured from the wrong place.
   //
-  // lasm_dwell counts cycles held in the current state, which is what the two
-  // link timeouts below measure. A state machine that cannot say HOW LONG it has
+  // The dwell counters count cycles held in the current state, which is what the
+  // two link timeouts below measure, and there is one per machine because
+  // "stuck waiting for an acknowledge" is a claim about ONE direction. A state machine that cannot say HOW LONG it has
   // been somewhere can only report a wrong transition, never a missing one --
   // and a link that never leaves ACTIVATE is precisely a missing one.
-  vip_chi_lasm_state_t lasm_state;
-  int unsigned         lasm_dwell;
+  vip_chi_lasm_state_t tx_lasm_state;
+  int unsigned         tx_lasm_dwell;
+  vip_chi_lasm_state_t rx_lasm_state;
+  int unsigned         rx_lasm_dwell;
 
   always_ff @(posedge vif.clk) begin
     if (!vif.rst_n) begin
       // Out of reset the sideband is held idle, which the reset-idle rule
       // already requires, so STOP is the state the link genuinely restarts in.
-      lasm_state <= VIP_CHI_LASM_STOP_E;
-      lasm_dwell <= 0;
+      tx_lasm_state <= VIP_CHI_LASM_STOP_E;
+      tx_lasm_dwell <= 0;
+      rx_lasm_state <= VIP_CHI_LASM_STOP_E;
+      rx_lasm_dwell <= 0;
     end
     else begin
-      lasm_state <= link_lasm();
-      lasm_dwell <= (link_lasm() == lasm_state) ? (lasm_dwell + 1) : 0;
+      tx_lasm_state <= tx_lasm();
+      tx_lasm_dwell <= (tx_lasm() == tx_lasm_state) ? (tx_lasm_dwell + 1) : 0;
+      rx_lasm_state <= rx_lasm();
+      rx_lasm_dwell <= (rx_lasm() == rx_lasm_state) ? (rx_lasm_dwell + 1) : 0;
     end
   end
 
@@ -273,7 +316,7 @@ module vip_chi_sva #(
   covergroup cg_lasm;
     option.per_instance = 1;
 
-    cp_state: coverpoint lasm_state {
+    cp_tx_state: coverpoint tx_lasm_state {
       bins stop       = {VIP_CHI_LASM_STOP_E};
       bins activate   = {VIP_CHI_LASM_ACTIVATE_E};
       bins run        = {VIP_CHI_LASM_RUN_E};
@@ -285,7 +328,24 @@ module vip_chi_sva #(
     // let a regression "cover" a violation. What this records is which parts of
     // the cycle the traffic actually walked: a link that comes up and never goes
     // down covers two of the four edges, and the report is what says so.
-    cp_transition: coverpoint lasm_state {
+    cp_tx_transition: coverpoint tx_lasm_state {
+      bins bring_up  = (VIP_CHI_LASM_STOP_E       => VIP_CHI_LASM_ACTIVATE_E);
+      bins running   = (VIP_CHI_LASM_ACTIVATE_E   => VIP_CHI_LASM_RUN_E);
+      bins tear_down = (VIP_CHI_LASM_RUN_E        => VIP_CHI_LASM_DEACTIVATE_E);
+      bins stopped   = (VIP_CHI_LASM_DEACTIVATE_E => VIP_CHI_LASM_STOP_E);
+    }
+
+    // The receive machine gets its own pair, not a shared one. A link that is
+    // driven hard in one direction and idle in the other used to look fully
+    // covered; two axes are what say which direction actually walked the cycle.
+    cp_rx_state: coverpoint rx_lasm_state {
+      bins stop       = {VIP_CHI_LASM_STOP_E};
+      bins activate   = {VIP_CHI_LASM_ACTIVATE_E};
+      bins run        = {VIP_CHI_LASM_RUN_E};
+      bins deactivate = {VIP_CHI_LASM_DEACTIVATE_E};
+    }
+
+    cp_rx_transition: coverpoint rx_lasm_state {
       bins bring_up  = (VIP_CHI_LASM_STOP_E       => VIP_CHI_LASM_ACTIVATE_E);
       bins running   = (VIP_CHI_LASM_ACTIVATE_E   => VIP_CHI_LASM_RUN_E);
       bins tear_down = (VIP_CHI_LASM_RUN_E        => VIP_CHI_LASM_DEACTIVATE_E);
@@ -2132,7 +2192,7 @@ module vip_chi_sva #(
   // and one that jumps RUN -> STOP dropped request and acknowledge together
   // instead of retiring the acknowledge after the request.
   //
-  // Gated on rst_n only, NOT on checks_enable -- see the comment on lasm_state
+  // Gated on rst_n only, NOT on checks_enable -- see the comment on the LASM
   // for why gating a link-state rule on link activity would blind it to the
   // deactivation half of the cycle. An interface whose agent is never built
   // holds STOP throughout and only ever sees the legal hold, so it stays silent.
@@ -2288,9 +2348,18 @@ module vip_chi_sva #(
     endcase
   endfunction
 
-  property p_lasm_legal_transition;
+  // One property per machine, both under the same check ID. Two IDs would let a
+  // user stand down one direction and leave the other, which is not a
+  // distinction the specification draws -- the two machines are independent in
+  // their state, not in their legality.
+  property p_tx_lasm_legal_transition;
     @(posedge vif.clk) disable iff (!vif.rst_n)
-      vip_chi_lasm_legal_step(lasm_state, link_lasm());
+      vip_chi_lasm_legal_step(tx_lasm_state, tx_lasm());
+  endproperty
+
+  property p_rx_lasm_legal_transition;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      vip_chi_lasm_legal_step(rx_lasm_state, rx_lasm());
   endproperty
 
   // A link that never leaves ACTIVATE or DEACTIVATE is stuck, and stuck is the
@@ -2307,16 +2376,32 @@ module vip_chi_sva #(
   // Fired on the crossing, not on every cycle beyond it: a stuck link would
   // otherwise report once per cycle for the rest of the run, which buries the
   // first (and only useful) report under thousands of copies.
-  property p_lasm_activation_timeout;
+  // Per machine, because "stuck waiting for an acknowledge" is a claim about ONE
+  // direction. Under the OR it was a claim about neither: the other direction's
+  // acknowledge could leave the collapsed state in RUN while this one waited
+  // forever, which is exactly how the stall control stopped firing.
+  property p_tx_lasm_activation_timeout;
     @(posedge vif.clk) disable iff (!vif.rst_n || (link_activation_timeout_cycles <= 0))
-      !((link_lasm() == VIP_CHI_LASM_ACTIVATE_E) &&
-        (lasm_dwell == unsigned'(link_activation_timeout_cycles)));
+      !((tx_lasm() == VIP_CHI_LASM_ACTIVATE_E) &&
+        (tx_lasm_dwell == unsigned'(link_activation_timeout_cycles)));
   endproperty
 
-  property p_lasm_deactivation_timeout;
+  property p_rx_lasm_activation_timeout;
+    @(posedge vif.clk) disable iff (!vif.rst_n || (link_activation_timeout_cycles <= 0))
+      !((rx_lasm() == VIP_CHI_LASM_ACTIVATE_E) &&
+        (rx_lasm_dwell == unsigned'(link_activation_timeout_cycles)));
+  endproperty
+
+  property p_tx_lasm_deactivation_timeout;
     @(posedge vif.clk) disable iff (!vif.rst_n || (link_deactivation_timeout_cycles <= 0))
-      !((link_lasm() == VIP_CHI_LASM_DEACTIVATE_E) &&
-        (lasm_dwell == unsigned'(link_deactivation_timeout_cycles)));
+      !((tx_lasm() == VIP_CHI_LASM_DEACTIVATE_E) &&
+        (tx_lasm_dwell == unsigned'(link_deactivation_timeout_cycles)));
+  endproperty
+
+  property p_rx_lasm_deactivation_timeout;
+    @(posedge vif.clk) disable iff (!vif.rst_n || (link_deactivation_timeout_cycles <= 0))
+      !((rx_lasm() == VIP_CHI_LASM_DEACTIVATE_E) &&
+        (rx_lasm_dwell == unsigned'(link_deactivation_timeout_cycles)));
   endproperty
 
   // No L-credit may still be outstanding while the link is in STOP. A sender
@@ -2590,6 +2675,20 @@ module vip_chi_sva #(
   // has always claimed. A node tearing its link down must not still be telling
   // the receiver it may have snoopable transactions outstanding.
   //
+  // THE ONE RULE THAT KEEPS THE REDUCTION after the Tx/Rx split, and the reason
+  // is a real distinction rather than convenience. Read per machine, this rule
+  // treats "our transmit link is in STOP" as "our tear-down has begun" -- but
+  // STOP is also where a machine sits when it was NEVER BROUGHT UP. On the
+  // hand-driven A0 link the completer never raises a request of its own, so its
+  // Tx machine is in STOP for the whole run, and a per-machine reading reported
+  // three violations against a node that was not tearing anything down.
+  // Measured, on the first sweep after the split.
+  //
+  // The claim here is about the INTERFACE being torn down, which is what the
+  // reduction says, so the reduction is the faithful term. The split matters to
+  // the handshake rules, which judge how a machine MOVES; this one judges where
+  // the interface IS.
+  //
   // ACTIVATE is deliberately NOT included, and the distinction is the point.
   // TXSACTIVE is an early warning, not a report: a node bringing a link up
   // already knows whether it will have snoopable traffic, and raising the
@@ -2770,7 +2869,7 @@ module vip_chi_sva #(
                       (rsp_opcode_t'(vif.txrspflit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_READ_RECEIPT_C)));
   endproperty
 
-  // The action block runs in the REACTIVE region, where lasm_state has already
+  // The action block runs in the REACTIVE region, where the registered state has
   // taken the value the property was comparing against and the sideband may have
   // moved again. Reading them live reports a step that did not happen: this rule
   // printed "RUN -> RUN" -- a legal hold -- for an actual STOP -> RUN, and cost a
@@ -2779,32 +2878,63 @@ module vip_chi_sva #(
   // link_lasm() cannot be sampled as a whole because it reads the interface
   // inside a function, so the state is rebuilt here from sampled signals. It is
   // the same expression, term for term.
-  assert property (p_lasm_legal_transition)
+  assert property (p_tx_lasm_legal_transition)
     chk_hit(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E);
-  else begin : b_lasm_legal_transition_miss
+  else begin : b_tx_lasm_legal_transition_miss
     vip_chi_lasm_state_t judged_cur;
     vip_chi_lasm_state_t judged_nxt;
-    judged_cur = $sampled(lasm_state);
-    judged_nxt = vip_chi_lasm(
-      ($sampled(vif.txlinkactivereq) || $sampled(vif.rxlinkactivereq)),
-      ($sampled(vif.txlinkactiveack) || $sampled(vif.rxlinkactiveack)));
-    chk_miss(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E, $sformatf("link stepped %s -> %s; the LASM may only hold or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
-      judged_cur.name(), judged_nxt.name()));
+    judged_cur = $sampled(tx_lasm_state);
+    judged_nxt = vip_chi_lasm($sampled(vif.txlinkactivereq),
+                              $sampled(vif.rxlinkactiveack));
+    // The four raw signals go in the message too. Two collapsed state names do
+    // not say WHICH direction moved, and this rule's whole difficulty is that it
+    // judges an OR of two independent handshakes -- so the reader needs the
+    // terms, not the reduction.
+    chk_miss(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E, $sformatf("TX link stepped %s -> %s (txreq=%0b rxack=%0b); the LASM may only hold or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
+      judged_cur.name(), judged_nxt.name(),
+      $sampled(vif.txlinkactivereq), $sampled(vif.rxlinkactiveack)));
   end
 
-  assert property (p_lasm_activation_timeout)
+  assert property (p_rx_lasm_legal_transition)
+    chk_hit(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E);
+  else begin : b_rx_lasm_legal_transition_miss
+    vip_chi_lasm_state_t judged_cur;
+    vip_chi_lasm_state_t judged_nxt;
+    judged_cur = $sampled(rx_lasm_state);
+    judged_nxt = vip_chi_lasm($sampled(vif.rxlinkactivereq),
+                              $sampled(vif.txlinkactiveack));
+    chk_miss(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E, $sformatf("RX link stepped %s -> %s (rxreq=%0b txack=%0b); the LASM may only hold or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
+      judged_cur.name(), judged_nxt.name(),
+      $sampled(vif.rxlinkactivereq), $sampled(vif.txlinkactiveack)));
+  end
+
+  assert property (p_tx_lasm_activation_timeout)
     chk_hit(VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E);
   else
     chk_miss(VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E, $sformatf(
-      "link stuck in ACTIVATE for %0d cycles (tx bring-up unacknowledged, limit %0d)",
-      $sampled(lasm_dwell), link_activation_timeout_cycles));
+      "TX link stuck in ACTIVATE for %0d cycles (our bring-up unacknowledged, limit %0d)",
+      $sampled(tx_lasm_dwell), link_activation_timeout_cycles));
 
-  assert property (p_lasm_deactivation_timeout)
+  assert property (p_rx_lasm_activation_timeout)
+    chk_hit(VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E, $sformatf(
+      "RX link stuck in ACTIVATE for %0d cycles (peer's bring-up unacknowledged by us, limit %0d)",
+      $sampled(rx_lasm_dwell), link_activation_timeout_cycles));
+
+  assert property (p_tx_lasm_deactivation_timeout)
     chk_hit(VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E);
   else
     chk_miss(VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E, $sformatf(
-      "link stuck in DEACTIVATE for %0d cycles (tx tear-down unacknowledged, limit %0d)",
-      $sampled(lasm_dwell), link_deactivation_timeout_cycles));
+      "TX link stuck in DEACTIVATE for %0d cycles (our tear-down unacknowledged, limit %0d)",
+      $sampled(tx_lasm_dwell), link_deactivation_timeout_cycles));
+
+  assert property (p_rx_lasm_deactivation_timeout)
+    chk_hit(VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E, $sformatf(
+      "RX link stuck in DEACTIVATE for %0d cycles (peer's tear-down unacknowledged by us, limit %0d)",
+      $sampled(rx_lasm_dwell), link_deactivation_timeout_cycles));
 
   assert property (p_lcrd_quiescent_in_stop)
     chk_hit(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E);

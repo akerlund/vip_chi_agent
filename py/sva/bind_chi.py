@@ -783,8 +783,13 @@ class bind_chi:
     self._act_countdown = None
     # The LASM restarts from STOP out of reset, which the reset-idle rule
     # already requires the sideband to be holding.
-    self._lasm = LasmState.STOP
-    self._lasm_dwell = 0
+    # One registered state and dwell per machine. See _tx_lasm_of / _rx_lasm_of:
+    # "stuck waiting for an acknowledge" is a claim about ONE direction, and the
+    # OR could make it a claim about neither.
+    self._tx_lasm = LasmState.STOP
+    self._tx_lasm_dwell = 0
+    self._rx_lasm = LasmState.STOP
+    self._rx_lasm_dwell = 0
 
   def _reset_tracking_state(self) -> None:
     """Everything the SV always_ff clears on `!checks_enable || !rst_n`.
@@ -904,8 +909,44 @@ class bind_chi:
     return cls._lasm_of(s) is not LasmState.STOP
 
   @staticmethod
+  def _tx_lasm_of(s: dict) -> LasmState:
+    """This endpoint's TRANSMIT-link state: our own request, their acknowledge.
+
+    E section 14.6.1 / D 13.6.1 defines the two machines by the direction of the
+    PAYLOAD -- TXLINK is every channel whose payload is an output of this
+    component -- and makes the TXLINK state "controlled by" this component.
+    Section 14.5.1 is explicit about the count: "An entire interface uses a
+    total of four signals, two signals are used for all the transmit channels
+    and two signals are used for all the receive channels."
+    """
+    return lasm(s["txlinkactivereq"], s["rxlinkactiveack"])
+
+  @staticmethod
+  def _rx_lasm_of(s: dict) -> LasmState:
+    """This endpoint's RECEIVE-link state: their request, our acknowledge.
+
+    Section 14.6.1: the RXLINK state "is controlled by the component on the
+    other side of the interface", which is why the request term is an input here
+    and an output in the transmit twin.
+    """
+    return lasm(s["rxlinkactivereq"], s["txlinkactiveack"])
+
+  @staticmethod
   def _lasm_of(s: dict) -> LasmState:
-    """The LASM state of this link, as seen from this endpoint.
+    """"Anything is up", which is the right gate for the CHANNEL rules.
+
+    NOT the handshake state any more -- see _tx_lasm_of / _rx_lasm_of. A flit may
+    cross as soon as its own direction is running, and the credit rules need the
+    link out of STOP in either direction, so this stays a reduction. The
+    per-direction distinction matters to the handshake rules, not to the question
+    "is this interface carrying anything".
+
+    The paragraphs below are kept because they record WHY one machine was
+    correct until now, and that reason is exactly what changed: the completer
+    never raised a request of its own, so half the signals were identically
+    zero and the OR was exact. With both handshakes live it is no longer a
+    faithful reduction of either machine -- it hides an aborted activation
+    behind the other direction's request.
 
     ONE state machine per link, not one per direction. The link adapter mirrors
     both sideband signals to both endpoints -- the requester-polarity endpoint
@@ -1125,16 +1166,20 @@ class bind_chi:
     The state is registered rather than recomputed from a pair of samples so it
     survives the enable gate and so the dwell counter has somewhere to live.
     """
-    cur = self._lasm
-    nxt = self._lasm_of(s)
+    for who, cur, nxt in (
+      ("TX", self._tx_lasm, self._tx_lasm_of(s)),
+      ("RX", self._rx_lasm, self._rx_lasm_of(s)),
+    ):
+      self._chk(
+        "CHI_LASM_LEGAL_TRANSITION",
+        lasm_legal_step(cur, nxt),
+        f"{who} link stepped {cur.name} -> {nxt.name}; the LASM may only hold "
+        f"or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
+        "E section 14.6 / D section 13.6",
+      )
 
-    self._chk(
-      "CHI_LASM_LEGAL_TRANSITION",
-      lasm_legal_step(cur, nxt),
-      f"link stepped {cur.name} -> {nxt.name}; the LASM may only hold or "
-      f"advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
-      "section 13.4",
-    )
+    cur = self._tx_lasm
+    nxt = self._tx_lasm_of(s)
 
     # LASM coverage, kept here rather than in vip_chi_coverage for the same
     # structural reason the SV covergroup sits in vip_chi_sva: that component
@@ -1146,10 +1191,18 @@ class bind_chi:
     if nxt is not cur and lasm_legal_step(cur, nxt):
       self._lasm_edge_seen[(cur, nxt)] += 1
 
-    self._lasm_dwell = 0 if nxt is not cur else self._lasm_dwell + 1
-    self._lasm = nxt
+    self._tx_lasm_dwell = 0 if nxt is not cur else self._tx_lasm_dwell + 1
+    self._tx_lasm = nxt
 
-    self._check_lcrd_quiescent_in_stop(nxt)
+    rx_nxt = self._rx_lasm_of(s)
+    self._rx_lasm_dwell = (
+      0 if rx_nxt is not self._rx_lasm else self._rx_lasm_dwell + 1)
+    self._rx_lasm = rx_nxt
+
+    # Credit quiescence is a property of the link as a whole rather than of one
+    # direction: a credit left behind is a disagreement about what the peer may
+    # send, whichever machine took the link down. Judged on the reduction.
+    self._check_lcrd_quiescent_in_stop(self._lasm_of(s))
 
   def _check_lcrd_quiescent_in_stop(self, state: LasmState) -> None:
     """No L-credit may still be outstanding while the link is in STOP.
@@ -1187,7 +1240,14 @@ class bind_chi:
     onward, because that is how the initial pool reaches the peer before the
     link is RUN at all. The SV behaviour was the correct one.
     """
-    state = self._lasm
+    # The REDUCTION, deliberately, and this is the one place the split stops
+    # short. Strictly a transmit flit belongs to the TX machine and a credit we
+    # grant belongs to the RX machine, and gating each on its own direction is
+    # the more faithful model -- but it CHANGES VERDICTS (a flit sent while only
+    # the other direction is up would start being reported), so it wants its own
+    # commit with its own sweep rather than riding along with the handshake
+    # rules. Recorded as the remaining task on F-INTOP-001.
+    state = self._lasm_of(s)
     for ch in _CHANNELS_C:
       if s[f"tx{ch}flitv"]:
         self._chk(
@@ -1359,14 +1419,21 @@ class bind_chi:
        "CHI_LASM_DEACTIVATION_TIMEOUT", "tear-down"),
     ):
       limit = int(getattr(self.tb_cfg, knob, 0) or 0) if self.tb_cfg else 0
-      if limit <= 0 or self._lasm is not state:
+      if limit <= 0:
         continue
-      self._chk(
-        rule, self._lasm_dwell != limit,
-        f"link stuck in {state.name} for {self._lasm_dwell} cycles "
-        f"(tx {what} unacknowledged, limit {limit})",
-        "section 13.4",
-      )
+      # Per machine, and that is the whole point of the split: under the OR the
+      # other direction's acknowledge could hold the reduced state in RUN while
+      # this direction waited forever, so the rule stopped being able to fire.
+      for who, cur, dwell in (("our", self._tx_lasm, self._tx_lasm_dwell),
+                              ("peer's", self._rx_lasm, self._rx_lasm_dwell)):
+        if cur is not state:
+          continue
+        self._chk(
+          rule, dwell != limit,
+          f"{'TX' if who == 'our' else 'RX'} link stuck in {state.name} for "
+          f"{dwell} cycles ({who} {what} unacknowledged, limit {limit})",
+          "E section 14.6 / D section 13.6",
+        )
 
   # ---------------------------------------------------------------------------
   # After reset releases, the link must activate within the window.

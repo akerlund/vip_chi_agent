@@ -86,6 +86,7 @@ class vip_chi_driver_snf #(
   // that keeps refilling the pool would never converge.
   protected bit                                                link_deactivating;
 
+
   // Countdowns for the two negative controls: one holds ACTIVATE by withholding
   // the acknowledge, the other holds DEACTIVATE past its drain by withholding
   // the drop. Both are counted in the credit loop, which is the one thread that
@@ -204,19 +205,73 @@ class vip_chi_driver_snf #(
     ANNOUNCE_DAT_E
   } announce_ch_t;
 
+  // This node has a transmit link of its own, and until now it never asked for
+  // it. IHI 0050 E 14.5.1 / D 13.5.1: "An entire interface uses a total of four
+  // signals, two signals are used for all the transmit channels and two signals
+  // are used for all the receive channels." The SN-F transmits RSP and DAT, so
+  // those channels are its TXLINK and 14.6.1 makes their state "controlled by"
+  // this component -- it must raise TXLINKACTIVEREQ for them. It was driving
+  // flits on the strength of the REQUESTER's request instead, which is why
+  // txlinkactivereq had exactly one assignment in this file and that assignment
+  // was 1'b0 in reset_outputs.
+  //
+  // ORDERING. 14.6.3 constrains this component's two outputs against each other:
+  // "Output X must change after or at the same time as output Y, but it is not
+  // permitted to change before output Y", instantiated as four rules of which two
+  // bind here -- the assertion of RXACK must not precede the assertion of TXREQ,
+  // and the deassertion of RXACK must not precede the deassertion of TXREQ. So
+  // the request leads in both directions and the acknowledge follows.
+  //
+  // Rising together is permitted ("or at the same time as") and is what this
+  // does. FALLING together is also permitted by the specification but is NOT
+  // done, and the reason is the checker rather than the protocol: the LASM this
+  // VIP models is still the OR of both directions, so if the request and the
+  // acknowledge fall in the same cycle the collapsed state steps RUN -> STOP and
+  // never shows DEACTIVATE, which CHI_LASM_LEGAL_TRANSITION then reports. Holding
+  // the acknowledge one cycle past the request is conformant AND keeps the
+  // tear-down observable, so it is what the model does until the LASM is split.
+  //
+  // The stall knob keeps its meaning and gains reach: it now withholds this
+  // node's request as well as its acknowledge, so the peer still sees ACTIVATE
+  // held with nothing acknowledged and CHI_LASM_ACTIVATION_TIMEOUT still has its
+  // one observation. Withholding only the acknowledge would have let the peer
+  // acknowledge OUR request instead, put the collapsed state in RUN, and quietly
+  // switched that control off.
   protected task drive_idle_sideband();
+
+    bit want_link;
+
     if (this.vif_snf.g_drv.snf_cb.rxlinkactivereq) begin
       // cfg.lasm_stall_activation_cycles withholds the acknowledge, leaving the
       // LASM in ACTIVATE. A requester that has asked for the link is entitled to
       // an answer, so a completer that does not give one hangs the link with
       // nothing in flight to time out -- which is exactly what the activation
       // timeout exists to name.
-      this.ack_driven = (this.activate_stall_remaining == 0);
+      want_link = (this.activate_stall_remaining == 0);
     end
     else begin
-      this.ack_driven = !this.link_drained();
+      want_link = !this.link_drained();
     end
+
+    // The acknowledge is a ONE-CYCLE DELAY of our own request, taken off the
+    // wire, and that is the whole trick. The drive is non-blocking, so the wire
+    // read here carries what was driven last cycle and the acknowledge lands
+    // exactly one cycle behind the request -- rising and falling both.
+    //
+    // It reads NOTHING but wires, which is what makes it correct: this task runs
+    // from several threads in a cycle (activate_link, the credit loop, the drain
+    // loops) and want_link itself is recomputed each time from link_drained(),
+    // whose counters the credit loop mutates in the same cycle. Two callers
+    // could therefore drive the request from one value and the acknowledge from
+    // another. Two earlier versions did exactly that and produced, in order,
+    // "RUN -> STOP (txreq=0 txack=0 rxreq=0 rxack=0)" -- everything falling
+    // together -- and then "RX link stepped RUN -> ACTIVATE", our own
+    // acknowledge falling before our own request.
+    this.ack_driven = this.vif_snf.txlinkactivereq;
+
+    this.vif_snf.g_drv.snf_cb.txlinkactivereq <= want_link;
     this.vif_snf.g_drv.snf_cb.txlinkactiveack <= this.ack_driven;
+
   endtask
 
   // An inbound L-credit return is a link-layer flit, not a request. It consumes

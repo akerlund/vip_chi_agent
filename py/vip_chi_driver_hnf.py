@@ -178,10 +178,37 @@ class vip_chi_driver_hnf(uvm_component):
     self.comp_ack_early_txn = [0] * len(self.rn_buses)
 
   def drive_rn_idle_sideband(self, p):
+    # This home transmits toward the RN, so those channels are its TXLINK on this
+    # port and E section 14.6.1 / D 13.6.1 makes their state "controlled by" this
+    # component -- it has to ask for the link. Until now txlinkactivereq was
+    # written on this port in exactly one place, as 0 in reset_outputs, and the
+    # home sent on the strength of the RN's request. The SN-facing port already
+    # does it correctly, which is what made the omission easy to miss.
+    #
+    # Section 14.6.3 orders the two outputs -- the acknowledge may not assert
+    # before the request, nor deassert before it -- so they rise together
+    # (permitted) and the acknowledge is held one cycle past the request on the
+    # way down, which also keeps DEACTIVATE visible to the OR-collapsed LASM.
+    # The hold term reads the wire, not a saved copy, so repeated calls in one
+    # cycle cannot collapse the stagger.
     rn = self.rn_buses[p]
-    rn.drive(txlinkactiveack=rn.get("rxlinkactivereq"))
+    # The acknowledge is a ONE-CYCLE DELAY of our own request, taken off the
+    # wire: the drive is non-blocking, so a wire read at cycle T carries what was
+    # driven at T-1 and the acknowledge lands exactly one cycle behind the
+    # request, rising and falling. It reads nothing but wires, so it does not
+    # care how many tasks call this in one cycle.
+    want_link = bool(rn.get("rxlinkactivereq"))
+    rn.drive(txlinkactivereq=1 if want_link else 0,
+             txlinkactiveack=1 if rn.get("txlinkactivereq") else 0)
 
   def drive_sn_idle_sideband(self, s):
+    # Ordered against our own request rather than mirrored, now that the SN
+    # raises one. E section 14.6.3 / D 13.6.3: the acknowledge may not assert
+    # before the request, nor deassert before it. Mirroring was safe only while
+    # the peer's request was identically zero.
+    # The plain mirror, which is ALREADY the one-cycle delay 14.6.3 wants: the
+    # drive is non-blocking. An earlier attempt gated it on a saved copy of our
+    # own request and broke the invariant, because an attribute is not a wire.
     sn = self.sn_buses[s]
     sn.drive(txlinkactiveack=sn.get("rxlinkactivereq"))
 

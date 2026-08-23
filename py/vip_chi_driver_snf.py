@@ -298,11 +298,44 @@ class vip_chi_driver_snf(uvm_driver):
     cfg.lasm_stall_activation_cycles withholds the acknowledge in the other
     direction, which is the control for the activation timeout.
     """
+    # This node has a transmit link of its own, and until now it never asked for
+    # it. E section 14.5.1 / D 13.5.1: "An entire interface uses a total of four
+    # signals, two signals are used for all the transmit channels and two
+    # signals are used for all the receive channels." The SN-F transmits RSP and
+    # DAT, so those are its TXLINK and section 14.6.1 makes their state
+    # "controlled by" this component. It was driving flits on the strength of the
+    # REQUESTER's request instead.
+    #
+    # Ordering, section 14.6.3: "Output X must change after or at the same time
+    # as output Y, but it is not permitted to change before output Y" -- the
+    # acknowledge may not assert before the request, nor deassert before it. So
+    # they rise together (permitted) and the acknowledge is held one cycle past
+    # the request on the way down. Falling together is also permitted by the
+    # specification, but while the LASM is still the OR of both directions it
+    # would step the collapsed state RUN -> STOP with no DEACTIVATE in between.
+    #
+    # The acknowledge is a ONE-CYCLE DELAY of our own request, taken off the
+    # wire. That is the whole trick, and it took two wrong attempts to find:
+    #
+    #   ack <= <req wire>   is already delayed, because the drive is
+    #                       non-blocking. The wire read at cycle T carries what
+    #                       was driven at T-1, so ack lands exactly one cycle
+    #                       behind req -- rising and falling.
+    #
+    # It reads NOTHING but wires, so it is immune to how many tasks call this in
+    # one cycle. The earlier versions kept "last cycle's request" in an attribute
+    # and recomputed want_link per call; want_link depends on _link_drained(),
+    # whose counters the credit loop mutates in the same cycle, so two callers
+    # could drive req from one value and ack from another. That produced
+    # "RX link stepped RUN -> ACTIVATE" -- our own acknowledge falling before our
+    # own request, which is the ordering 14.6.3 forbids.
     if self.bus.get("rxlinkactivereq"):
-      self.ack_driven = self.activate_stall_remaining == 0
+      want_link = self.activate_stall_remaining == 0
     else:
-      self.ack_driven = not self._link_drained()
-    self.bus.drive(txlinkactiveack=1 if self.ack_driven else 0)
+      want_link = not self._link_drained()
+    self.ack_driven = bool(self.bus.get("txlinkactivereq"))
+    self.bus.drive(txlinkactivereq=1 if want_link else 0,
+                   txlinkactiveack=1 if self.ack_driven else 0)
 
   def _rx_req_is_lcrd_return(self, req):
     """An inbound L-credit return is a link-layer flit, not a request.
