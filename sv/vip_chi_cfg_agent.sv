@@ -272,6 +272,32 @@ class vip_chi_cfg_agent extends uvm_object;
   // the race this endpoint then observes. Default 0 waits the race out.
   bit lasm_ignore_input_race = 1'b0;
 
+  // Negative-control knob for IHI 0050 E 14.6.3 / D 13.6.3's SECOND ordering:
+  // "the deassertion of RXACK must not occur before the deassertion of TXREQ."
+  // When set, the completer drops its acknowledge once while its own request is
+  // still asserted, which is exactly the banned step.
+  //
+  // It exists to close a hole the single check id cannot show. All four orderings
+  // report under CHI_LASM_OUTPUT_RACE, and three of them are provoked -- the
+  // aborted activation reaches the fourth and then the first, the tear-down race
+  // reaches the third -- so the vacuity report reads the rule as exercised while
+  // one quarter of it had never once failed. Default 0 keeps the acknowledge one
+  // cycle behind the request in both directions.
+  bit lasm_ack_falls_first = 1'b0;
+
+  // Negative-control knob for IHI 0050 E 14.6.3 / D 13.6.3's SECOND ordering:
+  // "the deassertion of RXACK must not occur before the deassertion of TXREQ."
+  // When set, the completer drops its acknowledge once while its own request is
+  // still asserted, which is exactly the banned step.
+  //
+  // It exists to close a hole the single check id cannot show. All four orderings
+  // report under CHI_LASM_OUTPUT_RACE, and three of them are provoked -- the
+  // aborted activation reaches the fourth and then the first, the tear-down race
+  // reaches the third -- so the vacuity report reads the rule as exercised while
+  // one quarter of it had never once failed. Default 0 keeps the acknowledge one
+  // cycle behind the request in both directions.
+  bit lasm_ack_falls_first = 1'b0;
+
   // POSITIVE-control knob for the FLITPEND rule: when set, the requester pulses
   // txreqflitpend and txrspflitpend for one cycle with no flit behind them,
   // once, after the link is up.
@@ -1108,6 +1134,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.snf_corrupt_tag ||
         this.lasm_abort_activation || this.flit_without_flitpend ||
         this.reset_idle_violation || this.lasm_ignore_input_race ||
+        this.lasm_ack_falls_first ||
         this.lasm_reactivate_during_deactivate) begin
       if (!silent) begin
         `uvm_warning("VIP_CHI_CFG", $sformatf(

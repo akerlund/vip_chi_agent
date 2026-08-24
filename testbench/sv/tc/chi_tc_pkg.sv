@@ -53,6 +53,7 @@ package chi_tc_pkg;
   `include "tc_chi_ordered_write_no_comp_ack.sv"
   `include "tc_chi_lasm_illegal_transition.sv"
   `include "tc_chi_lasm_input_race_negctl.sv"
+  `include "tc_chi_lasm_output_race_negctl.sv"
   `include "tc_chi_lasm_deactivate.sv"
   `include "tc_chi_lasm_timeout.sv"
   `include "tc_chi_lasm_race.sv"

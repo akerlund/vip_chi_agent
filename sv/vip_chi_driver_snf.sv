@@ -237,6 +237,11 @@ class vip_chi_driver_snf #(
   // one observation. Withholding only the acknowledge would have let the peer
   // acknowledge OUR request instead, put the collapsed state in RUN, and quietly
   // switched that control off.
+  // One-shot latch for cfg.lasm_ack_falls_first, so the control provokes exactly
+  // one banned step rather than one per cycle.
+  protected bit ack_drop_done;
+  protected bit ack_drop_pending;
+
   protected task drive_idle_sideband();
 
     bit want_link;
@@ -299,6 +304,38 @@ class vip_chi_driver_snf #(
     // together -- and then "RX link stepped RUN -> ACTIVATE", our own
     // acknowledge falling before our own request.
     this.ack_driven = this.vif_snf.txlinkactivereq;
+
+    // Negative control for 14.6.3's SECOND ordering: "the deassertion of RXACK
+    // must not occur before the deassertion of TXREQ." It is the only one of the
+    // four that nothing else in this regression provokes -- the abort control
+    // reaches the fourth and then the first, and the tear-down race reaches the
+    // third -- and under one check id the vacuity report cannot see that gap.
+    //
+    // Dropping the acknowledge while our own request is still up is exactly the
+    // banned step. It fires ONCE, on a link that is genuinely up, so the count a
+    // control asserts on is unambiguous.
+    //
+    // HELD UNTIL THE WIRE SHOWS IT, not applied once and latched, and that is the
+    // multi-caller hazard again -- this time defeating a violation instead of
+    // causing one. This task runs from several threads in a cycle. A version that
+    // set the latch and dropped ack_driven on the first call was overwritten by
+    // the next caller in the same cycle, which recomputed ack_driven from the
+    // wire and drove the acknowledge straight back: the control reported ZERO.
+    // Clearing on the WIRE instead makes every caller in the cycle reach the same
+    // conclusion, because every term is a wire or a flag that only moves when one
+    // does.
+    if (this.ack_drop_pending && !this.vif_snf.txlinkactiveack) begin
+      this.ack_drop_pending = 1'b0;
+      this.ack_drop_done    = 1'b1;
+    end
+    else if (this.cfg.lasm_ack_falls_first && !this.ack_drop_done &&
+             this.vif_snf.txlinkactivereq && this.vif_snf.txlinkactiveack) begin
+      this.ack_drop_pending = 1'b1;
+    end
+
+    if (this.ack_drop_pending) begin
+      this.ack_driven = 1'b0;
+    end
 
     this.vif_snf.g_drv.snf_cb.txlinkactivereq <= want_link;
     this.vif_snf.g_drv.snf_cb.txlinkactiveack <= this.ack_driven;

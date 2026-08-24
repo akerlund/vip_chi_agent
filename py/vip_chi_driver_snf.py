@@ -223,6 +223,10 @@ class vip_chi_driver_snf(uvm_driver):
     # deactivation tracker read one value rather than re-deriving it. Mirrors the
     # SV port, where a clocking-block output cannot be sampled at all.
     self.ack_driven = False
+    # One-shot latch for cfg.lasm_ack_falls_first, so the control provokes
+    # exactly one banned step rather than one per cycle.
+    self._ack_drop_done = False
+    self._ack_drop_pending = False
 
   def schedule_initial_credit_grants(self):
     self.req_lcrdv_pending += self.cfg.initial_req_credits
@@ -362,6 +366,35 @@ class vip_chi_driver_snf(uvm_driver):
       return
 
     self.ack_driven = bool(self.bus.get("txlinkactivereq"))
+
+    # Negative control for 14.6.3's SECOND ordering: "the deassertion of RXACK
+    # must not occur before the deassertion of TXREQ." It is the only one of the
+    # four nothing else provokes -- the abort control reaches the fourth and then
+    # the first, the tear-down race reaches the third -- and under one check id
+    # the vacuity report cannot see that gap.
+    #
+    # Dropping the acknowledge while our own request is still up is exactly the
+    # banned step. It fires ONCE, on a link that is genuinely up, so the count a
+    # control asserts on is unambiguous.
+    #
+    # HELD UNTIL THE WIRE SHOWS IT, not applied once and latched -- the
+    # multi-caller hazard again, this time defeating a violation instead of
+    # causing one. This task runs from several coroutines in a cycle, and a
+    # version that latched and dropped on the first call was overwritten by the
+    # next caller, which recomputed ack_driven from the wire: the control
+    # reported ZERO. Clearing on the WIRE makes every caller in the cycle reach
+    # the same conclusion.
+    if self._ack_drop_pending and not self.bus.get("txlinkactiveack"):
+      self._ack_drop_pending = False
+      self._ack_drop_done = True
+    elif (self.cfg.lasm_ack_falls_first and not self._ack_drop_done
+          and self.bus.get("txlinkactivereq")
+          and self.bus.get("txlinkactiveack")):
+      self._ack_drop_pending = True
+
+    if self._ack_drop_pending:
+      self.ack_driven = False
+
     self.bus.drive(txlinkactivereq=1 if want_link else 0,
                    txlinkactiveack=1 if self.ack_driven else 0)
 

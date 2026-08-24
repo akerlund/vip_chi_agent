@@ -224,6 +224,17 @@ class VipChiCfgAgent:
     # the race this endpoint then observes. Default False waits the race out.
     self.lasm_ignore_input_race = False
 
+    # Negative control for E section 14.6.3 / D 13.6.3's SECOND ordering: "the
+    # deassertion of RXACK must not occur before the deassertion of TXREQ." When
+    # set, the completer drops its acknowledge once while its own request is
+    # still asserted, which is exactly the banned step.
+    #
+    # It exists to close a hole the single check id cannot show. All four
+    # orderings report under CHI_LASM_OUTPUT_RACE, and three of them are
+    # provoked, so the vacuity report reads the rule as exercised while one
+    # quarter of it had never once failed.
+    self.lasm_ack_falls_first = False
+
     # POSITIVE control for the FLITPEND rule: the requester pulses txreqflitpend
     # and txrspflitpend for one cycle with no flit behind them, once, after the
     # link is up. E section 14.4 / D section 13.4 permit exactly this -- "a
@@ -713,6 +724,7 @@ class VipChiCfgAgent:
       "flit_without_flitpend": self.flit_without_flitpend,
       "reset_idle_violation": self.reset_idle_violation,
       "lasm_ignore_input_race": self.lasm_ignore_input_race,
+      "lasm_ack_falls_first": self.lasm_ack_falls_first,
     }
     on = [k for k, v in negctl.items() if v]
     if on:
