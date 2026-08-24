@@ -1247,6 +1247,32 @@ module vip_chi_sva #(
             req_txn_id_seen_by_txn[txn_idx] <= 1'b1;
           end
 
+          // Section 2.5 scopes the rule to "all requests except PrefetchTgt",
+          // and the arm here is req_has_modeled_completion instead. MEASURED,
+          // not assumed: the two coincide over every opcode this VIP can drive.
+          // Of the four REQ opcodes outside the classifier,
+          //
+          //   PrefetchTgt     is the specification's own named exception,
+          //   ReqLCrdReturn   is a link-layer credit return and carries no
+          //                   transaction at all,
+          //   PCrdReturn      is a NOP that names a credit; both it and the
+          //                   credit return are REQUIRED to drive TxnID zero,
+          //                   so treating either as a transaction would leave
+          //                   slot 0 permanently claimed and unjudgeable for
+          //                   the requests that can use it,
+          //   CleanShared     is unimplemented -- no constraint, sequence or
+          //                   driver in either port.
+          //
+          // So the arm is not narrower than the rule today. It WOULD become
+          // narrower the day CleanShared is implemented, which is why that
+          // claim is verified rather than trusted: check_classifier_coverage.py
+          // fails if the opcode is referenced outside the type packages.
+          //
+          // Widening the arm on its own would not be an improvement. The shadow
+          // is retired by completions this checker models, so an opcode outside
+          // the classifier would claim a slot nothing frees, and the next
+          // legitimate use of that TxnID would be reported as a reuse -- a
+          // false failure in place of a rule with nothing to judge.
           if (req_has_modeled_completion(req_opcode)) begin
             // Same SrcID reusing a live slot is the violation. A DIFFERENT SrcID
             // landing on the same slot is a pass, not a decline: section 2.5's
@@ -2025,6 +2051,8 @@ module vip_chi_sva #(
             req_txn_id_seen_by_txn[txn_idx] <= 1'b1;
           end
 
+          // Same arm as the requester vantage above, and the same reason;
+          // the scope note lives there.
           if (req_has_modeled_completion(req_opcode)) begin
             // Same SrcID reusing a live slot is the violation. A DIFFERENT SrcID
             // landing on the same slot is a pass, not a decline: section 2.5's

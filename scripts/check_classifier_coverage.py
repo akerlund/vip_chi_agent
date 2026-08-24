@@ -57,6 +57,62 @@ UNCLAIMED_BY_DESIGN = {
     0x3a: "PrefetchTgt - no response associated with this request (E line 4215)",
 }
 
+# Entries above whose reason is "unimplemented" are the only ones that can stop
+# being true without anybody touching this file. The other three are permanent
+# properties of the opcode -- a credit return will never carry a transaction,
+# and PrefetchTgt's exemption is the specification's own. "Unimplemented" is a
+# statement about THIS TREE, and implementing the opcode silently makes it
+# false while every gate keeps passing.
+#
+# So the claim is verified rather than trusted: the opcode must have no
+# reference anywhere outside the two type packages. Implement CleanShared and
+# this check fails, which is the point -- it forces the question of which
+# classifiers should now claim it, including _req_has_modeled_completion, which
+# is what arms the section 2.5 TxnID-reuse rules.
+UNIMPLEMENTED_MARKER_C = "unimplemented"
+
+# Where an opcode constant is ALLOWED to appear while unimplemented: its own
+# definition and enum entry.
+_TYPE_PACKAGES_C = ("sv/vip_chi_types_pkg.sv", "py/vip_chi_types_pkg.py")
+
+# Directories searched for uses. Build outputs and vendored copies are excluded
+# -- a stale extracted tree under testbench/*/rundir would report references
+# that no longer exist in the source.
+_SEARCH_DIRS_C = ("sv", "py", "scripts",
+                  "testbench/sv/tc", "testbench/sv/tb",
+                  "testbench/py/tc", "testbench/py/tb")
+
+
+def unimplemented_references(root: Path, name: str) -> list[str]:
+    """Every reference to an opcode outside the type packages, as file:line.
+
+    Matched on the WHOLE identifier: VIP_CHI_REQ_CLEAN_SHARED_C is a prefix of
+    VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C, and the SNP channel has a CleanShared of
+    its own, so a substring search would report the wrong opcode as implemented
+    and quietly excuse this check.
+    """
+    sv_re = re.compile(rf"\bVIP_CHI_REQ_{name}_C\b")
+    py_re = re.compile(rf"\bReqOpcode\.{name}\b")
+    hits = []
+    for d in _SEARCH_DIRS_C:
+        base = root / d
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if path.suffix not in (".sv", ".svh", ".py"):
+                continue
+            rel = path.relative_to(root).as_posix()
+            if rel in _TYPE_PACKAGES_C or rel == "scripts/check_classifier_coverage.py":
+                continue
+            try:
+                text = path.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            for n, line in enumerate(text.split("\n"), 1):
+                if sv_re.search(line) or py_re.search(line):
+                    hits.append(f"{rel}:{n}")
+    return hits
+
 # Classifiers in vip_chi_types_pkg rather than the checker, reached by call.
 PKG_FNS = {
     "vip_chi_req_opcode_is_atomic": "req_opcode_is_atomic",
@@ -154,7 +210,24 @@ def main() -> int:
           f"rule stands down for these:")
     for o in unclaimed:
         if o in UNCLAIMED_BY_DESIGN:
-            print(f"  ok   {names[o]:<34} 0x{o:02x}  {UNCLAIMED_BY_DESIGN[o]}")
+            reason = UNCLAIMED_BY_DESIGN[o]
+            if UNIMPLEMENTED_MARKER_C in reason:
+                refs = unimplemented_references(ROOT, names[o])
+                if refs:
+                    rc = 1
+                    print(f"  FAIL {names[o]:<34} 0x{o:02x}  claimed "
+                          f"unimplemented here, but referenced in "
+                          f"{len(refs)} place(s):")
+                    for r in refs[:8]:
+                        print(f"         {r}")
+                    print(f"         Decide which classifiers now claim it -- "
+                          f"_req_has_modeled_completion arms the section 2.5 "
+                          f"TxnID-reuse rules -- then remove this entry.")
+                    continue
+                print(f"  ok   {names[o]:<34} 0x{o:02x}  {reason} [verified: "
+                      f"no references outside the type packages]")
+                continue
+            print(f"  ok   {names[o]:<34} 0x{o:02x}  {reason}")
         else:
             rc = 1
             print(f"  FAIL {names[o]:<34} 0x{o:02x}  claimed by no classifier and "
