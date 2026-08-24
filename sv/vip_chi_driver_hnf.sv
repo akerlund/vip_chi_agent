@@ -128,6 +128,31 @@ class vip_chi_driver_hnf #(
 
   // Per-RN inbound receive-credit grants advertised on the wire.
   protected int unsigned rn_req_lcrdv_pending [N_RNF_PORTS];
+
+  // TXSACTIVE outstanding-window state, per RN-facing port.
+  //
+  // ONE OWNER. This wire used to have two: rn_credit_loop drove it from
+  // rn_link_up[p] on every cycle, and announce_rn_flit and every send_* task
+  // pulsed it around their own flit. Both are non-blocking writes into the same
+  // clocking-block output in the same time step, so the level was decided by
+  // whichever landed last -- and that showed: with the HN-F endpoint bound for
+  // the first time, the pyUVM port reported CHI_TXSACTIVE_DEASSERT_BOUNDED here
+  // and this port did not, from the same source. See F-CORR-005.
+  //
+  // Now rn_credit_loop is the only writer and it reads this count. The send
+  // tasks do not touch the wire at all: a transaction brackets itself with
+  // begin/end, and the COUNT -- not any one flit -- decides the level, which is
+  // what makes overlapping transactions correct. Same shape as
+  // vip_chi_driver_rni's tx_activity_begin/end/tick, and for the same reasons
+  // written out there.
+  //
+  // The window is opened at capture and closed when service_req returns, which
+  // is 14.7.2's "until after the final completing flit is sent OR RECEIVED":
+  // service_coherent_read calls await_comp_ack before it returns, so the CompAck
+  // is inside the window rather than after it.
+  protected int unsigned rn_tx_active_count  [N_RNF_PORTS];
+  protected int unsigned rn_tx_active_extend [N_RNF_PORTS];
+  protected bit          rn_tx_dispatch_open;
   protected int unsigned rn_rsp_lcrdv_pending [N_RNF_PORTS];
   protected int unsigned rn_dat_lcrdv_pending [N_RNF_PORTS];
 
@@ -258,6 +283,8 @@ class vip_chi_driver_hnf #(
       this.rn_snp_send_mgr[i].reset(this.cfg.snp_send_credit_cap, 0);
 
       this.rn_req_lcrdv_pending[i] = 0;
+      this.rn_tx_active_count[i]  = 0;
+      this.rn_tx_active_extend[i] = 0;
       this.rn_rsp_lcrdv_pending[i] = 0;
       this.rn_dat_lcrdv_pending[i] = 0;
       this.rn_link_up[i]           = 1'b0;
@@ -613,13 +640,48 @@ class vip_chi_driver_hnf #(
   // Per-RN credit/link loop. Advertises the queued receive credits, tracks the
   // RN-F's returned send credits, and keeps the sideband coherent.
   // ---------------------------------------------------------------------------
+  // Assertion is immediate so the sideband rises in the cycle the window opens;
+  // only the DROP waits for the per-cycle pass in rn_credit_loop.
+  protected function void rn_tx_activity_begin(input int p);
+    this.rn_tx_active_count[p]++;
+    this.rn_tx_active_extend[p] = 0;
+    this.vif_rn[p].g_drv.hnf_cb.txsactive <= 1'b1;
+  endfunction
+
+  // Idempotent within one dispatch. response_engine calls this after every
+  // service task so none can forget to retire its window, but a task whose
+  // remaining work is on the SN link closes early -- see service_writeback --
+  // and the end-of-dispatch call then does nothing. Because the engine is
+  // serial, one flag is enough to tell the two apart.
+  protected function void rn_tx_activity_end(input int p);
+    if (!this.rn_tx_dispatch_open) begin
+      return;
+    end
+    this.rn_tx_dispatch_open = 1'b0;
+    if (this.rn_tx_active_count[p] != 0) begin
+      this.rn_tx_active_count[p]--;
+    end
+    if (this.rn_tx_active_count[p] == 0) begin
+      this.rn_tx_active_extend[p] = this.cfg.txsactive_extend_max_cycles;
+    end
+  endfunction
+
   protected task rn_credit_loop(input int p);
     forever begin
       @(this.vif_rn[p].g_drv.hnf_cb);
 
       this.drive_rn_idle_sideband(p);
 
-      this.vif_rn[p].g_drv.hnf_cb.txsactive  <= this.rn_link_up[p];
+      // The only write to this wire. Asserted while anything is outstanding,
+      // then held for cfg.txsactive_extend_max_cycles past the close, modelling
+      // a node that speculates on more traffic -- the RN-I's shape exactly.
+      this.vif_rn[p].g_drv.hnf_cb.txsactive  <=
+        ((this.rn_tx_active_count[p] != 0) || (this.rn_tx_active_extend[p] != 0));
+      if (this.rn_tx_active_count[p] == 0) begin
+        if (this.rn_tx_active_extend[p] != 0) begin
+          this.rn_tx_active_extend[p]--;
+        end
+      end
       this.vif_rn[p].g_drv.hnf_cb.txreqlcrdv <= (this.rn_req_lcrdv_pending[p] != 0);
       this.vif_rn[p].g_drv.hnf_cb.txrsplcrdv <= (this.rn_rsp_lcrdv_pending[p] != 0);
       this.vif_rn[p].g_drv.hnf_cb.txdatlcrdv <= (this.rn_dat_lcrdv_pending[p] != 0);
@@ -705,6 +767,11 @@ class vip_chi_driver_hnf #(
 
       this.work_q.push_back('{port: p, flit: this.vif_rn[p].g_drv.hnf_cb.rxreqflit});
       this.rn_req_lcrdv_pending[p] += 1;
+      // Opened at capture, not at dispatch: a buffered request is already
+      // outstanding while it waits its turn in work_q, and 14.7.2 wants the
+      // sideband asserted "before or in the same cycle in which its first
+      // Response flit is sent" -- which is later than this.
+      this.rn_tx_activity_begin(p);
 
       // Step off the accepted REQ beat before sampling for the next one.
       @(this.vif_rn[p].g_drv.hnf_cb);
@@ -1040,7 +1107,11 @@ class vip_chi_driver_hnf #(
     forever begin
       if (this.work_q.size() != 0) begin
         w = this.work_q.pop_front();
+        this.rn_tx_dispatch_open = 1'b1;
         this.service_req(w.port, w.flit);
+        // Closed here rather than inside the service tasks, so every dispatch
+        // path retires exactly one window and none can forget to.
+        this.rn_tx_activity_end(w.port);
       end
       else begin
         @(this.vif_rn[0].g_drv.hnf_cb);
@@ -1581,6 +1652,14 @@ class vip_chi_driver_hnf #(
     // downstream SN-F (WriteNoSnpFull), then drop the local memory image so the
     // line is SN-resident (write-back). A later read misses and re-fetches it
     // from the SN-F, proving the written-back value survives downstream.
+    // The RN-facing transaction ends with the CopyBackWrData just collected:
+    // 14.7.2 requires TXSACTIVE held until after the final completing flit is
+    // sent or received, and that flit has been received. Everything below runs
+    // on the SN link, whose own TXSACTIVE covers it, so the RN-facing window is
+    // retired here rather than held across a downstream round trip in which the
+    // RN link is silent.
+    this.rn_tx_activity_end(p);
+
     if (this.cfg.hnf_downstream_en && (N_SN_PORTS > 0)) begin
       data_t wb_beats [$];
       be_t   wb_be    [$];
@@ -1837,7 +1916,6 @@ class vip_chi_driver_hnf #(
   protected task announce_rn_flit(input int p, input announce_ch_t ch);
     @(this.vif_rn[p].g_drv.hnf_cb);
     this.drive_rn_idle_sideband(p);
-    this.vif_rn[p].g_drv.hnf_cb.txsactive <= 1'b1;
     case (ch)
       ANNOUNCE_RSP_E: this.vif_rn[p].g_drv.hnf_cb.txrspflitpend <= 1'b1;
       ANNOUNCE_SNP_E: this.vif_rn[p].g_drv.hnf_cb.txsnpflitpend <= 1'b1;
@@ -1903,7 +1981,6 @@ class vip_chi_driver_hnf #(
     this.announce_rn_flit(p, ANNOUNCE_RSP_E);
     @(this.vif_rn[p].g_drv.hnf_cb);
     this.drive_rn_idle_sideband(p);
-    this.vif_rn[p].g_drv.hnf_cb.txsactive     <= 1'b1;
     this.vif_rn[p].g_drv.hnf_cb.txrspflitpend  <= 1'b0;
     this.vif_rn[p].g_drv.hnf_cb.txrspflit      <= flit;
     this.vif_rn[p].g_drv.hnf_cb.txrspflitv     <= 1'b1;
@@ -1912,7 +1989,6 @@ class vip_chi_driver_hnf #(
     this.drive_rn_idle_sideband(p);
     this.vif_rn[p].g_drv.hnf_cb.txrspflitv     <= 1'b0;
     this.vif_rn[p].g_drv.hnf_cb.txrspflit      <= '0;
-    this.vif_rn[p].g_drv.hnf_cb.txsactive      <= 1'b0;
   endtask
 
   // ---------------------------------------------------------------------------
@@ -2094,7 +2170,6 @@ class vip_chi_driver_hnf #(
     this.announce_rn_flit(k, ANNOUNCE_SNP_E);
     @(this.vif_rn[k].g_drv.hnf_cb);
     this.drive_rn_idle_sideband(k);
-    this.vif_rn[k].g_drv.hnf_cb.txsactive     <= 1'b1;
     this.vif_rn[k].g_drv.hnf_cb.txsnpflitpend  <= 1'b0;
     this.vif_rn[k].g_drv.hnf_cb.txsnpflit      <= flit;
     this.vif_rn[k].g_drv.hnf_cb.txsnpflitv     <= 1'b1;
@@ -2317,7 +2392,6 @@ class vip_chi_driver_hnf #(
       this.announce_rn_flit(p, ANNOUNCE_DAT_E);
       @(this.vif_rn[p].g_drv.hnf_cb);
       this.drive_rn_idle_sideband(p);
-      this.vif_rn[p].g_drv.hnf_cb.txsactive     <= 1'b1;
       this.vif_rn[p].g_drv.hnf_cb.txdatflitpend  <= (beat_index != (beat_count - 1));
       this.vif_rn[p].g_drv.hnf_cb.txdatflit      <= flit;
       this.vif_rn[p].g_drv.hnf_cb.txdatflitv     <= 1'b1;
@@ -2331,7 +2405,6 @@ class vip_chi_driver_hnf #(
 
     @(this.vif_rn[p].g_drv.hnf_cb);
     this.drive_rn_idle_sideband(p);
-    this.vif_rn[p].g_drv.hnf_cb.txsactive <= 1'b0;
   endtask
 
   // ---------------------------------------------------------------------------
@@ -2506,7 +2579,6 @@ class vip_chi_driver_hnf #(
       this.announce_rn_flit(p, ANNOUNCE_DAT_E);
       @(this.vif_rn[p].g_drv.hnf_cb);
       this.drive_rn_idle_sideband(p);
-      this.vif_rn[p].g_drv.hnf_cb.txsactive     <= 1'b1;
       this.vif_rn[p].g_drv.hnf_cb.txdatflitpend  <= (beat_index != (beat_count - 1));
       this.vif_rn[p].g_drv.hnf_cb.txdatflit      <= flit;
       this.vif_rn[p].g_drv.hnf_cb.txdatflitv     <= 1'b1;
@@ -2520,7 +2592,6 @@ class vip_chi_driver_hnf #(
 
     @(this.vif_rn[p].g_drv.hnf_cb);
     this.drive_rn_idle_sideband(p);
-    this.vif_rn[p].g_drv.hnf_cb.txsactive <= 1'b0;
   endtask
 
   // ---------------------------------------------------------------------------

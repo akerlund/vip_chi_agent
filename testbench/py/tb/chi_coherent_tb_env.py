@@ -151,18 +151,14 @@ class chi_coherent_tb_env(uvm_env):
     # that has to waive a rule at THIS endpoint should say so by name rather
     # than by position.
     #
-    # txsactive_from_link_up stands CHI_TXSACTIVE_DEASSERT_BOUNDED down here,
-    # exactly as it does on the SN-facing port above and for the same reason:
-    # rn_credit_loop drives txsactive from rn_link_up every cycle, so the
-    # sideband never drops while the link is up and the rule reports a signal
-    # that carries no information. THAT IS THE RULE BEING RIGHT. The stand-down
-    # is a marker for the unfinished half of F-CORR-005 -- the counted window
-    # HN-F and HN-I still need -- and it must come off with that, not outlive it.
+    # CHI_TXSACTIVE_DEASSERT_BOUNDED is NOT stood down here. It was, briefly,
+    # while rn_credit_loop still drove txsactive from rn_link_up every cycle --
+    # the sideband never dropped and the rule reported a signal carrying no
+    # information, correctly. The driver now drives it from a counted window with
+    # a single owner, so the rule has something real to judge and judges it.
     self.hnfr_sva = [
-      bind_chi(hnfr0_vif, f"{pfx}hnfr0_sva", enable_completion_timeout=False,
-               txsactive_from_link_up=True),
-      bind_chi(hnfr1_vif, f"{pfx}hnfr1_sva", enable_completion_timeout=False,
-               txsactive_from_link_up=True),
+      bind_chi(hnfr0_vif, f"{pfx}hnfr0_sva", enable_completion_timeout=False),
+      bind_chi(hnfr1_vif, f"{pfx}hnfr1_sva", enable_completion_timeout=False),
     ]
     self.rnf_sva += self.hnfr_sva
     # SNP is watched from BOTH ends, because each end exercises a different half

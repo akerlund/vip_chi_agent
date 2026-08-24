@@ -298,17 +298,13 @@ module chi_tb_top;
   // it: on a coherent link the completion the timeout waits for is not paired
   // with its request by this checker.
   //
-  // TXSACTIVE_FROM_LINK_UP_P stands CHI_TXSACTIVE_DEASSERT_BOUNDED down, exactly
-  // as the HN-F's SN-facing bind already does and for the same reason:
-  // rn_credit_loop drives txsactive from rn_link_up[p] every cycle, so the
-  // sideband never drops while the link is up and the rule reports a signal that
-  // carries no information. THAT IS THE RULE BEING RIGHT -- the pyUVM port
-  // reported it on the first run with these binds live, and this port did not,
-  // which is the two-writer race itself showing up as a cross-port difference.
-  // The stand-down is a MARKER for the unfinished half of F-CORR-005, the
-  // counted window HN-F and HN-I still need, and must come off with it.
+  // TXSACTIVE_DEASSERT_BOUNDED is NOT stood down here. It was, briefly, while
+  // rn_credit_loop still drove txsactive from rn_link_up[p] every cycle -- the
+  // sideband never dropped and the rule reported a signal carrying no
+  // information, correctly. The driver now drives it from a counted window with
+  // a single owner, so the rule has something real to judge and judges it.
   vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
-                .ENABLE_COMPLETION_TIMEOUT_P(1'b0), .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+                .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_hnf0_sva (.vif(coh_hnf0_if),
       .checks_enable((coh_hnf0_if.txlinkactivereq === 1'b1) || (coh_hnf0_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -317,7 +313,7 @@ module chi_tb_top;
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
   vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
-                .ENABLE_COMPLETION_TIMEOUT_P(1'b0), .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+                .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_hnf1_sva (.vif(coh_hnf1_if),
       .checks_enable((coh_hnf1_if.txlinkactivereq === 1'b1) || (coh_hnf1_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -326,7 +322,7 @@ module chi_tb_top;
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
   vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
-                .ENABLE_COMPLETION_TIMEOUT_P(1'b0), .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+                .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_e_hnf0_sva (.vif(coh_e_hnf0_if),
       .checks_enable((coh_e_hnf0_if.txlinkactivereq === 1'b1) || (coh_e_hnf0_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -335,7 +331,7 @@ module chi_tb_top;
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
   vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
-                .ENABLE_COMPLETION_TIMEOUT_P(1'b0), .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+                .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_e_hnf1_sva (.vif(coh_e_hnf1_if),
       .checks_enable((coh_e_hnf1_if.txlinkactivereq === 1'b1) || (coh_e_hnf1_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),

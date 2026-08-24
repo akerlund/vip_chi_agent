@@ -104,6 +104,27 @@ class vip_chi_driver_hnf(uvm_component):
       m.reset(cfg.dat_send_credit_cap, 0)
 
     self.rn_req_lcrdv_pending = [0] * n_rn
+    # TXSACTIVE outstanding-window state, per RN-facing port.
+    #
+    # ONE OWNER. This wire used to have two: rn_credit_loop drove it from
+    # rn_link_up[p] on every cycle, and every send path pulsed it around its own
+    # flit. The level was therefore decided by whichever drive ran last, and it
+    # showed -- with the HN-F endpoint bound for the first time, THIS port
+    # reported CHI_TXSACTIVE_DEASSERT_BOUNDED and the SystemVerilog port did
+    # not, from the same source. See F-CORR-005.
+    #
+    # Now rn_credit_loop is the only writer and it reads this count. A
+    # transaction brackets itself with begin/end, and the COUNT -- not any one
+    # flit -- decides the level, which is what makes overlapping transactions
+    # correct. Same shape as vip_chi_driver_rni's tx_activity_begin/end/tick.
+    #
+    # Opened at capture and closed when service_req returns, which is 14.7.2's
+    # "until after the final completing flit is sent OR RECEIVED":
+    # service_coherent_read awaits the CompAck before returning, so the CompAck
+    # is inside the window rather than after it.
+    self.rn_tx_active_count = [0] * n_rn
+    self.rn_tx_active_extend = [0] * n_rn
+    self.rn_tx_dispatch_open = False
     self.rn_rsp_lcrdv_pending = [0] * n_rn
     self.rn_dat_lcrdv_pending = [0] * n_rn
     self.rn_link_up = [False] * n_rn
@@ -393,15 +414,44 @@ class vip_chi_driver_hnf(uvm_component):
   # ==========================================================================
   # Per-RN credit/link + activate + REQ ingress capture.
   # ==========================================================================
+  # Assertion is immediate so the sideband rises in the cycle the window opens;
+  # only the DROP waits for the per-cycle pass in rn_credit_loop.
+  def rn_tx_activity_begin(self, p):
+    self.rn_tx_active_count[p] += 1
+    self.rn_tx_active_extend[p] = 0
+    self.rn_buses[p].drive(txsactive=1)
+
+  # Idempotent within one dispatch. response_engine calls this after every
+  # service path so none can forget to retire its window, but a path whose
+  # remaining work is on the SN link closes early -- see service_writeback --
+  # and the end-of-dispatch call then does nothing. Because the engine is
+  # serial, one flag is enough to tell the two apart.
+  def rn_tx_activity_end(self, p):
+    if not self.rn_tx_dispatch_open:
+      return
+    self.rn_tx_dispatch_open = False
+    if self.rn_tx_active_count[p]:
+      self.rn_tx_active_count[p] -= 1
+    if self.rn_tx_active_count[p] == 0:
+      self.rn_tx_active_extend[p] = max(
+        0, int(self.cfg.txsactive_extend_max_cycles))
+
   async def rn_credit_loop(self, p):
     rn = self.rn_buses[p]
     while True:
       await rn.rising()
       self.drive_rn_idle_sideband(p)
-      rn.drive(txsactive=1 if self.rn_link_up[p] else 0,
+      # The only write to this wire. Asserted while anything is outstanding,
+      # then held for cfg.txsactive_extend_max_cycles past the close, modelling
+      # a node that speculates on more traffic -- the RN-I's shape exactly.
+      active = (self.rn_tx_active_count[p] != 0
+                or self.rn_tx_active_extend[p] != 0)
+      rn.drive(txsactive=1 if active else 0,
                txreqlcrdv=1 if self.rn_req_lcrdv_pending[p] else 0,
                txrsplcrdv=1 if self.rn_rsp_lcrdv_pending[p] else 0,
                txdatlcrdv=1 if self.rn_dat_lcrdv_pending[p] else 0)
+      if self.rn_tx_active_count[p] == 0 and self.rn_tx_active_extend[p]:
+        self.rn_tx_active_extend[p] -= 1
       if self.rn_req_lcrdv_pending[p]:
         self.rn_req_lcrdv_pending[p] -= 1
       if self.rn_rsp_lcrdv_pending[p]:
@@ -455,6 +505,11 @@ class vip_chi_driver_hnf(uvm_component):
         await rn.rising()
       self.work_q.append((p, rn.sample_flit("req", "rx")))
       self.rn_req_lcrdv_pending[p] += 1
+      # Opened at capture, not at dispatch: a buffered request is already
+      # outstanding while it waits its turn in work_q, and 14.7.2 wants the
+      # sideband asserted before or in the cycle of the first Response flit,
+      # which is later than this.
+      self.rn_tx_activity_begin(p)
       await rn.rising()
 
   # ==========================================================================
@@ -653,7 +708,7 @@ class vip_chi_driver_hnf(uvm_component):
     rn = self.rn_buses[p]
     await rn.rising()
     self.drive_rn_idle_sideband(p)
-    rn.drive(**{"txsactive": 1, f"tx{channel}flitpend": 1})
+    rn.drive(**{f"tx{channel}flitpend": 1})
 
   async def announce_sn_flit(self, s, channel):
     """The downstream twin of announce_rn_flit."""
@@ -695,7 +750,11 @@ class vip_chi_driver_hnf(uvm_component):
     while True:
       if self.work_q:
         p, req = self.work_q.pop(0)
+        self.rn_tx_dispatch_open = True
         await self.service_req(p, req)
+        # Closed here rather than inside the service coroutines, so every
+        # dispatch path retires exactly one window and none can forget to.
+        self.rn_tx_activity_end(p)
       else:
         await bus.rising()
 
@@ -961,6 +1020,14 @@ class vip_chi_driver_hnf(uvm_component):
       self.directory[line][p] = int(Resp.I)
     self.excl_monitor.pop(line, None)
 
+    # The RN-facing transaction ends with the CopyBackWrData just collected:
+    # 14.7.2 requires TXSACTIVE held until after the final completing flit is
+    # sent or received, and that flit has been received. Everything below runs
+    # on the SN link, whose own TXSACTIVE covers it, so the RN-facing window is
+    # retired here rather than held across a downstream round trip in which the
+    # RN link is silent.
+    self.rn_tx_activity_end(p)
+
     if self.cfg.hnf_downstream_en and len(self.sn_buses) > 0:
       db = self.rn_buses[0].cfg.data_bytes
       nb = chi_xfer_dat_beats(_I(req["size"]), db)
@@ -1144,11 +1211,11 @@ class vip_chi_driver_hnf(uvm_component):
     await self.announce_rn_flit(p, "rsp")
     await rn.rising()
     self.drive_rn_idle_sideband(p)
-    rn.drive(txsactive=1, txrspflitpend=0, txrspflitv=1)
+    rn.drive(txrspflitpend=0, txrspflitv=1)
     rn.drive_flit("rsp", fields)
     await rn.rising()
     self.drive_rn_idle_sideband(p)
-    rn.drive(txrspflitv=0, txsactive=0)
+    rn.drive(txrspflitv=0)
     rn.drive_flit("rsp", {})
 
   # ==========================================================================
@@ -1259,7 +1326,7 @@ class vip_chi_driver_hnf(uvm_component):
     await self.announce_rn_flit(k, "snp")
     await rn.rising()
     self.drive_rn_idle_sideband(k)
-    rn.drive(txsactive=1, txsnpflitpend=0, txsnpflitv=1)
+    rn.drive(txsnpflitpend=0, txsnpflitv=1)
     rn.drive_flit("snp", fields)
     await rn.rising()
     self.drive_rn_idle_sideband(k)
@@ -1381,7 +1448,7 @@ class vip_chi_driver_hnf(uvm_component):
       await self.announce_rn_flit(p, "dat")
       await rn.rising()
       self.drive_rn_idle_sideband(p)
-      rn.drive(txsactive=1, txdatflitpend=1 if beat_index != (beat_count - 1) else 0,
+      rn.drive(txdatflitpend=1 if beat_index != (beat_count - 1) else 0,
                txdatflitv=1)
       rn.drive_flit("dat", fields)
       await rn.rising()
@@ -1391,7 +1458,6 @@ class vip_chi_driver_hnf(uvm_component):
 
     await rn.rising()
     self.drive_rn_idle_sideband(p)
-    rn.drive(txsactive=0)
 
   # ==========================================================================
   # DCT coherent read: forwarding snoop to the single peer holder; relay its
@@ -1477,7 +1543,7 @@ class vip_chi_driver_hnf(uvm_component):
       await self.announce_rn_flit(p, "dat")
       await rn.rising()
       self.drive_rn_idle_sideband(p)
-      rn.drive(txsactive=1, txdatflitpend=1 if beat_index != (beat_count - 1) else 0,
+      rn.drive(txdatflitpend=1 if beat_index != (beat_count - 1) else 0,
                txdatflitv=1)
       rn.drive_flit("dat", fields)
       await rn.rising()
@@ -1487,7 +1553,6 @@ class vip_chi_driver_hnf(uvm_component):
 
     await rn.rising()
     self.drive_rn_idle_sideband(p)
-    rn.drive(txsactive=0)
 
   # ==========================================================================
   # Test/scoreboard accessors.
