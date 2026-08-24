@@ -1827,6 +1827,37 @@ package vip_chi_types_pkg;
     endcase
   endfunction
 
+  // Which CHANNEL carries the flit that ends the transaction. The raw-injection
+  // watcher in vip_chi_driver_rni needs this as much as the checker does: a
+  // window closed on the wrong channel either drops the sideband mid-burst or
+  // never drops it at all.
+  function automatic bit vip_chi_req_completion_uses_dat(
+    input vip_chi_req_opcode_t opcode
+  );
+    return ((opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C)) ||
+            vip_chi_req_opcode_is_coherent_read(opcode) ||
+            vip_chi_req_opcode_is_atomic_returning_data(opcode));
+  endfunction
+
+  // Does this RSP retire the request, or is it an intermediate response?
+  function automatic bit vip_chi_is_final_rsp_completion(
+    input vip_chi_req_opcode_t opcode,
+    input vip_chi_rsp_opcode_t rsp_opcode
+  );
+    if (vip_chi_req_completion_uses_dat(opcode)) begin
+      // The completion arrives on DAT; no RSP retires such a request.
+      return 1'b0;
+    end
+
+    if (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C)) begin
+      return (rsp_opcode == vip_chi_rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C));
+    end
+
+    return ((rsp_opcode == vip_chi_rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) ||
+            (rsp_opcode == vip_chi_rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)));
+  endfunction
+
   // ---------------------------------------------------------------------------
   // Return TRUE when Size is one the specification permits for this atomic.
   //

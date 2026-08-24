@@ -95,6 +95,9 @@ from vip_chi_types_pkg import (
   req_opcode_is_coherent_write_data,
   req_opcode_is_coherent_rsp_only,
   req_has_modeled_completion,
+  req_completion_uses_dat,
+  is_final_rsp_completion,
+  PLAIN_COMPLETION_RSP_OPCODES_C,
   req_opcode_is_atomic_returning_data,
   req_opcode_is_combined_write_cmo,
 )
@@ -220,10 +223,6 @@ _DBID_GRANT_OPCODES_C = frozenset({
   int(RspOpcode.DBID_RESP), int(RspOpcode.DBID_RESP_ORD),
   int(RspOpcode.COMP_DBID_RESP),
 })
-_PLAIN_COMPLETION_RSP_OPCODES_C = frozenset({
-  int(RspOpcode.COMP), int(RspOpcode.COMP_DBID_RESP),
-})
-
 # --------------------------------------------------------------------------- #
 # The flits that end a snoop transaction, by the channel each arrives on. E
 # 14.7.2 / D 13.7.2 names them where it states the ICN's snoop obligation: the
@@ -314,23 +313,6 @@ _A4_ZERO_FIELD_RSP_OPCODES_C = frozenset(
   | _A4_RESP_ZERO_RSP_OPCODES_C
   | _A4_DBID_ZERO_RSP_OPCODES_C
 )
-
-
-def _req_completion_uses_dat(opcode: int) -> bool:
-  op = int(opcode)
-  return (op in (int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP))
-          or req_opcode_is_coherent_read(op)
-          or req_opcode_is_atomic_returning_data(op))
-
-
-def _is_final_rsp_completion(opcode: int, rsp_opcode: int) -> bool:
-  """Does this RSP retire the request, or is it an intermediate response?"""
-  if _req_completion_uses_dat(opcode):
-    # The completion arrives on DAT; no RSP retires such a request.
-    return False
-  if int(opcode) == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP):
-    return int(rsp_opcode) == int(RspOpcode.COMP_PERSIST)
-  return int(rsp_opcode) in _PLAIN_COMPLETION_RSP_OPCODES_C
 
 
 def _completion_txn_for_req(opcode: int, req_txn_id: int,
@@ -2296,7 +2278,7 @@ class bind_chi:
     if opcode in _DBID_GRANT_OPCODES_C:
       self._record_write_grant(f, mark_grant_seen=True)
     self._check_comp_dbid(f, opcode)
-    if opcode in _PLAIN_COMPLETION_RSP_OPCODES_C:
+    if opcode in PLAIN_COMPLETION_RSP_OPCODES_C:
       self._post(self._completion_seen, txn, True)
       self._post(self._req_inflight, self._inflight_key(f["tgtid"], txn),
                  False)
@@ -2347,7 +2329,7 @@ class bind_chi:
     # own -- which is not what section 14.7.2 says -- but the gate was load
     # bearing for a different reason, and dropping it without this made the
     # count run away on every completer bind. See F-CORR-005.
-    if opcode in _PLAIN_COMPLETION_RSP_OPCODES_C or opcode == int(
+    if opcode in PLAIN_COMPLETION_RSP_OPCODES_C or opcode == int(
         RspOpcode.COMP_PERSIST):
       self._post(self._req_inflight,
                  self._inflight_key(f["tgtid"], f["txnid"]), False)
@@ -2682,7 +2664,7 @@ class bind_chi:
                                  completion_txn: int) -> bool:
     """Is the completion that retires this request on the wire right now?"""
     cd = self._completion_dir
-    if _req_completion_uses_dat(opcode):
+    if req_completion_uses_dat(opcode):
       if not s[f"{cd}datflitv"]:
         return False
       f = s[f"{cd}datflit"]
@@ -2693,7 +2675,7 @@ class bind_chi:
       return False
     f = s[f"{cd}rspflit"]
     return (f["txnid"] == req_txn
-            and _is_final_rsp_completion(opcode, f["opcode"]))
+            and is_final_rsp_completion(opcode, f["opcode"]))
 
   def _check_completion_timeout(self, s: dict) -> None:
     """Every request this checker models must eventually be completed.
@@ -2733,7 +2715,7 @@ class bind_chi:
       if s[f"{cd}rspflitv"]:
         f = s[f"{cd}rspflit"]
         if (f["txnid"] == rec["req_txn"]
-            and int(f["opcode"]) in _PLAIN_COMPLETION_RSP_OPCODES_C):
+            and int(f["opcode"]) in PLAIN_COMPLETION_RSP_OPCODES_C):
           self._err("CHI_ATOMIC_RETURN_USES_DAT_COMPLETION",
                     f"data-returning atomic txnid={rec['req_txn']} was "
                     f"completed by an RSP instead of returning data on DAT")

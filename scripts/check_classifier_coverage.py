@@ -37,7 +37,7 @@ PAIRS = [
     ("req_opcode_is_coherent_write_data", "req_opcode_is_coherent_write_data"),
     ("req_opcode_is_coherent_rsp_only", "req_opcode_is_coherent_rsp_only"),
     ("req_has_modeled_completion", "req_has_modeled_completion"),
-    ("req_completion_uses_dat", "_req_completion_uses_dat"),
+    ("req_completion_uses_dat", "req_completion_uses_dat"),
     # is_write_req_opcode / _is_write_req_opcode were removed with box 3.5. The
     # pair existed to gate the ExpCompAck bookkeeping onto write opcodes, and
     # that gate is gone: Table 2-9 makes the bit a property of the opcode, not

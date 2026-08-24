@@ -1312,6 +1312,13 @@ _MODELED_COMPLETION_OPCODES_C = frozenset({
 })
 
 
+# The RSP opcodes that retire a request outright, as opposed to granting a
+# buffer or acknowledging a retry.
+PLAIN_COMPLETION_RSP_OPCODES_C = frozenset({
+  int(RspOpcode.COMP), int(RspOpcode.COMP_DBID_RESP),
+})
+
+
 def req_opcode_is_coherent_read(opcode: int) -> bool:
   return int(opcode) in _COHERENT_READ_OPCODES_C
 
@@ -1340,6 +1347,24 @@ def req_has_modeled_completion(opcode: int) -> bool:
           or req_opcode_is_coherent_rsp_only(op)
           or req_opcode_is_combined_write_cmo(op)
           or req_opcode_is_atomic(op))
+
+
+def req_completion_uses_dat(opcode: int) -> bool:
+  op = int(opcode)
+  return (op in (int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP))
+          or req_opcode_is_coherent_read(op)
+          or req_opcode_is_atomic_returning_data(op))
+
+
+def is_final_rsp_completion(opcode: int, rsp_opcode: int) -> bool:
+  """Does this RSP retire the request, or is it an intermediate response?"""
+  if req_completion_uses_dat(opcode):
+    # The completion arrives on DAT; no RSP retires such a request.
+    return False
+  if int(opcode) == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP):
+    return int(rsp_opcode) == int(RspOpcode.COMP_PERSIST)
+  return int(rsp_opcode) in PLAIN_COMPLETION_RSP_OPCODES_C
+
 
 
 def req_opcode_is_combined_write_cmo(opcode: int) -> bool:

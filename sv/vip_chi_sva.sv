@@ -615,27 +615,16 @@ module vip_chi_sva #(
   endfunction
 
   function automatic bit req_completion_uses_dat(input req_opcode_t opcode);
-    return ((opcode == VIP_CHI_REQ_READ_NO_SNP_C) ||
-            (opcode == VIP_CHI_REQ_READ_NO_SNP_SEP_C) ||
-            req_opcode_is_coherent_read(opcode) ||
-            vip_chi_types_pkg::vip_chi_req_opcode_is_atomic_returning_data(
-              vip_chi_req_opcode_t'(opcode)));
+    return vip_chi_types_pkg::vip_chi_req_completion_uses_dat(
+             vip_chi_req_opcode_t'(opcode));
   endfunction
 
   function automatic bit is_final_rsp_completion(
     input req_opcode_t opcode,
     input rsp_opcode_t rsp_opcode
   );
-    if (req_completion_uses_dat(opcode)) begin
-      return 1'b0;
-    end
-
-    if (opcode == req_opcode_t'(VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C)) begin
-      return (rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C));
-    end
-
-    return ((rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) ||
-            (rsp_opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)));
+    return vip_chi_types_pkg::vip_chi_is_final_rsp_completion(
+             vip_chi_req_opcode_t'(opcode), vip_chi_rsp_opcode_t'(rsp_opcode));
   endfunction
 
   function automatic txn_id_t completion_txn_for_req(

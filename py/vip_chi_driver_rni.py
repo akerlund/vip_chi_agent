@@ -42,8 +42,10 @@ from pyuvm import uvm_driver, ConfigDB
 
 from vip_chi_reject import reject
 from vip_chi_types_pkg import (
-  Role, Dir, ReqOpcode, RspOpcode, RawChannel,
+  Role, Dir, DatOpcode, ReqOpcode, RspOpcode, RawChannel,
   req_opcode_is_atomic, lasm, chi_xfer_dat_beats, req_bit17_is_dodwt,
+  req_has_modeled_completion, req_completion_uses_dat,
+  is_final_rsp_completion, unpack,
 )
 from vip_chi_if import ChiBus
 
@@ -62,6 +64,17 @@ _COMBINED_CMO_PERSIST_C = {
   int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
   int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
 }
+# Cycles the raw-injection path will hold a request's TXSACTIVE window open
+# waiting for a completion it does not itself collect.
+#
+# Matched to the CHECKER's completion timeout rather than picked: past that
+# point the checker has already reported the transaction as never completed, by
+# name and with the TxnID, and a sideband still up would only add a second and
+# vaguer report of the same thing. It also has to be BOUNDED at all, because
+# wait_for_drain refuses to take the link down while a window is open -- a
+# watcher that waited forever for a completion nobody will send would hang the
+# deactivation rather than fail it.
+_RAW_COMPLETION_WATCH_CYCLES_C = 1024
 from vip_chi_lcrd_mgr import VipChiLcrdMgr
 from vip_chi_cfg_agent import VipChiCfgAgent
 
@@ -1590,9 +1603,10 @@ class vip_chi_driver_rni(uvm_driver):
     await self.announce_flit(channel)
     await bus.rising()
     self.drive_idle_sideband()
-    # A raw flit is a single injected packet with no completion to wait for, but
-    # it still retires through the shared point below, so opening here keeps one
-    # begin paired with one end exactly as a normal request does.
+    # The FLIT's own window: opened here, retired through the shared point in
+    # _complete_item, one begin paired with one end exactly as a normal request
+    # does. A raw REQ whose opcode HAS a modeled completion gets a second,
+    # independent window on top of this one -- see _raw_req_activity below.
     self.tx_activity_begin()
     bus.drive(**{f"tx{channel}flitpend": flitpend, f"tx{channel}flitv": 1})
     bus.sig[f"tx{channel}flit"].value = int(raw_value)
@@ -1602,6 +1616,69 @@ class vip_chi_driver_rni(uvm_driver):
     bus.drive(**{f"tx{channel}flitpend": 0, f"tx{channel}flitv": 0})
     bus.drive_flit(channel, {})
     self.release_tx_flit()
+
+    if channel == "req":
+      self._raw_req_activity(raw_value)
+
+  # A raw REQ carrying an opcode whose completion this tree models is
+  # OUTSTANDING until that completion arrives, exactly like any other request:
+  # the checker holds it so, and E 14.7.2 / D 13.7.2 requires TXSACTIVE to cover
+  # every outstanding transaction. The flit-scoped window the raw path gave it
+  # was sound only while no raw-injectable opcode had a modeled completion --
+  # which stopped being true when WriteUniqueZero was classified, and the
+  # comment saying so kept reading as settled. F-CORR-021.
+  #
+  # The opcode is ASKED, not assumed, and it is asked of the same classifier the
+  # checker uses -- vip_chi_types_pkg.req_has_modeled_completion -- so
+  # classifying an opcode changes this window with it. That is the whole reason
+  # the classifier lives in the types package: a copy here would drift the next
+  # time an opcode joins it, which is the shape of the defect rather than an
+  # instance of it.
+  def _raw_req_activity(self, raw_value):
+    f = unpack(self.bus.cfg, "req", int(raw_value))
+    opcode = _I(f["opcode"])
+    if not req_has_modeled_completion(opcode):
+      return
+    self.tx_activity_begin()
+    cocotb.start_soon(self._raw_req_completion_window(
+      opcode, _I(f["txnid"]), _I(f["returntxnid"]), _I(f["size"])))
+
+  # Purely observational: it samples, and returns no credit and consumes no
+  # flit. The raw path's contract is that the injector drives both ends, so a
+  # watcher that started participating in the exchange would change the wire the
+  # test is there to inspect.
+  #
+  # The TxnID is matched against the request's own AND its ReturnTxnID, because
+  # a separated read returns its data under the latter. Accepting either is a
+  # superset that cannot be wrong for this purpose: both are identifiers this
+  # very request named, and no other transaction can answer to them while it is
+  # in flight.
+  async def _raw_req_completion_window(self, opcode, txn_id, return_txn_id,
+                                       size):
+    bus = self.bus
+    on_dat = req_completion_uses_dat(opcode)
+    # A DAT completion ends on its LAST beat. Closing on the first would drop
+    # the sideband in the middle of the burst that is still retiring the
+    # transaction.
+    want_beats = chi_xfer_dat_beats(size, bus.cfg.data_bytes) if on_dat else 0
+    seen = 0
+    for _ in range(_RAW_COMPLETION_WATCH_CYCLES_C):
+      await bus.rising()
+      if on_dat:
+        if bus.get("rxdatflitv"):
+          d = bus.sample_flit("dat", "rx")
+          if (_I(d["txnid"]) in (txn_id, return_txn_id)
+              and _I(d["opcode"]) in (int(DatOpcode.COMP_DATA),
+                                      int(DatOpcode.DATA_SEP_RESP))):
+            seen += 1
+            if seen >= want_beats:
+              break
+      elif bus.get("rxrspflitv"):
+        r = bus.sample_flit("rsp", "rx")
+        if (_I(r["txnid"]) == txn_id
+            and is_final_rsp_completion(opcode, _I(r["opcode"]))):
+          break
+    self.tx_activity_end()
 
   # ==========================================================================
   # Multi-outstanding mixed pipeline (opt-in via cfg.multi_outstanding).

@@ -55,6 +55,17 @@ class vip_chi_driver_rni #(
   typedef item_t::raw_rsp_t                    raw_rsp_t;
   typedef item_t::raw_dat_t                    raw_dat_t;
   typedef FLIT_TYPES_T::vip_chi_req_flit_t     req_flit_t;
+  // Cycles the raw-injection path will hold a request's TXSACTIVE window open
+  // waiting for a completion it does not itself collect.
+  //
+  // Matched to the CHECKER's completion timeout rather than picked: past that
+  // point the checker has already reported the transaction as never completed,
+  // by name and with the TxnID, and a sideband still up would only add a second
+  // and vaguer report of the same thing. It also has to be BOUNDED at all,
+  // because the link-deactivation sequence refuses to take the link down while
+  // a window is open -- a watcher waiting forever for a completion nobody will
+  // send would hang the deactivation rather than fail it.
+  localparam int RAW_COMPLETION_WATCH_CYCLES_C = 1024;
   typedef FLIT_TYPES_T::vip_chi_dat_flit_t     dat_flit_t;
   typedef FLIT_TYPES_T::vip_chi_rsp_flit_t     rsp_flit_t;
 
@@ -1605,8 +1616,9 @@ class vip_chi_driver_rni #(
     this.announce_flit(ANNOUNCE_REQ_E);
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
-    // A raw flit is a single injected packet with no completion to wait
-    // for, so its window is the flit itself.
+    // The FLIT's own window, opened here and retired below. A raw REQ whose
+    // opcode HAS a modeled completion gets a second, independent window on top
+    // of this one -- see raw_req_activity.
     this.tx_activity_begin();
     this.vif_rni.g_drv.rni_cb.txreqflitpend <= item.raw_flitpend;
     this.vif_rni.g_drv.rni_cb.txreqflit     <= flit;
@@ -1619,6 +1631,99 @@ class vip_chi_driver_rni #(
     this.vif_rni.g_drv.rni_cb.txreqflit     <= '0;
     this.tx_activity_end();
     this.release_tx_flit();
+
+    this.raw_req_activity(flit);
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // A raw REQ carrying an opcode whose completion this tree models is
+  // OUTSTANDING until that completion arrives, exactly like any other request:
+  // the checker holds it so, and E 14.7.2 / D 13.7.2 requires TXSACTIVE to
+  // cover every outstanding transaction. The flit-scoped window the raw path
+  // gave it was sound only while no raw-injectable opcode had a modeled
+  // completion -- which stopped being true when WriteUniqueZero was classified,
+  // and the comment saying so kept reading as settled. F-CORR-021.
+  //
+  // The opcode is ASKED, not assumed, and it is asked of the same classifier the
+  // checker uses -- vip_chi_types_pkg::vip_chi_req_has_modeled_completion -- so
+  // classifying an opcode changes this window with it. That is the whole reason
+  // the classifier lives in the types package: a copy here would drift the next
+  // time an opcode joins it, which is the shape of the defect rather than an
+  // instance of it.
+  // ---------------------------------------------------------------------------
+  protected task raw_req_activity(input req_flit_t flit);
+
+    if (!vip_chi_types_pkg::vip_chi_req_has_modeled_completion(
+           vip_chi_req_opcode_t'(flit.opcode))) begin
+      return;
+    end
+
+    this.tx_activity_begin();
+    fork
+      this.raw_req_completion_window(flit);
+    join_none
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Purely observational: it samples, and returns no credit and consumes no
+  // flit. The raw path's contract is that the injector drives both ends, so a
+  // watcher that started participating in the exchange would change the wire
+  // the test is there to inspect.
+  //
+  // The TxnID is matched against the request's own AND its ReturnTxnID, because
+  // a separated read returns its data under the latter. Accepting either is a
+  // superset that cannot be wrong for this purpose: both are identifiers this
+  // very request named, and no other transaction can answer to them while it is
+  // in flight.
+  // ---------------------------------------------------------------------------
+  protected task raw_req_completion_window(input req_flit_t flit);
+
+    bit  on_dat;
+    int  want_beats;
+    int  seen;
+    bit  done;
+
+    on_dat = vip_chi_types_pkg::vip_chi_req_completion_uses_dat(
+               vip_chi_req_opcode_t'(flit.opcode));
+    // A DAT completion ends on its LAST beat. Closing on the first would drop
+    // the sideband in the middle of the burst that is still retiring the
+    // transaction.
+    want_beats = on_dat ? vip_chi_types_pkg::chi_xfer_dat_beats(
+                            flit.size, CFG_P.DATA_BYTES_P) : 0;
+    seen = 0;
+    done = 1'b0;
+
+    for (int i = 0; (i < RAW_COMPLETION_WATCH_CYCLES_C) && !done; i++) begin
+
+      @(this.vif_rni.g_drv.rni_cb);
+
+      if (on_dat) begin
+        if (this.vif_rni.g_drv.rni_cb.rxdatflitv &&
+            ((txn_id_t'(this.vif_rni.g_drv.rni_cb.rxdatflit.txnid) ==
+              txn_id_t'(flit.txnid)) ||
+             (txn_id_t'(this.vif_rni.g_drv.rni_cb.rxdatflit.txnid) ==
+              txn_id_t'(flit.returntxnid))) &&
+            ((this.vif_rni.g_drv.rni_cb.rxdatflit.opcode ==
+              dat_opcode_t'(VIP_CHI_DAT_COMP_DATA_C)) ||
+             (this.vif_rni.g_drv.rni_cb.rxdatflit.opcode ==
+              dat_opcode_t'(VIP_CHI_DAT_DATA_SEP_RESP_C)))) begin
+          seen++;
+          if (seen >= want_beats) begin
+            done = 1'b1;
+          end
+        end
+      end
+      else if (this.vif_rni.g_drv.rni_cb.rxrspflitv &&
+               (txn_id_t'(this.vif_rni.g_drv.rni_cb.rxrspflit.txnid) ==
+                txn_id_t'(flit.txnid)) &&
+               vip_chi_types_pkg::vip_chi_is_final_rsp_completion(
+                 vip_chi_req_opcode_t'(flit.opcode),
+                 vip_chi_rsp_opcode_t'(this.vif_rni.g_drv.rni_cb.rxrspflit.opcode))) begin
+        done = 1'b1;
+      end
+    end
+
+    this.tx_activity_end();
   endtask
 
   // ---------------------------------------------------------------------------

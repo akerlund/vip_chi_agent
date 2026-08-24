@@ -50,20 +50,24 @@ from chi_tb_pkg import (E_WUZ_NEGCTL_ADDR_C, E_WUZ_NEGCTL_RNI_NODE_ID_C,
 
 NON_SECURE_C = 1
 SETTLE_C = 40
-# How long the requester holds TXSACTIVE past the close of its last window.
+# How long the COMPLETER holds TXSACTIVE past the close of its last window.
 #
-# The raw-inject path scopes a REQ's outstanding window to the flit itself -- "a
-# raw flit is a single injected packet with no completion to wait for" -- which was
-# sound while every raw-injectable REQ opcode had no modeled completion. It is not
-# sound for this one: the checker tracks the request as outstanding until its
-# completion arrives, so the sideband would go low with a transaction still live
-# and CHI_TXSACTIVE_COVERS_OUTSTANDING would report it, correctly and about the
-# wrong thing.
+# The requester's half of this hold is gone. It used to be here because the
+# raw-inject path scoped a REQ's window to the flit -- "a raw flit is a single
+# injected packet with no completion to wait for" -- which stopped being true for
+# this opcode when WriteUniqueZero was classified. The raw path now carries a
+# window of its own, closed by the completion rather than by the flit, so the
+# requester covers its own transaction and needs nothing from this testcase.
+# F-CORR-021.
 #
-# Holding the sideband is the honest fix rather than a waiver. TXSACTIVE is
-# permissive -- it says the node MAY have outstanding transactions -- so
-# over-assertion is legal and under-assertion is the violation, and this knob
-# exists to model a node that speculates on more traffic.
+# What remains is not a VIP defect and does not come off with it. This test
+# drives BOTH ends: the SN-F receives a raw request it does not service, so it
+# opens its window at capture and closes it again with nothing to send, while
+# the completion arrives cycles later from the test itself. Section 14.7.2
+# requires the sideband to cover that gap and the checker is right to say so --
+# there is simply no completer here to be wrong. Holding is legal where waiving
+# would not be: TXSACTIVE is permissive, so over-assertion is conformant and
+# under-assertion is the violation.
 TXSACTIVE_EXTEND_C = 32
 COMPLETION_C = "CHI_COMPLETION_FOLLOWS_REQ"
 REUSE_REQUESTER_C = "CHI_TXNID_REUSE_REQUESTER"
@@ -83,20 +87,15 @@ class tc_chi_e_write_unique_zero_negctl(chi_e_base_test):
     self.tb_cfg.scoreboard_enable = False
     self.tb_cfg.txsactive_extend_max_cycles = TXSACTIVE_EXTEND_C
 
-  # The driver half of the same hold. tb_cfg reaches the checkers; the agent cfg
-  # reaches the RN-I that drives the wire, and both have to agree or the checker
+  # The driver half of the hold, on the COMPLETER only. tb_cfg reaches the
+  # checkers and has to allow at least what the driver drives, or the checker
   # would judge a window the driver never drove.
+  #
+  # rni_cfg is deliberately NOT set: the requester's window is the raw path's
+  # own now, and leaving a hold here would hide a regression in it -- the
+  # sideband would stay up for 32 cycles whether or not the fix still worked.
   def configure(self, rni_cfg, snf_cfg):
     super().configure(rni_cfg, snf_cfg)
-    rni_cfg.txsactive_extend_max_cycles = TXSACTIVE_EXTEND_C
-    # The SN-F needs the same hold, and for a reason this testbench creates
-    # rather than the VIP: a raw-injected request is one the SN-F does not
-    # service, so it opens its window at capture and closes it again with
-    # nothing to send, while the completion this test supplies arrives cycles
-    # later. Section 14.7.2 requires the sideband to cover the gap, and the
-    # checker is right to report it -- there is simply no completer here to be
-    # wrong, because the test is driving both ends. Over-assertion is legal;
-    # under-assertion is the violation.
     snf_cfg.txsactive_extend_max_cycles = TXSACTIVE_EXTEND_C
 
   # Table 2-9 marks WriteUniqueZero's ExpCompAck prohibited, so the field stays
