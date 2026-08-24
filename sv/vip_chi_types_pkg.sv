@@ -620,6 +620,107 @@ package vip_chi_types_pkg;
     return {"CHI_", s.substr(12, s.len() - 3)};
   endfunction
 
+  // The specification clause the rule enforces, keyed by the rule and not by
+  // the place it is evaluated. Reported with every failure, so a log line names
+  // the text that was violated rather than only the rule that noticed.
+  //
+  // The Python twin is `CHECK_SPEC_C` in `py/sva/check_spec.py`, which carries
+  // the same string for the same ID; `scripts/check_citation_parity.py` holds
+  // the two equal and fails if a registry entry has no citation.
+  //
+  // The two issues renumber from chapter 12 onward -- the Link Layer is E
+  // chapter 14 and D chapter 13 -- so a bare section number is ambiguous
+  // exactly where the link rules live. Every entry names its issue, and quotes
+  // both numbers only where both were confirmed.
+  //
+  // An EMPTY string means the rule claims no clause, which is reported by
+  // omitting the reference rather than by printing an empty one. The X/Z rules
+  // are the only ones: they guard against a testbench defect, and the
+  // specification does not legislate about a net holding X.
+  function automatic string vip_chi_check_spec(input vip_chi_check_id_t id);
+    case (id)
+      VIP_CHI_CHK_REQ_FLITV_REQUIRES_LINK_E:           return "E section 14.6.1 / D section 13.6.1";
+      VIP_CHI_CHK_RSP_FLITV_REQUIRES_LINK_E:           return "E section 14.6.1 / D section 13.6.1";
+      VIP_CHI_CHK_DAT_FLITV_REQUIRES_LINK_E:           return "E section 14.6.1 / D section 13.6.1";
+      VIP_CHI_CHK_REQ_LCRDV_REQUIRES_LINK_E:           return "E section 14.6.1 / D section 13.6.1";
+      VIP_CHI_CHK_RSP_LCRDV_REQUIRES_LINK_E:           return "E section 14.6.1 / D section 13.6.1";
+      VIP_CHI_CHK_DAT_LCRDV_REQUIRES_LINK_E:           return "E section 14.6.1 / D section 13.6.1";
+      VIP_CHI_CHK_REQ_VALID_REQUIRES_PEND_E:           return "E section 14.4 / D section 13.4";
+      VIP_CHI_CHK_RSP_VALID_REQUIRES_PEND_E:           return "E section 14.4 / D section 13.4";
+      VIP_CHI_CHK_DAT_VALID_REQUIRES_PEND_E:           return "E section 14.4 / D section 13.4";
+      VIP_CHI_CHK_REQ_IDLE_IN_RESET_E:                 return "E section 14.1.3 / D section 13.1.3";
+      VIP_CHI_CHK_RSP_IDLE_IN_RESET_E:                 return "E section 14.1.3 / D section 13.1.3";
+      VIP_CHI_CHK_DAT_IDLE_IN_RESET_E:                 return "E section 14.1.3 / D section 13.1.3";
+      VIP_CHI_CHK_REQ_KNOWN_WHEN_VALID_E:              return "";
+      VIP_CHI_CHK_RSP_KNOWN_WHEN_VALID_E:              return "";
+      VIP_CHI_CHK_DAT_KNOWN_WHEN_VALID_E:              return "";
+      VIP_CHI_CHK_LINK_SIDEBAND_IDLE_IN_RESET_E:       return "E section 14.1.3 / D section 13.1.3";
+      VIP_CHI_CHK_LINK_RESTARTS_AFTER_RESET_E:         return "E section 14.1.3 / D section 13.1.3";
+      VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E:         return "E section 14.7.4 / D section 13.7.4";
+      VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E:             return "E section 14.6.2 / D section 13.6.2";
+      VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E:            return "E section 14.6.1 / D section 13.6.1";
+      VIP_CHI_CHK_LCRD_OVERFLOW_E:                     return "E section 14.2.1 / D section 13.2.1";
+      VIP_CHI_CHK_LCRD_UNDERFLOW_E:                    return "E section 14.2.1 / D section 13.2.1";
+      VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E:      return "E section 14.7.2 / D section 13.7.2";
+      VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E:        return "E section 14.7.2 / D section 13.7.2";
+      VIP_CHI_CHK_COMPLETION_FOLLOWS_REQ_E:            return "E section 2.3 / D section 2.3";
+      VIP_CHI_CHK_ATOMIC_RETURN_USES_DAT_COMPLETION_E: return "E section 4.2.5";
+      VIP_CHI_CHK_ORDERED_READ_RECEIPT_BEFORE_DAT_E:   return "E section 2.8.5 / D section 2.8.5";
+      VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E:             return "E section 2.5 / D section 2.5";
+      VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E:             return "E section 2.5 / D section 2.5";
+      VIP_CHI_CHK_WRITE_DAT_BEFORE_DBID_E:             return "E section 2.6.3 / D section 2.6.3";
+      VIP_CHI_CHK_WRITE_DAT_TXNID_MATCHES_DBID_E:      return "E section 2.6.3 / D section 2.6.3";
+      VIP_CHI_CHK_COMPACK_BEFORE_COMPLETION_E:         return "E section 2.8.3 / D section 2.8.3";
+      VIP_CHI_CHK_COMPACK_WITHOUT_EXPCOMPACK_E:        return "E section 2.8.3 / D section 2.8.3";
+      VIP_CHI_CHK_TX_DAT_FIRST_BEAT_DATAID_ZERO_E:     return "E section 2.10.4 / D section 2.10.4";
+      VIP_CHI_CHK_RX_DAT_FIRST_BEAT_DATAID_ZERO_E:     return "E section 2.10.4 / D section 2.10.4";
+      VIP_CHI_CHK_TX_DAT_DATAID_SEQUENTIAL_E:          return "E section 2.10.4 / D section 2.10.4";
+      VIP_CHI_CHK_RX_DAT_DATAID_SEQUENTIAL_E:          return "E section 2.10.4 / D section 2.10.4";
+      VIP_CHI_CHK_TX_DAT_TXNID_STABLE_E:               return "E section 2.5 / D section 2.5";
+      VIP_CHI_CHK_RX_DAT_TXNID_STABLE_E:               return "E section 2.5 / D section 2.5";
+      VIP_CHI_CHK_TX_WRITE_DAT_BEAT_COUNT_E:           return "E section 2.10.4 / D section 2.10.4";
+      VIP_CHI_CHK_RX_WRITE_DAT_BEAT_COUNT_E:           return "E section 2.10.4 / D section 2.10.4";
+      VIP_CHI_CHK_TX_READ_COMPLETION_DAT_OPCODE_E:     return "E section 2.6.1 / D section 2.6.1";
+      VIP_CHI_CHK_RX_READ_COMPLETION_DAT_OPCODE_E:     return "E section 2.6.1 / D section 2.6.1";
+      VIP_CHI_CHK_TX_READ_COMPLETION_DAT_BEAT_COUNT_E: return "E section 2.10.4 / D section 2.10.4";
+      VIP_CHI_CHK_RX_READ_COMPLETION_DAT_BEAT_COUNT_E: return "E section 2.10.4 / D section 2.10.4";
+      VIP_CHI_CHK_SNP_FLITV_REQUIRES_LINK_E:           return "E section 14.6.1 / D section 13.6.1";
+      VIP_CHI_CHK_SNP_LCRDV_REQUIRES_LINK_E:           return "E section 14.6.1 / D section 13.6.1";
+      VIP_CHI_CHK_SNP_VALID_REQUIRES_PEND_E:           return "E section 14.4 / D section 13.4";
+      VIP_CHI_CHK_SNP_KNOWN_WHEN_VALID_E:              return "";
+      VIP_CHI_CHK_SNP_IDLE_IN_RESET_E:                 return "E section 14.1.3 / D section 13.1.3";
+      VIP_CHI_CHK_SNP_LCRD_OVERFLOW_E:                 return "E section 14.2.1 / D section 13.2.1";
+      VIP_CHI_CHK_SNP_LCRD_UNDERFLOW_E:                return "E section 14.2.1 / D section 13.2.1";
+      VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E:               return "E section 13.10.5 / E section 13.10.16";
+      VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E:              return "E section 4.9 / D section 4.9";
+      VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E:         return "E section 13.10.35";
+      VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E:           return "E section 14.6.2 / D section 13.6.2";
+      VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E:         return "E section 14.6.2 / D section 13.6.2";
+      VIP_CHI_CHK_RSP_FIELD_ZERO_E:                    return "E Table A-4 / D Table A-4";
+      VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E:      return "E section 2.8.3 / D section 2.8.3";
+      VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E:                 return "E section 2.10.5 Table 2-17";
+      VIP_CHI_CHK_REQ_ORDER_LEGAL_E:                   return "E Table 13-25 / E Table 2-12 footnote a";
+      VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E:        return "E section 2.9.4 Table 2-12";
+      VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E:                return "E Table 2-14";
+      VIP_CHI_CHK_REQ_LIKELY_SHARED_LEGAL_E:           return "E section 2.9.5 / D section 2.9.5";
+      VIP_CHI_CHK_REQ_SIZE_LEGAL_E:                    return "E Table A-3 / D Table A-3";
+      VIP_CHI_CHK_REQ_EXCL_LEGAL_E:                    return "E section 6.3 / D section 6.3";
+      VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E:                  return "E Table A-3 / D Table A-3";
+      VIP_CHI_CHK_REQ_TAGOP_LEGAL_E:                   return "E Table 12-2";
+      VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E:             return "E section 13.10.4 / E section 13.10.15";
+      VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E:                return "E section 13.10.3";
+      VIP_CHI_CHK_DAT_CBUSY_LEGAL_E:                   return "E Table A-5";
+      VIP_CHI_CHK_EXPCOMPACK_PROHIBITED_BUT_SET_E:     return "E Table 2-9";
+      VIP_CHI_CHK_REQ_ALLOW_RETRY_PCRD_ZERO_E:         return "E section 2.11.2 / D section 2.11.2";
+      VIP_CHI_CHK_REQ_PCRD_RETURN_FIELDS_ZERO_E:       return "E Table A-2 / E Table A-3";
+      VIP_CHI_CHK_RSP_RETRY_ACK_TXN_ID_E:              return "E section 2.6.5 / D section 2.6.5";
+      VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E:   return "E section 2.11.2 / D section 2.11.2";
+      VIP_CHI_CHK_LASM_OUTPUT_RACE_E:                  return "E section 14.6.3 / D section 13.6.3";
+      VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E:              return "E section 14.6.3 / D section 13.6.3";
+      default: return "";
+    endcase
+  endfunction
+
   // ---------------------------------------------------------------------------
   // Scoreboard-check identity.
   //

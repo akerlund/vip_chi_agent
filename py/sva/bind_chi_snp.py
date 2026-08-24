@@ -30,6 +30,7 @@ import os
 from cocotb.triggers import RisingEdge
 
 from sva.bind_chi import claim_export_tag
+from sva.check_spec import check_spec
 
 from vip_chi_types_pkg import (
   LasmState, lasm, CheckSeverity, CHECK_IDS_SNP, CHECK_IDS_SV_ONLY,
@@ -186,7 +187,7 @@ class bind_chi_snp:
           f"{self.pass_count.get(rule, 0)},{self.fail_count.get(rule, 0)}\n")
 
   # ---------------------------------------------------------------------------
-  def _chk(self, rule: str, ok: bool, msg: str, where: str) -> None:
+  def _chk(self, rule: str, ok: bool, msg: str) -> None:
     # A DISABLED rule is skipped entirely -- neither pass nor fail is counted --
     # so the vacuity report shows it as not exercised rather than as quietly
     # holding. A rule at severity OFF is different: it still evaluates and still
@@ -196,9 +197,11 @@ class bind_chi_snp:
     if ok:
       self.pass_count[rule] = self.pass_count.get(rule, 0) + 1
     else:
-      self._err(rule, msg, where)
+      self._err(rule, msg)
 
-  def _err(self, rule: str, msg: str, where: str) -> None:
+  def _err(self, rule: str, msg: str) -> None:
+    where = check_spec(rule)
+    where = f" IHI 0050 {where}." if where else ""
     if not self.check_enable.get(rule, True):
       return
     self.fail_count[rule] = self.fail_count.get(rule, 0) + 1
@@ -206,10 +209,10 @@ class bind_chi_snp:
     if sev is CheckSeverity.OFF:
       return
     if sev is CheckSeverity.WARNING:
-      self.log.warning(f"{rule}: {msg}. IHI 0050 {where}.")
+      self.log.warning(f"{rule}: {msg}.{where}")
       return
     self.errors += 1
-    self.log.error(f"{rule}: {msg}. IHI 0050 {where}.")
+    self.log.error(f"{rule}: {msg}.{where}")
 
   def rule_names(self):
     return sorted(set(self.pass_count) | set(self.fail_count))
@@ -296,24 +299,18 @@ class bind_chi_snp:
       "CHI_SNP_FWD_FIELDS_ZERO",
       snp_opcode_is_forwarding(op) or (f["fwdnid"] == 0 and f["fwdtxnid"] == 0),
       f"{seen} snoop opcode 0x{op:x} is not a Forward type but carries "
-      f"FwdNID=0x{f['fwdnid']:x} FwdTxnID=0x{f['fwdtxnid']:x}",
-      "E section 13.10.5 / 13.10.16",
-    )
+      f"FwdNID=0x{f['fwdnid']:x} FwdTxnID=0x{f['fwdtxnid']:x}")
 
     self._chk(
       "CHI_SNP_RET_TO_SRC_LEGAL",
       (not snp_ret_to_src_must_be_zero(op)) or f["rettosrc"] == 0,
-      f"{seen} snoop opcode 0x{op:x} must carry RetToSrc = 0",
-      "E section 4.9 / D section 4.9",
-    )
+      f"{seen} snoop opcode 0x{op:x} must carry RetToSrc = 0")
 
     self._chk(
       "CHI_SNP_DO_NOT_GO_TO_SD_LEGAL",
       (not snp_do_not_go_to_sd_required(self._issue, op))
       or f["donotgotosd"] == 1,
-      f"{seen} snoop opcode 0x{op:x} must carry DoNotGoToSD = 1",
-      "E section 13.10.35",
-    )
+      f"{seen} snoop opcode 0x{op:x} must carry DoNotGoToSD = 1")
 
   def _enabled(self, s: dict) -> bool:
     if self._checks_enable is not None:
@@ -351,9 +348,7 @@ class bind_chi_snp:
           self._chk(
             "CHI_SNP_IDLE_IN_RESET",
             not (cur["txsnpflitv"] or cur["txsnplcrdv"]),
-            "SNP outputs not idle during reset",
-            "E section 14.1.3 / D section 13.1.3",
-          )
+            "SNP outputs not idle during reset")
         self._lcrd = {"txsnp": 0, "rxsnp": 0}
         prev, prev_rst = cur, rst
         continue
@@ -366,22 +361,18 @@ class bind_chi_snp:
           self._chk(
             "CHI_SNP_FLITV_REQUIRES_LINK",
             self._lasm_of(cur) is LasmState.RUN,
-            "txsnpflitv asserted before link RUN", "section 13.7",
-          )
+            "txsnpflitv asserted before link RUN")
         if cur["txsnplcrdv"]:
           self._chk(
             "CHI_SNP_LCRDV_REQUIRES_LINK", self._link_is_active(cur),
-            "txsnplcrdv asserted before link activation", "section 13.7",
-          )
+            "txsnplcrdv asserted before link activation")
         # FLITPEND announces a flit one cycle ahead; the obligation runs from
         # the flit backwards. See bind_chi._check_valid_requires_pend for why
         # this is one rule and not the two bullets the section lists.
         if cur["txsnpflitv"] and prev is not None:
           self._chk(
             "CHI_SNP_VALID_REQUIRES_PEND", bool(prev["txsnpflitpend"]),
-            "txsnpflitv sent without txsnpflitpend in the preceding cycle",
-            "E section 14.4 / D section 13.4",
-          )
+            "txsnpflitv sent without txsnpflitpend in the preceding cycle")
         if cur["txsnpflitv"]:
           self._check_snp_fields("tx")
         if cur["rxsnpflitv"]:
@@ -401,17 +392,13 @@ class bind_chi_snp:
       if grant:
         self._chk(
           "CHI_SNP_LCRD_OVERFLOW", count != _SNP_SEND_CAP_C,
-          f"{pool} SNP L-credit grant overflowed the tracked count",
-          "section 13.6",
-        )
+          f"{pool} SNP L-credit grant overflowed the tracked count")
         if count != _SNP_SEND_CAP_C:
           count += 1
       if consume:
         self._chk(
           "CHI_SNP_LCRD_UNDERFLOW", count != 0,
-          f"{pool} SNP L-credit consumed with no credit available (underflow)",
-          "section 13.6",
-        )
+          f"{pool} SNP L-credit consumed with no credit available (underflow)")
         if count != 0:
           count -= 1
       self._lcrd[pool] = count

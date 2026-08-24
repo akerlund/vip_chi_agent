@@ -774,6 +774,32 @@ constants live here. With no conversion available the script checks the two
 ports against each other and says plainly what went unchecked: an absent
 authority is not the same as a disagreement with one.
 
+### Which clause a check enforces
+
+Every rule in the check registry names the specification text it reads, and both
+ports name the same text. The citation is a property of the rule, not of the
+place it happens to be evaluated:
+
+- `vip_chi_check_spec()` in [sv/vip_chi_types_pkg.sv](sv/vip_chi_types_pkg.sv),
+  read by `chk_miss()` and appended to every SystemVerilog failure.
+- `CHECK_SPEC_C` in [py/sva/check_spec.py](py/sva/check_spec.py), read by
+  `_err()` and appended to every pyUVM failure.
+
+```bash
+python3 scripts/check_citation_parity.py
+```
+
+[scripts/check_citation_parity.py](scripts/check_citation_parity.py) fails if a
+registry entry has no citation, if the two ports cite a rule differently, or if
+a checker passes a citation at the call site instead of registering it against
+the rule. It needs no simulation and no specification conversion.
+
+The two issues renumber from chapter 12 onward — the Link Layer is E chapter 14
+and D chapter 13 — so **every citation names its issue**, and quotes both
+numbers only where both were confirmed. Four rules cite nothing and say so: the
+X/Z `KNOWN_WHEN_VALID` family guards against a testbench defect, and the
+specification does not legislate about a net holding X.
+
 ---
 
 ## Interface

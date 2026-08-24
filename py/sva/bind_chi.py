@@ -63,6 +63,7 @@ import os
 
 from cocotb.triggers import RisingEdge
 
+from sva.check_spec import check_spec
 from vip_chi_types_pkg import (
   CHECK_IDS,
   CHECK_IDS_MAIN,
@@ -530,7 +531,7 @@ class bind_chi:
   # ---------------------------------------------------------------------------
   # Reporting
   # ---------------------------------------------------------------------------
-  def _chk(self, rule: str, ok: bool, msg: str, where: str) -> None:
+  def _chk(self, rule: str, ok: bool, msg: str) -> None:
     """One check site: count the evaluation, and report it if it did not hold.
 
     `ok` is the violation predicate negated under the enclosing guard -- the
@@ -550,9 +551,14 @@ class bind_chi:
     if ok:
       self.pass_count[rule] = self.pass_count.get(rule, 0) + 1
     else:
-      self._err(rule, msg, where)
+      self._err(rule, msg)
 
-  def _err(self, rule: str, msg: str, where: str) -> None:
+  def _err(self, rule: str, msg: str) -> None:
+    # The clause comes from the rule, not from the call site: see
+    # sva/check_spec.py. A rule that claims no clause -- the X/Z ones --
+    # reports without a reference rather than with an empty one.
+    where = check_spec(rule)
+    where = f" IHI 0050 {where}." if where else ""
     self.fail_count[rule] = self.fail_count.get(rule, 0) + 1
     severity = self.check_severity.get(rule, CheckSeverity.ERROR)
     if severity is CheckSeverity.OFF:
@@ -561,15 +567,15 @@ class bind_chi:
       # can assert on it, but the deliberate violation does not read as a bug.
       # Logged at info so the run still SHOWS what happened -- silence here would
       # make a provoked failure and a suppressed real one look identical.
-      self.log.info(f"EXPECTED {rule}: {msg}. IHI 0050 {where}.")
+      self.log.info(f"EXPECTED {rule}: {msg}.{where}")
       return
     if severity is CheckSeverity.WARNING:
       # Demoted by the USER, so it must not fail the run -- but it is still a
       # violation and still visible, unlike OFF.
-      self.log.warning(f"{rule}: {msg}. IHI 0050 {where}.")
+      self.log.warning(f"{rule}: {msg}.{where}")
       return
     self.errors += 1
-    self.log.error(f"{rule}: {msg}. IHI 0050 {where}.")
+    self.log.error(f"{rule}: {msg}.{where}")
 
   # ---------------------------------------------------------------------------
   # Per-check control
@@ -1169,16 +1175,12 @@ class bind_chi:
     self._chk(
       "CHI_LINK_SIDEBAND_IDLE_IN_RESET",
       not (s["txlinkactivereq"] or s["txlinkactiveack"]),
-      "link sideband was not held idle during reset",
-      "E section 14.1.3 / D section 13.1.3",
-    )
+      "link sideband was not held idle during reset")
     for ch in _CHANNELS_C:
       self._chk(
         f"CHI_{ch.upper()}_IDLE_IN_RESET",
         not (s[f"tx{ch}flitv"] or s[f"tx{ch}lcrdv"]),
-        f"{ch.upper()} channel was not held idle during reset",
-        "E section 14.1.3 / D section 13.1.3",
-      )
+        f"{ch.upper()} channel was not held idle during reset")
 
   # ---------------------------------------------------------------------------
   # Link Activation State Machine, one per link (see _lasm_of).
@@ -1197,9 +1199,7 @@ class bind_chi:
         "CHI_LASM_LEGAL_TRANSITION",
         lasm_legal_step(cur, nxt),
         f"{who} link stepped {cur.name} -> {nxt.name}; the LASM may only hold "
-        f"or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP",
-        "E section 14.6 / D section 13.6",
-      )
+        f"or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP")
 
     cur = self._tx_lasm
     nxt = self._tx_lasm_of(s)
@@ -1286,9 +1286,7 @@ class bind_chi:
       self._chk(
         "CHI_LASM_OUTPUT_RACE", int(cur[other]) == need,
         f"banned output race: {moved} {edge} with {other}="
-        f"{int(cur[other])}; 14.6.3 forbids {sentence}",
-        "E section 14.6.3 / D section 13.6.3",
-      )
+        f"{int(cur[other])}; 14.6.3 forbids {sentence}")
 
   # The same four orderings mirrored onto the INPUT pair -- the peer's two
   # outputs as they arrive here. Observing them out of order is not a peer
@@ -1350,9 +1348,7 @@ class bind_chi:
         "CHI_LASM_INPUT_RACE_HOLD", not moved,
         f"{' and '.join(moved)} moved while an input race was unresolved "
         f"({self._input_race_why}); 14.6.3 requires a component that observes "
-        f"the race to wait for both signals before changing any output",
-        "E section 14.6.3 / D section 13.6.3",
-      )
+        f"the race to wait for both signals before changing any output")
 
     changed = (int(cur["rxlinkactivereq"]) != int(prev["rxlinkactivereq"]) or
                int(cur["rxlinkactiveack"]) != int(prev["rxlinkactiveack"]))
@@ -1410,9 +1406,7 @@ class bind_chi:
       which = "TRANSMIT" if pool.startswith("tx") else "RECEIVE"
       self._chk(
         "CHI_LCRD_QUIESCENT_IN_STOP", held == 0,
-        f"{pool} still holds {held} L-credit(s) with the {which} link in STOP",
-        "E section 14.6.1 / D section 13.6.1",
-      )
+        f"{pool} still holds {held} L-credit(s) with the {which} link in STOP")
 
   # ---------------------------------------------------------------------------
   # No flit and no credit before the link is RUN.
@@ -1451,16 +1445,12 @@ class bind_chi:
           f"CHI_{ch.upper()}_FLITV_REQUIRES_LINK",
           self._flit_send_allowed(tx_state, s, ch),
           f"tx{ch}flitv asserted with the TRANSMIT link in {tx_state.name}, "
-          f"not RUN",
-          "E section 14.6.1 / D section 13.6.1",
-        )
+          f"not RUN")
       if s[f"tx{ch}lcrdv"]:
         self._chk(
           f"CHI_{ch.upper()}_LCRDV_REQUIRES_LINK",
           rx_state is not LasmState.STOP,
-          f"tx{ch}lcrdv asserted with the RECEIVE link in STOP",
-          "E section 14.6.1 / D section 13.6.1",
-        )
+          f"tx{ch}lcrdv asserted with the RECEIVE link in STOP")
 
   @staticmethod
   def _flit_send_allowed(state: LasmState, s: dict, channel: str) -> bool:
@@ -1506,9 +1496,7 @@ class bind_chi:
       if s[f"tx{ch}flitv"]:
         self._chk(
           f"CHI_{ch.upper()}_VALID_REQUIRES_PEND", bool(prev[f"tx{ch}flitpend"]),
-          f"tx{ch}flitv sent without tx{ch}flitpend in the preceding cycle",
-          "E section 14.4 / D section 13.4",
-        )
+          f"tx{ch}flitv sent without tx{ch}flitpend in the preceding cycle")
 
   # ---------------------------------------------------------------------------
   # L-credit shadow, mirroring lcrd_next() in the SV checker.
@@ -1537,17 +1525,13 @@ class bind_chi:
       if grant:
         self._chk(
           "CHI_LCRD_OVERFLOW", count != cap,
-          f"{pool} L-credit grant overflowed the tracked count",
-          "section 13.6",
-        )
+          f"{pool} L-credit grant overflowed the tracked count")
         if count != cap:
           count += 1
       if consume:
         self._chk(
           "CHI_LCRD_UNDERFLOW", count != 0,
-          f"{pool} L-credit consumed with no credit available (underflow)",
-          "section 13.6",
-        )
+          f"{pool} L-credit consumed with no credit available (underflow)")
         if count != 0:
           count -= 1
       self._lcrd[pool] = count
@@ -1590,9 +1574,7 @@ class bind_chi:
       self._chk(
         "CHI_LINK_DEACTIVATE_WHEN_IDLE", not cur["txsactive"],
         f"txsactive was asserted with the link in {state.name}; nothing can be "
-        f"outstanding once a tear-down has begun",
-        "section 13.4",
-      )
+        f"outstanding once a tear-down has begun")
 
   # ---------------------------------------------------------------------------
   # A link stuck coming up or going down.
@@ -1630,9 +1612,7 @@ class bind_chi:
         self._chk(
           rule, dwell != limit,
           f"{'TX' if who == 'our' else 'RX'} link stuck in {state.name} for "
-          f"{dwell} cycles ({who} {what} unacknowledged, limit {limit})",
-          "E section 14.6 / D section 13.6",
-        )
+          f"{dwell} cycles ({who} {what} unacknowledged, limit {limit})")
 
   # ---------------------------------------------------------------------------
   # After reset releases, the link must activate within the window.
@@ -1652,15 +1632,13 @@ class bind_chi:
       return
     if self._link_is_active(s):
       self._chk("CHI_LINK_RESTARTS_AFTER_RESET", True,
-                "link activation did not restart after reset release",
-                "section 13.4")
+                "link activation did not restart after reset release")
       self._act_countdown = None
       return
     self._act_countdown -= 1
     if self._act_countdown <= 0:
       self._err("CHI_LINK_RESTARTS_AFTER_RESET",
-                "link activation did not restart after reset release",
-                "section 13.4")
+                "link activation did not restart after reset release")
       self._act_countdown = None
 
   # ===========================================================================
@@ -1798,8 +1776,7 @@ class bind_chi:
         "CHI_TXSACTIVE_COVERS_OUTSTANDING", bool(s["txsactive"]),
         f"TXSACTIVE was low with {outstanding} transaction(s) still "
         f"outstanding: the window it reports must cover every one of them, "
-        f"not just the cycles carrying flits",
-        "section 13.4")
+        f"not just the cycles carrying flits")
 
     # An episode ends the moment anything happens on the link. That is what
     # keeps the bound clear of a sender's own retire tail: the completion, and
@@ -1818,7 +1795,7 @@ class bind_chi:
       # blind spot: a check that only ever reports failures is indistinguishable
       # from one that never runs.
       if self._txsactive_idle_cycles and not self._txsactive_reported:
-        self._chk("CHI_TXSACTIVE_DEASSERT_BOUNDED", True, "", "section 13.4")
+        self._chk("CHI_TXSACTIVE_DEASSERT_BOUNDED", True, "")
       self._txsactive_idle_cycles = 0
       self._txsactive_reported = False
       return
@@ -1832,8 +1809,7 @@ class bind_chi:
       "CHI_TXSACTIVE_DEASSERT_BOUNDED", False,
       f"TXSACTIVE stayed asserted for {self._txsactive_idle_cycles} cycles "
       f"with nothing outstanding and no flit on any channel (bound is "
-      f"{limit}): a sideband that never drops reports nothing",
-      "section 13.4")
+      f"{limit}): a sideband that never drops reports nothing")
 
   @property
   def _txsactive_extend_max_cycles(self) -> int:
@@ -1880,8 +1856,7 @@ class bind_chi:
                 f"opcode 0x{int(opcode):x} carried AllowRetry deasserted with "
                 f"PCrdType 0x{pcrd:x}, and this link has seen no unspent "
                 f"PCrdGrant of that type; section 2.9.4 requires AllowRetry "
-                f"asserted on a first attempt",
-                "section 2.9.4")
+                f"asserted on a first attempt")
       if held != 0:
         self._pcrd_delta[pcrd] = self._pcrd_delta.get(pcrd, 0) - 1
     elif opcode == int(ReqOpcode.PCRD_RETURN):
@@ -1900,7 +1875,7 @@ class bind_chi:
       live = self._req_inflight.get(txn, False)
       self._chk(reuse_rule,
                 not (live and self._req_src.get(txn) == src),
-                reuse_msg, "section 2.5")
+                reuse_msg)
       self._post(self._req_inflight, txn, True)
       self._post(self._req_src, txn, src)
       self._arm_completion(s, f)
@@ -1937,7 +1912,7 @@ class bind_chi:
               not (exp_comp_ack_required(opcode, True)
                    and not int(f["expcompack"])),
               "a request whose opcode requires CompAck was issued with "
-              "ExpCompAck = 0", "section 2.8.3")
+              "ExpCompAck = 0")
 
     # Atomic operand Size against IHI 0050 E Table 2-17 / D Table 2-17.
     #
@@ -1959,7 +1934,7 @@ class bind_chi:
     self._chk("CHI_ATOMIC_SIZE_LEGAL",
               atomic_size_legal(opcode, f["size"]),
               f"atomic opcode 0x{int(opcode):x} carried Size {int(f['size'])}, "
-              f"which Table 2-17 does not permit for it", "Table 2-17")
+              f"which Table 2-17 does not permit for it")
 
     # Order legality: Table 13-25 reserves Order = 0b01 outside a read, and Table
     # 2-12's footnote a permits Order = 0b10 on ReadOnce*, WriteUnique, ReadNoSnp,
@@ -1967,8 +1942,7 @@ class bind_chi:
     self._chk("CHI_REQ_ORDER_LEGAL",
               req_order_legal(opcode, f["order"]),
               f"opcode 0x{int(opcode):x} carried Order 0b{int(f['order']):02b}, "
-              f"which the specification does not permit for it",
-              "Table 13-25 / Table 2-12 footnote a")
+              f"which the specification does not permit for it")
 
     # Table 2-12 as a whitelist: the table closes each of its two blocks with
     # "All other values -- Not valid", so a tuple outside the nine rows is a
@@ -1981,8 +1955,7 @@ class bind_chi:
               f"Cacheable {(ma >> 2) & 1} Device {(ma >> 1) & 1} EWA {ma & 1}), "
               f"SnpAttr {int(f['snpattr'])}, LikelyShared {int(f['likelyshared'])} "
               f"and Order 0b{int(f['order']):02b}, a combination Table 2-12 does "
-              f"not list",
-              "Table 2-12")
+              f"not list")
 
     # Table 2-14's per-opcode requirement, which the tuple rule above cannot
     # express: Table 2-12 says which combinations are legal, Table 2-14 says which
@@ -2004,8 +1977,7 @@ class bind_chi:
               f"opcode 0x{int(opcode):x} carried SnpAttr {snp}, and Table 2-14 "
               f"lists it as "
               f"{'Snoopable' if snp_req is SnpAttrReq.ONE else 'Non-snoopable'} "
-              f"only",
-              "Table 2-14")
+              f"only")
 
     # Section 2.9.5's LikelyShared whitelist. Narrower than the tuple rule above,
     # which only knows the table's "LikelyShared implies Snoopable": this also
@@ -2014,8 +1986,7 @@ class bind_chi:
               not (int(f["likelyshared"])
                    and not req_likely_shared_permitted(opcode)),
               f"opcode 0x{int(opcode):x} carried LikelyShared asserted, which "
-              f"section 2.9.5 does not permit for it",
-              "section 2.9.5")
+              f"section 2.9.5 does not permit for it")
 
     # Table A-3 fixes Size at 64 bytes for every coherent read, dataless and
     # CopyBack opcode, and for the full writes. Size = 0b110 is 64 bytes
@@ -2024,8 +1995,7 @@ class bind_chi:
               not (req_size_fixed_64b(opcode)
                    and int(f["size"]) != REQ_SIZE_64B),
               f"opcode 0x{int(opcode):x} carried Size 0b{int(f['size']):03b}, and "
-              f"Table A-3 fixes its Size at 64 bytes (0b110)",
-              "Table A-3")
+              f"Table A-3 fixes its Size at 64 bytes (0b110)")
 
     # Section 6.3's closed list of transactions that support an Exclusive access.
     # Excl on anything else is not a weaker guarantee, it is a bit the receiver
@@ -2033,8 +2003,7 @@ class bind_chi:
     self._chk("CHI_REQ_EXCL_LEGAL",
               not (int(f["excl"]) and not req_excl_permitted(opcode)),
               f"opcode 0x{int(opcode):x} carried Excl asserted, and section 6.3 "
-              f"does not list it as supporting Exclusive accesses",
-              "section 6.3")
+              f"does not list it as supporting Exclusive accesses")
 
     # ReturnNID and ReturnTxnID are inapplicable and must be zero outside the
     # request sets E 13.10.4 / 13.10.15 name, and the two sets differ:
@@ -2046,16 +2015,14 @@ class bind_chi:
       self._chk("CHI_REQ_RETURN_PATH_LEGAL", False,
                 f"opcode 0x{int(opcode):x} carried ReturnNID "
                 f"0x{int(f['returnnid']):x}, and section 13.10.4 makes the "
-                "field inapplicable and zero for it",
-                "E section 13.10.4")
+                "field inapplicable and zero for it")
     else:
       self._chk("CHI_REQ_RETURN_PATH_LEGAL",
                 not (int(f["returntxnid"])
                      and not req_return_txn_id_applicable(opcode)),
                 f"opcode 0x{int(opcode):x} carried ReturnTxnID "
                 f"0x{int(f['returntxnid']):x}, and section 13.10.15 makes the "
-                "field inapplicable and zero for it",
-                "E section 13.10.15")
+                "field inapplicable and zero for it")
 
     # Table A-3's Endian column: applicable on the Atomics only. Endian selects an
     # Atomic operand's byte order and has nothing to say about a plain read or
@@ -2063,8 +2030,7 @@ class bind_chi:
     self._chk("CHI_REQ_ENDIAN_LEGAL",
               not (int(f["endian"]) and not req_endian_applicable(opcode)),
               f"opcode 0x{int(opcode):x} carried Endian asserted, and Table A-3 "
-              f"makes the field inapplicable outside an Atomic",
-              "Table A-3")
+              f"makes the field inapplicable outside an Atomic")
 
     # IHI 0050 E Table 12-2's per-opcode TagOp permission, as a mask indexed by
     # the encoding. The table has five columns for a two-bit field -- Match and
@@ -2084,8 +2050,7 @@ class bind_chi:
                      & (1 << int(f["tagop"]))),
                 f"opcode 0x{int(opcode):x} carried TagOp "
                 f"0x{int(f['tagop']):x}, which Table 12-2 does not permit "
-                "for it",
-                "Table 12-2")
+                "for it")
 
     # Section 2.9.4: "If the AllowRetry field is asserted, the PCrdType field
     # must be set to 0b0000." A request that still allows a Retry response
@@ -2096,8 +2061,7 @@ class bind_chi:
               not (int(f["allowretry"]) and int(f["pcrdtype"])),
               f"opcode 0x{int(opcode):x} carried AllowRetry set with PCrdType "
               f"0x{int(f['pcrdtype']):x}, and section 2.9.4 requires PCrdType "
-              "zero while a Retry response is still allowed",
-              "section 2.9.4")
+              "zero while a Retry response is still allowed")
 
     # Every column Table A-2 and Table A-3 mark inapplicable-and-zero for
     # PCrdReturn. Issue D's tables agree: D drops only the TagOp column, and
@@ -2127,8 +2091,7 @@ class bind_chi:
                 not offenders,
                 "PCrdReturn carried a Table A-2/A-3 zero-marked field "
                 "non-zero: "
-                + ", ".join(f"{n}=0x{int(f[n]):x}" for n in offenders),
-                "Table A-2 / Table A-3")
+                + ", ".join(f"{n}=0x{int(f[n]):x}" for n in offenders))
 
     # The other half of Table 2-9, which nothing checked: the table marks
     # ExpCompAck prohibited on a whole class of requests, and until now only the
@@ -2144,8 +2107,7 @@ class bind_chi:
     self._chk("CHI_EXPCOMPACK_PROHIBITED_BUT_SET",
               not (int(f["expcompack"]) and exp_comp_ack_prohibited(opcode, True)),
               f"opcode 0x{int(opcode):x} carried ExpCompAck asserted, and "
-              f"Table 2-9 prohibits the bit for it",
-              "Table 2-9")
+              f"Table 2-9 prohibits the bit for it")
 
   def _arm_completion(self, s: dict, f: dict) -> None:
     """Start the temporal attempts a request opens."""
@@ -2198,8 +2160,7 @@ class bind_chi:
                 self._req_txn_id_seen.get(txn, False),
                 f"RetryAck arrived with TxnID 0x{int(txn):x}, which no request "
                 f"on this link has used; section 2.6.5 requires the bounced "
-                f"request's TxnID",
-                "section 2.6.5")
+                f"request's TxnID")
       self._post(self._req_txn_id_seen, txn, False)
 
   # ---------------------------------------------------------------------------
@@ -2226,8 +2187,7 @@ class bind_chi:
                 self._req_txn_id_seen.get(f["txnid"], False),
                 f"RetryAck was sent with TxnID 0x{int(f['txnid']):x}, which no "
                 f"request received on this link has used; section 2.6.5 "
-                f"requires the bounced request's TxnID",
-                "section 2.6.5")
+                f"requires the bounced request's TxnID")
       self._post(self._req_txn_id_seen, f["txnid"], False)
 
   def _record_write_grant(self, f: dict, mark_grant_seen: bool) -> None:
@@ -2257,11 +2217,9 @@ class bind_chi:
     dbid = f["dbid"]
     self._chk("CHI_WRITE_DAT_BEFORE_DBID",
               self._write_grant_seen_by_dbid.get(dbid, False),
-              "write DAT was sent before a DBID-bearing grant response",
-              "section 2.6")
+              "write DAT was sent before a DBID-bearing grant response")
     self._chk("CHI_WRITE_DAT_TXNID_MATCHES_DBID", f["txnid"] == dbid,
-              "write DAT txnid did not match DBID on the wire",
-              "section 2.6")
+              "write DAT txnid did not match DBID on the wire")
 
     if not s["txdatflitpend"]:
       # Last beat: the grant is spent.
@@ -2280,12 +2238,10 @@ class bind_chi:
     txn = f["txnid"]
     self._chk("CHI_COMPACK_BEFORE_COMPLETION",
               self._completion_seen.get(txn, False),
-              "CompAck was sent before the completion it acknowledges",
-              "section 2.6")
+              "CompAck was sent before the completion it acknowledges")
     self._chk("CHI_COMPACK_WITHOUT_EXPCOMPACK",
               self._req_exp_comp_ack.get(txn, False),
-              "CompAck was sent for a request without ExpCompAck",
-              "section 2.6")
+              "CompAck was sent for a request without ExpCompAck")
 
     self._post(self._req_exp_comp_ack, txn, False)
     self._post(self._completion_seen, txn, False)
@@ -2321,8 +2277,7 @@ class bind_chi:
               f"{d}rsp opcode 0x{opcode:x} drove a Table A-4 zero-marked field "
               f"non-zero (TxnID=0x{int(f['txnid']):x} "
               f"RespErr=0x{int(f['resperr']):x} Resp=0x{int(f['resp']):x} "
-              f"DBID=0x{int(f['dbid']):x})",
-              "Table A-4")
+              f"DBID=0x{int(f['dbid']):x})")
 
   # ---------------------------------------------------------------------------
   # DAT bursts: beat placement, TxnID stability, and the closing beat count.
@@ -2347,8 +2302,7 @@ class bind_chi:
                    and not dat_home_nid_applicable(f["opcode"])),
               f"{d} DAT opcode 0x{int(f['opcode']):x} carried HomeNID "
               f"0x{int(f['homenid']):x}, and section 13.10.3 makes the field "
-              "inapplicable and zero outside CompData and DataSepResp",
-              "E section 13.10.3")
+              "inapplicable and zero outside CompData and DataSepResp")
 
     # Table A-5 gives CBusy "0" on the write-data opcodes: a requester sending
     # write data has no completer-busy level to report.
@@ -2356,8 +2310,7 @@ class bind_chi:
               not (int(f["cbusy"]) and not dat_cbusy_applicable(f["opcode"])),
               f"{d} DAT opcode 0x{int(f['opcode']):x} carried CBusy "
               f"0x{int(f['cbusy']):x}, and Table A-5 makes the field "
-              "inapplicable and zero on write data",
-              "Table A-5")
+              "inapplicable and zero on write data")
 
     # Retire the transfer this beat belongs to, counted by TxnID, before the
     # run-shaped tracking below. See _retire_dat_transfer.
@@ -2368,8 +2321,7 @@ class bind_chi:
       self._post(st, "opcode", int(f["opcode"]))
       if not reorder:
         self._chk(f"CHI_{up}_DAT_FIRST_BEAT_DATAID_ZERO", f["dataid"] == 0,
-                  f"first {up} DAT beat did not start at dataid 0",
-                  "section 2.9")
+                  f"first {up} DAT beat did not start at dataid 0")
       if more:
         self._post(st, "active", True)
         self._post(st, "txn_id", f["txnid"])
@@ -2380,12 +2332,11 @@ class bind_chi:
 
     self._chk(f"CHI_{up}_DAT_TXNID_STABLE",
               interleaved or f["txnid"] == st["txn_id"],
-              f"{up} DAT burst changed txnid before {d}datflitpend dropped",
-              "section 2.9")
+              f"{up} DAT burst changed txnid before {d}datflitpend dropped")
     if not reorder:
       self._chk(f"CHI_{up}_DAT_DATAID_SEQUENTIAL",
                 f["dataid"] == st["expected_data_id"],
-                f"{up} DAT burst dataid was not sequential", "section 2.9")
+                f"{up} DAT burst dataid was not sequential")
 
     self._post(st, "count", st["count"] + 1)
     if more:
@@ -2432,7 +2383,7 @@ class bind_chi:
     self._chk(f"CHI_{up}_READ_COMPLETION_DAT_OPCODE",
               self._expected_completion_opcode_by_txn.get(txn) == int(f["opcode"]),
               f"{up} read completion DAT opcode did not match the request "
-              f"type", "section 2.9")
+              f"type")
     self._post(seen, txn, 0)
     self._post(self._expected_completion_valid_by_txn, txn, False)
     # The read half of section 2.8.3 rule 1. Keyed by the REQUEST's TxnID, not
@@ -2471,7 +2422,7 @@ class bind_chi:
         self._chk(f"CHI_{up}_WRITE_DAT_BEAT_COUNT",
                   self._expected_write_beats_by_dbid.get(dbid, 0) == beats,
                   f"{up} write DAT burst beat count did not match the granted "
-                  f"request size", "section 2.9")
+                  f"request size")
       self._post(self._expected_write_valid_by_dbid, dbid, False)
       return
 
@@ -2483,7 +2434,7 @@ class bind_chi:
                 self._dat_interleave_allowed()
                 or self._expected_completion_beats_by_txn.get(txn, 0) == beats,
                 f"{up} read completion DAT burst beat count did not match the "
-                f"request size", "section 2.9")
+                f"request size")
 
   # ---------------------------------------------------------------------------
   # Temporal attempts
@@ -2534,14 +2485,12 @@ class bind_chi:
       if self._final_completion_observed(s, rec["opcode"], rec["req_txn"],
                                          rec["completion_txn"]):
         self._chk("CHI_COMPLETION_FOLLOWS_REQ", True,
-                  "request was not completed within the timeout window",
-                  "section 2.3")
+                  "request was not completed within the timeout window")
         continue
       if rec["remaining"] <= 0:
         self._err("CHI_COMPLETION_FOLLOWS_REQ",
                   f"request txnid={rec['req_txn']} opcode=0x{rec['opcode']:x} "
-                  f"was not completed within {self._timeout_cycles} cycles",
-                  "section 2.3")
+                  f"was not completed within {self._timeout_cycles} cycles")
         continue
       rec["remaining"] -= 1
       still.append(rec)
@@ -2564,15 +2513,13 @@ class bind_chi:
             and int(f["opcode"]) in _PLAIN_COMPLETION_RSP_OPCODES_C):
           self._err("CHI_ATOMIC_RETURN_USES_DAT_COMPLETION",
                     f"data-returning atomic txnid={rec['req_txn']} was "
-                    f"completed by an RSP instead of returning data on DAT",
-                    "section 2.12")
+                    f"completed by an RSP instead of returning data on DAT")
           continue
       if (s[f"{cd}datflitv"] and not s[f"{cd}datflitpend"]
           and s[f"{cd}datflit"]["txnid"] == rec["completion_txn"]
           and int(s[f"{cd}datflit"]["opcode"]) == int(DatOpcode.COMP_DATA)):
         self._chk("CHI_ATOMIC_RETURN_USES_DAT_COMPLETION", True,
-                  "data-returning atomic returned its data on DAT",
-                  "section 2.12")
+                  "data-returning atomic returned its data on DAT")
         continue
       still.append(rec)
     self._pending_atomic = still
@@ -2593,14 +2540,13 @@ class bind_chi:
                                          rec["completion_txn"]):
         self._err("CHI_ORDERED_READ_RECEIPT_BEFORE_DAT",
                   f"ordered read txnid={rec['req_txn']} was completed before "
-                  f"its ReadReceipt", "section 2.7")
+                  f"its ReadReceipt")
         continue
       if (s[f"{cd}rspflitv"]
           and s[f"{cd}rspflit"]["txnid"] == rec["req_txn"]
           and int(s[f"{cd}rspflit"]["opcode"]) == int(RspOpcode.READ_RECEIPT)):
         self._chk("CHI_ORDERED_READ_RECEIPT_BEFORE_DAT", True,
-                  "ordered read was receipted before its completion",
-                  "section 2.7")
+                  "ordered read was receipted before its completion")
         continue
       still.append(rec)
     self._pending_ordered = still

@@ -108,6 +108,84 @@ Extends the RN-F / HN-F subsystem with more of the CHI coherency surface.
   triggering sequence); today a bounded cache that fills with dirty lines fatals
   with an explicit message. *Effort M.*
 
+## 1b. Unimplemented opcodes, by protocol feature
+
+Everything the two ports do NOT define, grouped by the feature that would bring
+it in. The point of the grouping is that a list of 22 REQ encodings is not a
+backlog anyone can act on, while "combined Write + CMO" is one decision covering
+nine of them.
+
+**Reproducing this list.** `scripts/check_opcodes.py --show-unimplemented` prints
+it, but only when given a local markdown conversion of the specification — the
+Arm document is not in this repository and must not be:
+
+```
+python3 scripts/check_opcodes.py --spec-e <your IHI0050E_a conversion>.md \
+                                --show-unimplemented
+```
+
+The classification below was taken from a conversion of **IHI0050E_a**, 14019
+lines, sha256 beginning `a4a12b28166eac8c`, on 2026-08-24, when the script
+reported REQ 51/73, RSP 15/18, SNP 13/22, DAT 9/10. A different conversion may
+split tables differently and shift those totals; the FAMILIES are what this
+section commits to, not the ratios.
+
+Each family carries one of five dispositions:
+
+  **backlog**   wanted, not built. The subsystem it needs is named.
+  **excluded**  deliberately out of scope. The reason is recorded, and a
+                `scope_exclusion` row in the review trace matrix points here.
+  **n/a**       does not apply to the roles this VIP models.
+  **open**      an unresolved specification question, not a work item yet.
+  **parser**    implemented, but missing from the opcode tables — a defect.
+
+No family is currently `parser`: the ports agree with each other and with the
+specification on all 88 opcodes they define, which `check_opcodes.py` asserts on
+every run without needing a conversion.
+
+- **DVM** — `DVMOp` (REQ 0x14), `SnpDVMOp` (SNP 0x0D). **backlog**, see §1
+  above; needs TLB-maintenance sequencing, not just the two encodings.
+- **Stash** — `StashOnceShared/Unique` (REQ 0x22/0x23), `StashOnceSepShared/Unique`
+  (0x47/0x48), `WriteUniqueFullStash`/`WriteUniquePtlStash` (0x20/0x21),
+  `SnpStashShared/Unique` (SNP 0x0C/0x0B), `SnpUniqueStash` (0x05),
+  `SnpMakeInvalidStash` (0x06), `StashDone`/`CompStashDone` (RSP 0x10/0x11).
+  **backlog**, see §1 above; needs a stash-target model. Note the RSP pair: a
+  stash implementation is not complete without the two completion opcodes, which
+  is the kind of thing an opcode-row list hides and a family list does not.
+- **Combined Write + CMO** — `WriteBackFullCleanInv/CleanSh/CleanShPerSep`
+  (REQ 0x59/0x58/0x5A), `WriteCleanFullCleanSh/CleanShPerSep` (0x5C/0x5E),
+  `WriteUniqueFullCleanSh/CleanShPerSep` (0x54/0x56),
+  `WriteUniquePtlCleanSh/CleanShPerSep` (0x64/0x66). **backlog.** The
+  `WriteNoSnp*` half of this family IS implemented — `vip_chi_write_cmo_seq`
+  drives six of those — so this is breadth within a mechanism that exists, and
+  the cheapest of the four backlog families.
+- **Invalidating ReadOnce forms** — `ReadOnceCleanInvalid` (REQ 0x24),
+  `ReadOnceMakeInvalid` (0x25). **backlog.** Both need the RN-F cache to act on a
+  read that also invalidates, which the current model does not do.
+- **ReadNotSharedDirty / SnpNotSharedDirty** — REQ 0x26, SNP 0x04. **backlog**,
+  and coupled: the request is only meaningful against a snoop response that can
+  return SD, so the pair lands together.
+- **PreferUnique (CHI-E)** — `ReadPreferUnique` (REQ 0x4C),
+  `SnpPreferUnique`/`SnpPreferUniqueFwd` (SNP 0x15/0x16). **backlog.**
+- **SnpQuery (CHI-E)** — SNP 0x10. **backlog**; a query snoop changes no state,
+  so it is the smallest coherent addition on this list.
+- **Memory Tagging `TagMatch`** — RSP 0x0A. **backlog**, and it is the one item
+  here that a plan already claimed: see `IMPLEMENTATION_PLAN.md` §4, which now
+  separates the implemented tag storage and replay from the unimplemented
+  `TagMatch` response.
+- **`WriteBackPtl` / `WriteEvictFull`** — REQ 0x1A / 0x15. **backlog**, tied to
+  the dirty-writeback-on-eviction item in §1: both are eviction paths the bounded
+  RN-F cache would need before it could evict rather than fatal.
+- **`WriteDataCancel`** — DAT 0x07. **excluded.** It cancels beats of a write
+  whose data the requester has already begun sending, which presupposes a
+  requester that abandons a transaction mid-burst. Every driver here completes
+  the bursts it starts, and building the opcode without that behaviour would
+  produce a flit nothing in the bench could provoke or consume.
+
+Nothing on this list is `n/a` or `open` today. Both dispositions are kept in the
+vocabulary because the next conversion may add opcodes for roles this VIP does
+not model, and an empty category is cheaper than inventing one later.
+
 ## 2. Infrastructure / breadth
 
 - **Interface parity (`PARITY_EN_P`)** — parity signals across the whole CHI

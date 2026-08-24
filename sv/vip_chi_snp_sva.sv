@@ -220,6 +220,15 @@ module vip_chi_snp_sva #(
     vif.check_pass_count[id] = vif.check_pass_count[id] + 1;
   endfunction
 
+  // The clause the rule enforces, appended to every report so a log line names
+  // the text that was violated and not only the rule that noticed. Empty for
+  // the X/Z rules, which claim none -- see vip_chi_check_spec.
+  function automatic string chk_where(input vip_chi_check_id_t id);
+    string s;
+    s = vip_chi_check_spec(id);
+    return (s.len() == 0) ? "" : {" IHI 0050 ", s, "."};
+  endfunction
+
   function automatic void chk_miss(input vip_chi_check_id_t id, input string msg);
     if (!vif.check_enabled[id]) begin
       return;
@@ -229,10 +238,10 @@ module vip_chi_snp_sva #(
       VIP_CHI_CHK_SEV_OFF_E: begin
       end
       VIP_CHI_CHK_SEV_WARNING_E: begin
-        $warning("vip_chi_snp_sva: [%s] %s", vip_chi_check_name(id), msg);
+        $warning("vip_chi_snp_sva: [%s] %s%s", vip_chi_check_name(id), msg, chk_where(id));
       end
       default: begin
-        $error("vip_chi_snp_sva: [%s] %s", vip_chi_check_name(id), msg);
+        $error("vip_chi_snp_sva: [%s] %s%s", vip_chi_check_name(id), msg, chk_where(id));
       end
     endcase
   endfunction
