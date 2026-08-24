@@ -350,6 +350,17 @@ class vip_chi_driver_snf(uvm_driver):
     if self.bus.get("txlinkactivereq") and not self.bus.get("txlinkactiveack"):
       want_link = True
 
+    # 14.6.3's requirement on the OBSERVER: while the peer's two outputs have
+    # arrived out of order and the second has not yet followed, neither of our
+    # outputs may move. This writer recomputes its intent every cycle, so
+    # SKIPPING is the whole hold -- an unwritten signal keeps its value and the
+    # same intent is re-derived next cycle. It must NOT re-drive the wires
+    # instead: txlinkactivereq is written by the activation path, and a writer
+    # that seizes a signal it does not own loses that path's one-shot request,
+    # which hung tc_chi_coh_d_reset_mid_snoop. ChiBus owns the flag; see there.
+    if self.bus.input_race_hold() and not self.cfg.lasm_ignore_input_race:
+      return
+
     self.ack_driven = bool(self.bus.get("txlinkactivereq"))
     self.bus.drive(txlinkactivereq=1 if want_link else 0,
                    txlinkactiveack=1 if self.ack_driven else 0)

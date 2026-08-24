@@ -176,6 +176,17 @@ class vip_chi_driver_hni(uvm_component):
     # driven at T-1 and the acknowledge lands exactly one cycle behind the
     # request, rising and falling. It reads nothing but wires, so it does not
     # care how many tasks call this in one cycle.
+    # 14.6.3's requirement on the OBSERVER: while the peer's two outputs have
+    # arrived out of order and the second has not yet followed, neither of our
+    # outputs may move. This writer recomputes its intent every cycle, so
+    # SKIPPING is the whole hold -- an unwritten signal keeps its value and the
+    # same intent is re-derived next cycle. It must NOT re-drive the wires
+    # instead: txlinkactivereq is written by the activation path, and a writer
+    # that seizes a signal it does not own loses that path's one-shot request,
+    # which hung tc_chi_coh_d_reset_mid_snoop. ChiBus owns the flag; see there.
+    if rn.input_race_hold():
+      return
+
     want_link = bool(rn.get("rxlinkactivereq"))
 
     # 14.6.3's fourth ordering binds US, not the peer: "the deassertion of TXREQ
@@ -207,6 +218,17 @@ class vip_chi_driver_hni(uvm_component):
     # drive is non-blocking. An earlier attempt gated it on a saved copy of our
     # own request and broke the invariant, because an attribute is not a wire.
     sn = self.sn_buses[s]
+    # 14.6.3's requirement on the OBSERVER: while the peer's two outputs have
+    # arrived out of order and the second has not yet followed, neither of our
+    # outputs may move. This writer recomputes its intent every cycle, so
+    # SKIPPING is the whole hold -- an unwritten signal keeps its value and the
+    # same intent is re-derived next cycle. It must NOT re-drive the wires
+    # instead: txlinkactivereq is written by the activation path, and a writer
+    # that seizes a signal it does not own loses that path's one-shot request,
+    # which hung tc_chi_coh_d_reset_mid_snoop. ChiBus owns the flag; see there.
+    if sn.input_race_hold():
+      return
+
     sn.drive(txlinkactiveack=sn.get("rxlinkactivereq"))
 
   # ==========================================================================

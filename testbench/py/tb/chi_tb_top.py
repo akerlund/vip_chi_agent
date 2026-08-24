@@ -1236,6 +1236,13 @@ async def tc_chi_lasm_illegal_transition(dut) -> None:
   await _run_d_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_lasm_input_race_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_lasm_input_race_negctl(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_lasm_input_race_negctl"
+  await _run_d_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_flitpend_without_valid", timeout_time=20, timeout_unit="ms")
 async def tc_chi_flitpend_without_valid(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""

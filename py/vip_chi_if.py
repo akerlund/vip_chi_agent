@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 from cocotb.triggers import RisingEdge, FallingEdge, ReadOnly, ReadWrite
+from cocotb.utils import get_sim_time
 
 from vip_chi_types_pkg import ChiCfg, Role, pack, unpack, flit_width
 
@@ -106,6 +107,95 @@ class ChiBus:
       h = getattr(dut, prefix + name, None)
       if h is not None:
         self.sig[name] = h
+    # Observed-input-race state; see input_race_hold().
+    self._race_t = None
+    self._race_prev = None
+    self._race_now = False
+    self._race_hold = False
+
+  # -- observed input race (E 14.6.3 / D 13.6.3) ----------------------------
+  #
+  # "For all input race conditions, a component that observes the input race is
+  # required to wait for both signals before changing any output signals."
+  #
+  # Hosted on the bus rather than in each driver for the reason the SystemVerilog
+  # twin puts it in vip_chi_if: a race is identified by the STEP the two inputs
+  # took, which needs state, and the sideband tasks run from several coroutines
+  # in a cycle. A per-call copy of "last cycle's inputs" collapses the moment two
+  # callers coincide -- the hazard that cost three attempts on the activation
+  # stagger. Keying the advance on simulation time makes it idempotent within a
+  # cycle and advance exactly once, which is what replaces the always_ff.
+  #
+  # It reads only the rx* pair, which this endpoint never drives, so the answer
+  # does not depend on when in the cycle a driver asks.
+  #
+  # THIS PORT RETURNS THE LIVE DECISION AND THE SYSTEMVERILOG TWIN RETURNS A
+  # REGISTERED ONE. That asymmetry is deliberate, it is measured in both
+  # directions, and swapping either to match the other reintroduces the defect --
+  # so do not "fix the inconsistency".
+  #
+  # The two ports differ in WHEN a driver observes the edge. cocotb wakes a
+  # coroutine on RisingEdge before non-blocking-style updates have landed, so the
+  # raw reads here are the PRE-edge values -- the same ones the assertions sample
+  # -- and the step visible now is exactly the step that armed the obligation. A
+  # SystemVerilog driver resumed on a clocking-block event reads raw wires that
+  # have ALREADY advanced past the edge, so there the live term describes the
+  # NEXT step and the registered one is the arming step.
+  #
+  # Measured, both ways round: with this port consuming the registered term the
+  # completer still reported its violation (1 at the SN-F), and with the
+  # SystemVerilog port consuming the live term it did too. Each port at its own
+  # term reports 0.
+  #
+  # It advances only when a driver asks, unlike the always_ff. Every active
+  # link's sideband task calls it once a cycle, and an idle link needs no hold.
+  #
+  # bind_chi DELIBERATELY DOES NOT CALL THIS and keeps its own copy. A checker
+  # that judged the drivers against the drivers' own belief could only report
+  # that they read the flag correctly: CHI_LASM_INPUT_RACE_HOLD would pass by
+  # construction, and a negative control that cannot fail is the failure mode the
+  # per-check mechanism exists to prevent. The duplication IS the independence.
+  _RACE_C = (
+    (True, 1, 0, 1),    # their ack rose with their req low
+    (False, 1, 0, 0),   # their ack fell with their req still high
+    (True, 0, 1, 0),    # their req rose with their ack still high
+    (False, 0, 1, 1),   # their req fell with their ack low
+  )
+
+  def input_race_hold(self) -> bool:
+    """True if the drive issued this cycle must not move either output."""
+    now = get_sim_time("step")
+    if now == self._race_t:
+      return self._race_hold
+    self._race_t = now
+
+    cur = (int(self.get_or("rxlinkactivereq")), int(self.get_or("rxlinkactiveack")))
+    prev = self._race_prev
+    self._race_prev = cur
+
+    if prev is None or cur == prev:
+      # THE OBLIGATION IS ONE CYCLE. A race is two signals driven in one cycle
+      # and observed in different ones, so the resynchronisation window is a
+      # cycle; if the second has not arrived by then, what was observed was a
+      # peer changing one signal at a time and 14.6.3's wait does not apply.
+      # The bound is also what lets a one-shot writer wait a race out.
+      self._race_now = False
+    else:
+      # RESOLVE TAKES PRECEDENCE OVER ARM: the change IS the arrival of the other
+      # signal, so it closes an open race whatever it is, and only an unarmed
+      # step can open a new one. The second half of a raced pair is itself out of
+      # order almost by definition, so arming on it would chain one race into a
+      # permanent hold.
+      step = False
+      for rising, idx, other, need in self._RACE_C:
+        if cur[idx] != (1 if rising else 0) or prev[idx] == cur[idx]:
+          continue
+        if cur[other] != need:
+          step = True
+          break
+      self._race_now = (not self._race_hold) and step
+    self._race_hold = self._race_now
+    return self._race_hold
 
   # -- introspection --------------------------------------------------------
   def has(self, name: str) -> bool:
@@ -143,6 +233,13 @@ class ChiBus:
   def reset_role(self):
     """Park every signal this role drives to 0 (safe link-idle)."""
     self.park([n for n in self.outputs if n in self.sig], 0)
+    # 14.1.3 has both peers holding the sideband idle through reset, so nothing
+    # is in flight; a race carried across would freeze the bring-up that
+    # follows. The SystemVerilog twin clears the same state on !rst_n.
+    self._race_t = None
+    self._race_prev = None
+    self._race_now = False
+    self._race_hold = False
 
   # -- sample ---------------------------------------------------------------
   def get(self, name: str) -> int:

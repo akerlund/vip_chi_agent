@@ -41,7 +41,7 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
   // 14.6.3's companion requirement, on the OBSERVER rather than the driver. The
   // completer is where it lands, and where it currently fails -- see the check.
   localparam int            HOLD_REPORTS_RNI_C  = 0;
-  localparam int            HOLD_REPORTS_SNF_C  = 1;
+  localparam int            HOLD_REPORTS_SNF_C  = 0;
 
   // ---------------------------------------------------------------------------
   // Constructor

@@ -340,6 +340,18 @@ class vip_chi_driver_hnf #(
       want_link = 1'b1;
     end
 
+    // 14.6.3's requirement on the OBSERVER: while the peer's two outputs have
+    // arrived out of order and the second has not yet followed, neither of our
+    // outputs may move. This writer recomputes its intent every cycle, so
+    // SKIPPING is the whole hold -- a clocking-block output not assigned this
+    // cycle keeps its last driven value, and the same intent is re-derived next
+    // cycle. It must NOT re-drive the wires instead: txlinkactivereq is written
+    // by the activation path, and a writer that seizes a signal it does not own
+    // loses that path's one-shot request. vip_chi_if owns the flag; see there.
+    if (this.vif_rn[p].input_race_hold) begin
+      return;
+    end
+
     this.vif_rn[p].g_drv.hnf_cb.txlinkactivereq <= want_link;
     // The acknowledge is a ONE-CYCLE DELAY of our own request, off the wire: the
     // drive is non-blocking, so a wire read carries last cycle's value and the
@@ -715,6 +727,18 @@ class vip_chi_driver_hnf #(
   // before the assertion of TXREQ", and the deassertion likewise. Mirroring was
   // safe only while the peer's request was identically zero.
   protected task drive_sn_idle_sideband(input int s);
+    // 14.6.3's requirement on the OBSERVER: while the peer's two outputs have
+    // arrived out of order and the second has not yet followed, neither of our
+    // outputs may move. This writer recomputes its intent every cycle, so
+    // SKIPPING is the whole hold -- a clocking-block output not assigned this
+    // cycle keeps its last driven value, and the same intent is re-derived next
+    // cycle. It must NOT re-drive the wires instead: txlinkactivereq is written
+    // by the activation path, and a writer that seizes a signal it does not own
+    // loses that path's one-shot request. vip_chi_if owns the flag; see there.
+    if (this.vif_sn[s].input_race_hold) begin
+      return;
+    end
+
     this.vif_sn[s].g_drv.rni_cb.txlinkactiveack <=
       this.vif_sn[s].g_drv.rni_cb.rxlinkactivereq;
   endtask

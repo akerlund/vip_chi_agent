@@ -43,7 +43,7 @@ _RACE_REPORTS_SNF_C = 0
 # completer is where it lands, and where it currently fails -- see the check.
 _HOLD_RULE_C = "CHI_LASM_INPUT_RACE_HOLD"
 _HOLD_REPORTS_RNI_C = 0
-_HOLD_REPORTS_SNF_C = 1
+_HOLD_REPORTS_SNF_C = 0
 ADDR_C = 0x3D40_0000
 SIZE_C = 6                      # 64 B = 4 beats on the CHI-D cut
 SETTLE_C = 20

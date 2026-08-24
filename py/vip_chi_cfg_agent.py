@@ -208,6 +208,22 @@ class VipChiCfgAgent:
     # sequence. It fires once per activation; the link then comes up normally.
     self.lasm_abort_activation = False
 
+    # Negative control for the OBSERVER half of E section 14.6.3 / D 13.6.3:
+    # when set, this endpoint's sideband drivers ignore an observed input race
+    # and move their outputs through it, which the section forbids -- "a
+    # component that observes the input race is required to wait for both
+    # signals before changing any output signals."
+    #
+    # It exists because fixing the VIP removed the rule's only failing
+    # observation. CHI_LASM_INPUT_RACE_HOLD had exactly one, and it was this
+    # VIP's own defect rather than deliberate stimulus; with the defect fixed the
+    # rule could no longer fail anywhere, which makes it indistinguishable from a
+    # rule that is not being evaluated.
+    #
+    # Pair it with lasm_abort_activation on the requester: that is what produces
+    # the race this endpoint then observes. Default False waits the race out.
+    self.lasm_ignore_input_race = False
+
     # POSITIVE control for the FLITPEND rule: the requester pulses txreqflitpend
     # and txrspflitpend for one cycle with no flit behind them, once, after the
     # link is up. E section 14.4 / D section 13.4 permit exactly this -- "a
@@ -696,6 +712,7 @@ class VipChiCfgAgent:
       "lasm_reactivate_during_deactivate": self.lasm_reactivate_during_deactivate,
       "flit_without_flitpend": self.flit_without_flitpend,
       "reset_idle_violation": self.reset_idle_violation,
+      "lasm_ignore_input_race": self.lasm_ignore_input_race,
     }
     on = [k for k, v in negctl.items() if v]
     if on:

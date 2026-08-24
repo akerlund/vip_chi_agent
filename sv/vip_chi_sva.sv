@@ -365,7 +365,6 @@ module vip_chi_sva #(
 
   always_ff @(posedge vif.clk) begin : b_input_race
     bit inputs_changed;
-    bit outputs_moved;
     int unsigned step;
 
     if (!vif.rst_n) begin
@@ -388,8 +387,6 @@ module vip_chi_sva #(
 
       inputs_changed = ((vif.rxlinkactivereq === 1'b1) !== rxreq_q) ||
                        ((vif.rxlinkactiveack === 1'b1) !== rxack_q);
-      outputs_moved  = ((vif.txlinkactivereq === 1'b1) !== txreq_q) ||
-                       ((vif.txlinkactiveack === 1'b1) !== txack_q);
       step           = input_race_step();
 
       if (inputs_changed) begin
@@ -400,10 +397,14 @@ module vip_chi_sva #(
           input_race_why <= step;
         end
       end
-      else if (input_race_armed && outputs_moved) begin
-        // Already broken, and the inputs have not moved to resolve it. Dropping
-        // the flag keeps this to ONE report; holding it would repeat every
-        // remaining cycle and bury the line that says what happened.
+      else begin
+        // THE OBLIGATION IS ONE CYCLE. A race is two signals driven in one cycle
+        // and observed in different ones, so the resynchronisation window is a
+        // cycle; if the second has not arrived by then, what was observed was a
+        // peer changing one signal at a time and 14.6.3's wait does not apply.
+        // Demanding more would require stability from a component with nothing
+        // left to wait for -- and it is the bound that lets a one-shot driver
+        // WAIT the race out instead of dropping its request.
         input_race_armed <= 1'b0;
       end
     end

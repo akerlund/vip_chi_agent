@@ -56,6 +56,7 @@ filesets:
       - tc/tc_chi_ordered_stream_negctl.sv:                {is_include_file: true}
       - tc/tc_chi_ordered_write_no_comp_ack.sv:            {is_include_file: true}
       - tc/tc_chi_lasm_illegal_transition.sv:              {is_include_file: true}
+      - tc/tc_chi_lasm_input_race_negctl.sv:               {is_include_file: true}
       - tc/tc_chi_lasm_deactivate.sv:                       {is_include_file: true}
       - tc/tc_chi_lasm_timeout.sv:                          {is_include_file: true}
       - tc/tc_chi_lasm_race.sv:                             {is_include_file: true}

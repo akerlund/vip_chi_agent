@@ -1367,10 +1367,14 @@ class bind_chi:
       self._input_race_pending = why is not None
       if why is not None:
         self._input_race_why = why
-    elif armed and moved:
-      # Already broken, and the inputs have not moved to resolve it. Dropping
-      # the flag keeps this to ONE report; holding it would repeat every
-      # remaining cycle and bury the one line that says what happened.
+    else:
+      # THE OBLIGATION IS ONE CYCLE. A race is two signals driven in one cycle
+      # and observed in different ones, so the resynchronisation window is a
+      # cycle; if the second has not arrived by then, what was observed was a
+      # peer changing one signal at a time and 14.6.3's wait does not apply.
+      # Demanding more would require stability from a component with nothing
+      # left to wait for -- and it is the bound that lets a one-shot driver wait
+      # a race out instead of dropping its request.
       self._input_race_pending = False
 
   def _check_lcrd_quiescent_in_stop(self, state: LasmState) -> None:

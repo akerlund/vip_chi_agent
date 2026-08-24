@@ -269,6 +269,18 @@ class vip_chi_driver_rni #(
     // explicitly, and that BROKE it: a class member is not a wire, this task
     // runs from several threads in a cycle, and two callers could disagree.
     // Reading only wires is what makes the ordering call-order independent.
+    // 14.6.3's requirement on the OBSERVER: while the peer's two outputs have
+    // arrived out of order and the second has not yet followed, neither of our
+    // outputs may move. This writer recomputes its intent every cycle, so
+    // SKIPPING is the whole hold -- a clocking-block output not assigned this
+    // cycle keeps its last driven value, and the same intent is re-derived next
+    // cycle. It must NOT re-drive the wires instead: txlinkactivereq is written
+    // by the activation path, and a writer that seizes a signal it does not own
+    // loses that path's one-shot request. vip_chi_if owns the flag; see there.
+    if (this.vif_rni.input_race_hold) begin
+      return;
+    end
+
     this.vif_rni.g_drv.rni_cb.txlinkactiveack <=
       this.vif_rni.g_drv.rni_cb.rxlinkactivereq;
   endtask

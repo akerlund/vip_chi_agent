@@ -255,6 +255,23 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0 keeps bring-up a clean STOP -> ACTIVATE -> RUN.
   bit lasm_abort_activation = 1'b0;
 
+  // Negative-control knob for the OBSERVER half of IHI 0050 E 14.6.3 / D 13.6.3:
+  // when set, this endpoint's sideband drivers ignore an observed input race and
+  // move their outputs through it, which the section forbids -- "a component
+  // that observes the input race is required to wait for both signals before
+  // changing any output signals."
+  //
+  // It exists because fixing the VIP removed the rule's only failing
+  // observation. CHI_LASM_INPUT_RACE_HOLD had exactly one, and it was this VIP's
+  // own defect rather than deliberate stimulus; with the defect fixed the rule
+  // could no longer fail anywhere, which makes it indistinguishable from a rule
+  // that is not being evaluated. A knob that breaks the requirement on purpose
+  // is what keeps it honest.
+  //
+  // Pair it with lasm_abort_activation on the requester: that is what produces
+  // the race this endpoint then observes. Default 0 waits the race out.
+  bit lasm_ignore_input_race = 1'b0;
+
   // POSITIVE-control knob for the FLITPEND rule: when set, the requester pulses
   // txreqflitpend and txrspflitpend for one cycle with no flit behind them,
   // once, after the link is up.
@@ -1090,7 +1107,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
         this.snf_corrupt_tag ||
         this.lasm_abort_activation || this.flit_without_flitpend ||
-        this.reset_idle_violation ||
+        this.reset_idle_violation || this.lasm_ignore_input_race ||
         this.lasm_reactivate_during_deactivate) begin
       if (!silent) begin
         `uvm_warning("VIP_CHI_CFG", $sformatf(

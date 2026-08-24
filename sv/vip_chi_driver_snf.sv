@@ -272,6 +272,18 @@ class vip_chi_driver_snf #(
       want_link = 1'b1;
     end
 
+    // 14.6.3's requirement on the OBSERVER: while the peer's two outputs have
+    // arrived out of order and the second has not yet followed, neither of our
+    // outputs may move. This writer recomputes its intent every cycle, so
+    // SKIPPING is the whole hold -- a clocking-block output not assigned this
+    // cycle keeps its last driven value, and the same intent is re-derived next
+    // cycle. It must NOT re-drive the wires instead: txlinkactivereq is written
+    // by the activation path, and a writer that seizes a signal it does not own
+    // loses that path's one-shot request. vip_chi_if owns the flag; see there.
+    if (this.vif_snf.input_race_hold && !this.cfg.lasm_ignore_input_race) begin
+      return;
+    end
+
     // The acknowledge is a ONE-CYCLE DELAY of our own request, taken off the
     // wire, and that is the whole trick. The drive is non-blocking, so the wire
     // read here carries what was driven last cycle and the acknowledge lands

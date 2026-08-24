@@ -98,6 +98,116 @@ interface vip_chi_if #(
   vip_chi_check_severity_t check_severity [VIP_CHI_CHK_NUM_E];
 
   // ---------------------------------------------------------------------------
+  // Observed input race, IHI 0050 E 14.6.3 / D 13.6.3 -- for the DRIVERS on this
+  // interface.
+  //
+  // "For all input race conditions, a component that observes the input race is
+  // required to wait for both signals before changing any output signals."
+  //
+  // Hosted here rather than in each driver for one reason: a race is identified
+  // by the STEP the two inputs took, which needs state, and the sideband tasks
+  // run from several threads in a cycle. A per-call copy of "last cycle's
+  // inputs" collapses the moment two callers coincide -- the same hazard that
+  // cost three attempts on the activation stagger. An always_ff runs ONCE per
+  // cycle whatever the drivers do, which is the property that makes it correct.
+  //
+  // It reads only the rx* pair, which this endpoint never drives, so the answer
+  // does not depend on when in the cycle a driver asks.
+  //
+  // THE HOLD LASTS AT MOST ONE CYCLE, and consecutive holds are impossible: a
+  // registered hold blocks the combinational term from arming again. That bound is what makes it safe for a caller to WAIT on it (see the
+  // one-shot writers in the requester and the homes) rather than only to skip.
+  //
+  // The bound is also the right model. A race is two signals driven in one cycle
+  // and observed in different ones, so the resynchronisation window is a cycle:
+  // if the second signal has not arrived by then, what was observed was a peer
+  // changing one signal at a time, not a race, and 14.6.3's wait does not apply.
+  //
+  // vip_chi_sva DELIBERATELY DOES NOT READ THIS and keeps its own copy. A
+  // checker that judged the drivers against the drivers' own belief could only
+  // ever report that they read the flag correctly: CHI_LASM_INPUT_RACE_HOLD
+  // would pass by construction, and a negative control that cannot fail is the
+  // failure mode this VIP's per-check mechanism exists to prevent. The
+  // duplication IS the independence, which is why the two are written from the
+  // specification separately rather than shared.
+  // ---------------------------------------------------------------------------
+  logic rxreq_prev;
+  logic rxack_prev;
+  // Combinational: the step just observed at this edge is a forbidden one.
+  logic input_race_now;
+  // REGISTERED, and this is the one the drivers read. The distinction is the
+  // whole timing of the thing: a driver running just after edge N sees raw
+  // inputs that have ALREADY advanced past the edge, so the combinational term
+  // describes the step from N to N+1, while the drive it is about to issue lands
+  // at N+1 and must match N+1's value. The register carries the step that armed
+  // the obligation, which is what the drive being issued now has to respect.
+  //
+  // Reading the combinational term instead puts the hold a cycle early and
+  // changes nothing -- measured: the completer still reported its violation.
+  // Same lesson as the acknowledge stagger, in a new place: the non-blocking
+  // assignment IS the delay, and the delayed copy is the one to consume.
+  //
+  // THE pyUVM TWIN CONSUMES ITS LIVE TERM, NOT A REGISTERED ONE, and that is
+  // correct there rather than a divergence to reconcile. cocotb wakes a
+  // coroutine on RisingEdge before non-blocking-style updates have landed, so
+  // its raw reads are the PRE-edge values and the live step is already the
+  // arming step. A driver here is resumed on a clocking-block event and reads
+  // wires that have advanced past the edge. Measured both ways round in both
+  // ports: each at the other's term leaves the completer's violation in place.
+  logic input_race_hold;
+
+  // TRUE when the peer's two outputs arrived in an order 14.6.3 forbids.
+  // Two-state comparisons throughout: X -> 0 is not a deassertion, and an
+  // undriven peer must not read as a race.
+  function automatic bit input_race_step();
+    if ((rxack_prev === 1'b0) && (rxlinkactiveack === 1'b1) &&
+        (rxlinkactivereq !== 1'b1)) begin
+      return 1'b1;
+    end
+    if ((rxack_prev === 1'b1) && (rxlinkactiveack === 1'b0) &&
+        (rxlinkactivereq !== 1'b0)) begin
+      return 1'b1;
+    end
+    if ((rxreq_prev === 1'b0) && (rxlinkactivereq === 1'b1) &&
+        (rxlinkactiveack !== 1'b0)) begin
+      return 1'b1;
+    end
+    if ((rxreq_prev === 1'b1) && (rxlinkactivereq === 1'b0) &&
+        (rxlinkactiveack !== 1'b1)) begin
+      return 1'b1;
+    end
+    return 1'b0;
+  endfunction
+
+  always_comb begin
+    bit changed;
+    changed = ((rxlinkactivereq === 1'b1) !== rxreq_prev) ||
+              ((rxlinkactiveack === 1'b1) !== rxack_prev);
+    // RESOLVE TAKES PRECEDENCE OVER ARM: an armed race is closed by the next
+    // input change whatever it is, because that change IS the arrival of the
+    // other signal, and only an unarmed step can open a new one. The second half
+    // of a raced pair is itself out of order almost by definition, so arming on
+    // it would chain one race into a permanent hold.
+    input_race_now = changed && !input_race_hold && input_race_step();
+  end
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      // 14.1.3 has both peers holding the sideband idle through reset, so
+      // nothing is in flight and a race carried across would freeze the
+      // bring-up that follows.
+      rxreq_prev      <= 1'b0;
+      rxack_prev      <= 1'b0;
+      input_race_hold <= 1'b0;
+    end
+    else begin
+      rxreq_prev      <= (rxlinkactivereq === 1'b1);
+      rxack_prev      <= (rxlinkactiveack === 1'b1);
+      input_race_hold <= input_race_now;
+    end
+  end
+
+  // ---------------------------------------------------------------------------
   // Request channel.
   // ---------------------------------------------------------------------------
   logic      txreqflitpend;
