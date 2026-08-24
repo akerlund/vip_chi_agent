@@ -2695,6 +2695,15 @@ module vip_chi_sva #(
   // p_link_restarts_after_reset_release uses it: an interface whose agent is
   // never built stays unarmed and cannot false-fail on an idle link, while one
   // that has carried traffic is judged for the whole life of the link.
+  //
+  // THE THREE LCRDV RULES BELOW ARE GOVERNED BY THE SAME ARGUMENT and were left
+  // on checks_enable when the flit rules moved off it. "No credit may be
+  // advertised once the link is down" has content only while the link is down,
+  // which is exactly when checks_enable is low -- so the gate switched off the
+  // rule in the only state it could fail in. The pyUVM port has never had that
+  // gate, which is why it reported a credit driven through reset in
+  // tc_chi_reset_idle_scope and this port did not: a divergence both sweeps
+  // printed and no gate compared, until check_tally_parity.py.
   property p_req_requires_link;
     @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
       vif.txreqflitv |-> flit_send_allowed(tx_req_is_lcrd_return());
@@ -2711,17 +2720,17 @@ module vip_chi_sva #(
   endproperty
 
   property p_req_lcrdv_requires_link;
-    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+    @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
       vif.txreqlcrdv |-> rx_link_is_active();
   endproperty
 
   property p_rsp_lcrdv_requires_link;
-    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+    @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
       vif.txrsplcrdv |-> rx_link_is_active();
   endproperty
 
   property p_dat_lcrdv_requires_link;
-    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+    @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
       vif.txdatlcrdv |-> rx_link_is_active();
   endproperty
 
