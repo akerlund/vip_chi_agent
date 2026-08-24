@@ -721,6 +721,20 @@ class vip_chi_cfg_agent extends uvm_object;
   // wrong. Default 0.
   bit hnf_txsactive_early_drop_negctl = 1'b0;
 
+  // Negative control for CHI_TXSACTIVE_COVERS_OUTSTANDING at a RAW-INJECTING
+  // requester. The raw path reverts to the window it used to have: scoped to the
+  // injected flit, with nothing holding the sideband up while the transaction it
+  // started is still outstanding.
+  //
+  // This is the defect F-CORR-021 recorded rather than an invented one. It was
+  // sound while no raw-injectable opcode had a modeled completion and stopped
+  // being sound the moment WriteUniqueZero was classified, which is why the
+  // control exists at all: the fix is a behaviour that has to keep working as
+  // opcodes are classified, and a mutation proves that once while a control
+  // proves it on every run.
+  // Default 0.
+  bit raw_req_txsactive_flit_scoped_negctl = 1'b0;
+
   // ---------------------------------------------------------------------------
   // Constructor.
   // ---------------------------------------------------------------------------
@@ -1148,6 +1162,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.hnf_force_excl_success || this.hnf_corrupt_fwd_data ||
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
         this.hnf_txsactive_early_drop_negctl ||
+        this.raw_req_txsactive_flit_scoped_negctl ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
         this.snf_corrupt_tag ||
         this.lasm_abort_activation || this.flit_without_flitpend ||

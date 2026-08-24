@@ -69,6 +69,7 @@ package chi_tc_pkg;
   `include "tc_chi_e_persist.sv"
   `include "tc_chi_e_write_zero_readback.sv"
   `include "tc_chi_e_write_unique_zero_negctl.sv"
+  `include "tc_chi_e_raw_txsactive_negctl.sv"
   `include "tc_chi_txnid_reuse_srcid_scope.sv"
   `include "tc_chi_comp_dbid_negctl.sv"
   `include "tc_chi_e_retry_field_negctl.sv"

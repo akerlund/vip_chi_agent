@@ -1635,6 +1635,10 @@ class vip_chi_driver_rni(uvm_driver):
   # time an opcode joins it, which is the shape of the defect rather than an
   # instance of it.
   def _raw_req_activity(self, raw_value):
+    # The negative control reverts to the flit-scoped window, which is the
+    # defect itself rather than an invented one -- see the knob.
+    if self.cfg.raw_req_txsactive_flit_scoped_negctl:
+      return
     f = unpack(self.bus.cfg, "req", int(raw_value))
     opcode = _I(f["opcode"])
     if not req_has_modeled_completion(opcode):

@@ -1653,6 +1653,12 @@ class vip_chi_driver_rni #(
   // ---------------------------------------------------------------------------
   protected task raw_req_activity(input req_flit_t flit);
 
+    // The negative control reverts to the flit-scoped window, which is the
+    // defect itself rather than an invented one -- see the knob.
+    if (this.cfg.raw_req_txsactive_flit_scoped_negctl) begin
+      return;
+    end
+
     if (!vip_chi_types_pkg::vip_chi_req_has_modeled_completion(
            vip_chi_req_opcode_t'(flit.opcode))) begin
       return;

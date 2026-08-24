@@ -73,6 +73,7 @@ filesets:
       - tc/tc_chi_e_persist.sv:                             {is_include_file: true}
       - tc/tc_chi_e_write_zero_readback.sv:                 {is_include_file: true}
       - tc/tc_chi_e_write_unique_zero_negctl.sv:            {is_include_file: true}
+      - tc/tc_chi_e_raw_txsactive_negctl.sv:                {is_include_file: true}
       - tc/tc_chi_txnid_reuse_srcid_scope.sv:               {is_include_file: true}
       - tc/tc_chi_comp_dbid_negctl.sv:                      {is_include_file: true}
       - tc/tc_chi_e_retry_field_negctl.sv:                  {is_include_file: true}
