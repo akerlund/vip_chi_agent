@@ -1738,6 +1738,96 @@ package vip_chi_types_pkg;
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Completion classifiers.
+  //
+  // These live HERE rather than in the checker that first needed them, and the
+  // move is the point rather than tidying. "Does this REQ opcode have a
+  // completion this tree models" is asked by vip_chi_sva, to decide whether to
+  // hold the request outstanding, AND by the raw-injection path in
+  // vip_chi_driver_rni, to decide how long to hold TXSACTIVE. A module-local
+  // copy is not reachable from a driver class at all, and a second copy of the
+  // answer drifts the moment an opcode is classified -- which is exactly what
+  // F-CORR-021 recorded: the raw path's comment asserted a property of the
+  // opcode set that stopped being true when WriteUniqueZero joined this
+  // classifier, and nothing connected the two.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_req_opcode_is_coherent_read(
+    input vip_chi_req_opcode_t opcode
+  );
+    return ((opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_READ_SHARED_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_READ_CLEAN_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_READ_UNIQUE_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_MAKE_READ_UNIQUE_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_READ_ONCE_C)));
+  endfunction
+
+  function automatic bit vip_chi_req_opcode_is_coherent_write_data(
+    input vip_chi_req_opcode_t opcode
+  );
+    return ((opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C)) ||
+            // WriteEvictOrEvict is a CopyBack whose data is CONDITIONAL: the
+            // home asks for it with CompDBIDResp or declines with a bare Comp.
+            // Listing it here is still right, and the conditionality takes care
+            // of itself -- the burst-length check arms only when a DBID is
+            // granted, which is exactly the leg that carries data.
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)));
+  endfunction
+
+  function automatic bit vip_chi_req_opcode_is_coherent_rsp_only(
+    input vip_chi_req_opcode_t opcode
+  );
+    return ((opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_EVICT_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_CLEAN_INVALID_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_MAKE_INVALID_C)) ||
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_CLEAN_UNIQUE_C)) ||
+            // MakeUnique completes on an RSP-only Comp (no data), like
+            // CleanUnique.
+            (opcode == vip_chi_req_opcode_t'(VIP_CHI_REQ_MAKE_UNIQUE_C)));
+  endfunction
+
+  function automatic bit vip_chi_req_has_modeled_completion(
+    input vip_chi_req_opcode_t opcode
+  );
+    case (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode))
+      VIP_CHI_REQ_READ_NO_SNP_C,
+      VIP_CHI_REQ_READ_NO_SNP_SEP_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C,
+      // WriteUniqueZero is the snoopable twin of WriteNoSnpZero and completes
+      // the same way, with a bare Comp. Naming only one of the pair left every
+      // rule gated on this function standing down for the other -- TxnID reuse
+      // and the completion timeout, in both ports -- for an opcode that ships
+      // with its own sequence, testcase and completer service routine.
+      VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C,
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C,
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C: begin
+        return 1'b1;
+      end
+      default: begin
+        // The combined Write + CMO family completes exactly as its plain write
+        // half does, and it ships with sequences, a testcase and a completer
+        // service routine -- so leaving it out stood the TxnID-reuse rules and
+        // the completion timeout down for six opcodes the regression drives.
+        // The same omission the WriteUniqueZero comment above records, for a
+        // family rather than for one opcode. It stayed invisible because
+        // check_classifier_coverage saw the six claimed by is_write_req_opcode,
+        // a classifier that answered a question about ExpCompAck and nothing
+        // about completions; the six surfaced the moment that function was
+        // deleted.
+        return vip_chi_req_opcode_is_coherent_read(opcode) ||
+               vip_chi_req_opcode_is_coherent_write_data(opcode) ||
+               vip_chi_req_opcode_is_coherent_rsp_only(opcode) ||
+               vip_chi_req_opcode_is_combined_write_cmo(opcode) ||
+               vip_chi_req_opcode_is_atomic(opcode);
+      end
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Return TRUE when Size is one the specification permits for this atomic.
   //
   // IHI 0050 E Table 2-17 (Atomic transaction outbound and inbound data sizes,

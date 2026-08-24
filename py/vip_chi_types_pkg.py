@@ -1264,6 +1264,84 @@ _COMBINED_WRITE_CMO_OPCODES = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# Completion classifiers.
+#
+# These live HERE rather than in the checker that first needed them, and the
+# move is the point rather than tidying. "Does this REQ opcode have a completion
+# this tree models" is asked by the checker, to decide whether to hold the
+# request outstanding, AND by the raw-injection path in the requester driver, to
+# decide how long to hold TXSACTIVE. Two copies of that answer drift the moment
+# an opcode is classified -- which is exactly what F-CORR-021 recorded: the raw
+# path's comment asserted a property of the opcode set that stopped being true
+# when WriteUniqueZero joined this classifier, and nothing connected the two.
+# One definition, in the layer both sides already import from.
+# ---------------------------------------------------------------------------
+_COHERENT_READ_OPCODES_C = frozenset({
+  int(ReqOpcode.READ_SHARED), int(ReqOpcode.READ_CLEAN),
+  int(ReqOpcode.READ_UNIQUE), int(ReqOpcode.MAKE_READ_UNIQUE),
+  int(ReqOpcode.READ_ONCE),
+})
+_COHERENT_WRITE_DATA_OPCODES_C = frozenset({
+  int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL),
+  int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL),
+  # WriteEvictOrEvict is a CopyBack whose data is CONDITIONAL: the home asks for
+  # it with CompDBIDResp or declines with a bare Comp. Listing it here is still
+  # right, and the conditionality takes care of itself -- the burst-length check
+  # arms only when a DBID is granted, which is exactly the leg that carries data.
+  int(ReqOpcode.WRITE_EVICT_OR_EVICT),
+})
+# MakeUnique completes on an RSP-only Comp (no data), like CleanUnique.
+_COHERENT_RSP_ONLY_OPCODES_C = frozenset({
+  int(ReqOpcode.EVICT), int(ReqOpcode.CLEAN_INVALID),
+  int(ReqOpcode.MAKE_INVALID), int(ReqOpcode.CLEAN_UNIQUE),
+  int(ReqOpcode.MAKE_UNIQUE),
+})
+# Non-coherent opcodes whose completion this tree models.
+_MODELED_COMPLETION_OPCODES_C = frozenset({
+  int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP),
+  int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL),
+  int(ReqOpcode.WRITE_NO_SNP_ZERO), int(ReqOpcode.CLEAN_SHARED_PERSIST),
+  int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP),
+  # WriteUniqueZero is the snoopable twin of WriteNoSnpZero and completes the
+  # same way, with a bare Comp. Naming only one of the pair left every rule
+  # gated on this set standing down for the other -- TxnID reuse and the
+  # completion timeout, in both ports -- for an opcode that ships with its own
+  # sequence, testcase and completer service routine.
+  int(ReqOpcode.WRITE_UNIQUE_ZERO),
+})
+
+
+def req_opcode_is_coherent_read(opcode: int) -> bool:
+  return int(opcode) in _COHERENT_READ_OPCODES_C
+
+
+def req_opcode_is_coherent_write_data(opcode: int) -> bool:
+  return int(opcode) in _COHERENT_WRITE_DATA_OPCODES_C
+
+
+def req_opcode_is_coherent_rsp_only(opcode: int) -> bool:
+  return int(opcode) in _COHERENT_RSP_ONLY_OPCODES_C
+
+
+def req_has_modeled_completion(opcode: int) -> bool:
+  op = int(opcode)
+  # The combined Write + CMO family completes exactly as its plain write half
+  # does, and it ships with sequences, a testcase and a completer service
+  # routine -- so leaving it out stood the TxnID-reuse rules and the completion
+  # timeout down for six opcodes the regression drives. The same omission the
+  # WriteUniqueZero comment above records, for a family rather than for one
+  # opcode. It stayed invisible because check_classifier_coverage saw the six
+  # claimed by _is_write_req_opcode, a classifier that answered a question about
+  # ExpCompAck and nothing about completions.
+  return (op in _MODELED_COMPLETION_OPCODES_C
+          or req_opcode_is_coherent_read(op)
+          or req_opcode_is_coherent_write_data(op)
+          or req_opcode_is_coherent_rsp_only(op)
+          or req_opcode_is_combined_write_cmo(op)
+          or req_opcode_is_atomic(op))
+
+
 def req_opcode_is_combined_write_cmo(opcode: int) -> bool:
   """A single request carrying both a write and a cache maintenance operation.
 

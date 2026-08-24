@@ -91,6 +91,10 @@ from vip_chi_types_pkg import (
   SnpAttrReq, snp_attr_requirement, req_bit17_is_dodwt,
   req_opcode_is_atomic,
   req_opcode_is_atomic_compare,
+  req_opcode_is_coherent_read,
+  req_opcode_is_coherent_write_data,
+  req_opcode_is_coherent_rsp_only,
+  req_has_modeled_completion,
   req_opcode_is_atomic_returning_data,
   req_opcode_is_combined_write_cmo,
 )
@@ -191,37 +195,12 @@ _FLIT_FIELDS_C = {
 }
 
 # Opcode classes, mirroring the SV req_opcode_is_* / is_write_* functions.
-_COHERENT_READ_OPCODES_C = frozenset({
-  int(ReqOpcode.READ_SHARED), int(ReqOpcode.READ_CLEAN),
-  int(ReqOpcode.READ_UNIQUE), int(ReqOpcode.MAKE_READ_UNIQUE),
-  int(ReqOpcode.READ_ONCE),
-})
-_COHERENT_WRITE_DATA_OPCODES_C = frozenset({
-  int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL),
-  int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL),
-  # WriteEvictOrEvict is a CopyBack whose data is CONDITIONAL: the home asks for it with CompDBIDResp or declines with a bare Comp.
-  # Listing it here is still right, and the conditionality takes care of itself -- the burst-length check arms only when a DBID is granted, which is exactly the leg that carries data.
-  int(ReqOpcode.WRITE_EVICT_OR_EVICT),
-})
-# MakeUnique completes on an RSP-only Comp (no data), like CleanUnique.
-_COHERENT_RSP_ONLY_OPCODES_C = frozenset({
-  int(ReqOpcode.EVICT), int(ReqOpcode.CLEAN_INVALID),
-  int(ReqOpcode.MAKE_INVALID), int(ReqOpcode.CLEAN_UNIQUE),
-  int(ReqOpcode.MAKE_UNIQUE),
-})
-# Non-coherent opcodes whose completion this checker models.
-_MODELED_COMPLETION_OPCODES_C = frozenset({
-  int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP),
-  int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL),
-  int(ReqOpcode.WRITE_NO_SNP_ZERO), int(ReqOpcode.CLEAN_SHARED_PERSIST),
-  int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP),
-  # WriteUniqueZero is the snoopable twin of WriteNoSnpZero and completes the
-  # same way, with a bare Comp. Naming only one of the pair left every rule
-  # gated on this set standing down for the other -- TxnID reuse and the
-  # completion timeout, in both ports -- for an opcode that ships with its own
-  # sequence, testcase and completer service routine.
-  int(ReqOpcode.WRITE_UNIQUE_ZERO),
-})
+#
+# The four completion classifiers that used to sit here now live in
+# vip_chi_types_pkg, imported above. They moved because the raw-injection path
+# in the requester driver needs the same answer this checker does, and a second
+# copy of it drifts the moment an opcode is classified -- see F-CORR-021, where
+# exactly that happened. The sets below are the ones only this checker reads.
 _NON_COHERENT_WRITE_OPCODES_C = frozenset({
   int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL),
   int(ReqOpcode.WRITE_NO_SNP_ZERO),
@@ -337,32 +316,10 @@ _A4_ZERO_FIELD_RSP_OPCODES_C = frozenset(
 )
 
 
-def _req_opcode_is_coherent_read(opcode: int) -> bool:
-  return int(opcode) in _COHERENT_READ_OPCODES_C
-
-
-def _req_has_modeled_completion(opcode: int) -> bool:
-  op = int(opcode)
-  # The combined Write + CMO family completes exactly as its plain write half
-  # does, and it ships with sequences, a testcase and a completer service
-  # routine -- so leaving it out stood the TxnID-reuse rules and the completion
-  # timeout down for six opcodes the regression drives. The same omission the
-  # WriteUniqueZero comment above records, for a family rather than for one
-  # opcode. It stayed invisible because check_classifier_coverage saw the six
-  # claimed by _is_write_req_opcode, a classifier that answered a question about
-  # ExpCompAck and nothing about completions.
-  return (op in _MODELED_COMPLETION_OPCODES_C
-          or op in _COHERENT_READ_OPCODES_C
-          or op in _COHERENT_WRITE_DATA_OPCODES_C
-          or op in _COHERENT_RSP_ONLY_OPCODES_C
-          or req_opcode_is_combined_write_cmo(op)
-          or req_opcode_is_atomic(op))
-
-
 def _req_completion_uses_dat(opcode: int) -> bool:
   op = int(opcode)
   return (op in (int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP))
-          or op in _COHERENT_READ_OPCODES_C
+          or req_opcode_is_coherent_read(op)
           or req_opcode_is_atomic_returning_data(op))
 
 
@@ -877,7 +834,7 @@ class bind_chi:
     # Which TxnIDs a request has actually put on the wire, tracked SEPARATELY
     # from _req_inflight and deliberately so.
     #
-    # _req_inflight is set only for _req_has_modeled_completion's opcodes,
+    # _req_inflight is set only for req_has_modeled_completion's opcodes,
     # because what it exists for is pairing a request with the completion that
     # retires it. CHI_RSP_RETRY_ACK_TXN_ID asks a different question -- did any
     # request carry this TxnID -- and gating it on that whitelist would make a
@@ -1750,7 +1707,7 @@ class bind_chi:
     if (req_opcode_is_atomic(op)
         or op in (int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL))
         or req_opcode_is_combined_write_cmo(op)
-        or op in _COHERENT_WRITE_DATA_OPCODES_C):
+        or req_opcode_is_coherent_write_data(op)):
       return chi_xfer_dat_beats(size, self._data_bytes)
     return 0
 
@@ -1762,7 +1719,7 @@ class bind_chi:
     if req_opcode_is_atomic_compare(op):
       return chi_xfer_dat_beats(size, self._data_bytes) // 2
     if (op in (int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP))
-        or op in _COHERENT_READ_OPCODES_C
+        or req_opcode_is_coherent_read(op)
         or req_opcode_is_atomic_returning_data(op)):
       return chi_xfer_dat_beats(size, self._data_bytes)
     return 0
@@ -1997,7 +1954,7 @@ class bind_chi:
     opcode = f["opcode"]
     txn = f["txnid"]
 
-    # Not gated on _req_has_modeled_completion: see the shadow's comment.
+    # Not gated on req_has_modeled_completion: see the shadow's comment.
     # ReqLCrdReturn and PCrdReturn are excluded because both are required to
     # drive TxnID zero, so marking slot 0 for them would leave the one slot a
     # real request can also use permanently unjudgeable.
@@ -2032,7 +1989,7 @@ class bind_chi:
         self._pcrd_delta[pcrd] = self._pcrd_delta.get(pcrd, 0) - 1
 
     # Section 2.5 scopes the rule to "all requests except PrefetchTgt", and the
-    # arm here is `_req_has_modeled_completion` instead. MEASURED, not assumed:
+    # arm here is `req_has_modeled_completion` instead. MEASURED, not assumed:
     # the two coincide over every opcode this VIP can drive. Of the four REQ
     # opcodes outside the classifier,
     #
@@ -2057,7 +2014,7 @@ class bind_chi:
     # classifier would claim a slot nothing frees, and the next legitimate use
     # of that TxnID would be reported as a reuse -- a false failure in place of
     # a rule that currently has nothing to judge.
-    if _req_has_modeled_completion(opcode):
+    if req_has_modeled_completion(opcode):
       # A TxnID identifies an outstanding transaction. Reusing one before its
       # first use retires makes the two indistinguishable to every downstream
       # tracker, including this checker.

@@ -33,10 +33,10 @@ ROOT = Path(os.environ.get("CHI_ROOT", Path(__file__).resolve().parents[1]))
 # rather than functions; the comparison is on the resulting opcode SET, which is
 # what the checks actually consume.
 PAIRS = [
-    ("req_opcode_is_coherent_read", "_req_opcode_is_coherent_read"),
-    ("req_opcode_is_coherent_write_data", "_COHERENT_WRITE_DATA_OPCODES_C"),
-    ("req_opcode_is_coherent_rsp_only", "_COHERENT_RSP_ONLY_OPCODES_C"),
-    ("req_has_modeled_completion", "_req_has_modeled_completion"),
+    ("req_opcode_is_coherent_read", "req_opcode_is_coherent_read"),
+    ("req_opcode_is_coherent_write_data", "req_opcode_is_coherent_write_data"),
+    ("req_opcode_is_coherent_rsp_only", "req_opcode_is_coherent_rsp_only"),
+    ("req_has_modeled_completion", "req_has_modeled_completion"),
     ("req_completion_uses_dat", "_req_completion_uses_dat"),
     # is_write_req_opcode / _is_write_req_opcode were removed with box 3.5. The
     # pair existed to gate the ExpCompAck bookkeeping onto write opcodes, and
@@ -113,7 +113,12 @@ def unimplemented_references(root: Path, name: str) -> list[str]:
                     hits.append(f"{rel}:{n}")
     return hits
 
-# Classifiers in vip_chi_types_pkg rather than the checker, reached by call.
+# Classifiers in vip_chi_types_pkg whose SV set is taken from the PYTHON twin
+# rather than parsed. That is a real weakening -- for these three the comparison
+# below cannot detect a divergence -- so nothing is added here without reason.
+# The four completion classifiers also live in the package now and are
+# deliberately NOT listed: their SV bodies are parsed out of the package file,
+# so the sets on both sides are still computed independently and still compared.
 PKG_FNS = {
     "vip_chi_req_opcode_is_atomic": "req_opcode_is_atomic",
     "vip_chi_req_opcode_is_atomic_returning_data": "req_opcode_is_atomic_returning_data",
@@ -175,8 +180,13 @@ def main() -> int:
             pkg_sets[py_fn] = {o for o in all_ops if fn(o)}
 
     sva = (ROOT / "sv" / "vip_chi_sva.sv").read_text()
-    consts = sv_localparams((ROOT / "sv" / "vip_chi_types_pkg.sv").read_text())
-    bodies = sv_function_bodies(sva)
+    types_sv = (ROOT / "sv" / "vip_chi_types_pkg.sv").read_text()
+    consts = sv_localparams(types_sv)
+    # BOTH files. A classifier the checker forwards to the package resolves
+    # through this dict to the package's own body, so the SV side of the
+    # comparison stays SV source rather than becoming the Python answer read
+    # back -- see the note on PKG_FNS.
+    bodies = sv_function_bodies(sva) | sv_function_bodies(types_sv)
 
     names = {int(o): o.name for o in pyt.ReqOpcode}
     rc = 0
@@ -191,7 +201,11 @@ def main() -> int:
 
     for sv_name, py_name in PAIRS:
         sv_set = sv_classifier_set(sv_name, bodies, consts, all_ops, pkg_sets)
-        py_obj = getattr(pyb, py_name)
+        # Either module: the four completion classifiers moved to the types
+        # package, the rest are still the checker's own.
+        py_obj = getattr(pyb, py_name, None)
+        if py_obj is None:
+            py_obj = getattr(pyt, py_name)
         py_set = ({o for o in all_ops if py_obj(o)} if callable(py_obj)
                   else {int(o) for o in py_obj} & all_ops)
         claimed |= sv_set | py_set
