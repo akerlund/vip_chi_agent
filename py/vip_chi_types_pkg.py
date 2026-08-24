@@ -364,6 +364,17 @@ CHECK_IDS = (
   # conditions, a component that observes the input race is required to wait for
   # both signals before changing any output signals."
   "CHI_LASM_INPUT_RACE_HOLD",
+  # Section 2.5: "A Comp response message sent separate from a DBIDResp or
+  # DBIDRespOrd message for a Write transaction must include the same DBID field
+  # value." The SEPARATE form is the only one where two messages carry a DBID
+  # that could disagree, so this became checkable when cfg.split_write_rsp
+  # landed and nothing has read it since.
+  #
+  # Atomic transactions are EXEMPT, two lines later in the same section, where
+  # the equality is "permitted, but is not required". Built in rather than
+  # retrofitted: a rule written for writes and applied to atomics would
+  # false-fail a conformant completer.
+  "CHI_COMP_DBID_MATCHES_GRANT",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -1131,7 +1142,7 @@ def atomic_size_legal(opcode: int, size: int) -> bool:
   """TRUE when Size is one the specification permits for this atomic.
 
   IHI 0050 E Table 2-17 (Atomic transaction outbound and inbound data sizes, in
-  section 2.10.4) is a closed list, and it is not the same list for every atomic:
+  section 2.10.5 -- 2.10.4 is Data packetization) is a closed list, and it is not the same list for every atomic:
 
     AtomicStore / AtomicLoad / AtomicSwap   1, 2, 4 or 8 byte   -> Size 0..3
     AtomicCompare                           2, 4, 8, 16 or 32   -> Size 1..5

@@ -866,6 +866,19 @@ class bind_chi:
     # every completion path, and a slot cleared one step early would false-fail
     # the legitimate RetryAck that a permissive rule simply misses.
     self._req_txn_id_seen = {}
+    # Section 2.5's DBID-equality rule needs two things a completion flit does
+    # not carry: what DBID the SEPARATE grant named, and whether the request was
+    # an Atomic. Both keyed like the in-flight shadow, on (requester, TxnID) --
+    # a grant and the Comp that follows it belong to one transaction at one
+    # requester, and on a fan-in link the TxnID alone does not say which.
+    #
+    # A grant is recorded only for the SEPARATE forms. CompDBIDResp is the
+    # combined message and carries the only DBID the transaction ever has, so
+    # there is nothing for a later Comp to disagree with, and recording it would
+    # arm the rule against a Comp belonging to some other transaction that
+    # happened to reuse the TxnID.
+    self._write_grant_dbid = {}
+    self._req_is_atomic = {}
     # P-Credits this link has seen granted and not yet seen spent, per PCrdType,
     # with the same accumulator split as the SV checker and for the same reason:
     # a grant can land in the cycle a credit is spent, and _post defers absolute
@@ -1905,6 +1918,11 @@ class bind_chi:
       self._chk(reuse_rule, not self._req_inflight.get(key, False),
                 f"{reuse_msg}: SrcID 0x{key[0]:x} reused TxnID 0x{key[1]:x}")
       self._post(self._req_inflight, key, True)
+      # For section 2.5's DBID-equality exemption. Recorded per transaction
+      # rather than looked up when the Comp arrives, because the completion
+      # flit does not carry the request opcode.
+      self._post(self._req_is_atomic, key, req_opcode_is_atomic(int(opcode)))
+      self._post(self._write_grant_dbid, key, None)
       self._arm_completion(s, f)
 
     self._post(self._expected_write_beats_by_txn, txn,
@@ -2168,6 +2186,7 @@ class bind_chi:
 
     if opcode in _DBID_GRANT_OPCODES_C:
       self._record_write_grant(f, mark_grant_seen=True)
+    self._check_comp_dbid(f, opcode)
     if opcode in _PLAIN_COMPLETION_RSP_OPCODES_C:
       self._post(self._completion_seen, txn, True)
       self._post(self._req_inflight, self._inflight_key(f["tgtid"], txn),
@@ -2207,6 +2226,7 @@ class bind_chi:
       # honour it, so it records the expected burst size without the
       # grant-seen marker the requester side uses to police its own DAT.
       self._record_write_grant(f, mark_grant_seen=False)
+    self._check_comp_dbid(f, opcode)
     if opcode == int(RspOpcode.RETRY_ACK):
       # Mirror of the requester side: a RetryAck this node drove retires the
       # bounced request's TxnID, for the requester it is aimed at.
@@ -2234,6 +2254,51 @@ class bind_chi:
       self._post(self._write_grant_seen_by_dbid, dbid, True)
     self._post(self._expected_write_beats_by_dbid, dbid, beats)
     self._post(self._expected_write_valid_by_dbid, dbid, beats != 0)
+
+  # ---------------------------------------------------------------------------
+  # Section 2.5: a Comp sent SEPARATE from its DBIDResp must carry the same DBID.
+  #
+  # Judged at both vantages under one ID, the RSP_FIELD_ZERO shape: the requester
+  # reads the responses it receives, the completer the ones it drives, and a link
+  # may carry a bind at only one end.
+  #
+  # `who` is the node the pair belongs to -- the response's TgtID, which is the
+  # requester. A grant aimed at A and a Comp aimed at B are two transactions,
+  # even on one TxnID.
+  # ---------------------------------------------------------------------------
+  def _check_comp_dbid(self, f: dict, opcode: int) -> None:
+    key = self._inflight_key(f["tgtid"], f["txnid"])
+
+    # The SEPARATE grant forms only. See the state's comment for why
+    # CompDBIDResp is not one of them.
+    if opcode in (int(RspOpcode.DBID_RESP), int(RspOpcode.DBID_RESP_ORD)):
+      self._post(self._write_grant_dbid, key, int(f["dbid"]))
+      return
+
+    if opcode != int(RspOpcode.COMP):
+      return
+
+    granted = self._write_grant_dbid.get(key)
+    if granted is None:
+      # No separate grant on record, so the rule does not apply: this is a Comp
+      # for a transaction that never split its response, or one whose grant this
+      # bind did not see. Deliberately not counted as a pass -- a pass here
+      # would be recorded on every dataless completion on the link and the
+      # tally would say the rule is exercised on traffic it never governed.
+      return
+
+    # Two lines after the rule, section 2.5 makes the equality "permitted, but
+    # is not required" for Atomic transactions. Exempt rather than judged: a
+    # completer that renumbers is conformant, and reporting it would be the
+    # checker inventing a requirement.
+    if self._req_is_atomic.get(key, False):
+      return
+
+    self._chk("CHI_COMP_DBID_MATCHES_GRANT", int(f["dbid"]) == granted,
+              f"Comp for TxnID 0x{int(f['txnid']):x} at SrcID 0x{key[0]:x} "
+              f"carried DBID 0x{int(f['dbid']):x} where the separate DBIDResp "
+              f"granted 0x{granted:x}")
+    self._post(self._write_grant_dbid, key, None)
 
   # ---------------------------------------------------------------------------
   # Write data must be authorized by a grant, and must carry that grant's DBID.

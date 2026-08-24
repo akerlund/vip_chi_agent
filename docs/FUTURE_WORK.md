@@ -5,7 +5,7 @@ Checker D, coherent coverage, HN-I proxy, scoreboard, perf counters, exclusives,
 CMO, DCT forwarding, SN-F-behind-HN-F, MakeUnique, bounded-cache eviction) is
 **complete and tested** — every charter item has a named testcase in
 [../testbench/TEST_CASES.md](../testbench/TEST_CASES.md). The regression is
-**184 SV + 185 PY** — the same list on both flows apart from three documented
+**185 SV + 186 PY** — the same list on both flows apart from three documented
 exceptions: `tc_chi_sva_smoke` and `tc_chi_reject_scope`, both Python-only, and
 `tc_chi_e_hni_port1`, SV-only because the SV CHI-E proxy is 2x2 and the Python
 one 1x1, so its port-1 links do not exist to drive (see

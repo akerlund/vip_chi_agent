@@ -79,6 +79,14 @@ E_WUZ_NEGCTL_TXN_ID_DUP_C = 0x72
 TXNID_SCOPE_SRC_A_C = 0x01E
 TXNID_SCOPE_SRC_B_C = 0x03B
 TXNID_SCOPE_TXN_ID_C = 0x73
+
+# tc_chi_comp_dbid_negctl. One transaction per raw-injected phase, so the counts
+# stay separable; two DBID values that must differ, so the mismatch is
+# unambiguous. Phase C drives a real atomic and needs neither.
+COMP_DBID_TXN_ID_PASS_C = 0x74
+COMP_DBID_TXN_ID_FAIL_C = 0x75
+COMP_DBID_GRANTED_C = 0x21
+COMP_DBID_OTHER_C = 0x22
 # Retry field control. Its own line, node-ID pair and TxnID, so nothing it
 # injects can be confused with another testcase's traffic. PCRD_TYPE is non-zero
 # and that is the point: phase A pairs it with AllowRetry asserted, which

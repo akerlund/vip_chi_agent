@@ -586,6 +586,17 @@ package vip_chi_types_pkg;
     // this component drives its sideband", the other "do not judge how it reacts
     // to a peer whose sideband arrived out of order".
     VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E,
+    // Section 2.5: "A Comp response message sent separate from a DBIDResp or
+    // DBIDRespOrd message for a Write transaction must include the same DBID
+    // field value." The SEPARATE form is the only one where two messages carry
+    // a DBID that could disagree, so this became checkable when
+    // cfg.split_write_rsp landed and nothing has read it since.
+    //
+    // Atomic transactions are EXEMPT, two lines later in the same section,
+    // where the equality is "permitted, but is not required". Built in rather
+    // than retrofitted: a rule written for writes and applied to atomics would
+    // false-fail a conformant completer.
+    VIP_CHI_CHK_COMP_DBID_MATCHES_GRANT_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -717,6 +728,7 @@ package vip_chi_types_pkg;
       VIP_CHI_CHK_REQ_RETRY_SPENDS_GRANTED_CREDIT_E:   return "E section 2.11.2 / D section 2.11.2";
       VIP_CHI_CHK_LASM_OUTPUT_RACE_E:                  return "E section 14.6.3 / D section 13.6.3";
       VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E:              return "E section 14.6.3 / D section 13.6.3";
+      VIP_CHI_CHK_COMP_DBID_MATCHES_GRANT_E: return "E section 2.5 / D section 2.5";
       default: return "";
     endcase
   endfunction
@@ -1729,8 +1741,8 @@ package vip_chi_types_pkg;
   // Return TRUE when Size is one the specification permits for this atomic.
   //
   // IHI 0050 E Table 2-17 (Atomic transaction outbound and inbound data sizes,
-  // in section 2.10.4) is a closed list, and it is not the same list for every
-  // atomic:
+  // in section 2.10.5 -- 2.10.4 is Data packetization) is a closed list, and it
+  // is not the same list for every atomic:
   //
   //   AtomicStore / AtomicLoad / AtomicSwap   1, 2, 4 or 8 byte   -> Size 0..3
   //   AtomicCompare                           2, 4, 8, 16 or 32   -> Size 1..5

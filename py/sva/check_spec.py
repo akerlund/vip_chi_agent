@@ -128,6 +128,9 @@ CHECK_SPEC_C = {
   "CHI_WRITE_DAT_BEFORE_DBID":         "E section 2.6.3 / D section 2.6.3",
   "CHI_WRITE_DAT_TXNID_MATCHES_DBID":  "E section 2.6.3 / D section 2.6.3",
   "CHI_RSP_RETRY_ACK_TXN_ID":          "E section 2.6.5 / D section 2.6.5",
+  # Same section as the TxnID rules above, and for the same reason: it is a
+  # statement about which identifier a message must carry.
+  "CHI_COMP_DBID_MATCHES_GRANT":       "E section 2.5 / D section 2.5",
 
   # 2.8 Ordering. CompAck has its own subsection, carrying both the sequencing
   # rule and the rule that ExpCompAck is what asks for one. The ordered-read

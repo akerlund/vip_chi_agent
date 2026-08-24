@@ -1017,6 +1017,31 @@ module vip_chi_sva #(
     return req_inflight_by_key.exists(k) && req_inflight_by_key[k];
   endfunction
 
+  // Section 2.5's DBID-equality rule needs two things a completion flit does not
+  // carry: what DBID the SEPARATE grant named, and whether the request was an
+  // Atomic. Both keyed like the in-flight shadow, on (requester, TxnID) -- a
+  // grant and the Comp that follows it belong to one transaction at one
+  // requester, and on a fan-in link the TxnID alone does not say which.
+  //
+  // A grant is recorded only for the SEPARATE forms. CompDBIDResp is the
+  // combined message and carries the only DBID the transaction ever has, so
+  // there is nothing for a later Comp to disagree with, and recording it would
+  // arm the rule against a Comp belonging to some other transaction that
+  // happened to reuse the TxnID.
+  typedef struct packed {
+    bit      grant_valid;
+    txn_id_t grant_dbid;
+    bit      is_atomic;
+  } comp_dbid_state_t;
+
+  comp_dbid_state_t comp_dbid_by_key[req_key_t];
+
+  function automatic comp_dbid_state_t comp_dbid_state(input req_key_t k);
+    comp_dbid_state_t empty;
+    empty = '0;
+    return comp_dbid_by_key.exists(k) ? comp_dbid_by_key[k] : empty;
+  endfunction
+
   // Which TxnIDs a request has actually put on the wire, tracked SEPARATELY from
   // req_inflight_by_key and deliberately so.
   //
@@ -1129,6 +1154,11 @@ module vip_chi_sva #(
   end
 
   always_ff @(posedge vif.clk or negedge vif.rst_n) begin
+    // Section 2.5's DBID-equality scratch, declared at the top of the block
+    // because both vantages below read and write it.
+    req_key_t         comp_dbid_k;
+    comp_dbid_state_t comp_dbid_v;
+
     if (!checks_enable || !vif.rst_n) begin
       for (int txn_i = 0; txn_i < TXN_ID_COUNT_C; txn_i++) begin
         req_exp_comp_ack_by_txn[txn_i]    <= 1'b0;
@@ -1156,6 +1186,7 @@ module vip_chi_sva #(
       // in the reset branch, and an NBA clear would need one write per live
       // key rather than one statement.
       req_inflight_by_key.delete();
+      comp_dbid_by_key.delete();
       req_outstanding_count <= 0;
       txsactive_idle_cycles <= 0;
       txsactive_bound_reported <= 1'b0;
@@ -1203,6 +1234,7 @@ module vip_chi_sva #(
           int unsigned beat_count;
           req_opcode_t req_opcode;
           req_key_t    req_k;
+          comp_dbid_state_t comp_dbid_state_v;
 
           req_opcode = req_opcode_t'(vif.txreqflit.opcode);
           txn_idx = txn_id_to_index(txn_id_t'(vif.txreqflit.txnid));
@@ -1232,6 +1264,11 @@ module vip_chi_sva #(
               req_outstanding_delta++;
             end
             req_inflight_by_key[req_k] <= 1'b1;
+            // For section 2.5's DBID-equality rule. Recorded per transaction
+            // because the completion flit does not carry the request opcode.
+            comp_dbid_state_v             = '0;
+            comp_dbid_state_v.is_atomic   = vip_chi_req_opcode_is_atomic(req_opcode);
+            comp_dbid_by_key[req_k]       <= comp_dbid_state_v;
           end
           expected_write_beats_by_txn[txn_idx] <= req_write_payload_beats(
             req_opcode, size_t'(vif.txreqflit.size));
@@ -1524,6 +1561,14 @@ module vip_chi_sva #(
           case (rsp_opcode_t'(vif.rxrspflit.opcode))
             rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_C): begin
               write_grant_seen_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <= 1'b1;
+              // Section 2.5, the SEPARATE grant: remember the DBID it named, so the
+              // Comp that follows can be held to it.
+              comp_dbid_k              = req_key(node_id_t'(vif.rxrspflit.tgtid),
+                                                 txn_id_t'(vif.rxrspflit.txnid));
+              comp_dbid_v              = comp_dbid_state(comp_dbid_k);
+              comp_dbid_v.grant_valid  = 1'b1;
+              comp_dbid_v.grant_dbid   = txn_id_t'(vif.rxrspflit.dbid);
+              comp_dbid_by_key[comp_dbid_k] <= comp_dbid_v;
               expected_write_beats_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <=
                 expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))];
               expected_write_valid_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <=
@@ -1532,6 +1577,14 @@ module vip_chi_sva #(
 
             rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_ORD_C): begin
               write_grant_seen_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <= 1'b1;
+              // Section 2.5, the SEPARATE grant: remember the DBID it named, so the
+              // Comp that follows can be held to it.
+              comp_dbid_k              = req_key(node_id_t'(vif.rxrspflit.tgtid),
+                                                 txn_id_t'(vif.rxrspflit.txnid));
+              comp_dbid_v              = comp_dbid_state(comp_dbid_k);
+              comp_dbid_v.grant_valid  = 1'b1;
+              comp_dbid_v.grant_dbid   = txn_id_t'(vif.rxrspflit.dbid);
+              comp_dbid_by_key[comp_dbid_k] <= comp_dbid_v;
               expected_write_beats_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <=
                 expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))];
               expected_write_valid_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <=
@@ -1553,6 +1606,26 @@ module vip_chi_sva #(
 
             rsp_opcode_t'(VIP_CHI_RSP_COMP_C): begin
               completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b1;
+              // Section 2.5: "A Comp response message sent separate from a DBIDResp
+              // or DBIDRespOrd message for a Write transaction must include the same
+              // DBID field value." Only armed by a separate grant -- a Comp with no
+              // grant on record is a transaction that never split its response, and
+              // counting it would report the rule as exercised on traffic it does
+              // not govern. Atomic is exempt two lines later in the same section,
+              // where the equality is "permitted, but is not required".
+              comp_dbid_k = req_key(node_id_t'(vif.rxrspflit.tgtid),
+                                    txn_id_t'(vif.rxrspflit.txnid));
+              comp_dbid_v = comp_dbid_state(comp_dbid_k);
+              if (comp_dbid_v.grant_valid && !comp_dbid_v.is_atomic) begin
+                if (txn_id_t'(vif.rxrspflit.dbid) === comp_dbid_v.grant_dbid) begin
+                  chk_hit(VIP_CHI_CHK_COMP_DBID_MATCHES_GRANT_E);
+                end
+                else begin
+                  chk_miss(VIP_CHI_CHK_COMP_DBID_MATCHES_GRANT_E, $sformatf("Comp for TxnID 0x%0h at SrcID 0x%0h carried DBID 0x%0h where the separate DBIDResp granted 0x%0h", comp_dbid_k.txn, comp_dbid_k.src, txn_id_t'(vif.rxrspflit.dbid), comp_dbid_v.grant_dbid));
+                end
+                comp_dbid_v.grant_valid = 1'b0;
+                comp_dbid_by_key[comp_dbid_k] <= comp_dbid_v;
+              end
               if (req_inflight(req_key(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid)))) begin
                 req_outstanding_delta--;
               end
@@ -1700,6 +1773,7 @@ module vip_chi_sva #(
           int unsigned beat_count;
           req_opcode_t req_opcode;
           req_key_t    req_k;
+          comp_dbid_state_t comp_dbid_state_v;
 
           req_opcode = req_opcode_t'(vif.rxreqflit.opcode);
           txn_idx = txn_id_to_index(txn_id_t'(vif.rxreqflit.txnid));
@@ -1968,6 +2042,11 @@ module vip_chi_sva #(
               req_outstanding_delta++;
             end
             req_inflight_by_key[req_k] <= 1'b1;
+            // For section 2.5's DBID-equality rule. Recorded per transaction
+            // because the completion flit does not carry the request opcode.
+            comp_dbid_state_v             = '0;
+            comp_dbid_state_v.is_atomic   = vip_chi_req_opcode_is_atomic(req_opcode);
+            comp_dbid_by_key[req_k]       <= comp_dbid_state_v;
           end
           expected_write_beats_by_txn[txn_idx] <= req_write_payload_beats(
             req_opcode, size_t'(vif.rxreqflit.size));
@@ -1998,6 +2077,47 @@ module vip_chi_sva #(
                 expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))];
               expected_write_valid_by_dbid[txn_id_to_index(txn_id_t'(vif.txrspflit.dbid))] <=
                 (expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))] != 0);
+
+              // Section 2.5, the SEPARATE grant only: remember the DBID it
+              // named, so the Comp that follows can be held to it. CompDBIDResp
+              // shares this arm's bookkeeping but not this: it is the combined
+              // message and carries the only DBID the transaction ever has.
+              if (rsp_opcode_t'(vif.txrspflit.opcode) !=
+                  rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)) begin
+                comp_dbid_k              = req_key(node_id_t'(vif.txrspflit.tgtid),
+                                                   txn_id_t'(vif.txrspflit.txnid));
+                comp_dbid_v              = comp_dbid_state(comp_dbid_k);
+                comp_dbid_v.grant_valid  = 1'b1;
+                comp_dbid_v.grant_dbid   = txn_id_t'(vif.txrspflit.dbid);
+                comp_dbid_by_key[comp_dbid_k] <= comp_dbid_v;
+              end
+            end
+
+            rsp_opcode_t'(VIP_CHI_RSP_COMP_C): begin
+              // Section 2.5: "A Comp response message sent separate from a
+              // DBIDResp or DBIDRespOrd message for a Write transaction must
+              // include the same DBID field value." Only armed by a separate
+              // grant -- a Comp with no grant on record is a transaction that
+              // never split its response, and counting it would report the rule
+              // as exercised on traffic it does not govern. Atomic is exempt two
+              // lines later in the same section, where the equality is
+              // "permitted, but is not required".
+              comp_dbid_k = req_key(node_id_t'(vif.txrspflit.tgtid),
+                                    txn_id_t'(vif.txrspflit.txnid));
+              comp_dbid_v = comp_dbid_state(comp_dbid_k);
+              if (comp_dbid_v.grant_valid && !comp_dbid_v.is_atomic) begin
+                if (txn_id_t'(vif.txrspflit.dbid) === comp_dbid_v.grant_dbid) begin
+                  chk_hit(VIP_CHI_CHK_COMP_DBID_MATCHES_GRANT_E);
+                end
+                else begin
+                  chk_miss(VIP_CHI_CHK_COMP_DBID_MATCHES_GRANT_E, $sformatf(
+                    "Comp for TxnID 0x%0h at SrcID 0x%0h carried DBID 0x%0h where the separate DBIDResp granted 0x%0h",
+                    comp_dbid_k.txn, comp_dbid_k.src,
+                    txn_id_t'(vif.txrspflit.dbid), comp_dbid_v.grant_dbid));
+                end
+                comp_dbid_v.grant_valid = 1'b0;
+                comp_dbid_by_key[comp_dbid_k] <= comp_dbid_v;
+              end
             end
             rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C): begin
               // Mirror of the RN-I side: a RetryAck this SN-F drove retires the

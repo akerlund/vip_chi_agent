@@ -137,6 +137,14 @@ package chi_tb_pkg;
   localparam item_e_t::node_id_t TXNID_SCOPE_SRC_A_C  = item_e_t::node_id_t'('h01e);
   localparam item_e_t::node_id_t TXNID_SCOPE_SRC_B_C  = item_e_t::node_id_t'('h03b);
   localparam item_e_t::txn_id_t  TXNID_SCOPE_TXN_ID_C = item_e_t::txn_id_t'(8'h73);
+
+  // tc_chi_comp_dbid_negctl. One transaction per raw-injected phase, so the
+  // counts stay separable; two DBID values that must differ, so the mismatch is
+  // unambiguous. Phase C drives a real atomic and needs neither.
+  localparam item_e_t::txn_id_t COMP_DBID_TXN_ID_PASS_C   = item_e_t::txn_id_t'(8'h74);
+  localparam item_e_t::txn_id_t COMP_DBID_TXN_ID_FAIL_C   = item_e_t::txn_id_t'(8'h75);
+  localparam item_e_t::txn_id_t COMP_DBID_GRANTED_C       = item_e_t::txn_id_t'(8'h21);
+  localparam item_e_t::txn_id_t COMP_DBID_OTHER_C         = item_e_t::txn_id_t'(8'h22);
   // Retry field control. Its own line, node-ID pair and TxnIDs, for the same
   // reason as the WriteUniqueZero pair above. Two TxnIDs because the two phases
   // inject on different opcodes and neither may retire the other's transaction.
