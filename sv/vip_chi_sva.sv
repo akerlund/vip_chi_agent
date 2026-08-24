@@ -753,6 +753,27 @@ module vip_chi_sva #(
             (opcode == dat_opcode_t'(VIP_CHI_DAT_COPY_BACK_WR_DATA_C)));
   endfunction
 
+  // The flits that end a snoop transaction, by the channel each arrives on. E
+  // 14.7.2 / D 13.7.2 names them where it states the ICN's snoop obligation:
+  // the window is held "until after the final completing flit is sent, which
+  // will be either SnpResp or SnpRespData".
+  //
+  // The Fwded forms belong here. A forwarding snoop sends the DATA to the
+  // requester, but the snoopee still answers the HOME -- with SnpRespFwded when
+  // it forwarded clean data, SnpRespDataFwded when the home wanted a copy too.
+  // Either way the flit that closes the home's window arrives on the home's own
+  // link, which is the only link this bind can see.
+  function automatic bit is_snp_resp_rsp_opcode(input rsp_opcode_t opcode);
+    return ((opcode == rsp_opcode_t'(VIP_CHI_RSP_SNP_RESP_C)) ||
+            (opcode == rsp_opcode_t'(VIP_CHI_RSP_SNP_RESP_FWDED_C)));
+  endfunction
+
+  function automatic bit is_snp_resp_dat_opcode(input dat_opcode_t opcode);
+    return ((opcode == dat_opcode_t'(VIP_CHI_DAT_SNP_RESP_DATA_C)) ||
+            (opcode == dat_opcode_t'(VIP_CHI_DAT_SNP_RESP_DATA_PTL_C)) ||
+            (opcode == dat_opcode_t'(VIP_CHI_DAT_SNP_RESP_DATA_FWDED_C)));
+  endfunction
+
   // ---------------------------------------------------------------------------
   // Appendix A Table A-4 field legality, for the fields the table marks zero.
   //
@@ -1072,6 +1093,25 @@ module vip_chi_sva #(
   int unsigned req_outstanding_count;
   int          req_outstanding_delta;
 
+  // Snoops this endpoint has SENT and not yet seen answered, with the same
+  // shape and for the same reasons as the request count above: an array keyed
+  // on the snoop's TxnID, a running population count because
+  // p_txsactive_covers_outstanding needs the answer on every clock, and a
+  // blocking accumulator so a snoop going out in the cycle another retires
+  // lands as one net update.
+  //
+  // Keyed on the TxnID rather than counted flat so a SnpDVMOp -- two SNP flits
+  // carrying one TxnID, answered by one SnpResp -- opens one window, not two.
+  bit          snp_inflight_by_txn[TXN_ID_COUNT_C];
+  int unsigned snp_outstanding_count;
+  int          snp_outstanding_delta;
+
+  // SnpRespData beats seen so far for each open snoop. A snoop data response is
+  // a full cache line however partial its content -- SnpRespDataPtl carries the
+  // same burst with byte enables -- so retiring on the first beat would drop
+  // the window mid-burst, which is the exact thing 14.7.2 forbids.
+  int unsigned snp_dat_beats_by_txn[TXN_ID_COUNT_C];
+
   // P-Credits this link has seen granted and not yet seen spent, per PCrdType,
   // with the same blocking-accumulator shape as req_outstanding_delta above and
   // for the same reason: a grant can land in the cycle a credit is spent, and
@@ -1121,6 +1161,7 @@ module vip_chi_sva #(
   // costs nothing on the roles that have none.
   function automatic bit link_quiet();
     return ((req_outstanding_count == 0) &&
+            (snp_outstanding_count == 0) &&
             !vif.txreqflitv && !vif.txrspflitv && !vif.txdatflitv &&
             !vif.rxreqflitv && !vif.rxrspflitv && !vif.rxdatflitv &&
             !vif.txsnpflitv && !vif.rxsnpflitv);
@@ -1174,6 +1215,8 @@ module vip_chi_sva #(
     // because both vantages below read and write it.
     req_key_t         comp_dbid_k;
     comp_dbid_state_t comp_dbid_v;
+    // The snoop window's TxnID index, shared by its three sites below.
+    int unsigned      snp_win_idx;
 
     if (!checks_enable || !vif.rst_n) begin
       for (int txn_i = 0; txn_i < TXN_ID_COUNT_C; txn_i++) begin
@@ -1192,6 +1235,8 @@ module vip_chi_sva #(
         req_txn_id_seen_by_txn[txn_i] <= 1'b0;
         dat_completion_req_valid_by_txn[txn_i] <= 1'b0;
         dat_completion_req_txn_by_txn[txn_i] <= '0;
+        snp_inflight_by_txn[txn_i] <= 1'b0;
+        snp_dat_beats_by_txn[txn_i] <= 0;
       end
 
       for (int unsigned pcrd_i = 0;
@@ -1204,6 +1249,7 @@ module vip_chi_sva #(
       req_inflight_by_key.delete();
       comp_dbid_by_key.delete();
       req_outstanding_count <= 0;
+      snp_outstanding_count <= 0;
       txsactive_idle_cycles <= 0;
       txsactive_bound_reported <= 1'b0;
 
@@ -1220,6 +1266,7 @@ module vip_chi_sva #(
     end
     else begin
       req_outstanding_delta = 0;
+      snp_outstanding_delta = 0;
       for (int unsigned pcrd_i = 0;
            pcrd_i < (2 ** VIP_CHI_PCRD_TYPE_WIDTH_C); pcrd_i++) begin
         pcrd_delta_by_type[pcrd_i] = 0;
@@ -2536,8 +2583,87 @@ module vip_chi_sva #(
         end
       end
 
+      // ----------------------------------------------------------------------
+      // The snoop window, at the vantage that SENDS snoops.
+      //
+      // E 14.7.2 / D 13.7.2 gives the ICN-to-RN interface TWO conditions, "in
+      // both the following conditions", and only the first is the request
+      // window req_outstanding_count already models. The second is a window of
+      // its own:
+      //
+      //   "Before or in the same cycle in which its initiating Snoop or
+      //    SnpDVMOp flit is sent. It must keep TXSACTIVE asserted until after
+      //    the final completing flit is sent, which will be either SnpResp or
+      //    SnpRespData."
+      //
+      // The RN-F side of the same clause says what the two conditions together
+      // mean: "the TXSACTIVE output is the logical OR of the requirements for
+      // the Request interface and the Snoop interface". An OR, not a sequence --
+      // so a home that holds the sideband up across a snoop only because the
+      // request that CAUSED the snoop happens to still be outstanding satisfies
+      // the letter by accident, and stops satisfying it the moment the two
+      // windows do not nest. On a forwarding snoop, or on any snoop whose
+      // snoopee has nothing outstanding of its own, they do not nest at all:
+      // the snoop goes out on the snoopee's link while that link's request
+      // count is zero. Counting the snoop separately is what makes the OR the
+      // reason the signal is high.
+      //
+      // Only the tx direction. The window is the SENDER's obligation, and only
+      // an ICN-facing endpoint transmits snoops, so the direction scopes this
+      // to the vantage that owes it without a role predicate -- vip_chi_if ties
+      // txsnpflitv low on a role with no snoop channel. The receiving end's
+      // mirror of this clause ("An RN-F or RN-D component must also assert
+      // TXSACTIVE while a Snoop transaction is in progress") is a claim about a
+      // level the snoopee cannot raise until it has SEEN the flit, so it needs
+      // an assertion allowance this arm deliberately does not grant.
+      //
+      // Both edges are registered, and the two do different work. The open
+      // lands at the end of the send cycle, which grants the sideband the same
+      // one-cycle sequential grace the request limb already allows -- no driver
+      // presents a flit and a level from the same clock edge. The close lands at
+      // the end of the answering cycle, so the cycle carrying the final SnpResp
+      // or SnpRespData beat is still inside the window: "until AFTER the final
+      // completing flit".
+      // ----------------------------------------------------------------------
+      if (vif.txsnpflitv) begin
+        snp_win_idx = txn_id_to_index(txn_id_t'(vif.txsnpflit.txnid));
+        if (!snp_inflight_by_txn[snp_win_idx]) begin
+          snp_inflight_by_txn[snp_win_idx]  <= 1'b1;
+          snp_dat_beats_by_txn[snp_win_idx] <= 0;
+          snp_outstanding_delta             = snp_outstanding_delta + 1;
+        end
+      end
+
+      if (vif.rxrspflitv &&
+          is_snp_resp_rsp_opcode(rsp_opcode_t'(vif.rxrspflit.opcode))) begin
+        snp_win_idx = txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid));
+        if (snp_inflight_by_txn[snp_win_idx]) begin
+          snp_inflight_by_txn[snp_win_idx] <= 1'b0;
+          snp_outstanding_delta            = snp_outstanding_delta - 1;
+        end
+      end
+
+      if (vif.rxdatflitv &&
+          is_snp_resp_dat_opcode(dat_opcode_t'(vif.rxdatflit.opcode))) begin
+        snp_win_idx = txn_id_to_index(txn_id_t'(vif.rxdatflit.txnid));
+        if (snp_inflight_by_txn[snp_win_idx]) begin
+          if ((snp_dat_beats_by_txn[snp_win_idx] + 1) <
+              unsigned'(vip_chi_types_pkg::chi_xfer_dat_beats(
+                          VIP_CHI_REQ_SIZE_64B_C, CFG_P.DATA_BYTES_P))) begin
+            snp_dat_beats_by_txn[snp_win_idx] <=
+              snp_dat_beats_by_txn[snp_win_idx] + 1;
+          end
+          else begin
+            snp_dat_beats_by_txn[snp_win_idx] <= 0;
+            snp_inflight_by_txn[snp_win_idx]  <= 1'b0;
+            snp_outstanding_delta             = snp_outstanding_delta - 1;
+          end
+        end
+      end
+
       // One NBA update carrying the net change every site above contributed.
       req_outstanding_count <= req_outstanding_count + req_outstanding_delta;
+      snp_outstanding_count <= snp_outstanding_count + snp_outstanding_delta;
       for (int unsigned pcrd_i = 0;
            pcrd_i < (2 ** VIP_CHI_PCRD_TYPE_WIDTH_C); pcrd_i++) begin
         pcrd_held_by_type[pcrd_i] <=
@@ -3244,9 +3370,14 @@ module vip_chi_sva #(
   // on. It was never the peer's window read off the wrong wire; it was this
   // node's own obligation, and the check that expresses it was switched off for
   // the one role that gets it wrong. See F-CORR-005.
+  // Two limbs, one rule. The snoop limb is 14.7.2's second condition, counted
+  // separately so the OR the clause requires is what holds the sideband up
+  // rather than an accident of how the two windows happen to overlap. See the
+  // snoop window in the always_ff above.
   property p_txsactive_covers_outstanding;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      (req_outstanding_count > 0) |-> vif.txsactive;
+      ((req_outstanding_count > 0) || (snp_outstanding_count > 0))
+        |-> vif.txsactive;
   endproperty
 
   // Over-assertion is legal -- "may have" is permissive -- so this is not the
@@ -3670,7 +3801,7 @@ module vip_chi_sva #(
   assert property (p_txsactive_covers_outstanding)
     chk_hit(VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E);
   else
-    chk_miss(VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E, $sformatf("TXSACTIVE was low with transactions still outstanding"));
+    chk_miss(VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E, $sformatf("TXSACTIVE was low with %0d transaction(s) and %0d snoop(s) still outstanding", req_outstanding_count, snp_outstanding_count));
 
   assert property (p_txsactive_deassert_bounded)
     chk_hit(VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E);

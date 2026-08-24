@@ -640,12 +640,32 @@ class vip_chi_driver_hnf #(
   // Per-RN credit/link loop. Advertises the queued receive credits, tracks the
   // RN-F's returned send credits, and keeps the sideband coherent.
   // ---------------------------------------------------------------------------
+  // The counted primitive. Every window on this port is one increment here and
+  // one decrement in rn_window_close, and the credit loop reads nothing but the
+  // count -- so two windows open at once hold the sideband up for as long as the
+  // LONGER of them, with no ordering between them and no writer but the loop.
+  //
   // Assertion is immediate so the sideband rises in the cycle the window opens;
   // only the DROP waits for the per-cycle pass in rn_credit_loop.
-  protected function void rn_tx_activity_begin(input int p);
+  protected function void rn_window_open(input int p);
     this.rn_tx_active_count[p]++;
     this.rn_tx_active_extend[p] = 0;
     this.vif_rn[p].g_drv.hnf_cb.txsactive <= 1'b1;
+  endfunction
+
+  protected function void rn_window_close(input int p);
+    if (this.rn_tx_active_count[p] != 0) begin
+      this.rn_tx_active_count[p]--;
+    end
+    if (this.rn_tx_active_count[p] == 0) begin
+      this.rn_tx_active_extend[p] = this.cfg.txsactive_extend_max_cycles;
+    end
+  endfunction
+
+  // The REQUEST window: one per dispatch, opened at capture and retired when
+  // the service task is done with the RN link.
+  protected function void rn_tx_activity_begin(input int p);
+    this.rn_window_open(p);
   endfunction
 
   // Idempotent within one dispatch. response_engine calls this after every
@@ -653,17 +673,18 @@ class vip_chi_driver_hnf #(
   // remaining work is on the SN link closes early -- see service_writeback --
   // and the end-of-dispatch call then does nothing. Because the engine is
   // serial, one flag is enough to tell the two apart.
+  //
+  // The flag guards the REQUEST window alone. A snoop window opened by
+  // drive_snoop retires through rn_window_close directly, so an early request
+  // retire cannot swallow it and a snoop cannot consume the request's close:
+  // 14.7.2 asks for the OR of the two, which is what two independent
+  // contributions to one count express.
   protected function void rn_tx_activity_end(input int p);
     if (!this.rn_tx_dispatch_open) begin
       return;
     end
     this.rn_tx_dispatch_open = 1'b0;
-    if (this.rn_tx_active_count[p] != 0) begin
-      this.rn_tx_active_count[p]--;
-    end
-    if (this.rn_tx_active_count[p] == 0) begin
-      this.rn_tx_active_extend[p] = this.cfg.txsactive_extend_max_cycles;
-    end
+    this.rn_window_close(p);
   endfunction
 
   protected task rn_credit_loop(input int p);
@@ -2178,6 +2199,19 @@ class vip_chi_driver_hnf #(
     this.announce_rn_flit(k, ANNOUNCE_SNP_E);
     @(this.vif_rn[k].g_drv.hnf_cb);
     this.drive_rn_idle_sideband(k);
+    // The snoop's TXSACTIVE window opens HERE, in the cycle the flit is
+    // presented, and not before the credit wait above. E 14.7.2 / D 13.7.2 asks
+    // for the sideband "before or in the same cycle in which its initiating
+    // Snoop or SnpDVMOp flit is sent" -- the same cycle satisfies it, and
+    // opening any sooner covers a wait for a snoop credit that is unbounded. On
+    // a link whose peer withholds snoop credit that wait IS the whole test, and
+    // a sideband raised before there is anything on the wire to justify it is
+    // exactly the over-assertion TXSACTIVE_DEASSERT_BOUNDED exists to catch.
+    //
+    // Closed by the caller, after the last response beat. The window is not
+    // symmetric in this file for the same reason it is not symmetric in the
+    // clause: the open is pinned to the flit, the close to the response.
+    this.rn_window_open(k);
     this.vif_rn[k].g_drv.hnf_cb.txsnpflitpend  <= 1'b0;
     this.vif_rn[k].g_drv.hnf_cb.txsnpflit      <= flit;
     this.vif_rn[k].g_drv.hnf_cb.txsnpflitv     <= 1'b1;
@@ -2188,10 +2222,22 @@ class vip_chi_driver_hnf #(
     this.vif_rn[k].g_drv.hnf_cb.txsnpflit      <= '0;
   endtask
 
+  // E 14.7.2 / D 13.7.2 makes the snoop a TXSACTIVE window in its own right:
+  // asserted "before or in the same cycle in which its initiating Snoop or
+  // SnpDVMOp flit is sent", held "until after the final completing flit is
+  // sent, which will be either SnpResp or SnpRespData". send_snoop_flit opens it
+  // in the flit cycle; the close belongs here, where the response has been
+  // collected.
+  //
+  // No unwinding guard around the pair, unlike the Python port's try/finally:
+  // every way out of collect_snp_response other than the SnpResp is a
+  // uvm_fatal, which ends the simulation rather than returning to a caller that
+  // would need the window retired.
   protected task drive_snoop(input int k, input addr_t line, input snp_opcode_t op);
     txn_id_t snp_txn;
     this.send_snoop_flit(k, line, op, node_id_t'(0), txn_id_t'(0), snp_txn);
     this.collect_snp_response(k, snp_txn, line);
+    this.rn_window_close(k);
   endtask
 
   // ---------------------------------------------------------------------------
@@ -2448,9 +2494,14 @@ class vip_chi_driver_hnf #(
                              : VIP_CHI_RESP_STATE_SC_E;
 
     // Issue the forwarding snoop; then collect the forwarded burst and relay it.
+    //
+    // The forwarding snoop goes out on the SNOOPEE's link, not the requester's,
+    // so the request window opened at capture covers the wrong port entirely.
+    // Its own window, on fwd_k, opened in send_snoop_flit -- see drive_snoop.
     this.send_snoop_flit(fwd_k, line, fwd_op,
                          node_id_t'(req.srcid), txn_id_t'(req.txnid), snp_txn);
     this.collect_fwd_resp_data(fwd_k, snp_txn, line, fwd_beats);
+    this.rn_window_close(fwd_k);
     this.drive_relayed_compdata(p, req, granted, fwd_beats);
 
     // Resolve the directory: requester granted, snoopee downgraded/invalidated.

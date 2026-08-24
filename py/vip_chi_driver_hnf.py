@@ -414,27 +414,46 @@ class vip_chi_driver_hnf(uvm_component):
   # ==========================================================================
   # Per-RN credit/link + activate + REQ ingress capture.
   # ==========================================================================
+  # The counted primitive. Every window on this port is one increment here and
+  # one decrement in rn_window_close, and the credit loop reads nothing but the
+  # count -- so two windows open at once hold the sideband up for as long as the
+  # LONGER of them, with no ordering between them and no writer but the loop.
+  #
   # Assertion is immediate so the sideband rises in the cycle the window opens;
   # only the DROP waits for the per-cycle pass in rn_credit_loop.
-  def rn_tx_activity_begin(self, p):
+  def rn_window_open(self, p):
     self.rn_tx_active_count[p] += 1
     self.rn_tx_active_extend[p] = 0
     self.rn_buses[p].drive(txsactive=1)
+
+  def rn_window_close(self, p):
+    if self.rn_tx_active_count[p]:
+      self.rn_tx_active_count[p] -= 1
+    if self.rn_tx_active_count[p] == 0:
+      self.rn_tx_active_extend[p] = max(
+        0, int(self.cfg.txsactive_extend_max_cycles))
+
+  # The REQUEST window: one per dispatch, opened at capture and retired when the
+  # service path is done with the RN link.
+  def rn_tx_activity_begin(self, p):
+    self.rn_window_open(p)
 
   # Idempotent within one dispatch. response_engine calls this after every
   # service path so none can forget to retire its window, but a path whose
   # remaining work is on the SN link closes early -- see service_writeback --
   # and the end-of-dispatch call then does nothing. Because the engine is
   # serial, one flag is enough to tell the two apart.
+  #
+  # The flag guards the REQUEST window alone. A snoop window opened by
+  # drive_snoop retires through rn_window_close directly, so an early request
+  # retire cannot swallow it and a snoop cannot consume the request's close:
+  # 14.7.2 asks for the OR of the two, which is what two independent
+  # contributions to one count express.
   def rn_tx_activity_end(self, p):
     if not self.rn_tx_dispatch_open:
       return
     self.rn_tx_dispatch_open = False
-    if self.rn_tx_active_count[p]:
-      self.rn_tx_active_count[p] -= 1
-    if self.rn_tx_active_count[p] == 0:
-      self.rn_tx_active_extend[p] = max(
-        0, int(self.cfg.txsactive_extend_max_cycles))
+    self.rn_window_close(p)
 
   async def rn_credit_loop(self, p):
     rn = self.rn_buses[p]
@@ -1333,6 +1352,22 @@ class vip_chi_driver_hnf(uvm_component):
     await self.announce_rn_flit(k, "snp")
     await rn.rising()
     self.drive_rn_idle_sideband(k)
+    # The snoop's TXSACTIVE window opens HERE, in the cycle the flit is
+    # presented, and not one line earlier. E 14.7.2 / D 13.7.2 asks for the
+    # sideband "before or in the same cycle in which its initiating Snoop or
+    # SnpDVMOp flit is sent" -- the same cycle satisfies it, and opening any
+    # sooner covers the wait for a snoop credit above, which is unbounded. On a
+    # link whose peer withholds snoop credit that wait IS the whole test:
+    # tc_chi_coh_{d,e}_snp_backpressure held the sideband up over 17 idle cycles
+    # with the request being serviced on the OTHER port, and
+    # TXSACTIVE_DEASSERT_BOUNDED reported it -- correctly. A sideband raised
+    # before there is anything on the wire to justify it is the over-assertion
+    # that rule exists to catch.
+    #
+    # Closed by the caller, after the last response beat. The window is not
+    # symmetric in this file for the same reason it is not symmetric in the
+    # clause: the open is pinned to the flit, the close to the response.
+    self.rn_window_open(k)
     rn.drive(txsnpflitpend=0, txsnpflitv=1)
     rn.drive_flit("snp", fields)
     await rn.rising()
@@ -1341,9 +1376,19 @@ class vip_chi_driver_hnf(uvm_component):
     rn.drive_flit("snp", {})
     return snp_txn
 
+  # E 14.7.2 / D 13.7.2 makes the snoop a TXSACTIVE window in its own right:
+  # asserted "before or in the same cycle in which its initiating Snoop or
+  # SnpDVMOp flit is sent", held "until after the final completing flit is sent,
+  # which will be either SnpResp or SnpRespData". send_snoop_flit opens it in
+  # the flit cycle; the close belongs here, where the response has been
+  # collected -- in a finally, so a snoopee that answers with something
+  # unexpected does not leave the sideband stuck high for the rest of the run.
   async def drive_snoop(self, k, line, op):
     snp_txn = await self.send_snoop_flit(k, line, op)
-    await self.collect_snp_response(k, snp_txn, line)
+    try:
+      await self.collect_snp_response(k, snp_txn, line)
+    finally:
+      self.rn_window_close(k)
 
   # Collect the response to the originated snoop on port k. Clean -> no-data
   # SnpResp on RSP; dirty -> SnpRespData on DAT (merged to memory as authority).
@@ -1476,9 +1521,15 @@ class vip_chi_driver_hnf(uvm_component):
     fwd_op = self.snoop_for(req["opcode"], fwd=True)
     snoopee_next = int(Resp.I) if is_unique else int(Resp.SC)
 
+    # The forwarding snoop goes out on the SNOOPEE's link, not the requester's,
+    # so the request window opened at capture covers the wrong port entirely.
+    # Its own window, on fwd_k, opened in send_snoop_flit -- see drive_snoop.
     snp_txn = await self.send_snoop_flit(fwd_k, line, fwd_op,
-                                         _I(req["srcid"]), _I(req["txnid"]))
-    fwd_beats = await self.collect_fwd_resp_data(fwd_k, snp_txn, line)
+                                        _I(req["srcid"]), _I(req["txnid"]))
+    try:
+      fwd_beats = await self.collect_fwd_resp_data(fwd_k, snp_txn, line)
+    finally:
+      self.rn_window_close(fwd_k)
     await self.drive_relayed_compdata(p, req, granted, fwd_beats)
 
     # The requester's entry is the join, not the grant -- Table 4-14 footnote b,

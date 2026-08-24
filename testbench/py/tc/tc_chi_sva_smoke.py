@@ -56,10 +56,12 @@ _CHANNELS = ("req", "rsp", "dat")
 def _sample(base: dict, **over) -> dict:
   """One cycle of checker input: link state plus all-quiet channels.
 
-  The snoop VALIDS are here and the rest of the snoop channel is not, which
-  matches what bind_chi samples: the main checker judges REQ/RSP/DAT and reads
-  only "is anything moving" off the snoop channel, for link_quiet. The snoop
-  flits themselves belong to bind_chi_snp.
+  The snoop VALIDS are here, and so is the outbound snoop FLIT -- which is as
+  much of the snoop channel as bind_chi samples. The valids serve link_quiet;
+  the tx flit serves the snoop limb of TXSACTIVE_COVERS_OUTSTANDING, which pairs
+  a snoop with its response by TxnID. The inbound snoop flit is not sampled by
+  the checker and so is not built here, and the snoop channel's own rules still
+  belong to bind_chi_snp.
 
   A key the real sampler supplies and this one does not is a KeyError the moment
   a rule reads it, not a rule quietly standing down -- which is how the snoop
@@ -74,6 +76,7 @@ def _sample(base: dict, **over) -> dict:
       s[f"{d}{ch}flit"] = None
   for d in ("tx", "rx"):
     s[f"{d}snpflitv"] = 0
+  s["txsnpflit"] = None
   s.update(over)
   return s
 
@@ -120,6 +123,12 @@ def _rsp(d="rx", pend=0, **fields):
 
 def _dat(d="tx", pend=0, **fields):
   return _sample(_RUN, **_flit(d, "dat", pend, **fields))
+
+
+# Outbound by default: the snoop window is the SENDER's obligation, and only an
+# ICN-facing endpoint transmits snoops.
+def _snp(d="tx", pend=0, **fields):
+  return _sample(_RUN, **_flit(d, "snp", pend, **fields))
 
 
 def _idle(n: int = 1):
@@ -329,6 +338,50 @@ class tc_chi_sva_smoke(uvm_test):
     ])
     assert self._fired(c, "CHI_TXNID_REUSE_COMPLETER") == 1, (
       "a completer did not report an inbound reused TxnID")
+
+    # ---- A snoop is a TXSACTIVE window of its own ------------------------
+    # E 14.7.2 / D 13.7.2 gives the ICN-to-RN interface two conditions, and this
+    # is the second: the sideband must cover the snoop from the flit that starts
+    # it to the response that ends it, whether or not any request is outstanding
+    # at the same time. Nothing is outstanding in any of these feeds -- that is
+    # the point, because a limb that only fires while a request happens to be in
+    # flight adds nothing to the request limb.
+    c = _checker(Role.HNF)
+    _feed_txn(c, [
+      _snp(txnid=7),
+      _sample(_RUN, txsactive=0),
+    ])
+    assert self._fired(c, "CHI_TXSACTIVE_COVERS_OUTSTANDING") == 1, (
+      "TXSACTIVE dropped with a snoop outstanding and nothing else was, and "
+      "the snoop limb did not report it")
+
+    # ---- ...and the SnpResp ends it ---------------------------------------
+    c = _checker(Role.HNF)
+    _feed_txn(c, [
+      _snp(txnid=7),
+      _rsp(opcode=int(RspOpcode.SNP_RESP), txnid=7),
+      _sample(_RUN, txsactive=0),
+    ])
+    assert self._fired(c, "CHI_TXSACTIVE_COVERS_OUTSTANDING") == 0, (
+      "the sideband was dropped after the snoop had been answered, which is "
+      "where the window ends -- a limb that never retires would hold it open "
+      "for the rest of the run")
+
+    # ---- A SnpRespData burst ends it on the LAST beat ---------------------
+    # Retiring on the first beat would drop the window mid-burst, which is the
+    # thing "until after the final completing flit" forbids. _DATA_BYTES_C is 16,
+    # so a cache line is four beats: the sideband must still be covered after
+    # three of them.
+    c = _checker(Role.HNF)
+    _feed_txn(c, [
+      _snp(txnid=7),
+      *[_dat("rx", opcode=int(DatOpcode.SNP_RESP_DATA), txnid=7, dataid=i)
+        for i in range(3)],
+      _sample(_RUN, txsactive=0),
+    ])
+    assert self._fired(c, "CHI_TXSACTIVE_COVERS_OUTSTANDING") == 1, (
+      "the sideband was dropped three beats into a four-beat SnpRespData and "
+      "the snoop limb treated the snoop as already answered")
 
     # ---- Write data sent with no DBID grant behind it ---------------------
     c = _checker()
