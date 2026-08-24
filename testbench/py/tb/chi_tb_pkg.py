@@ -71,6 +71,14 @@ E_WUZ_NEGCTL_RNI_NODE_ID_C = 0x01E
 E_WUZ_NEGCTL_SNF_NODE_ID_C = 0x027
 E_WUZ_NEGCTL_TXN_ID_PASS_C = 0x71
 E_WUZ_NEGCTL_TXN_ID_DUP_C = 0x72
+
+# tc_chi_txnid_reuse_srcid_scope. Two DIFFERENT SrcIDs holding one TxnID is the
+# legal case section 2.5 describes, so the two node IDs must differ and neither
+# may collide with the SN-F's -- a request whose SrcID equals its TgtID is a
+# different kind of malformed and would muddy the verdict.
+TXNID_SCOPE_SRC_A_C = 0x01E
+TXNID_SCOPE_SRC_B_C = 0x03B
+TXNID_SCOPE_TXN_ID_C = 0x73
 # Retry field control. Its own line, node-ID pair and TxnID, so nothing it
 # injects can be confused with another testcase's traffic. PCRD_TYPE is non-zero
 # and that is the point: phase A pairs it with AllowRetry asserted, which

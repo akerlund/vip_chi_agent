@@ -164,15 +164,25 @@ _COMPLETER_ROLES_C = (Role.SNF, Role.HNF, Role.HNI)
 # raw flit: unpacking the whole DAT flit every beat would drag the multi-hundred
 # bit `data` field through a big-int shift for a checker that never looks at it.
 _FLIT_FIELDS_C = {
-  "req": ("opcode", "txnid", "returnnid", "returntxnid", "size", "expcompack",
-          "order", "memattr", "snpattr", "likelyshared", "excl", "endian",
-          "tagop", "addr", "ns", "allowretry", "pcrdtype", "lpid", "mpam",
-          "groupidext"),
+  "req": ("opcode", "txnid", "srcid", "tgtid", "returnnid", "returntxnid",
+          "size", "expcompack", "order", "memattr", "snpattr", "likelyshared",
+          "excl", "endian", "tagop", "addr", "ns", "allowretry", "pcrdtype",
+          "lpid", "mpam", "groupidext"),
   # pcrdtype is read by _credit_grants, not by a field-legality rule: a field
   # this map omits raises KeyError at run time rather than standing its reader
   # down, so every reader of a channel has to be represented here.
-  "rsp": ("opcode", "txnid", "dbid", "resperr", "resp", "pcrdtype"),
-  "dat": ("opcode", "txnid", "dbid", "dataid", "homenid", "cbusy"),
+  #
+  # srcid and tgtid are the in-flight shadow's key, section 2.5's scope. They
+  # were ABSENT until F-CHK-018's re-key, and their absence is why the SrcID
+  # scoping that finding recorded as done had no effect: the reader guarded
+  # itself with `"srcid" in f`, got None on every flit, and compared None to
+  # None -- so the rule went on enforcing "unique per link", which is stricter
+  # than what section 2.5 states. A whitelist that silently yields None is worse
+  # than one that raises; the guard is gone with the omission.
+  "rsp": ("opcode", "txnid", "srcid", "tgtid", "dbid", "resperr", "resp",
+          "pcrdtype"),
+  "dat": ("opcode", "txnid", "srcid", "tgtid", "dbid", "dataid", "homenid",
+          "cbusy"),
 }
 
 # Opcode classes, mirroring the SV req_opcode_is_* / is_write_* functions.
@@ -462,15 +472,16 @@ class bind_chi:
     if not enable_completion_timeout:
       self.check_enable["CHI_COMPLETION_FOLLOWS_REQ"] = False
 
-    # More than one requester's traffic converges on this link. The TxnID-reuse
-    # shadow is keyed by TxnID alone, so it cannot hold two sources' claims on
-    # the same value at once -- and section 2.5 makes that a legal situation.
-    # Scoping the rule by SrcID (below) removes the systematic false report; what
-    # remains is that the shadow is lossy, so on a genuinely multi-source link the
-    # rule stands down and says so through enabled=0. See F-CHK-018.
-    if multi_source_link:
-      self.check_enable["CHI_TXNID_REUSE_REQUESTER"] = False
-      self.check_enable["CHI_TXNID_REUSE_COMPLETER"] = False
+    # `multi_source_link` no longer stands the TxnID-reuse rules down. It used
+    # to, because the shadow was keyed by TxnID alone and could not hold two
+    # sources' claims on the same value at once -- which section 2.5 makes a
+    # legal situation, so the rule had to be silent rather than wrong. The
+    # shadow is now keyed by (SrcID, TxnID) and represents it directly, so a
+    # fan-in link is CHECKED instead of excused. See F-CHK-018.
+    #
+    # The parameter is kept: it still records that a link carries more than one
+    # source, which is a fact about the topology rather than about this rule,
+    # and removing it would silently change every testbench that sets it.
 
     # This endpoint drives TXSACTIVE from link-up rather than from its
     # outstanding window, so the sideband is a constant while the link is up.
@@ -531,6 +542,17 @@ class bind_chi:
   # ---------------------------------------------------------------------------
   # Reporting
   # ---------------------------------------------------------------------------
+  @staticmethod
+  def _inflight_key(src, txn):
+    """The in-flight shadow's key: (SrcID, TxnID), section 2.5's scope.
+
+    Indexed rather than `.get()`: both fields are in _FLIT_FIELDS_C, and if one
+    is ever dropped from it this must raise where the omission happened rather
+    than quietly key everything on None -- which is precisely the failure this
+    re-key was built to undo.
+    """
+    return (int(src), int(txn))
+
   def _chk(self, rule: str, ok: bool, msg: str) -> None:
     """One check site: count the evaluation, and report it if it did not hold.
 
@@ -817,9 +839,17 @@ class bind_chi:
     guaranteed idle and therefore the enable gate is low. Clearing it on the
     disable path would disarm the check on the very cycle it was armed.
     """
-    # Per-TxnID bookkeeping. The SV declares these as arrays sized by the TxnID
-    # space and clears them on reset; a dict with a zero default is the same
-    # thing without allocating the whole space up front.
+    # Keyed by (SrcID, TxnID), not by TxnID alone. Section 2.5 scopes uniqueness
+    # to a source -- "The Requester is identified by the SrcID" -- so two
+    # requesters holding the same TxnID at once is legal and a TxnID-indexed
+    # shadow cannot represent it. It used to be one slot per value with a
+    # parallel map of the LAST claimant, which made the second source overwrite
+    # the first: A takes 0, B takes 0, A's completion frees the slot, and A
+    # reusing 0 with its own request still outstanding passed. See F-CHK-018.
+    #
+    # The key is read from a different field at each end of a transaction. A
+    # request carries the requester in SrcID; every response and data flit that
+    # retires one is TARGETED at that requester, so its TgtID is the same node.
     self._req_inflight = {}
     # Which TxnIDs a request has actually put on the wire, tracked SEPARATELY
     # from _req_inflight and deliberately so.
@@ -860,7 +890,6 @@ class bind_chi:
     # Without this the reuse rules read the spec as "unique per link", a stricter
     # rule than the one written. It went unnoticed because no bind sat on a fan-in
     # link until box 0.3 bound the HN-I proxy's SN-facing ports.
-    self._req_src = {}
     self._req_exp_comp_ack = {}
     self._completion_seen = {}
     self._write_grant_seen_by_dbid = {}
@@ -1868,16 +1897,14 @@ class bind_chi:
       # first use retires makes the two indistinguishable to every downstream
       # tracker, including this checker.
       # Same SrcID reusing a live slot is the violation. A DIFFERENT SrcID
-      # landing on the same slot is a pass, not a decline: section 2.5's rule is
-      # satisfied outright, because the two requests are distinguishable by the
-      # field the spec names.
-      src = int(f["srcid"]) if "srcid" in f else None
-      live = self._req_inflight.get(txn, False)
-      self._chk(reuse_rule,
-                not (live and self._req_src.get(txn) == src),
-                reuse_msg)
-      self._post(self._req_inflight, txn, True)
-      self._post(self._req_src, txn, src)
+      # landing on the same TxnID is a pass, not a decline: section 2.5's rule
+      # is satisfied outright, because the two requests are distinguishable by
+      # the field the spec names -- and now the shadow can hold both at once,
+      # so it is a pass that leaves the first source's claim standing.
+      key = self._inflight_key(f["srcid"], txn)
+      self._chk(reuse_rule, not self._req_inflight.get(key, False),
+                f"{reuse_msg}: SrcID 0x{key[0]:x} reused TxnID 0x{key[1]:x}")
+      self._post(self._req_inflight, key, True)
       self._arm_completion(s, f)
 
     self._post(self._expected_write_beats_by_txn, txn,
@@ -2143,15 +2170,18 @@ class bind_chi:
       self._record_write_grant(f, mark_grant_seen=True)
     if opcode in _PLAIN_COMPLETION_RSP_OPCODES_C:
       self._post(self._completion_seen, txn, True)
-      self._post(self._req_inflight, txn, False)
+      self._post(self._req_inflight, self._inflight_key(f["tgtid"], txn),
+                 False)
     elif opcode == int(RspOpcode.COMP_PERSIST):
-      self._post(self._req_inflight, txn, False)
+      self._post(self._req_inflight, self._inflight_key(f["tgtid"], txn),
+                 False)
     elif opcode == int(RspOpcode.RETRY_ACK):
       # A RetryAck retires the bounced request: the completer did not accept
       # it, so its TxnID is released and the requester re-issues after the
       # matching PCrdGrant. Clearing the marker keeps that legitimate re-issue
       # from reading as a TxnID reuse.
-      self._post(self._req_inflight, txn, False)
+      self._post(self._req_inflight, self._inflight_key(f["tgtid"], txn),
+                 False)
       # And section 2.6.5 requires the flit to carry the bounced request's
       # TxnID, so a RetryAck landing on a slot no request has used bounced
       # nothing -- and the credit that follows it would have no transaction to
@@ -2179,8 +2209,9 @@ class bind_chi:
       self._record_write_grant(f, mark_grant_seen=False)
     if opcode == int(RspOpcode.RETRY_ACK):
       # Mirror of the requester side: a RetryAck this node drove retires the
-      # bounced request's TxnID.
-      self._post(self._req_inflight, f["txnid"], False)
+      # bounced request's TxnID, for the requester it is aimed at.
+      self._post(self._req_inflight,
+                 self._inflight_key(f["tgtid"], f["txnid"]), False)
       # Section 2.6.5 read at the sending vantage: a completer must bounce a
       # request it received, and the TxnID is the only thing naming which one.
       self._chk("CHI_RSP_RETRY_ACK_TXN_ID",
@@ -2396,7 +2427,9 @@ class bind_chi:
                True)
     if self._dat_completion_req_valid_by_txn.get(txn, False):
       self._post(self._req_inflight,
-                 self._dat_completion_req_txn_by_txn.get(txn, 0), False)
+                 self._inflight_key(
+                   f["tgtid"],
+                   self._dat_completion_req_txn_by_txn.get(txn, 0)), False)
       self._post(self._dat_completion_req_valid_by_txn, txn, False)
 
   def _close_burst(self, s: dict, d: str, opcode: int, f: dict,

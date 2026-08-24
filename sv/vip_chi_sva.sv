@@ -967,8 +967,8 @@ module vip_chi_sva #(
   int unsigned rxreq_lcrd_count;
   int unsigned rxrsp_lcrd_count;
   int unsigned rxdat_lcrd_count;
-  bit req_inflight_by_txn[TXN_ID_COUNT_C];
-  // Which SrcID owns the TxnID currently occupying each slot.
+  // In-flight requests, keyed by (SrcID, TxnID) -- section 2.5's scope, not a
+  // slot per TxnID value.
   //
   // IHI 0050 E section 2.5 scopes the uniqueness rule to a source and says so
   // twice over: "It is required that the TxnID, except for PrefetchTgt, must be
@@ -982,13 +982,45 @@ module vip_chi_sva #(
   // a fan-in link: the integrated topology is one requester to one completer, and
   // the coherent binds sit at the RN-F ends, one source each. The proxy's
   // SN-facing links, bound for the first time by box 0.3, carry two.
-  node_id_t req_src_by_txn[TXN_ID_COUNT_C];
-  bit       req_src_valid_by_txn[TXN_ID_COUNT_C];
+  // A TxnID-indexed array cannot represent this: it has one slot per value, so
+  // the second source to claim a TxnID overwrote the first's ownership. The
+  // residual was a MISSED violation -- A takes 0, B takes 0 and becomes the
+  // slot's owner, A's completion frees the slot, and A reusing 0 with its own
+  // first request still outstanding passed. The rules therefore stood down on
+  // multi-source links rather than reporting from a shadow that could not
+  // answer. Keyed on the pair they report there instead. See F-CHK-018.
+  //
+  // Associative because the product space is not worth allocating: NODE_ID and
+  // TXN_ID are 11 and 12 bits on CHI-E, so a second dimension would be 8M bits
+  // per bind for a handful of live entries. Entries are cleared to 0 rather
+  // than deleted, because every write here is non-blocking and the whole
+  // always_ff depends on reads seeing start-of-cycle values; the array
+  // therefore grows to the set of (SrcID, TxnID) pairs a run actually uses,
+  // which is bounded by the traffic rather than by the field widths.
+  typedef struct packed {
+    node_id_t src;
+    txn_id_t  txn;
+  } req_key_t;
+
+  bit req_inflight_by_key[req_key_t];
+
+  function automatic req_key_t req_key(input node_id_t src, input txn_id_t txn);
+    req_key_t k;
+    k.src = src;
+    k.txn = txn;
+    return k;
+  endfunction
+
+  // `exists` first: reading an absent index would create it, which would make
+  // every judged-and-clean TxnID allocate an entry.
+  function automatic bit req_inflight(input req_key_t k);
+    return req_inflight_by_key.exists(k) && req_inflight_by_key[k];
+  endfunction
 
   // Which TxnIDs a request has actually put on the wire, tracked SEPARATELY from
-  // req_inflight_by_txn and deliberately so.
+  // req_inflight_by_key and deliberately so.
   //
-  // req_inflight_by_txn is set only for req_has_modeled_completion's opcodes,
+  // req_inflight_by_key is set only for req_has_modeled_completion's opcodes,
   // because what it exists for is pairing a request with the completion that
   // retires it. RETRY_ACK_TXN_ID asks a different question -- did any request
   // carry this TxnID -- and gating it on that whitelist would make a RetryAck for
@@ -1002,7 +1034,7 @@ module vip_chi_sva #(
   // the legitimate RetryAck that a permissive rule simply misses.
   bit       req_txn_id_seen_by_txn[TXN_ID_COUNT_C];
 
-  // Running population count of req_inflight_by_txn. Maintained alongside the
+  // Running population count of req_inflight_by_key. Maintained alongside the
   // array rather than reduced from it: the TxnID space is 1024 entries on CHI-D
   // and 4096 on CHI-E, and p_txsactive_covers_outstanding needs the answer on
   // EVERY clock, which is not something to spend a full-array reduction on.
@@ -1111,9 +1143,6 @@ module vip_chi_sva #(
         expected_completion_valid_by_txn[txn_i] <= 1'b0;
         txdat_beats_by_txn[txn_i] <= 0;
         rxdat_beats_by_txn[txn_i] <= 0;
-        req_inflight_by_txn[txn_i] <= 1'b0;
-        req_src_valid_by_txn[txn_i] <= 1'b0;
-        req_src_by_txn[txn_i]       <= '0;
         req_txn_id_seen_by_txn[txn_i] <= 1'b0;
         dat_completion_req_valid_by_txn[txn_i] <= 1'b0;
         dat_completion_req_txn_by_txn[txn_i] <= '0;
@@ -1123,6 +1152,10 @@ module vip_chi_sva #(
            pcrd_i < (2 ** VIP_CHI_PCRD_TYPE_WIDTH_C); pcrd_i++) begin
         pcrd_held_by_type[pcrd_i] <= 0;
       end
+      // Blocking, and the only blocking write to this array: nothing reads it
+      // in the reset branch, and an NBA clear would need one write per live
+      // key rather than one statement.
+      req_inflight_by_key.delete();
       req_outstanding_count <= 0;
       txsactive_idle_cycles <= 0;
       txsactive_bound_reported <= 1'b0;
@@ -1169,6 +1202,7 @@ module vip_chi_sva #(
           int unsigned completion_idx;
           int unsigned beat_count;
           req_opcode_t req_opcode;
+          req_key_t    req_k;
 
           req_opcode = req_opcode_t'(vif.txreqflit.opcode);
           txn_idx = txn_id_to_index(txn_id_t'(vif.txreqflit.txnid));
@@ -1186,19 +1220,18 @@ module vip_chi_sva #(
             // landing on the same slot is a pass, not a decline: section 2.5's
             // rule is satisfied outright, because the two requests are
             // distinguishable by the field the spec names.
-            if (req_inflight_by_txn[txn_idx] && req_src_valid_by_txn[txn_idx] &&
-                (req_src_by_txn[txn_idx] === node_id_t'(vif.txreqflit.srcid))) begin
-              chk_miss(VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E, $sformatf("requester reused a TxnID while the earlier request was still in flight"));
+            req_k = req_key(node_id_t'(vif.txreqflit.srcid),
+                            txn_id_t'(vif.txreqflit.txnid));
+            if (req_inflight(req_k)) begin
+              chk_miss(VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E, $sformatf("requester reused a TxnID while the earlier request was still in flight: SrcID 0x%0h reused TxnID 0x%0h", req_k.src, req_k.txn));
             end
             else begin
               chk_hit(VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E);
             end
-            if (!req_inflight_by_txn[txn_idx]) begin
+            if (!req_inflight(req_k)) begin
               req_outstanding_delta++;
             end
-            req_inflight_by_txn[txn_idx]  <= 1'b1;
-            req_src_by_txn[txn_idx]       <= node_id_t'(vif.txreqflit.srcid);
-            req_src_valid_by_txn[txn_idx] <= 1'b1;
+            req_inflight_by_key[req_k] <= 1'b1;
           end
           expected_write_beats_by_txn[txn_idx] <= req_write_payload_beats(
             req_opcode, size_t'(vif.txreqflit.size));
@@ -1512,25 +1545,25 @@ module vip_chi_sva #(
               expected_write_valid_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <=
                 (expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] != 0);
               completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b1;
-              if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
+              if (req_inflight(req_key(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid)))) begin
                 req_outstanding_delta--;
               end
-              req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
+              req_inflight_by_key[req_key(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
             end
 
             rsp_opcode_t'(VIP_CHI_RSP_COMP_C): begin
               completion_seen_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b1;
-              if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
+              if (req_inflight(req_key(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid)))) begin
                 req_outstanding_delta--;
               end
-              req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
+              req_inflight_by_key[req_key(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
             end
 
             rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C): begin
-              if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
+              if (req_inflight(req_key(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid)))) begin
                 req_outstanding_delta--;
               end
-              req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
+              req_inflight_by_key[req_key(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
             end
 
             rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C): begin
@@ -1538,10 +1571,10 @@ module vip_chi_sva #(
               // accept it, so its TxnID is released and the requester re-issues
               // after the matching PCrdGrant. Clear the in-flight marker so that
               // legitimate re-issue is not flagged as a TxnID reuse.
-              if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))]) begin
+              if (req_inflight(req_key(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid)))) begin
                 req_outstanding_delta--;
               end
-              req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
+              req_inflight_by_key[req_key(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid))] <= 1'b0;
 
               // Section 2.6.5 requires this flit to carry the bounced request's
               // TxnID, so a RetryAck landing on a slot no request has used
@@ -1666,6 +1699,7 @@ module vip_chi_sva #(
           int unsigned completion_idx;
           int unsigned beat_count;
           req_opcode_t req_opcode;
+          req_key_t    req_k;
 
           req_opcode = req_opcode_t'(vif.rxreqflit.opcode);
           txn_idx = txn_id_to_index(txn_id_t'(vif.rxreqflit.txnid));
@@ -1922,19 +1956,18 @@ module vip_chi_sva #(
             // landing on the same slot is a pass, not a decline: section 2.5's
             // rule is satisfied outright, because the two requests are
             // distinguishable by the field the spec names.
-            if (req_inflight_by_txn[txn_idx] && req_src_valid_by_txn[txn_idx] &&
-                (req_src_by_txn[txn_idx] === node_id_t'(vif.rxreqflit.srcid))) begin
-              chk_miss(VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E, $sformatf("completer observed a reused request TxnID while the earlier request was still in flight"));
+            req_k = req_key(node_id_t'(vif.rxreqflit.srcid),
+                            txn_id_t'(vif.rxreqflit.txnid));
+            if (req_inflight(req_k)) begin
+              chk_miss(VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E, $sformatf("completer observed a reused request TxnID while the earlier request was still in flight: SrcID 0x%0h reused TxnID 0x%0h", req_k.src, req_k.txn));
             end
             else begin
               chk_hit(VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E);
             end
-            if (!req_inflight_by_txn[txn_idx]) begin
+            if (!req_inflight(req_k)) begin
               req_outstanding_delta++;
             end
-            req_inflight_by_txn[txn_idx]  <= 1'b1;
-            req_src_by_txn[txn_idx]       <= node_id_t'(vif.rxreqflit.srcid);
-            req_src_valid_by_txn[txn_idx] <= 1'b1;
+            req_inflight_by_key[req_k] <= 1'b1;
           end
           expected_write_beats_by_txn[txn_idx] <= req_write_payload_beats(
             req_opcode, size_t'(vif.rxreqflit.size));
@@ -1970,10 +2003,10 @@ module vip_chi_sva #(
               // Mirror of the RN-I side: a RetryAck this SN-F drove retires the
               // bounced request's TxnID, so clear the in-flight marker and allow
               // the requester's re-issue to reuse it without a reuse violation.
-              if (req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))]) begin
+              if (req_inflight(req_key(node_id_t'(vif.txrspflit.tgtid), txn_id_t'(vif.txrspflit.txnid)))) begin
                 req_outstanding_delta--;
               end
-              req_inflight_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
+              req_inflight_by_key[req_key(node_id_t'(vif.txrspflit.tgtid), txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
 
               // Section 2.6.5 read at the sending vantage: a completer must
               // bounce a request it received, and the TxnID is the only thing
@@ -2029,10 +2062,10 @@ module vip_chi_sva #(
             expected_completion_valid_by_txn[rt_txn_idx] <= 1'b0;
             txdat_beats_by_txn[rt_txn_idx] <= 0;
             if (dat_completion_req_valid_by_txn[rt_txn_idx]) begin
-              if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[rt_txn_idx])]) begin
+              if (req_inflight(req_key(node_id_t'(vif.txdatflit.tgtid), dat_completion_req_txn_by_txn[rt_txn_idx]))) begin
                 req_outstanding_delta--;
               end
-              req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[rt_txn_idx])] <= 1'b0;
+              req_inflight_by_key[req_key(node_id_t'(vif.txdatflit.tgtid), dat_completion_req_txn_by_txn[rt_txn_idx])] <= 1'b0;
               dat_completion_req_valid_by_txn[rt_txn_idx] <= 1'b0;
             end
           end
@@ -2185,10 +2218,10 @@ module vip_chi_sva #(
                 ? txn_id_to_index(dat_completion_req_txn_by_txn[rr_txn_idx])
                 : rr_txn_idx] <= 1'b1;
             if (dat_completion_req_valid_by_txn[rr_txn_idx]) begin
-              if (req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[rr_txn_idx])]) begin
+              if (req_inflight(req_key(node_id_t'(vif.rxdatflit.tgtid), dat_completion_req_txn_by_txn[rr_txn_idx]))) begin
                 req_outstanding_delta--;
               end
-              req_inflight_by_txn[txn_id_to_index(dat_completion_req_txn_by_txn[rr_txn_idx])] <= 1'b0;
+              req_inflight_by_key[req_key(node_id_t'(vif.rxdatflit.tgtid), dat_completion_req_txn_by_txn[rr_txn_idx])] <= 1'b0;
               dat_completion_req_valid_by_txn[rr_txn_idx] <= 1'b0;
             end
           end
@@ -2438,10 +2471,15 @@ module vip_chi_sva #(
       vif.check_enabled[VIP_CHI_CHK_COMPLETION_FOLLOWS_REQ_E] = 1'b0;
     end
 
-    if (MULTI_SOURCE_LINK_P) begin
-      vif.check_enabled[VIP_CHI_CHK_TXNID_REUSE_REQUESTER_E] = 1'b0;
-      vif.check_enabled[VIP_CHI_CHK_TXNID_REUSE_COMPLETER_E] = 1'b0;
-    end
+    // MULTI_SOURCE_LINK_P no longer stands the TxnID-reuse rules down. It used
+    // to, because the shadow was one slot per TxnID and could not hold two
+    // sources' claims on the same value -- which section 2.5 makes legal, so
+    // the rule had to be silent rather than wrong. req_inflight_by_key is keyed
+    // on the pair and represents it directly, so a fan-in link is CHECKED
+    // instead of excused. See F-CHK-018.
+    //
+    // The parameter stays: it records that a link carries more than one source,
+    // which is a fact about the topology rather than about this rule.
 
     if (TXSACTIVE_FROM_LINK_UP_P) begin
       vif.check_enabled[VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E] = 1'b0;

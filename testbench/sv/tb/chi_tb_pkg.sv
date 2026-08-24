@@ -129,6 +129,14 @@ package chi_tb_pkg;
   localparam item_e_t::node_id_t E_WUZ_NEGCTL_SNF_NODE_ID_C = item_e_t::node_id_t'('h027);
   localparam item_e_t::txn_id_t  E_WUZ_NEGCTL_TXN_ID_PASS_C = item_e_t::txn_id_t'(8'h71);
   localparam item_e_t::txn_id_t  E_WUZ_NEGCTL_TXN_ID_DUP_C  = item_e_t::txn_id_t'(8'h72);
+
+  // tc_chi_txnid_reuse_srcid_scope. Two DIFFERENT SrcIDs holding one TxnID is
+  // the legal case section 2.5 describes, so the two node IDs must differ and
+  // neither may collide with the SN-F's -- a request whose SrcID equals its
+  // TgtID is a different kind of malformed and would muddy the verdict.
+  localparam item_e_t::node_id_t TXNID_SCOPE_SRC_A_C  = item_e_t::node_id_t'('h01e);
+  localparam item_e_t::node_id_t TXNID_SCOPE_SRC_B_C  = item_e_t::node_id_t'('h03b);
+  localparam item_e_t::txn_id_t  TXNID_SCOPE_TXN_ID_C = item_e_t::txn_id_t'(8'h73);
   // Retry field control. Its own line, node-ID pair and TxnIDs, for the same
   // reason as the WriteUniqueZero pair above. Two TxnIDs because the two phases
   // inject on different opcodes and neither may retire the other's transaction.
