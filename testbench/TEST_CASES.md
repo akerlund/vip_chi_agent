@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **190 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **191 pyUVM/cocotb**
+The shared regression currently runs **191 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **192 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -139,6 +139,7 @@ exception of `tc_chi_sva_smoke` described at the top of this file.
 | `tc_chi_d_split_write_rsp` | INT | `DBIDResp` plus deferred `Comp`, with optional trailing `CompAck` under `ExpCompAck`. |
 | `tc_chi_d_prefetch_tgt` | INT | `PrefetchTgt` treated as a no-completion hint. |
 | `tc_chi_d_atomic` | INT | atomic store/load/swap/compare smoke using the SN-F backing memory for operand capture, RMW, old-data return, and readback. |
+| `tc_chi_d_atomic_compare_size_legal` | D | The **positive** control for `CHI_ATOMIC_SIZE_LEGAL` (F-CHK-019). The five wide-operand atomic testcases prove the rule fires — they drive Sizes Table 2-17 does not list, arm it at `OFF` and require it to have reported — and a rule that fired on everything would pass all five. This drives the case a plausible implementation gets wrong instead: AtomicCompare's Size is the *combined* compare+swap size, so the table gives it a ceiling one step above the ordinary atomic limit, and deriving that ceiling from the 8-byte limit rejects a legal 32-byte request. The rule stays **armed**, and the test requires zero reports and at least one pass. `atomic_strict_size` is enabled too, so the solver's view of the table is exercised beside the checker's — a regressed ceiling fails randomization rather than quietly drawing something else. |
 | `tc_chi_d_atomic_variants` | INT | broader atomic sweep: `AtomicStore[0:7]`, `AtomicLoad[0:7]`, `AtomicSwap`, matching/non-matching `AtomicCompare`. |
 | `tc_chi_d_atomic_predict` | INT | scoreboard Checker-C atomic RMW prediction: each variant seeds its target with a known full-beat write, issues the atomic, then reads back — the scoreboard independently predicts the returned pre-op value and the committed post-op value, keeping the atomic predictor from silently skipping. |
 | `tc_chi_e_write_zero_readback` | E | `WriteNoSnpZero` memory semantics: a non-zero line is zero-written with no DAT phase, then read back as all zeros. The completion is a *write* completion — `CompDBIDResp`, or `DBIDResp` then `Comp` under `cfg.split_write_rsp` — not the bare `Comp` it looks like it should be: the requester sends no data, so the granted buffer is never used, but the response shape is normative regardless. |

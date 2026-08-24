@@ -44,6 +44,7 @@ filesets:
       - tb/chi_prefetch_tgt_seq.sv:                     {is_include_file: true}
       - tc/tc_chi_d_prefetch_tgt.sv:                        {is_include_file: true}
       - tc/tc_chi_d_atomic.sv:                              {is_include_file: true}
+      - tc/tc_chi_d_atomic_compare_size_legal.sv:            {is_include_file: true}
       - tc/tc_chi_d_atomic_variants.sv:                     {is_include_file: true}
       - tc/tc_chi_d_atomic_predict.sv:                      {is_include_file: true}
       - tc/tc_chi_e_signal_drivability.sv:                  {is_include_file: true}

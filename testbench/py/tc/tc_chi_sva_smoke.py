@@ -4,7 +4,7 @@
 #
 # Negative control for py/sva/bind_chi.py: one deliberate violation per check
 # family, asserting the checker REPORTS it. Without this the checkers could be
-# silently vacuous -- every one of the 191 regression testcases passes with them
+# silently vacuous -- every one of the 192 regression testcases passes with them
 # enabled, and a checker that can never fire passes exactly as loudly as one
 # that works.
 #

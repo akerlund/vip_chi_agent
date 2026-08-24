@@ -40,6 +40,7 @@ package chi_tc_pkg;
   `include "chi_prefetch_tgt_seq.sv"
   `include "tc_chi_d_prefetch_tgt.sv"
   `include "tc_chi_d_atomic.sv"
+  `include "tc_chi_d_atomic_compare_size_legal.sv"
   `include "tc_chi_d_atomic_variants.sv"
   `include "tc_chi_d_atomic_predict.sv"
   `include "tc_chi_e_signal_drivability.sv"
