@@ -45,6 +45,29 @@
 //   * rxsnp pool (RN-F receive): granted by this node's own txsnplcrdv, consumed
 //     by each rxsnpflitv -- an underflow means the peer over-sent snoops.
 // -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// A warning about ROLE_P, for whoever reaches for it first.
+//
+// It is passed at every instantiation with a real role -- HN-F on the home side,
+// RN-F on the requester side -- and NOTHING IN THIS MODULE READS IT. Every
+// property here is gated on `checks_enable` and `rst_n`, which are runtime state
+// the per-ID enable/severity array already models, so no rule in this file can
+// be switched off by elaboration.
+//
+// That is the only reason F-CHK-010 does not apply here. That finding is about
+// exactly this: `check_enabled` doubles as the ownership record -- "an ID left
+// false is either switched off or belongs to a bind this interface does not
+// carry" -- and it records the RUNTIME array, not the parameters. A property
+// gated in its `disable iff` on an elaboration parameter therefore exports
+// `enabled=1 passes=0 fails=0`, which reads as a rule nothing reached rather
+// than one that could never fire. It took a per-bind vacuity axis to notice, in
+// vip_chi_sva, for ENABLE_COMPLETION_TIMEOUT_P.
+//
+// So: if you gate a property on ROLE_P (or on any parameter), the ownership
+// `initial` below has to clear that ID's `check_enabled` on the binds where the
+// gate is false, in the same commit. Otherwise the tally will claim the rule is
+// live on interfaces where it cannot evaluate.
+// -----------------------------------------------------------------------------
 module vip_chi_snp_sva #(
   parameter vip_chi_cfg_t  CFG_P        = VIP_CHI_DEFAULT_CFG_C,
   parameter type           FLIT_TYPES_T = vip_chi_types #(CFG_P),

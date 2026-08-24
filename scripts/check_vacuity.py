@@ -15,7 +15,9 @@ Reads the CSV the checkers append to:
 covering BOTH registries -- the SVA binds' rules and the scoreboard's -- and
 reports, in order of how alarming it is:
 
-  FAILING        any run recorded a failure
+  FAILING        any run recorded a failure. Reported first because it is the
+                 most alarming thing here, and deliberately NOT a gate -- see
+                 the note where it is printed.
   PROVOKED       a failure at OFF or WARNING -- a negative control proving its
                  rule fires, which is evidence rather than a bug
   NOT EXPORTED   in the registry, but no bind wrote a row for it
@@ -296,6 +298,23 @@ def main() -> int:
     print(f"\nFAILING ({len(failing)}):")
     for rule, n in failing:
       print(f"  {rule:<44s} {n} failure(s)")
+    # Reported, not gated, and that is a decision rather than an oversight.
+    #
+    # Every one of these has already failed its own testcase, at the source and
+    # in the run that produced it: the SV env raises uvm_report_error from
+    # chi_check_report_tallies for any rule with fails > 0 at ERROR severity,
+    # and the Python checker reports through the same path its testcases assert
+    # on. A second gate here would not catch anything the sweep let through.
+    #
+    # What it WOULD add is a false alarm on the one axis this script cannot
+    # verify: it reads CSVs whose vintage it can only guess at from file age
+    # (see the staleness note above). Gating on a failure -- an event tied to
+    # one revision -- would turn a stale file into a live regression report.
+    # The gates below are about ABSENCE of evidence, which stays meaningful on
+    # a file of uncertain age in a way that a recorded failure does not.
+    print("  ^ reported, not gated: each of these failed its own testcase in "
+          "the run that\n    recorded it. This script gates on rules with no "
+          "evidence, not on failures.")
 
   provoked = [(r, deliberate[r]) for r in rules if deliberate[r]]
   if provoked:
