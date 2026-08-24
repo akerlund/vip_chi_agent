@@ -232,10 +232,46 @@ module vip_chi_sva #(
   //
   // Kept as a combinational predicate rather than read off the registered state
   // because two properties need the answer for a cycle other than the current
-  // one. It is exactly (link_lasm() != STOP), and the earlier hand-written
-  // OR-of-four form it replaced was the same expression.
+  // one.
+  //
+  // PER DIRECTION, and which machine gates which signal is decided by 14.6.1's
+  // definition rather than by the signal's name prefix. TXLINK is every channel
+  // whose PAYLOAD is an output of this component; RXLINK every channel whose
+  // payload is an input. So for one channel the two halves land on DIFFERENT
+  // machines:
+  //
+  //   tx<ch>flitv   we SEND ch     -> the payload is our output   -> TX
+  //   tx<ch>lcrdv   we GRANT ch    -> we RECEIVE ch, so the
+  //                                   payload is our input        -> RX
+  //
+  // That is not a detail. An endpoint grants credit for the channels it
+  // receives, so every LCRDV this component drives belongs to the machine the
+  // OTHER direction runs -- and under the reduction both were judged against
+  // whichever machine happened to be up, which is exactly the aliasing
+  // F-INTOP-001 describes.
+  function automatic bit tx_link_is_active();
+    return (tx_lasm() != VIP_CHI_LASM_STOP_E);
+  endfunction
+
+  function automatic bit rx_link_is_active();
+    return (rx_lasm() != VIP_CHI_LASM_STOP_E);
+  endfunction
+
+  // "Is this interface carrying anything, in either direction." Deliberately the
+  // reduction, and it has exactly three callers, all of which ask about the
+  // INTERFACE rather than about one machine:
+  //
+  //   link_ever_active                    has this interface ever come up
+  //   p_link_restarts_after_reset_release did it come back after reset
+  //   p_link_deactivate_when_idle         has our tear-down begun
+  //
+  // The first two would be wrong per machine: an interface that brings up one
+  // direction has come up, and requiring both after a reset release would fail a
+  // link that legitimately runs one way. The third is the one this file already
+  // records -- per machine it reads a never-brought-up STOP as "tearing down",
+  // which fired three times on tc_chi_a0_smoke.
   function automatic bit link_is_active();
-    return (link_lasm() != VIP_CHI_LASM_STOP_E);
+    return tx_link_is_active() || rx_link_is_active();
   endfunction
 
   // May a flit go out in the current link state?
@@ -251,11 +287,16 @@ module vip_chi_sva #(
   // Anything OTHER than an L-credit return is still a violation there, which is
   // what keeps the exception narrow: it admits the one flit the tear-down needs
   // and nothing else.
+  //
+  // Judged on the TRANSMIT machine: a flit we send is a payload that is our
+  // output, which 14.6.1 puts on TXLINK. An L-credit RETURN is also a flit we
+  // send -- the sender hands back credits it holds by sending on the channel it
+  // sends -- so the DEACTIVATE exception is a TX exception too.
   function automatic bit flit_send_allowed(input bit is_lcrd_return);
-    if (link_lasm() == VIP_CHI_LASM_RUN_E) begin
+    if (tx_lasm() == VIP_CHI_LASM_RUN_E) begin
       return 1'b1;
     end
-    return (link_lasm() == VIP_CHI_LASM_DEACTIVATE_E) && is_lcrd_return;
+    return (tx_lasm() == VIP_CHI_LASM_DEACTIVATE_E) && is_lcrd_return;
   endfunction
 
   function automatic bit tx_req_is_lcrd_return();
@@ -2619,12 +2660,26 @@ module vip_chi_sva #(
   // from -- a pool seeded with a stale credit lets the first flit after bring-up
   // go out unauthorised, which the underflow rule could then never catch because
   // the count never reaches zero.
-  property p_lcrd_quiescent_in_stop;
+  //
+  // Split by POOL, because each pool belongs to one machine. tx*_lcrd_count is
+  // what this component may still SEND (granted to us by the peer, spent by our
+  // flitv), so it is stranded when the TRANSMIT link stops. rx*_lcrd_count is
+  // what we have GRANTED and the peer may still spend, so it is stranded when the
+  // RECEIVE link stops. Under the reduction a tx pool could be judged against a
+  // receive link that had gone down while ours was still up, and vice versa --
+  // the rule was asking the right question of the wrong machine.
+  property p_tx_lcrd_quiescent_in_stop;
     @(posedge vif.clk) disable iff (!vif.rst_n)
-      (link_lasm() == VIP_CHI_LASM_STOP_E) |->
+      (tx_lasm() == VIP_CHI_LASM_STOP_E) |->
         ((txreq_lcrd_count == 0) && (txrsp_lcrd_count == 0) &&
-         (txdat_lcrd_count == 0) && (rxreq_lcrd_count == 0) &&
-         (rxrsp_lcrd_count == 0) && (rxdat_lcrd_count == 0));
+         (txdat_lcrd_count == 0));
+  endproperty
+
+  property p_rx_lcrd_quiescent_in_stop;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      (rx_lasm() == VIP_CHI_LASM_STOP_E) |->
+        ((rxreq_lcrd_count == 0) && (rxrsp_lcrd_count == 0) &&
+         (rxdat_lcrd_count == 0));
   endproperty
 
   // Gated on link_ever_active rather than checks_enable, and the three rules
@@ -2657,17 +2712,17 @@ module vip_chi_sva #(
 
   property p_req_lcrdv_requires_link;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txreqlcrdv |-> link_is_active();
+      vif.txreqlcrdv |-> rx_link_is_active();
   endproperty
 
   property p_rsp_lcrdv_requires_link;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txrsplcrdv |-> link_is_active();
+      vif.txrsplcrdv |-> rx_link_is_active();
   endproperty
 
   property p_dat_lcrdv_requires_link;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txdatlcrdv |-> link_is_active();
+      vif.txdatlcrdv |-> rx_link_is_active();
   endproperty
 
   // ---------------------------------------------------------------------------
@@ -3184,12 +3239,22 @@ module vip_chi_sva #(
       "RX link stuck in DEACTIVATE for %0d cycles (peer's tear-down unacknowledged by us, limit %0d)",
       $sampled(rx_lasm_dwell), link_deactivation_timeout_cycles));
 
-  assert property (p_lcrd_quiescent_in_stop)
+  // One check id for both halves: it is one obligation -- no credit may be left
+  // stranded by a tear-down -- and a user standing it down wants both quiet. The
+  // report names which direction, which is the distinction that matters.
+  assert property (p_tx_lcrd_quiescent_in_stop)
     chk_hit(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E);
   else
-    chk_miss(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E, $sformatf("L-credits still outstanding with the link in STOP (tx req/rsp/dat=%0d/%0d/%0d rx req/rsp/dat=%0d/%0d/%0d)",
-      txreq_lcrd_count, txrsp_lcrd_count, txdat_lcrd_count,
-      rxreq_lcrd_count, rxrsp_lcrd_count, rxdat_lcrd_count));
+    chk_miss(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E, $sformatf("L-credits we may still SEND are outstanding with the TRANSMIT link in STOP (tx req/rsp/dat=%0d/%0d/%0d)",
+      $sampled(txreq_lcrd_count), $sampled(txrsp_lcrd_count),
+      $sampled(txdat_lcrd_count)));
+
+  assert property (p_rx_lcrd_quiescent_in_stop)
+    chk_hit(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E);
+  else
+    chk_miss(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E, $sformatf("L-credits we have GRANTED are outstanding with the RECEIVE link in STOP (rx req/rsp/dat=%0d/%0d/%0d)",
+      $sampled(rxreq_lcrd_count), $sampled(rxrsp_lcrd_count),
+      $sampled(rxdat_lcrd_count)));
 
   assert property (p_req_requires_link)
     chk_hit(VIP_CHI_CHK_REQ_FLITV_REQUIRES_LINK_E);

@@ -1222,10 +1222,11 @@ class bind_chi:
       0 if rx_nxt is not self._rx_lasm else self._rx_lasm_dwell + 1)
     self._rx_lasm = rx_nxt
 
-    # Credit quiescence is a property of the link as a whole rather than of one
-    # direction: a credit left behind is a disagreement about what the peer may
-    # send, whichever machine took the link down. Judged on the reduction.
-    self._check_lcrd_quiescent_in_stop(self._lasm_of(s))
+    # Credit quiescence is judged PER POOL, because each pool belongs to one
+    # machine: tx* is what we may still send and is stranded when our transmit
+    # link stops, rx* is what we have granted and is stranded when our receive
+    # link stops.
+    self._check_lcrd_quiescent_in_stop(self._tx_lasm_of(s), self._rx_lasm_of(s))
 
   # ---------------------------------------------------------------------------
   # E section 14.6.3 / D section 13.6.3, Asynchronous race condition.
@@ -1377,8 +1378,9 @@ class bind_chi:
       # a race out instead of dropping its request.
       self._input_race_pending = False
 
-  def _check_lcrd_quiescent_in_stop(self, state: LasmState) -> None:
-    """No L-credit may still be outstanding while the link is in STOP.
+  def _check_lcrd_quiescent_in_stop(self, tx_state: LasmState,
+                                    rx_state: LasmState) -> None:
+    """No L-credit may still be outstanding while its own machine is in STOP.
 
     A sender must have returned every credit it holds before the link goes down;
     one left behind means the shadow and the link disagree about what the peer
@@ -1387,16 +1389,29 @@ class bind_chi:
     bring-up go out unauthorised, which the underflow check could then never
     catch because the count never reaches zero.
 
+    PER POOL, because each pool belongs to one machine. `tx*` is what this
+    component may still SEND -- granted to us by the peer, spent by our flitv --
+    so it is stranded when the TRANSMIT link stops. `rx*` is what we have GRANTED
+    and the peer may still spend, so it is stranded when the RECEIVE link stops.
+    Under the reduction a tx pool could be judged against a receive link that had
+    gone down while ours was still up, and the other way round: the rule was
+    asking the right question of the wrong machine.
+
+    One check id for both halves -- it is one obligation, and a user standing it
+    down wants both quiet. The message names the direction.
+
     Read before _check_lcrd runs this cycle, so the counts judged are the ones
     carried INTO STOP rather than any same-cycle return.
     """
-    if state is not LasmState.STOP:
-      return
     for pool, held in self._lcrd.items():
+      own = tx_state if pool.startswith("tx") else rx_state
+      if own is not LasmState.STOP:
+        continue
+      which = "TRANSMIT" if pool.startswith("tx") else "RECEIVE"
       self._chk(
         "CHI_LCRD_QUIESCENT_IN_STOP", held == 0,
-        f"{pool} still holds {held} L-credit(s) with the link in STOP",
-        "section 13.6",
+        f"{pool} still holds {held} L-credit(s) with the {which} link in STOP",
+        "E section 14.6.1 / D section 13.6.1",
       )
 
   # ---------------------------------------------------------------------------
@@ -1413,27 +1428,38 @@ class bind_chi:
     onward, because that is how the initial pool reaches the peer before the
     link is RUN at all. The SV behaviour was the correct one.
     """
-    # The REDUCTION, deliberately, and this is the one place the split stops
-    # short. Strictly a transmit flit belongs to the TX machine and a credit we
-    # grant belongs to the RX machine, and gating each on its own direction is
-    # the more faithful model -- but it CHANGES VERDICTS (a flit sent while only
-    # the other direction is up would start being reported), so it wants its own
-    # commit with its own sweep rather than riding along with the handshake
-    # rules. Recorded as the remaining task on F-INTOP-001.
-    state = self._lasm_of(s)
+    # PER DIRECTION, and which machine gates which signal follows 14.6.1's
+    # definition rather than the signal's name prefix. TXLINK is every channel
+    # whose PAYLOAD is an output of this component, RXLINK every channel whose
+    # payload is an input -- so for one channel the two halves land on DIFFERENT
+    # machines:
+    #
+    #   tx<ch>flitv   we SEND ch    -> the payload is our output  -> TX
+    #   tx<ch>lcrdv   we GRANT ch   -> we RECEIVE ch, so the
+    #                                  payload is our input       -> RX
+    #
+    # An endpoint grants credit for the channels it RECEIVES, so every lcrdv this
+    # component drives belongs to the machine the other direction runs. Under the
+    # reduction both halves were judged against whichever machine happened to be
+    # up, which is the aliasing F-INTOP-001 describes: a credit granted while only
+    # our transmit link was alive read as legal.
+    tx_state = self._tx_lasm_of(s)
+    rx_state = self._rx_lasm_of(s)
     for ch in _CHANNELS_C:
       if s[f"tx{ch}flitv"]:
         self._chk(
           f"CHI_{ch.upper()}_FLITV_REQUIRES_LINK",
-          self._flit_send_allowed(state, s, ch),
-          f"tx{ch}flitv asserted with the link in {state.name}, not RUN",
-          "section 13.7",
+          self._flit_send_allowed(tx_state, s, ch),
+          f"tx{ch}flitv asserted with the TRANSMIT link in {tx_state.name}, "
+          f"not RUN",
+          "E section 14.6.1 / D section 13.6.1",
         )
       if s[f"tx{ch}lcrdv"]:
         self._chk(
-          f"CHI_{ch.upper()}_LCRDV_REQUIRES_LINK", state is not LasmState.STOP,
-          f"tx{ch}lcrdv asserted with the link in STOP",
-          "section 13.7",
+          f"CHI_{ch.upper()}_LCRDV_REQUIRES_LINK",
+          rx_state is not LasmState.STOP,
+          f"tx{ch}lcrdv asserted with the RECEIVE link in STOP",
+          "E section 14.6.1 / D section 13.6.1",
         )
 
   @staticmethod
