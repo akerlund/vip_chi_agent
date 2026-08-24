@@ -60,9 +60,18 @@ class chi_coh_expcompack_negctl_base_test #(
 
     phase.raise_objection(this);
 
-    // Suppress the report, keep the count.
+    // Suppress the report, keep the count -- at BOTH ends of the link. The
+    // deliberate ExpCompAck = 0 travels from the RN-F to the HN-F, so it is
+    // judged twice under one ID: once where it is sent and once where it
+    // arrives. Standing it down only at the sender left the receiving vantage
+    // reporting a violation this test asked for, the moment F-CORR-005 gave the
+    // HN-F endpoint a main-range bind.
     super.tb_env.hrnf0_agent.vif.check_severity[VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E] =
       VIP_CHI_CHK_SEV_OFF_E;
+    foreach (super.tb_env.hnf_agent.rn_vif[i]) begin
+      super.tb_env.hnf_agent.rn_vif[i].check_severity[VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E] =
+        VIP_CHI_CHK_SEV_OFF_E;
+    end
 
     super.wait_reset_settle();
 

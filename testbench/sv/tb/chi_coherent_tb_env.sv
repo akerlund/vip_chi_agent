@@ -273,6 +273,24 @@ class chi_coherent_tb_env #(
         this.hnf_agent.rn_vif[i].check_severity,
         this.hnf_agent.rn_vif[i].check_pass_count,
         this.hnf_agent.rn_vif[i].check_fail_count);
+
+      // The MAIN range on the same ports, added with F-CORR-005. The HN-F
+      // endpoint carried only the SNP bind, which has no TXSACTIVE property, so
+      // the sideband of the role that gets it wrong was watched from neither
+      // direction -- the RN-F bind opposite judges its own txsactive, on a
+      // different interface.
+      chi_check_export_csv($sformatf("%shnf%0d_sva", BIND_PREFIX_C, i),
+        CHI_CHECK_SCOPE_MAIN_E,
+        this.hnf_agent.rn_vif[i].check_enabled,
+        this.hnf_agent.rn_vif[i].check_severity,
+        this.hnf_agent.rn_vif[i].check_pass_count,
+        this.hnf_agent.rn_vif[i].check_fail_count);
+      chi_check_report_tallies($sformatf("%shnf%0d_sva", BIND_PREFIX_C, i),
+        CHI_CHECK_SCOPE_MAIN_E,
+        this.hnf_agent.rn_vif[i].check_enabled,
+        this.hnf_agent.rn_vif[i].check_severity,
+        this.hnf_agent.rn_vif[i].check_pass_count,
+        this.hnf_agent.rn_vif[i].check_fail_count);
     end
   endfunction
 

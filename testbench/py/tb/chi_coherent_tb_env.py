@@ -53,6 +53,7 @@ class chi_coherent_tb_env(uvm_env):
     self.coh_checker = None
     self.cov = None
     self.rnf_sva = []
+    self.hnfr_sva = []
     self.snp_sva = []
     self.hrnf0_req_fifo = None
     self.hrnf0_rsp_fifo = None
@@ -135,7 +136,35 @@ class chi_coherent_tb_env(uvm_env):
       # either because neither endpoint was bound.
       bind_chi(hnfs0_vif, f"{pfx}hnf0_sn_sva", txsactive_from_link_up=True),
       bind_chi(dsnf0_vif, f"{pfx}dsnf0_sva"),
+      # The MAIN range on the HN-F's RN-facing ports. Those endpoints carried
+      # only the SNP bind below, which has no TXSACTIVE property, so the
+      # sideband of the role F-CORR-005 accuses was watched from neither
+      # direction -- the RN-F bind opposite judges its OWN txsactive, on a
+      # different interface.
+      #
+      # The completion timeout is OFF, for the reason given for the RN-F links
+      # above: the HN-F may answer from another RN-F's snoop data, so a
+      # completion is not visible end to end on one interface.
     ]
+
+    # The HN-F's RN-facing ports, in a named list as well as in rnf_sva: a test
+    # that has to waive a rule at THIS endpoint should say so by name rather
+    # than by position.
+    #
+    # txsactive_from_link_up stands CHI_TXSACTIVE_DEASSERT_BOUNDED down here,
+    # exactly as it does on the SN-facing port above and for the same reason:
+    # rn_credit_loop drives txsactive from rn_link_up every cycle, so the
+    # sideband never drops while the link is up and the rule reports a signal
+    # that carries no information. THAT IS THE RULE BEING RIGHT. The stand-down
+    # is a marker for the unfinished half of F-CORR-005 -- the counted window
+    # HN-F and HN-I still need -- and it must come off with that, not outlive it.
+    self.hnfr_sva = [
+      bind_chi(hnfr0_vif, f"{pfx}hnfr0_sva", enable_completion_timeout=False,
+               txsactive_from_link_up=True),
+      bind_chi(hnfr1_vif, f"{pfx}hnfr1_sva", enable_completion_timeout=False,
+               txsactive_from_link_up=True),
+    ]
+    self.rnf_sva += self.hnfr_sva
     # SNP is watched from BOTH ends, because each end exercises a different half
     # of the channel: the HN-F side drives snoops and its txsnp send-credit
     # shadow, the RN-F side receives them and shadows rxsnp.

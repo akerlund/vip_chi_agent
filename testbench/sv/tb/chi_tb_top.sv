@@ -286,6 +286,64 @@ module chi_tb_top;
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
 
+  // REQ/RSP/DAT checker on the HN-F side of each coherent link.
+  //
+  // The HN-F endpoint carried only vip_chi_snp_sva, which has no TXSACTIVE
+  // property, so the sideband of the one role that gets it wrong was watched
+  // from neither direction: the RN-F bind opposite judges its OWN txsactive, on
+  // a different interface. F-CORR-005 named both endpoints and had evidence for
+  // neither, because neither was bound.
+  //
+  // ENABLE_COMPLETION_TIMEOUT_P is 1'b0 for the same reason the RN-F binds pass
+  // it: on a coherent link the completion the timeout waits for is not paired
+  // with its request by this checker.
+  //
+  // TXSACTIVE_FROM_LINK_UP_P stands CHI_TXSACTIVE_DEASSERT_BOUNDED down, exactly
+  // as the HN-F's SN-facing bind already does and for the same reason:
+  // rn_credit_loop drives txsactive from rn_link_up[p] every cycle, so the
+  // sideband never drops while the link is up and the rule reports a signal that
+  // carries no information. THAT IS THE RULE BEING RIGHT -- the pyUVM port
+  // reported it on the first run with these binds live, and this port did not,
+  // which is the two-writer race itself showing up as a cross-port difference.
+  // The stand-down is a MARKER for the unfinished half of F-CORR-005, the
+  // counted window HN-F and HN-I still need, and must come off with it.
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
+                .ENABLE_COMPLETION_TIMEOUT_P(1'b0), .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+    coh_hnf0_sva (.vif(coh_hnf0_if),
+      .checks_enable((coh_hnf0_if.txlinkactivereq === 1'b1) || (coh_hnf0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
+                .ENABLE_COMPLETION_TIMEOUT_P(1'b0), .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+    coh_hnf1_sva (.vif(coh_hnf1_if),
+      .checks_enable((coh_hnf1_if.txlinkactivereq === 1'b1) || (coh_hnf1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
+                .ENABLE_COMPLETION_TIMEOUT_P(1'b0), .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+    coh_e_hnf0_sva (.vif(coh_e_hnf0_if),
+      .checks_enable((coh_e_hnf0_if.txlinkactivereq === 1'b1) || (coh_e_hnf0_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
+                .ENABLE_COMPLETION_TIMEOUT_P(1'b0), .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+    coh_e_hnf1_sva (.vif(coh_e_hnf1_if),
+      .checks_enable((coh_e_hnf1_if.txlinkactivereq === 1'b1) || (coh_e_hnf1_if.rxlinkactivereq === 1'b1)),
+      .dat_reorder_allowed(chi_dat_reorder_allowed),
+      .dat_interleave_allowed(chi_dat_interleave_allowed),
+      .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
+      .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
+      .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
+
   // SNP-channel protocol checker on the coherent RN-F / HN-F links. Role-agnostic:
   // the HN-F side exercises the txsnp send-credit shadow, the RN-F side the rxsnp
   // receive shadow. Same x-safe link-active gate as the REQ/RSP/DAT binds above.
