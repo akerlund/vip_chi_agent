@@ -1104,10 +1104,26 @@ module vip_chi_sva #(
   // deassert bound clear of a sender's own retire tail: a completion, and any
   // CompAck chasing it, are flits, so the idle run only starts once the link is
   // genuinely quiet.
+  // Every channel, INCLUDING SNP.
+  //
+  // The snoop valids were omitted, so a link busy with nothing but snoop
+  // traffic read as quiet and TXSACTIVE_DEASSERT_BOUNDED reported a stuck
+  // sideband on an RN-F that was legitimately holding TXSACTIVE up for the
+  // snoop window section 14.7.2 requires it to keep. That is the worse
+  // direction for this rule to be wrong in: it flagged LEGAL behaviour, on the
+  // coherent binds, on every run.
+  //
+  // Read off the interface rather than from a channel list, because the main
+  // checker's list is REQ/RSP/DAT by design -- the snoop channel has its own
+  // bind, its own credit pool and its own rules, and adding it there would arm
+  // all of them twice. What is needed here is only "is anything moving".
+  // vip_chi_if ties both valids low on a role with no snoop channel, so this
+  // costs nothing on the roles that have none.
   function automatic bit link_quiet();
     return ((req_outstanding_count == 0) &&
             !vif.txreqflitv && !vif.txrspflitv && !vif.txdatflitv &&
-            !vif.rxreqflitv && !vif.rxrspflitv && !vif.rxdatflitv);
+            !vif.rxreqflitv && !vif.rxrspflitv && !vif.rxdatflitv &&
+            !vif.txsnpflitv && !vif.rxsnpflitv);
   endfunction
   bit dat_completion_req_valid_by_txn[TXN_ID_COUNT_C];
   txn_id_t dat_completion_req_txn_by_txn[TXN_ID_COUNT_C];
@@ -2106,6 +2122,17 @@ module vip_chi_sva #(
               expected_write_valid_by_dbid[txn_id_to_index(txn_id_t'(vif.txrspflit.dbid))] <=
                 (expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))] != 0);
 
+              // CompDBIDResp is a COMPLETION as well as a grant, so it
+              // retires the request here at the sending vantage -- the same
+              // reason as the Comp arm below.
+              if (rsp_opcode_t'(vif.txrspflit.opcode) ==
+                  rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C)) begin
+                if (req_inflight(req_key(node_id_t'(vif.txrspflit.tgtid), txn_id_t'(vif.txrspflit.txnid)))) begin
+                  req_outstanding_delta--;
+                end
+                req_inflight_by_key[req_key(node_id_t'(vif.txrspflit.tgtid), txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
+              end
+
               // Section 2.5, the SEPARATE grant only: remember the DBID it
               // named, so the Comp that follows can be held to it. CompDBIDResp
               // shares this arm's bookkeeping but not this: it is the combined
@@ -2122,6 +2149,18 @@ module vip_chi_sva #(
             end
 
             rsp_opcode_t'(VIP_CHI_RSP_COMP_C): begin
+              // A completer retires a request when it SENDS the completion,
+              // exactly as a requester retires one when it receives it. Without
+              // this the completer-side count only ever grew: filled by every
+              // received request and cleared by nothing but a RetryAck. It went
+              // unnoticed because the one rule that reads the count was gated
+              // to the requester -- see p_txsactive_covers_outstanding, and
+              // F-CORR-005.
+              if (req_inflight(req_key(node_id_t'(vif.txrspflit.tgtid), txn_id_t'(vif.txrspflit.txnid)))) begin
+                req_outstanding_delta--;
+              end
+              req_inflight_by_key[req_key(node_id_t'(vif.txrspflit.tgtid), txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
+
               // Section 2.5: "A Comp response message sent separate from a
               // DBIDResp or DBIDRespOrd message for a Write transaction must
               // include the same DBID field value." Only armed by a separate
@@ -2147,6 +2186,15 @@ module vip_chi_sva #(
                 comp_dbid_by_key[comp_dbid_k] <= comp_dbid_v;
               end
             end
+            rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C): begin
+              // The separated-persist completion, retired at the sending
+              // vantage for the same reason as Comp above.
+              if (req_inflight(req_key(node_id_t'(vif.txrspflit.tgtid), txn_id_t'(vif.txrspflit.txnid)))) begin
+                req_outstanding_delta--;
+              end
+              req_inflight_by_key[req_key(node_id_t'(vif.txrspflit.tgtid), txn_id_t'(vif.txrspflit.txnid))] <= 1'b0;
+            end
+
             rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C): begin
               // Mirror of the RN-I side: a RetryAck this SN-F drove retires the
               // bounced request's TxnID, so clear the in-flight marker and allow
@@ -3178,15 +3226,26 @@ module vip_chi_sva #(
   // the sideband low while transactions are still in flight tells the receiver
   // it may stand down when it may not.
   //
-  // Requester vantage only. TXSACTIVE reports the TRANSMITTING node's own
-  // outstanding transactions, and a completer has none: the requests it is
-  // servicing belong to the requester at the other end of the link, which is
-  // the node whose sideband covers them. req_outstanding_count tracks received
-  // requests at a completer, so it would otherwise read that peer's window off
-  // the wrong wire.
+  // BOTH vantages. This was requester-only, on the ground that "a completer has
+  // none of its own outstanding transactions: the requests it is servicing
+  // belong to the requester at the other end of the link". That reasoning does
+  // not survive 14.7.2, which states the obligation separately for each role,
+  // and gives the completer one of its own under TXSACTIVE signaling from an
+  // ICN interface to an RN:
+  //
+  //   "On receiving a transaction initiating flit, it must be asserted before
+  //    or in the same cycle in which its first Response flit is sent. It must
+  //    keep TXSACTIVE asserted until after the final completing flit is sent or
+  //    received."
+  //
+  // So a completer's window is the requests it has RECEIVED and not yet
+  // completed -- which is exactly what req_outstanding_count holds at a
+  // completer, because it is maintained from the direction the role receives
+  // on. It was never the peer's window read off the wrong wire; it was this
+  // node's own obligation, and the check that expresses it was switched off for
+  // the one role that gets it wrong. See F-CORR-005.
   property p_txsactive_covers_outstanding;
-    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n ||
-                                    !ROLE_IS_REQUESTER_C)
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
       (req_outstanding_count > 0) |-> vif.txsactive;
   endproperty
 

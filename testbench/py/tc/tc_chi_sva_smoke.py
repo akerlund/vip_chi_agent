@@ -54,7 +54,17 @@ _CHANNELS = ("req", "rsp", "dat")
 
 
 def _sample(base: dict, **over) -> dict:
-  """One cycle of checker input: link state plus all-quiet channels."""
+  """One cycle of checker input: link state plus all-quiet channels.
+
+  The snoop VALIDS are here and the rest of the snoop channel is not, which
+  matches what bind_chi samples: the main checker judges REQ/RSP/DAT and reads
+  only "is anything moving" off the snoop channel, for link_quiet. The snoop
+  flits themselves belong to bind_chi_snp.
+
+  A key the real sampler supplies and this one does not is a KeyError the moment
+  a rule reads it, not a rule quietly standing down -- which is how the snoop
+  valids surfaced here the day link_quiet started reading them.
+  """
   s = dict(base)
   for ch in _CHANNELS:
     for d in ("tx", "rx"):
@@ -62,6 +72,8 @@ def _sample(base: dict, **over) -> dict:
       s[f"{d}{ch}flitpend"] = 0
       s[f"{d}{ch}lcrdv"] = 0
       s[f"{d}{ch}flit"] = None
+  for d in ("tx", "rx"):
+    s[f"{d}snpflitv"] = 0
   s.update(over)
   return s
 

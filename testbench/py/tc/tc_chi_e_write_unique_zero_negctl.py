@@ -89,6 +89,15 @@ class tc_chi_e_write_unique_zero_negctl(chi_e_base_test):
   def configure(self, rni_cfg, snf_cfg):
     super().configure(rni_cfg, snf_cfg)
     rni_cfg.txsactive_extend_max_cycles = TXSACTIVE_EXTEND_C
+    # The SN-F needs the same hold, and for a reason this testbench creates
+    # rather than the VIP: a raw-injected request is one the SN-F does not
+    # service, so it opens its window at capture and closes it again with
+    # nothing to send, while the completion this test supplies arrives cycles
+    # later. Section 14.7.2 requires the sideband to cover the gap, and the
+    # checker is right to report it -- there is simply no completer here to be
+    # wrong, because the test is driving both ends. Over-assertion is legal;
+    # under-assertion is the violation.
+    snf_cfg.txsactive_extend_max_cycles = TXSACTIVE_EXTEND_C
 
   # Table 2-9 marks WriteUniqueZero's ExpCompAck prohibited, so the field stays
   # zero and the flit does not trip the CompAck rules on its way past.

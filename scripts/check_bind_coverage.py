@@ -99,11 +99,22 @@ REQUESTER_VANTAGE_C = frozenset({
   "CHI_WRITE_DAT_TXNID_MATCHES_DBID",
   "CHI_RX_READ_COMPLETION_DAT_BEAT_COUNT",
   "CHI_RX_READ_COMPLETION_DAT_OPCODE",
-  # CompAck is sent by the requester, and TXSACTIVE reports ITS outstanding
-  # window -- a completer has none of its own.
+  # CompAck is sent by the requester.
   "CHI_COMPACK_BEFORE_COMPLETION",
   "CHI_COMPACK_WITHOUT_EXPCOMPACK",
-  "CHI_TXSACTIVE_COVERS_OUTSTANDING",
+  #
+  # CHI_TXSACTIVE_COVERS_OUTSTANDING WAS LISTED HERE, on the ground that
+  # "TXSACTIVE reports ITS outstanding window -- a completer has none of its
+  # own". Section 14.7.2 states the obligation separately for each role and
+  # gives the completer one under TXSACTIVE signaling from an ICN interface to
+  # an RN: hold the sideband "until after the final completing flit is sent or
+  # received". So the rule is live at BOTH ends and belongs in neither vantage
+  # set. See F-CORR-005.
+  #
+  # This entry is why the gate fired when the checker's own gate came off -- the
+  # table recorded the same wrong belief the checker did, in a second place.
+  # That is the table working: a rule whose vantage changes has to be restated
+  # here, and 12 binds said so.
   # Snoop credits are GRANTED by the RN-F that receives snoops.
   "CHI_SNP_LCRDV_REQUIRES_LINK",
 })

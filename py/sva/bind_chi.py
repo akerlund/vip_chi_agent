@@ -1038,7 +1038,13 @@ class bind_chi:
   def _sample(self) -> dict:
     g = self.bus.get_or
     names = ["txlinkactivereq", "txlinkactiveack", "txsactive",
-             "rxlinkactivereq", "rxlinkactiveack", "rxsactive"]
+             "rxlinkactivereq", "rxlinkactiveack", "rxsactive",
+             # The snoop valids, for link_quiet alone. Sampled here rather than
+             # read from the bus at the check, because every other signal this
+             # checker judges comes from one snapshot per edge and a mixed read
+             # would compare values from two different points in the cycle.
+             # `get_or` yields 0 on a role with no snoop channel.
+             "txsnpflitv", "rxsnpflitv"]
     for ch in _CHANNELS_C:
       names += [f"tx{ch}flitv", f"tx{ch}flitpend", f"tx{ch}lcrdv",
                 f"rx{ch}flitv", f"rx{ch}flitpend", f"rx{ch}lcrdv"]
@@ -1807,13 +1813,18 @@ class bind_chi:
   def _check_txsactive(self, s: dict) -> None:
     outstanding = sum(1 for v in self._req_inflight.values() if v)
 
-    # Requester vantage only. TXSACTIVE reports the TRANSMITTING node's own
-    # outstanding transactions, and a completer has none: the requests it is
-    # servicing belong to the requester at the other end of the link, which is
-    # the node whose sideband covers them. This checker's _req_inflight tracks
-    # received requests at a completer, so it would otherwise read that peer's
-    # window off the wrong wire.
-    if outstanding and self._is_requester:
+    # BOTH vantages. This was requester-only, on the ground that "a completer
+    # has none of its own outstanding transactions". That does not survive
+    # section 14.7.2, which states the obligation separately for each role and
+    # gives the completer one of its own: on receiving a transaction initiating
+    # flit it must assert TXSACTIVE before or in the cycle of its first Response
+    # flit, and "keep TXSACTIVE asserted until after the final completing flit
+    # is sent or received".
+    #
+    # So a completer's window is the requests it has RECEIVED and not yet
+    # completed -- exactly what _req_inflight holds at a completer, because it
+    # is filled from the direction the role receives on. See F-CORR-005.
+    if outstanding:
       self._chk(
         "CHI_TXSACTIVE_COVERS_OUTSTANDING", bool(s["txsactive"]),
         f"TXSACTIVE was low with {outstanding} transaction(s) still "
@@ -1824,8 +1835,20 @@ class bind_chi:
     # keeps the bound clear of a sender's own retire tail: the completion, and
     # any CompAck chasing it, are flits, so the count only runs once the link
     # is genuinely idle AND this checker sees nothing outstanding.
+    # Every channel, INCLUDING SNP. The snoop valids were omitted, so a link
+    # busy with nothing but snoop traffic read as quiet and this rule reported a
+    # stuck sideband on an RN-F that was legitimately holding TXSACTIVE up for
+    # the snoop window section 14.7.2 requires it to keep -- flagging LEGAL
+    # behaviour, on the coherent binds, on every run.
+    #
+    # Not added to _CHANNELS_C: that list is REQ/RSP/DAT by design, because the
+    # snoop channel has its own bind, its own credit pool and its own rules, and
+    # adding it there would arm all of them twice. What is needed here is only
+    # "is anything moving". ChiBus.get_or returns 0 for a signal a role does not
+    # have, so this costs nothing on the roles with no snoop channel.
     link_quiet = not outstanding and not any(
-      s[f"{d}{ch}flitv"] for d in ("tx", "rx") for ch in _CHANNELS_C)
+      s[f"{d}{ch}flitv"] for d in ("tx", "rx")
+      for ch in (*_CHANNELS_C, "snp"))
 
     limit = _TXSACTIVE_SETTLE_CYCLES_C + self._txsactive_extend_max_cycles
 
@@ -2253,6 +2276,22 @@ class bind_chi:
       # grant-seen marker the requester side uses to police its own DAT.
       self._record_write_grant(f, mark_grant_seen=False)
     self._check_comp_dbid(f, opcode)
+
+    # A completer retires a request when it SENDS the completion, exactly as a
+    # requester retires one when it receives it. Without this the completer-side
+    # shadow only ever grew: filled by every received request and cleared by
+    # nothing but a RetryAck.
+    #
+    # It went unnoticed because the one rule that reads the count was gated to
+    # the requester. The stated reason was that a completer has no window of its
+    # own -- which is not what section 14.7.2 says -- but the gate was load
+    # bearing for a different reason, and dropping it without this made the
+    # count run away on every completer bind. See F-CORR-005.
+    if opcode in _PLAIN_COMPLETION_RSP_OPCODES_C or opcode == int(
+        RspOpcode.COMP_PERSIST):
+      self._post(self._req_inflight,
+                 self._inflight_key(f["tgtid"], f["txnid"]), False)
+
     if opcode == int(RspOpcode.RETRY_ACK):
       # Mirror of the requester side: a RetryAck this node drove retires the
       # bounced request's TxnID, for the requester it is aimed at.

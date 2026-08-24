@@ -76,6 +76,15 @@ class tc_chi_comp_dbid_negctl extends chi_e_base_test;
     super.configure_agent_cfgs();
 
     super.rni_cfg.txsactive_extend_max_cycles = TXSACTIVE_EXTEND_C;
+    // The SN-F needs the same hold, and for a reason this testbench creates
+    // rather than the VIP: a raw-injected request is one the SN-F does not
+    // service, so it opens its window at capture and closes it again with
+    // nothing to send, while the completion this test supplies arrives cycles
+    // later. Section 14.7.2 requires the sideband to cover the gap, and the
+    // checker is right to report it -- there is simply no completer here to be
+    // wrong, because the test is driving both ends. Over-assertion is legal;
+    // under-assertion is the violation.
+    super.snf_cfg.txsactive_extend_max_cycles = TXSACTIVE_EXTEND_C;
     // Phase C needs the SN-F to SPLIT its atomic response, because a combined
     // CompDBIDResp carries the only DBID the transaction has and cannot
     // disagree with anything -- the rule would never arm and the phase would
