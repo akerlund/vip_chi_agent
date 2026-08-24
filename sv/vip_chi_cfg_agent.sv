@@ -704,6 +704,23 @@ class vip_chi_cfg_agent extends uvm_object;
   bit hnf_downstream_corrupt_data = 1'b0;
   bit hnf_downstream_force_decerr = 1'b0;
 
+  // Negative control for CHI_TXSACTIVE_COVERS_OUTSTANDING at the HOME. The home
+  // retires its RN-facing TXSACTIVE window the moment it STARTS serving a read,
+  // instead of when the transaction is complete -- a window scoped to "while I
+  // am handling flits" rather than to the outstanding transaction, which is the
+  // under-assertion IHI 0050 E section 14.7.2 / D section 13.7.2 forbids: the
+  // sideband low while a transaction is in flight tells the receiver it may
+  // stand its snoop logic down when it may not.
+  //
+  // It drops at the start of service rather than "just before the CompAck",
+  // which is where the obligation ends, because the rule's shadow retires a
+  // read when its CompData is on the wire. A drop after that point is
+  // over-assertion's mirror -- legal, and the rule is right to stay quiet -- so
+  // a control placed there would prove nothing about the rule. Start of service
+  // is early enough to be visible and is a shape a real implementation gets
+  // wrong. Default 0.
+  bit hnf_txsactive_early_drop_negctl = 1'b0;
+
   // ---------------------------------------------------------------------------
   // Constructor.
   // ---------------------------------------------------------------------------
@@ -1130,6 +1147,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.rn_drop_required_exp_comp_ack ||
         this.hnf_force_excl_success || this.hnf_corrupt_fwd_data ||
         this.hnf_downstream_corrupt_data || this.hnf_downstream_force_decerr ||
+        this.hnf_txsactive_early_drop_negctl ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
         this.snf_corrupt_tag ||
         this.lasm_abort_activation || this.flit_without_flitpend ||

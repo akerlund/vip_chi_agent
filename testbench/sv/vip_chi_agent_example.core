@@ -201,6 +201,12 @@ filesets:
       - tc/chi_coh_transition_sweep_base_test.sv:       {is_include_file: true}
       - tc/tc_chi_coh_d_transition_sweep.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_transition_sweep.sv:                {is_include_file: true}
+      - tc/chi_coh_txsactive_negctl_base_test.sv:       {is_include_file: true}
+      - tc/tc_chi_coh_d_txsactive_negctl.sv:                {is_include_file: true}
+      - tc/tc_chi_coh_e_txsactive_negctl.sv:                {is_include_file: true}
+      - tc/chi_coh_txsactive_window_base_test.sv:       {is_include_file: true}
+      - tc/tc_chi_coh_d_txsactive_window.sv:                {is_include_file: true}
+      - tc/tc_chi_coh_e_txsactive_window.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_make_read_unique.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_cmo_negctl.sv:                      {is_include_file: true}
       - tc/chi_coh_excl_success_base_test.sv:           {is_include_file: true}

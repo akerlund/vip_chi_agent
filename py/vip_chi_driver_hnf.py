@@ -930,6 +930,13 @@ class vip_chi_driver_hnf(uvm_component):
     is_unique = self.req_opcode_is_unique_read(_I(req["opcode"]))
     entry = self._dir_entry(line)
 
+    # Negative control: retire the window at the START of service instead of at
+    # the end of the dispatch. The end-of-dispatch call in response_engine then
+    # finds it already closed and does nothing, so the sideband is low for the
+    # whole snoop-and-complete sequence with the request still outstanding.
+    if self.cfg.hnf_txsactive_early_drop_negctl:
+      self.rn_tx_activity_end(p)
+
     # DCT origination (cfg-gated, default off): exactly one peer holds the line
     # and the read is not an exclusive load -> forward from that peer.
     if (self.cfg.hnf_enable_snoop_fwd and not self.cfg.hnf_suppress_snoops and

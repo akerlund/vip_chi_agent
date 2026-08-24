@@ -1486,6 +1486,14 @@ class vip_chi_driver_hnf #(
     is_unique = this.req_opcode_is_unique_read(req_opcode_t'(req.opcode));
     entry     = this.directory.exists(line) ? this.directory[line] : '0;
 
+    // Negative control: retire the window at the START of service instead of at
+    // the end of the dispatch. The end-of-dispatch call in response_engine then
+    // finds it already closed and does nothing, so the sideband is low for the
+    // whole snoop-and-complete sequence with the request still outstanding.
+    if (this.cfg.hnf_txsactive_early_drop_negctl) begin
+      this.rn_tx_activity_end(p);
+    end
+
     // DCT (direct cache transfer) origination -- config-gated (default off, so all
     // non-DCT tests are byte-identical). When EXACTLY ONE peer holds the line and
     // the read is not an exclusive load, forward the data directly from that peer

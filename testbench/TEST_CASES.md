@@ -1,7 +1,7 @@
 # vip_chi testbench testcase catalog
 
-The shared regression currently runs **185 SystemVerilog** testcases (one
-`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **186 pyUVM/cocotb**
+The shared regression currently runs **189 SystemVerilog** testcases (one
+`` `include `` per `tc_*.sv` in `sv/tc/chi_tc_pkg.sv`) and **190 pyUVM/cocotb**
 testcases (`tc_*.py` discovered by `py/scripts/run.py`). Those counts are
 maintained here as part of adding a testcase, not re-derived: adding one means
 adding its row below and updating this paragraph.
@@ -260,6 +260,8 @@ forwarding (`SnpRespData` + PassDirty), and eviction (`WriteBackFull` /
 | `tc_chi_coh_d_writeback_evict` | COH | both eviction paths: RN-F0 `WriteBackFull` (DBID grant → `CopyBackWrData` → memory commit) and RN-F1 `Evict` (RSP-only `Comp`). Both directory ports and both RN-F cache states return to Invalid. |
 | `tc_chi_coh_d_read_after_writeback` | COH | writeback data integrity: RN-F0 writes a fresh payload back, then RN-F1 `ReadShared` returns exactly the written-back data (and it differs from the original image — a no-op writeback would fail). |
 | `tc_chi_coh_d_write_unique_ptl` | COH | `WriteUniquePtl` data integrity: RN-F1 writes 16 byte-enabled bytes at offset 16, the HN-F invalidates RN-F0 and commits at the request address, and a full-line readback proves only the enabled lanes changed. |
+| `tc_chi_coh_d_txsactive_window` | COH | `TXSACTIVE` at the HOME, and the half a single-requester run cannot reach: a home serves one request at a time out of a queue, so the interval a captured request spends WAITING is part of the window IHI 0050 E section 14.7.2 / D section 13.7.2 asks for. RN-F1 reads a line RN-F0 owns so the home must snoop first, and RN-F0's own read of a different line is launched into the middle of that round trip. On the home's port 0 the sideband must be up before its first response flit, stay up across the whole wait, cover at least one flit-free cycle, and drop once the traffic drains -- failing which the window opens at dispatch, is pulsed per flit, or is driven from link-up respectively. |
+| `tc_chi_coh_d_txsactive_negctl` | COH | **negative control for `CHI_TXSACTIVE_COVERS_OUTSTANDING` at the home**: `cfg.hnf_txsactive_early_drop_negctl` retires the home's RN-facing window the moment it starts serving a read instead of when the transaction completes, and the rule must report the cycles the sideband spends low under an in-flight transaction. The read is aimed at a line the other requester owns so the home must snoop first, making the window tens of cycles wide. Dropped at the START of service, not before the CompAck: the rule's shadow retires a read when its CompData is on the wire, so a drop after that is legal over-assertion the rule is right to ignore. Asserts `CHI_TXSACTIVE_DEASSERT_BOUNDED` stays silent, which keeps the control pointed at one rule. |
 
 ## Instrumentation & checker guards
 

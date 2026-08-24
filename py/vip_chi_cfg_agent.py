@@ -519,6 +519,23 @@ class VipChiCfgAgent:
     self.hnf_downstream_corrupt_data = False
     self.hnf_downstream_force_decerr = False
 
+    # Negative control for CHI_TXSACTIVE_COVERS_OUTSTANDING at the HOME. The
+    # home retires its RN-facing TXSACTIVE window the moment it STARTS serving a
+    # read, instead of when the transaction is complete -- a window scoped to
+    # "while I am handling flits" rather than to the outstanding transaction,
+    # which is the under-assertion IHI 0050 E section 14.7.2 / D section 13.7.2
+    # forbids: the sideband low while a transaction is in flight tells the
+    # receiver it may stand its snoop logic down when it may not.
+    #
+    # It drops at the start of service rather than "just before the CompAck",
+    # which is where the obligation ends, because the rule's shadow retires a
+    # read when its CompData is on the wire. A drop after that point is
+    # over-assertion's mirror -- legal, and the rule is right to stay quiet --
+    # so a control placed there would prove nothing about the rule. Start of
+    # service is early enough to be visible and is a shape a real
+    # implementation gets wrong.
+    self.hnf_txsactive_early_drop_negctl = False
+
   # ==========================================================================
   # is_valid -- runtime configuration self-check.
   #
@@ -716,6 +733,7 @@ class VipChiCfgAgent:
       "hnf_corrupt_fwd_data": self.hnf_corrupt_fwd_data,
       "hnf_downstream_corrupt_data": self.hnf_downstream_corrupt_data,
       "hnf_downstream_force_decerr": self.hnf_downstream_force_decerr,
+      "hnf_txsactive_early_drop_negctl": self.hnf_txsactive_early_drop_negctl,
       "snf_duplicate_dat_beat": self.snf_duplicate_dat_beat,
       "snf_corrupt_tag": self.snf_corrupt_tag,
       "snf_reorder_ordered_service": self.snf_reorder_ordered_service,
