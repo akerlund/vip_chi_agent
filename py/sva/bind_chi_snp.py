@@ -159,6 +159,18 @@ class bind_chi_snp:
             and not self.pass_count.get(r, 0)
             and not self.fail_count.get(r, 0)]
 
+  def export_opcode_csv(self, path: str, run_name: str) -> None:
+    """No REQ census here: this bind watches the SNP channel, which carries no
+    request opcode.
+
+    Present rather than absent so the envs can export over a mixed list of
+    checkers without asking each one what it is. It was absent once, and the
+    AttributeError did not surface as a failure -- it killed the export loop
+    part way and took the end-of-test assertion after it, so a coherent run
+    dropped every SNP bind's tallies and still reported PASS.
+    """
+    return
+
   def export_check_csv(self, path: str, run_name: str) -> None:
     """Append this checker's per-rule tallies to the cross-run aggregation CSV.
 

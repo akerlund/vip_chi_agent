@@ -203,9 +203,11 @@ class chi_coherent_tb_env #(
     chi_check_export_csv({BIND_PREFIX_C, "rnf0_sva"}, CHI_CHECK_SCOPE_MAIN_E,
       this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
       this.hrnf0_agent.vif.check_pass_count, this.hrnf0_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv({BIND_PREFIX_C, "rnf0_sva"}, this.hrnf0_agent.vif.req_opcode_seen);
     chi_check_export_csv({BIND_PREFIX_C, "rnf1_sva"}, CHI_CHECK_SCOPE_MAIN_E,
       this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
       this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv({BIND_PREFIX_C, "rnf1_sva"}, this.hrnf1_agent.vif.req_opcode_seen);
 
     chi_check_report_tallies({BIND_PREFIX_C, "rnf0_sva"}, CHI_CHECK_SCOPE_MAIN_E,
       this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
@@ -226,9 +228,11 @@ class chi_coherent_tb_env #(
     chi_check_export_csv({BIND_PREFIX_C, "hnf0_sn_sva"}, CHI_CHECK_SCOPE_MAIN_E,
       this.hnf_agent.sn_vif[0].check_enabled, this.hnf_agent.sn_vif[0].check_severity,
       this.hnf_agent.sn_vif[0].check_pass_count, this.hnf_agent.sn_vif[0].check_fail_count);
+    chi_check_export_opcode_csv({BIND_PREFIX_C, "hnf0_sn_sva"}, this.hnf_agent.sn_vif[0].req_opcode_seen);
     chi_check_export_csv({BIND_PREFIX_C, "dsnf0_sva"}, CHI_CHECK_SCOPE_MAIN_E,
       this.dsnf0_agent.vif.check_enabled, this.dsnf0_agent.vif.check_severity,
       this.dsnf0_agent.vif.check_pass_count, this.dsnf0_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv({BIND_PREFIX_C, "dsnf0_sva"}, this.dsnf0_agent.vif.req_opcode_seen);
 
     chi_check_report_tallies({BIND_PREFIX_C, "hnf0_sn_sva"}, CHI_CHECK_SCOPE_MAIN_E,
       this.hnf_agent.sn_vif[0].check_enabled, this.hnf_agent.sn_vif[0].check_severity,
@@ -246,9 +250,11 @@ class chi_coherent_tb_env #(
     chi_check_export_csv({BIND_PREFIX_C, "rnf0_snp_sva"}, CHI_CHECK_SCOPE_SNP_E,
       this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
       this.hrnf0_agent.vif.check_pass_count, this.hrnf0_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv({BIND_PREFIX_C, "rnf0_snp_sva"}, this.hrnf0_agent.vif.req_opcode_seen);
     chi_check_export_csv({BIND_PREFIX_C, "rnf1_snp_sva"}, CHI_CHECK_SCOPE_SNP_E,
       this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
       this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv({BIND_PREFIX_C, "rnf1_snp_sva"}, this.hrnf1_agent.vif.req_opcode_seen);
 
     chi_check_report_tallies({BIND_PREFIX_C, "rnf0_snp_sva"}, CHI_CHECK_SCOPE_SNP_E,
       this.hrnf0_agent.vif.check_enabled, this.hrnf0_agent.vif.check_severity,
@@ -285,6 +291,12 @@ class chi_coherent_tb_env #(
         this.hnf_agent.rn_vif[i].check_severity,
         this.hnf_agent.rn_vif[i].check_pass_count,
         this.hnf_agent.rn_vif[i].check_fail_count);
+      // MAIN scope only. The SNP-scope export above reads the SAME
+      // interface, and the opcode census is a property of the interface
+      // rather than of a check scope, so exporting it twice would enter
+      // one bind's requests under two names.
+      chi_check_export_opcode_csv($sformatf("%shnf%0d_sva", BIND_PREFIX_C, i),
+        this.hnf_agent.rn_vif[i].req_opcode_seen);
       chi_check_report_tallies($sformatf("%shnf%0d_sva", BIND_PREFIX_C, i),
         CHI_CHECK_SCOPE_MAIN_E,
         this.hnf_agent.rn_vif[i].check_enabled,

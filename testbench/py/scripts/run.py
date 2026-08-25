@@ -72,9 +72,10 @@ def main() -> int:
   # would show as a testcase that no longer exists. A single -t run still
   # appends, which is what lets one be added to a sweep's file on purpose.
   if args.all:
-    stale = pathlib.Path(env(root)["VIP_CHI_CHECK_CSV"])
-    if stale.is_file():
-      stale.unlink()
+    for key in ("VIP_CHI_CHECK_CSV", "VIP_CHI_OPCODE_CSV"):
+      stale = pathlib.Path(env(root)[key])
+      if stale.is_file():
+        stale.unlink()
 
   if args.build or selected:
     if not args.no_build:
@@ -222,6 +223,16 @@ def env(root: Path, case: TestCase | None = None) -> dict[str, str]:
                     str(root / "build" / "py_regression" / "check_tallies.csv"))
   csv_path = pathlib.Path(values["VIP_CHI_CHECK_CSV"])
   csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+  # The opcode-evidence companion, defaulted for the same reason and into the
+  # same directory. Kept a separate file rather than a column on the tally CSV:
+  # that file is keyed (run, bind, check) and three gates read it, so widening it
+  # to carry an opcode would multiply every row to say something about the
+  # STIMULUS rather than about which check ran.
+  values.setdefault("VIP_CHI_OPCODE_CSV",
+                    str(root / "build" / "py_regression" / "opcode_evidence.csv"))
+  pathlib.Path(values["VIP_CHI_OPCODE_CSV"]).parent.mkdir(parents=True,
+                                                          exist_ok=True)
   values["PYTHONPATH"] = os.pathsep.join(
     [str(path) for path in paths] + [values.get("PYTHONPATH", "")]
   )

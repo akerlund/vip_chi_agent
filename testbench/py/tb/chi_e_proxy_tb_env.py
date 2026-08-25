@@ -173,6 +173,9 @@ class chi_e_proxy_tb_env(uvm_env):
 
   def report_phase(self):
     csv_path = os.environ.get("VIP_CHI_CHECK_CSV", "")
+    # The opcode-evidence companion. Same switch as the tally export: a run
+    # with no CSV configured writes neither.
+    opcode_csv = os.environ.get("VIP_CHI_OPCODE_CSV", "")
     run_name = os.environ.get("VIP_CHI_TESTNAME", "") or "unknown"
     self.scoreboard.report_checks(self.logger)
     if csv_path:
@@ -181,6 +184,8 @@ class chi_e_proxy_tb_env(uvm_env):
       checker.report(self.logger)
       if csv_path:
         checker.export_check_csv(csv_path, run_name)
+      if opcode_csv:
+        checker.export_opcode_csv(opcode_csv, run_name)
     total = sum(checker.errors for checker in self.hni_sva)
     assert total == 0, (
       f"CHI protocol checkers reported {total} violation(s) on the HN-I proxy "

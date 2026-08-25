@@ -256,15 +256,26 @@ class chi_coherent_tb_env(uvm_env):
     # never been given, so a report covering the non-coherent binds alone read as
     # a report on all of them.
     csv_path = os.environ.get("VIP_CHI_CHECK_CSV", "")
+    # The opcode-evidence companion. Same switch as the tally export: a run
+    # with no CSV configured writes neither.
+    opcode_csv = os.environ.get("VIP_CHI_OPCODE_CSV", "")
     run_name = os.environ.get("VIP_CHI_TESTNAME", "") or "unknown"
-    for checker in checkers:
-      checker.report(self.logger)
-      if csv_path:
-        checker.export_check_csv(csv_path, run_name)
-    total = sum(checker.errors for checker in checkers)
-    assert total == 0, (
-      f"CHI protocol checkers reported {total} violation(s): "
-      + " ".join(f"{c.log.name}={c.errors}" for c in checkers if c.errors))
+    # The exports run in a try/finally so the VERDICT survives them. pyUVM
+    # swallows an exception raised in report_phase, so an export that throws
+    # part way used to take the assertion below with it and the run still
+    # reported PASS -- reporting nothing is not the same as reporting zero.
+    try:
+      for checker in checkers:
+        checker.report(self.logger)
+        if csv_path:
+          checker.export_check_csv(csv_path, run_name)
+        if opcode_csv:
+          checker.export_opcode_csv(opcode_csv, run_name)
+    finally:
+      total = sum(checker.errors for checker in checkers)
+      assert total == 0, (
+        f"CHI protocol checkers reported {total} violation(s): "
+        + " ".join(f"{c.log.name}={c.errors}" for c in checkers if c.errors))
 
   def handle_reset(self):
     self.perf.handle_reset()

@@ -335,6 +335,27 @@ module vip_chi_sva #(
   bit                  tx_activate_seen;
   bit                  rx_activate_seen;
 
+  // See vip_chi_if for what this census is for. Its own always_ff rather than a
+  // line inside one of the role-gated blocks below, because it must record at
+  // BOTH ends: the requester sees the request on its transmit channel and the
+  // completer on its receive channel, and a census kept only where
+  // ROLE_IS_REQUESTER_C holds would answer for half the binds.
+  //
+  // The else-if is exact rather than a shortcut: at any one endpoint only one
+  // direction of REQ carries traffic, so the two cannot both be valid here.
+  always_ff @(posedge vif.clk) begin
+    if (vif.rst_n) begin
+      if (vif.txreqflitv) begin
+        vif.req_opcode_seen[vif.txreqflit.opcode] <=
+          vif.req_opcode_seen[vif.txreqflit.opcode] + 1;
+      end
+      else if (vif.rxreqflitv) begin
+        vif.req_opcode_seen[vif.rxreqflit.opcode] <=
+          vif.req_opcode_seen[vif.rxreqflit.opcode] + 1;
+      end
+    end
+  end
+
   always_ff @(posedge vif.clk) begin
     if (!vif.rst_n) begin
       // Out of reset the sideband is held idle, which the reset-idle rule

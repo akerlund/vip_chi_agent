@@ -720,6 +720,22 @@ class bind_chi:
           f"{self.pass_count.get(rule, 0)},{self.fail_count.get(rule, 0)},"
           f"{rev}\n")
 
+  def export_opcode_csv(self, path: str, run_name: str) -> None:
+    """Append the REQ opcodes this bind observed, for the opcode-evidence gate.
+
+    A companion export rather than a column on the tally CSV, and deliberately:
+    the tally file is keyed (run, bind, check) and three gates already read it,
+    so widening it to (run, bind, check, opcode) would multiply every row by the
+    opcode space to carry a fact that has nothing to do with which CHECK ran.
+    """
+    new = not os.path.exists(path)
+    with open(path, "a", encoding="utf-8") as fh:
+      if new:
+        fh.write("run,bind,opcode,seen\n")
+      for opcode in sorted(self._req_opcode_seen):
+        fh.write(f"{run_name},{self.log.name},0x{opcode:02x},"
+                 f"{self._req_opcode_seen[opcode]}\n")
+
   def not_exercised(self):
     """This checker's rules that were neither passed nor failed, in registry order.
 
@@ -844,6 +860,20 @@ class bind_chi:
     # them apart. A control asserts on this rather than assuming the stimulus
     # reached the case.
     self._lasm_divergent_cycles = 0
+
+    # Which REQ opcodes this bind actually saw, and how often.
+    #
+    # The runtime half of the opcode-evidence axis. The classifiers that gate
+    # REQ-derived rules are pure functions of the opcode, so WHAT they answer is
+    # already resolvable statically -- scripts/check_classifier_coverage.py does
+    # exactly that. What no artifact knew is which opcodes the regression
+    # actually DRIVES, and that is the half that makes an unclaimed opcode
+    # actionable rather than theoretical: an opcode no classifier claims and
+    # nothing drives costs nothing, while the same opcode driven thousands of
+    # times means every gated rule stood down for real traffic. That second case
+    # is this finding's defect, and it was invisible because the tally CSV has no
+    # opcode dimension at all.
+    self._req_opcode_seen: dict[int, int] = {}
     # Whether ACTIVATE has been observed since this LASM last left RUN. The
     # legal-step rule judges one step at a time and cannot express "the link
     # went up through ACTIVATE", which is a claim about the whole activation.
@@ -2061,6 +2091,12 @@ class bind_chi:
     f = s[f"{d}reqflit"]
     opcode = f["opcode"]
     txn = f["txnid"]
+
+    # See the counter's declaration. Recorded for EVERY request, including the
+    # credit and prefetch forms a transaction rule would skip: the question this
+    # answers is "was it driven", and a form excluded here could not be
+    # distinguished afterwards from one nothing sends.
+    self._req_opcode_seen[opcode] = self._req_opcode_seen.get(opcode, 0) + 1
 
     # Not gated on req_has_modeled_completion: see the shadow's comment.
     # ReqLCrdReturn and PCrdReturn are excluded because both are required to

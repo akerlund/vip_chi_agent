@@ -163,12 +163,17 @@ class chi_tb_env(uvm_env):
     # able to say which test exercised a rule, and every run would otherwise
     # carry the same label.
     csv_path = os.environ.get("VIP_CHI_CHECK_CSV", "")
+    # The opcode-evidence companion. Same switch as the tally export: a run
+    # with no CSV configured writes neither.
+    opcode_csv = os.environ.get("VIP_CHI_OPCODE_CSV", "")
     run_name = os.environ.get("VIP_CHI_TESTNAME", "") or "unknown"
 
     for checker in (self.rni_sva, self.snf_sva):
       checker.report(self.logger)
       if csv_path:
         checker.export_check_csv(csv_path, run_name)
+      if opcode_csv:
+        checker.export_opcode_csv(opcode_csv, run_name)
 
     # The scoreboard's rules go into the SAME export, under its own bind name.
     # They were outside the mechanism entirely until now, which meant a

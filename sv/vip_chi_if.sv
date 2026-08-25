@@ -89,6 +89,21 @@ interface vip_chi_if #(
   // actually drove them apart. Written by vip_chi_sva, read by a test.
   int unsigned lasm_divergent_cycles;
 
+  // Which REQ opcodes this bind actually saw, and how often.
+  //
+  // The runtime half of the opcode-evidence axis. The classifiers that gate
+  // REQ-derived rules are pure functions of the opcode, so WHAT they answer is
+  // already resolvable statically -- scripts/check_classifier_coverage.py does
+  // exactly that. What no artifact knew is which opcodes the regression actually
+  // DRIVES, and that is the half that makes an unclaimed opcode actionable
+  // rather than theoretical: an opcode no classifier claims and nothing drives
+  // costs nothing, while the same opcode driven thousands of times means every
+  // gated rule stood down for real traffic.
+  //
+  // Cumulative across resets on purpose: the question is whether the opcode was
+  // ever driven in this run, not where in it.
+  int unsigned req_opcode_seen [128];
+
   // Per-check enable and severity, initialised by whichever checker owns each
   // ID. Published here for the same reason as the counters: a package may hold
   // no hierarchical reference, so this is the only handle a testcase has on an

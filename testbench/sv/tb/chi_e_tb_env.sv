@@ -123,9 +123,11 @@ class chi_e_tb_env extends uvm_env;
     chi_check_export_csv("rni_e_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.rni_agent.vif.check_enabled, this.rni_agent.vif.check_severity,
       this.rni_agent.vif.check_pass_count, this.rni_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv("rni_e_sva", this.rni_agent.vif.req_opcode_seen);
     chi_check_export_csv("snf_e_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.snf_agent.vif.check_enabled, this.snf_agent.vif.check_severity,
       this.snf_agent.vif.check_pass_count, this.snf_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv("snf_e_sva", this.snf_agent.vif.req_opcode_seen);
 
     chi_check_report_tallies("rni_e_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.rni_agent.vif.check_enabled, this.rni_agent.vif.check_severity,

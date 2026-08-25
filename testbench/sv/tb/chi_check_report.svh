@@ -133,6 +133,61 @@ function automatic void chi_check_claim_tag(
   chi_check_tag_claimed[key] = 1'b1;
 endfunction
 
+// The opcode-evidence companion. A separate file rather than a column on the
+// tally CSV, and deliberately: that file is keyed (run, bind, check) and three
+// gates already read it, so widening it to (run, bind, check, opcode) would
+// multiply every row to carry a fact about the STIMULUS rather than about which
+// check ran.
+//
+// scripts/check_opcode_evidence.py joins this against the classifier sets
+// scripts/check_classifier_coverage.py resolves statically. Neither half is a
+// gate on its own: an opcode no classifier claims is only a defect once
+// something drives it, and an opcode that is driven is only a defect once no
+// classifier claims it.
+function automatic void chi_check_export_opcode_csv(
+  input string       tag,
+  input int unsigned req_opcode_seen [128]
+);
+  string path;
+  string run_name;
+  int    fd;
+
+  run_name = "unknown";
+  void'($value$plusargs("UVM_TESTNAME=%s", run_name));
+
+  if (!$value$plusargs("vip_chi_opcode_csv=%s", path)) begin
+    return;
+  end
+
+  fd = $fopen(path, "r");
+  if (fd == 0) begin
+    fd = $fopen(path, "w");
+    if (fd == 0) begin
+      uvm_pkg::uvm_report_warning("VIP_CHI_CHECK", $sformatf(
+        "could not open %s for the opcode-evidence export", path));
+      return;
+    end
+    $fdisplay(fd, "run,bind,opcode,seen");
+  end
+  else begin
+    $fclose(fd);
+    fd = $fopen(path, "a");
+    if (fd == 0) begin
+      uvm_pkg::uvm_report_warning("VIP_CHI_CHECK", $sformatf(
+        "could not append to %s for the opcode-evidence export", path));
+      return;
+    end
+  end
+
+  for (int unsigned op = 0; op < 128; op++) begin
+    if (req_opcode_seen[op] != 0) begin
+      $fdisplay(fd, "%s,%s,0x%02h,%0d", run_name, tag, op, req_opcode_seen[op]);
+    end
+  end
+
+  $fclose(fd);
+endfunction
+
 function automatic void chi_check_export_csv(
   input string                   tag,
   input chi_check_scope_t        scope,

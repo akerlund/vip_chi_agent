@@ -179,6 +179,41 @@ def sv_classifier_set(name, bodies, consts, all_ops, pkg_sets, seen=None) -> set
     return ops & all_ops
 
 
+def claimed_opcode_set() -> tuple[set[int], set[int], dict[int, str]]:
+    """(every modeled REQ opcode, the ones some classifier claims, opcode names).
+
+    Extracted so scripts/check_opcode_evidence.py can ask the same question of
+    the same source rather than restating the classifier table. That gate joins
+    this static answer with a runtime census of which opcodes the regression
+    actually drove: neither half is a defect on its own, and the pair is.
+    """
+    sys.path.insert(0, str(ROOT / "py"))
+    sys.path.insert(0, str(ROOT / "py" / "sva"))
+    import vip_chi_types_pkg as pyt
+    import bind_chi as pyb
+
+    all_ops = {int(o) for o in pyt.ReqOpcode}
+    names = {int(o): o.name for o in pyt.ReqOpcode}
+
+    pkg_sets = {}
+    for sv_fn, py_fn in PKG_FNS.items():
+        fn = getattr(pyt, py_fn, None)
+        pkg_sets[py_fn] = set() if fn is None else {o for o in all_ops if fn(o)}
+
+    sva = (ROOT / "sv" / "vip_chi_sva.sv").read_text()
+    types_sv = (ROOT / "sv" / "vip_chi_types_pkg.sv").read_text()
+    consts = sv_localparams(types_sv)
+    bodies = sv_function_bodies(sva) | sv_function_bodies(types_sv)
+
+    claimed: set[int] = set()
+    for sv_name, py_name in PAIRS:
+        claimed |= sv_classifier_set(sv_name, bodies, consts, all_ops, pkg_sets)
+        py_obj = getattr(pyb, py_name, None) or getattr(pyt, py_name)
+        claimed |= ({o for o in all_ops if py_obj(o)} if callable(py_obj)
+                    else {int(o) for o in py_obj} & all_ops)
+    return all_ops, claimed, names
+
+
 def main() -> int:
     sys.path.insert(0, str(ROOT / "py"))
     sys.path.insert(0, str(ROOT / "py" / "sva"))

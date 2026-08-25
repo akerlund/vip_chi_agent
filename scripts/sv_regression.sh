@@ -55,6 +55,11 @@ OUT_DIR="${OUT_DIR:-$ROOT/build/sv_regression}"
 # anywhere -- only the union over the sweep can -- so each run appends its rows
 # and scripts/check_vacuity.py reads the lot.
 CHECK_CSV="${CHECK_CSV:-$OUT_DIR/check_tallies.csv}"
+# The opcode-evidence companion. Separate from the tally file on purpose: that
+# one is keyed (run, bind, check) and three gates read it, so widening it to
+# carry an opcode would multiply every row to say something about the STIMULUS
+# rather than about which check ran.
+OPCODE_CSV="${OPCODE_CSV:-$OUT_DIR/opcode_evidence.csv}"
 # Per-test wall-clock ceiling. A simulator that stops advancing time does not
 # exit and does not fail -- it spins, and the sweep waits on it forever. One
 # hung testcase then costs the WHOLE regression rather than one verdict, which
@@ -66,7 +71,7 @@ TEST_TIMEOUT_S="${TEST_TIMEOUT_S:-600}"
 mkdir -p "$OUT_DIR"
 SUMMARY="$OUT_DIR/summary.txt"
 : > "$SUMMARY"
-rm -f "$CHECK_CSV"
+rm -f "$CHECK_CSV" "$OPCODE_CSV"
 
 {
   echo "started $(date -Is)"
@@ -102,6 +107,7 @@ hung=0
 for t in $(ls "$ROOT/testbench/sv/tc"/tc_*.sv | sed 's|.*/||; s|\.sv$||'); do
   timeout --signal=TERM "$TEST_TIMEOUT_S" \
     "$SIMV" +UVM_TESTNAME="$t" +vip_chi_check_csv="$CHECK_CSV" \
+      +vip_chi_opcode_csv="$OPCODE_CSV" \
     +vip_chi_rev="$SOURCE_REV" \
     -l "vcs_${t}.log" > /dev/null 2>&1
   rc=$?
@@ -264,4 +270,22 @@ python3 "$ROOT/scripts/check_counter_parity.py" >> "$SUMMARY" 2>&1 || true
 python3 "$ROOT/scripts/check_bind_coverage.py" --csv "$OUT_DIR/check_tallies.csv" \
   >> "$SUMMARY" 2>&1 || bind_gap=1
 
-exit $(( fail > 0 || ${bind_gap:-0} > 0 || ${illegal_bins_bad:-0} > 0 ))
+# The per-opcode evidence axis, and it is a JOIN rather than a reading of either
+# input. The classifiers that gate the REQ-derived checks are pure functions of
+# the opcode, so which opcodes they CLAIM needs no simulation; which opcodes the
+# regression DRIVES needs nothing but a sweep. Neither is a defect on its own --
+# an opcode nothing drives costs nothing however it is classified, and an opcode
+# that is driven is fine as long as something claims it. Driven AND unclaimed
+# means every REQ-derived rule stood down for traffic that really went out,
+# while still accumulating passes from the opcodes it does claim, so no artifact
+# that exists reports it as anything but healthy. That has happened twice, to the
+# same opcode family, and both times a human found it.
+#
+# Both ports' censuses, because either flow can be the one that drives a family
+# first. A GATE, by the same criterion as check_bind_coverage.py above: the
+# sweep's own CSV is present by definition and the classifier half is source, so
+# there is nothing for it to be inconclusive about.
+python3 "$ROOT/scripts/check_opcode_evidence.py" "$OPCODE_CSV" \
+  "$ROOT/build/py_regression/opcode_evidence.csv" >> "$SUMMARY" 2>&1 || opcode_gap=1
+
+exit $(( fail > 0 || ${bind_gap:-0} > 0 || ${illegal_bins_bad:-0} > 0 || ${opcode_gap:-0} > 0 ))

@@ -187,9 +187,11 @@ class chi_tb_env extends uvm_env;
     chi_check_export_csv("rni_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.rni_agent.vif.check_enabled, this.rni_agent.vif.check_severity,
       this.rni_agent.vif.check_pass_count, this.rni_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv("rni_sva", this.rni_agent.vif.req_opcode_seen);
     chi_check_export_csv("snf_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.snf_agent.vif.check_enabled, this.snf_agent.vif.check_severity,
       this.snf_agent.vif.check_pass_count, this.snf_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv("snf_sva", this.snf_agent.vif.req_opcode_seen);
 
     chi_check_report_tallies("rni_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.rni_agent.vif.check_enabled, this.rni_agent.vif.check_severity,
@@ -207,48 +209,56 @@ class chi_tb_env extends uvm_env;
     chi_check_export_csv("hni_rni0_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hrni0_agent.vif.check_enabled, this.hrni0_agent.vif.check_severity,
       this.hrni0_agent.vif.check_pass_count, this.hrni0_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv("hni_rni0_sva", this.hrni0_agent.vif.req_opcode_seen);
     chi_check_report_tallies("hni_rni0_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hrni0_agent.vif.check_enabled, this.hrni0_agent.vif.check_severity,
       this.hrni0_agent.vif.check_pass_count, this.hrni0_agent.vif.check_fail_count);
     chi_check_export_csv("hni_rn0_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hni_agent.rn_vif[0].check_enabled, this.hni_agent.rn_vif[0].check_severity,
       this.hni_agent.rn_vif[0].check_pass_count, this.hni_agent.rn_vif[0].check_fail_count);
+    chi_check_export_opcode_csv("hni_rn0_sva", this.hni_agent.rn_vif[0].req_opcode_seen);
     chi_check_report_tallies("hni_rn0_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hni_agent.rn_vif[0].check_enabled, this.hni_agent.rn_vif[0].check_severity,
       this.hni_agent.rn_vif[0].check_pass_count, this.hni_agent.rn_vif[0].check_fail_count);
     chi_check_export_csv("hni_sn0_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hni_agent.sn_vif[0].check_enabled, this.hni_agent.sn_vif[0].check_severity,
       this.hni_agent.sn_vif[0].check_pass_count, this.hni_agent.sn_vif[0].check_fail_count);
+    chi_check_export_opcode_csv("hni_sn0_sva", this.hni_agent.sn_vif[0].req_opcode_seen);
     chi_check_report_tallies("hni_sn0_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hni_agent.sn_vif[0].check_enabled, this.hni_agent.sn_vif[0].check_severity,
       this.hni_agent.sn_vif[0].check_pass_count, this.hni_agent.sn_vif[0].check_fail_count);
     chi_check_export_csv("hni_snf0_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hsnf0_agent.vif.check_enabled, this.hsnf0_agent.vif.check_severity,
       this.hsnf0_agent.vif.check_pass_count, this.hsnf0_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv("hni_snf0_sva", this.hsnf0_agent.vif.req_opcode_seen);
     chi_check_report_tallies("hni_snf0_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hsnf0_agent.vif.check_enabled, this.hsnf0_agent.vif.check_severity,
       this.hsnf0_agent.vif.check_pass_count, this.hsnf0_agent.vif.check_fail_count);
     chi_check_export_csv("hni_rni1_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hrni1_agent.vif.check_enabled, this.hrni1_agent.vif.check_severity,
       this.hrni1_agent.vif.check_pass_count, this.hrni1_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv("hni_rni1_sva", this.hrni1_agent.vif.req_opcode_seen);
     chi_check_report_tallies("hni_rni1_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hrni1_agent.vif.check_enabled, this.hrni1_agent.vif.check_severity,
       this.hrni1_agent.vif.check_pass_count, this.hrni1_agent.vif.check_fail_count);
     chi_check_export_csv("hni_rn1_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hni_agent.rn_vif[1].check_enabled, this.hni_agent.rn_vif[1].check_severity,
       this.hni_agent.rn_vif[1].check_pass_count, this.hni_agent.rn_vif[1].check_fail_count);
+    chi_check_export_opcode_csv("hni_rn1_sva", this.hni_agent.rn_vif[1].req_opcode_seen);
     chi_check_report_tallies("hni_rn1_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hni_agent.rn_vif[1].check_enabled, this.hni_agent.rn_vif[1].check_severity,
       this.hni_agent.rn_vif[1].check_pass_count, this.hni_agent.rn_vif[1].check_fail_count);
     chi_check_export_csv("hni_sn1_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hni_agent.sn_vif[1].check_enabled, this.hni_agent.sn_vif[1].check_severity,
       this.hni_agent.sn_vif[1].check_pass_count, this.hni_agent.sn_vif[1].check_fail_count);
+    chi_check_export_opcode_csv("hni_sn1_sva", this.hni_agent.sn_vif[1].req_opcode_seen);
     chi_check_report_tallies("hni_sn1_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hni_agent.sn_vif[1].check_enabled, this.hni_agent.sn_vif[1].check_severity,
       this.hni_agent.sn_vif[1].check_pass_count, this.hni_agent.sn_vif[1].check_fail_count);
     chi_check_export_csv("hni_snf1_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hsnf1_agent.vif.check_enabled, this.hsnf1_agent.vif.check_severity,
       this.hsnf1_agent.vif.check_pass_count, this.hsnf1_agent.vif.check_fail_count);
+    chi_check_export_opcode_csv("hni_snf1_sva", this.hsnf1_agent.vif.req_opcode_seen);
     chi_check_report_tallies("hni_snf1_sva", CHI_CHECK_SCOPE_MAIN_E,
       this.hsnf1_agent.vif.check_enabled, this.hsnf1_agent.vif.check_severity,
       this.hsnf1_agent.vif.check_pass_count, this.hsnf1_agent.vif.check_fail_count);
