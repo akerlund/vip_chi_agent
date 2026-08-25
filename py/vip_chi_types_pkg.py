@@ -377,6 +377,16 @@ CHECK_IDS = (
   # retrofitted: a rule written for writes and applied to atomics would
   # false-fail a conformant completer.
   "CHI_COMP_DBID_MATCHES_GRANT",
+
+  # Section 2.5 again, on the other identifier the pair uses: a DBID a Completer
+  # hands out must be unique for a given Requester while the transaction it
+  # belongs to is outstanding. The Requester tags its write data with the DBID
+  # and nothing else, so two live transactions sharing one make their data
+  # indistinguishable -- to the Completer first, and to every shadow after it.
+  #
+  # The mirror of the TxnID-uniqueness rule with the roles swapped, and it was
+  # the one identifier rule in the section that nothing checked.
+  "CHI_COMPLETER_DBID_UNIQUE",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept

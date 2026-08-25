@@ -1097,6 +1097,64 @@ module vip_chi_sva #(
     return k;
   endfunction
 
+  // ---------------------------------------------------------------------------
+  // Section 2.5: a DBID a Completer hands out must be unique for a given
+  // Requester.
+  //
+  // The Requester tags its write data with the DBID and with nothing else, so
+  // two of its transactions holding one DBID at the same time make their data
+  // indistinguishable -- to the Completer first, and to every shadow built on
+  // top of it. This is the TxnID-uniqueness rule with the roles swapped, and it
+  // was the one identifier rule in the section that nothing checked.
+  //
+  // Scoped PER REQUESTER, as the section writes it: two different Requesters
+  // holding the same DBID at one Completer is explicitly permitted, and
+  // reporting it would be the checker inventing a requirement. The response's
+  // TgtID is the requester.
+  //
+  // Ownership expires with the transaction rather than through a retire path of
+  // its own: a re-grant is compared against whether the PREVIOUS owner is still
+  // in flight, which is exactly the window the rule is written over and costs no
+  // bookkeeping at the several places a transaction can retire.
+  //
+  // The slot reuses req_key_t with the DBID in the id field -- the same
+  // (node, identifier) shape, and deliberately the same type, so the two
+  // shadows cannot drift apart in how they are keyed.
+  // ---------------------------------------------------------------------------
+  req_key_t dbid_owner_by_slot [req_key_t];
+
+  function automatic void check_dbid_unique(input node_id_t requester,
+                                            input txn_id_t txn,
+                                            input txn_id_t dbid);
+    req_key_t slot;
+    req_key_t owner;
+    req_key_t mine;
+    bit       collision;
+
+    slot      = req_key(requester, dbid);
+    mine      = req_key(requester, txn);
+    collision = 1'b0;
+
+    if (dbid_owner_by_slot.exists(slot)) begin
+      owner = dbid_owner_by_slot[slot];
+      // A re-grant for the SAME transaction is not a reuse: a completer may
+      // send more than one DBID-bearing response, and they carry the DBID the
+      // transaction already holds.
+      collision = (owner != mine) && req_inflight(owner);
+    end
+
+    if (collision) begin
+      chk_miss(VIP_CHI_CHK_COMPLETER_DBID_UNIQUE_E, $sformatf(
+        "completer granted DBID 0x%0h to requester 0x%0h for TxnID 0x%0h while its TxnID 0x%0h still holds that DBID",
+        dbid, requester, txn, dbid_owner_by_slot[slot].txn));
+    end
+    else begin
+      chk_hit(VIP_CHI_CHK_COMPLETER_DBID_UNIQUE_E);
+    end
+
+    dbid_owner_by_slot[slot] = mine;
+  endfunction
+
   // `exists` first: reading an absent index would create it, which would make
   // every judged-and-clean TxnID allocate an entry.
   function automatic bit req_inflight(input req_key_t k);
@@ -1738,6 +1796,7 @@ module vip_chi_sva #(
           case (rsp_opcode_t'(vif.rxrspflit.opcode))
             rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_C): begin
               write_grant_seen_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <= 1'b1;
+              check_dbid_unique(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid), txn_id_t'(vif.rxrspflit.dbid));
               // Section 2.5, the SEPARATE grant: remember the DBID it named, so the
               // Comp that follows can be held to it.
               comp_dbid_k              = req_key(node_id_t'(vif.rxrspflit.tgtid),
@@ -1754,6 +1813,7 @@ module vip_chi_sva #(
 
             rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_ORD_C): begin
               write_grant_seen_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <= 1'b1;
+              check_dbid_unique(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid), txn_id_t'(vif.rxrspflit.dbid));
               // Section 2.5, the SEPARATE grant: remember the DBID it named, so the
               // Comp that follows can be held to it.
               comp_dbid_k              = req_key(node_id_t'(vif.rxrspflit.tgtid),
@@ -1770,6 +1830,7 @@ module vip_chi_sva #(
 
             rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C): begin
               write_grant_seen_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <= 1'b1;
+              check_dbid_unique(node_id_t'(vif.rxrspflit.tgtid), txn_id_t'(vif.rxrspflit.txnid), txn_id_t'(vif.rxrspflit.dbid));
               expected_write_beats_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <=
                 expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.rxrspflit.txnid))];
               expected_write_valid_by_dbid[txn_id_to_index(txn_id_t'(vif.rxrspflit.dbid))] <=
@@ -2260,6 +2321,7 @@ module vip_chi_sva #(
             rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_C),
             rsp_opcode_t'(VIP_CHI_RSP_DBID_RESP_ORD_C),
             rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C): begin
+              check_dbid_unique(node_id_t'(vif.txrspflit.tgtid), txn_id_t'(vif.txrspflit.txnid), txn_id_t'(vif.txrspflit.dbid));
               expected_write_beats_by_dbid[txn_id_to_index(txn_id_t'(vif.txrspflit.dbid))] <=
                 expected_write_beats_by_txn[txn_id_to_index(txn_id_t'(vif.txrspflit.txnid))];
               expected_write_valid_by_dbid[txn_id_to_index(txn_id_t'(vif.txrspflit.dbid))] <=

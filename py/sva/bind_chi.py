@@ -874,6 +874,13 @@ class bind_chi:
     # is this finding's defect, and it was invisible because the tally CSV has no
     # opcode dimension at all.
     self._req_opcode_seen: dict[int, int] = {}
+
+    # Which transaction currently owns each (requester, DBID) pair, for section
+    # 2.5's DBID-uniqueness rule. The value is the in-flight key, so ownership
+    # expires with the transaction rather than needing a retire hook of its own:
+    # a DBID is in use for exactly as long as its transaction is outstanding,
+    # which is the window the rule is written over.
+    self._dbid_owner: dict[tuple, tuple] = {}
     # Whether ACTIVATE has been observed since this LASM last left RUN. The
     # legal-step rule judges one step at a time and cannot express "the link
     # went up through ACTIVATE", which is a claim about the whole activation.
@@ -2528,14 +2535,60 @@ class bind_chi:
     The write data that follows is tagged with the DBID, not with the request's
     TxnID, so the beat-count expectation has to be re-keyed here or the burst
     check would have nothing to compare against.
+
+    Also where section 2.5's DBID-uniqueness rule is judged, because this is the
+    one place both vantages see a grant: the completer as it drives one, the
+    requester as it receives one.
     """
     dbid = f["dbid"]
+    self._check_dbid_unique(f, dbid)
     beats = self._expected_write_beats_by_txn.get(f["txnid"], 0)
     if mark_grant_seen:
       self._post(self._write_grant_seen_by_dbid, dbid, True)
     self._post(self._expected_write_beats_by_dbid, dbid, beats)
     self._post(self._expected_write_valid_by_dbid, dbid, beats != 0)
 
+  # ---------------------------------------------------------------------------
+  # Section 2.5: a DBID a Completer hands out must be unique for a given
+  # Requester.
+  #
+  # The Requester tags its write data with the DBID and with nothing else, so two
+  # of its transactions holding one DBID at the same time make their data
+  # indistinguishable -- to the Completer first, and to every shadow built on top
+  # of it. This is the TxnID-uniqueness rule with the roles swapped, and it was
+  # the one identifier rule in the section that nothing checked.
+  #
+  # Scoped PER REQUESTER, as the section writes it: two different Requesters
+  # holding the same DBID at one Completer is explicitly permitted, and reporting
+  # it would be the checker inventing a requirement. The response's TgtID is the
+  # requester -- a grant aimed at A and a grant aimed at B are two conversations.
+  #
+  # Ownership expires with the transaction rather than through a retire hook of
+  # its own: a re-grant is compared against whether the PREVIOUS owner is still
+  # in flight, which is exactly the window the rule is written over and costs no
+  # new bookkeeping at the several places a transaction can retire.
+  # ---------------------------------------------------------------------------
+  def _check_dbid_unique(self, f: dict, dbid: int) -> None:
+    requester = int(f["tgtid"])
+    key = self._inflight_key(requester, f["txnid"])
+    slot = (requester, int(dbid))
+
+    prev = self._dbid_owner.get(slot)
+    # A re-grant for the SAME transaction is not a reuse: a completer is
+    # permitted to send more than one DBID-bearing response, and they carry the
+    # DBID the transaction already holds.
+    collision = (prev is not None and prev != key
+                 and self._req_inflight.get(prev, False))
+
+    self._chk("CHI_COMPLETER_DBID_UNIQUE", not collision,
+              f"completer granted DBID 0x{int(dbid):x} to requester "
+              f"0x{requester:x} for TxnID 0x{int(f['txnid']):x} while its "
+              f"TxnID 0x{prev[1]:x} still holds that DBID"
+              if collision else "")
+    self._post(self._dbid_owner, slot, key)
+
+  # ---------------------------------------------------------------------------
+  # Section 2.5: a Comp sent SEPARATE from its DBIDResp must carry the same DBID.
   # ---------------------------------------------------------------------------
   # Section 2.5: a Comp sent SEPARATE from its DBIDResp must carry the same DBID.
   #

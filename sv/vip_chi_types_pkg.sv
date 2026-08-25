@@ -630,6 +630,7 @@ package vip_chi_types_pkg;
     // than retrofitted: a rule written for writes and applied to atomics would
     // false-fail a conformant completer.
     VIP_CHI_CHK_COMP_DBID_MATCHES_GRANT_E,
+    VIP_CHI_CHK_COMPLETER_DBID_UNIQUE_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -764,6 +765,7 @@ package vip_chi_types_pkg;
       VIP_CHI_CHK_LASM_OUTPUT_RACE_E:                  return "E section 14.6.3 / D section 13.6.3";
       VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E:              return "E section 14.6.3 / D section 13.6.3";
       VIP_CHI_CHK_COMP_DBID_MATCHES_GRANT_E: return "E section 2.5 / D section 2.5";
+      VIP_CHI_CHK_COMPLETER_DBID_UNIQUE_E:   return "E section 2.5 / D section 2.5";
       default: return "";
     endcase
   endfunction

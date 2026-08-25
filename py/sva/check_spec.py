@@ -133,6 +133,7 @@ CHECK_SPEC_C = {
   # Same section as the TxnID rules above, and for the same reason: it is a
   # statement about which identifier a message must carry.
   "CHI_COMP_DBID_MATCHES_GRANT":       "E section 2.5 / D section 2.5",
+  "CHI_COMPLETER_DBID_UNIQUE":         "E section 2.5 / D section 2.5",
 
   # 2.8 Ordering. CompAck has its own subsection, carrying both the sequencing
   # rule and the rule that ExpCompAck is what asks for one. The ordered-read
