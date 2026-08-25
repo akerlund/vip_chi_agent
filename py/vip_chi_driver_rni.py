@@ -261,6 +261,10 @@ class vip_chi_driver_rni(uvm_driver):
     self.dat_lcrd.reset(self.cfg.dat_send_credit_cap, 0)
     self.rsp_lcrdv_pending = 0
     self.dat_lcrdv_pending = 0
+    # Remaining REQ sends that step around the credit manager, drawn from
+    # cfg.req_send_without_credit_negctl at reset.
+    self.req_send_without_credit_remaining = int(
+      self.cfg.req_send_without_credit_negctl)
     # Graceful-deactivation state (see deactivate_watch).
     #
     # link_deactivating suppresses NEW receive-credit grants: a receiver may not
@@ -653,6 +657,16 @@ class vip_chi_driver_rni(uvm_driver):
 
   async def wait_req_credit(self):
     await self.wait_channel_delay(self.cfg.draw_req_valid_delay())
+
+    # The credit manager refusing at zero is the only thing that keeps this
+    # driver off the wire without permission, so a control that needs an
+    # uncredited flit has to step around it rather than configure it. Bounded by
+    # the knob's count: each send spends one bypass and the driver goes back to
+    # asking.
+    if self.req_send_without_credit_remaining:
+      self.req_send_without_credit_remaining -= 1
+      return
+
     await self.wait_for_credit(self.req_lcrd)
 
   async def wait_rsp_credit(self):

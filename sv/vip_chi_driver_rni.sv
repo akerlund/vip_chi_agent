@@ -150,6 +150,10 @@ class vip_chi_driver_rni #(
   protected vip_chi_lcrd_mgr req_lcrd_mgr;
   protected vip_chi_lcrd_mgr rsp_lcrd_mgr;
   protected vip_chi_lcrd_mgr dat_lcrd_mgr;
+  // Remaining REQ sends that step around the credit manager, drawn from
+  // cfg.req_send_without_credit_negctl at reset.
+  protected int unsigned     req_send_without_credit_remaining;
+
   protected int unsigned     rsp_lcrdv_pulses_pending;
   protected int unsigned     dat_lcrdv_pulses_pending;
 
@@ -381,6 +385,7 @@ class vip_chi_driver_rni #(
     this.dat_lcrd_mgr.reset(this.cfg.dat_send_credit_cap, 0);
     this.rsp_lcrdv_pulses_pending = 0;
     this.dat_lcrdv_pulses_pending = 0;
+    this.req_send_without_credit_remaining = this.cfg.req_send_without_credit_negctl;
     this.rsp_lcrd_granted = 0;
     this.dat_lcrd_granted = 0;
     this.link_deactivating = 1'b0;
@@ -800,7 +805,19 @@ class vip_chi_driver_rni #(
   endtask
 
   protected task wait_req_credit();
+
     this.wait_channel_delay(this.cfg.draw_req_valid_delay());
+
+    // The credit manager refusing at zero is the only thing that keeps this
+    // driver off the wire without permission, so a control that needs an
+    // uncredited flit has to step around it rather than configure it. Bounded by
+    // the knob's count: each send spends one bypass and the driver goes back to
+    // asking.
+    if (this.req_send_without_credit_remaining != 0) begin
+      this.req_send_without_credit_remaining--;
+      return;
+    end
+
     this.wait_for_credit(this.req_lcrd_mgr);
   endtask
 

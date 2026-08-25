@@ -83,6 +83,10 @@ class vip_chi_driver_snf #(
   protected int unsigned                                       rsp_lcrd_granted;
   protected int unsigned                                       dat_lcrd_granted;
 
+  // Armed by cfg.req_lcrd_grant_on_flitpend_negctl while the initial REQ
+  // advertisement is being withheld, and cleared by the single grant it draws.
+  protected bit                                                req_grant_on_flitpend_armed;
+
   // Set while the peer has withdrawn its activation request and this node is
   // handing its credits back. Suppresses NEW grants: a receiver may not issue
   // L-credits once the link is coming down, and a drain racing a credit loop
@@ -482,6 +486,7 @@ class vip_chi_driver_snf #(
     this.rsp_lcrd_granted = 0;
     this.dat_lcrd_granted = 0;
     this.link_deactivating = 1'b0;
+    this.req_grant_on_flitpend_armed = 1'b0;
     this.activate_stall_remaining   = this.cfg.lasm_stall_activation_cycles;
     this.deactivate_stall_remaining = 0;
   endfunction
@@ -491,7 +496,17 @@ class vip_chi_driver_snf #(
   // initial receive-credit budgets after link activation.
   // ---------------------------------------------------------------------------
   protected function void schedule_initial_credit_grants();
-    this.req_lcrdv_pulses_pending += this.cfg.initial_req_credits;
+
+    // The REQ advertisement is held back under the grant-on-FLITPEND control so
+    // the peer's send pool stays at zero; the credit loop releases it behind the
+    // single grant it draws, leaving the run's total budget unchanged.
+    if (this.cfg.req_lcrd_grant_on_flitpend_negctl) begin
+      this.req_grant_on_flitpend_armed = 1'b1;
+    end
+    else begin
+      this.req_lcrdv_pulses_pending += this.cfg.initial_req_credits;
+    end
+
     this.rsp_lcrdv_pulses_pending += this.cfg.initial_rsp_credits;
     this.dat_lcrdv_pulses_pending += this.cfg.initial_dat_credits;
   endfunction
@@ -752,14 +767,26 @@ class vip_chi_driver_snf #(
   // initial receive-credit grant and later return-after-consume events.
   // ---------------------------------------------------------------------------
   protected task credit_loop();
+
+    bit req_grant_now;
+
     forever begin
       @(this.vif_snf.g_drv.snf_cb);
 
       this.track_deactivation();
       this.drive_idle_sideband();
       this.tx_activity_tick();
-      this.vif_snf.g_drv.snf_cb.txreqlcrdv <=
-        (this.req_lcrdv_pulses_pending != 0) && !this.link_deactivating;
+      // A grant drawn by the inbound FLITPEND lands one cycle later, which is the
+      // cycle the announced flit occupies -- the coincidence the grant-cycle rule
+      // is about, and one an ordinary receiver cannot produce because its grants
+      // are queued rather than provoked.
+      req_grant_now = this.req_grant_on_flitpend_armed &&
+                      this.vif_snf.g_drv.snf_cb.rxreqflitpend &&
+                      !this.link_deactivating;
+
+      this.vif_snf.g_drv.snf_cb.txreqlcrdv <= req_grant_now ||
+        ((this.req_lcrdv_pulses_pending != 0) && !this.link_deactivating);
+
       this.vif_snf.g_drv.snf_cb.txrsplcrdv <=
         (this.rsp_lcrdv_pulses_pending != 0) && !this.link_deactivating;
       this.vif_snf.g_drv.snf_cb.txdatlcrdv <=
@@ -768,6 +795,16 @@ class vip_chi_driver_snf #(
       if ((this.req_lcrdv_pulses_pending != 0) && !this.link_deactivating) begin
         this.req_lcrdv_pulses_pending--;
         this.req_lcrd_granted++;
+      end
+
+      // Released after the queue is served, not before, so the credit just
+      // granted and the advertisement behind it cannot both be spent this cycle.
+      if (req_grant_now) begin
+        this.req_grant_on_flitpend_armed = 1'b0;
+        this.req_lcrd_granted++;
+        if (this.cfg.initial_req_credits != 0) begin
+          this.req_lcrdv_pulses_pending += (this.cfg.initial_req_credits - 1);
+        end
       end
 
       if ((this.rsp_lcrdv_pulses_pending != 0) && !this.link_deactivating) begin

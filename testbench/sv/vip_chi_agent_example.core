@@ -41,6 +41,7 @@ filesets:
       - tc/tc_chi_d_reset.sv:                               {is_include_file: true}
       - tc/tc_chi_d_credit_starvation.sv:                   {is_include_file: true}
       - tc/tc_chi_d_lcrd_overgrant.sv:                      {is_include_file: true}
+      - tc/tc_chi_d_lcrd_grant_cycle_negctl.sv:             {is_include_file: true}
       - tc/tc_chi_reset_idle_scope.sv:                      {is_include_file: true}
       - tc/tc_chi_d_link_reactivation.sv:                   {is_include_file: true}
       - tb/chi_prefetch_tgt_seq.sv:                     {is_include_file: true}

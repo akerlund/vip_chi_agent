@@ -688,6 +688,34 @@ class VipChiCfgAgent:
     # wait for a grant that is never coming.
     self.snf_write_zero_bare_comp_negctl = False
 
+    # Negative controls for the grant-cycle L-credit rule, which needs a flit and
+    # the grant that authorises it sampled in the SAME cycle with the send pool
+    # at zero. Neither end can produce that alone: the flit and the grant are
+    # driven by opposite ends of the link, so both knobs below are needed
+    # together and the test that uses them sets one on each agent.
+    #
+    # Sender half. A REQ send skips the credit manager entirely instead of
+    # waiting at zero. Counted rather than a flag, because an unbounded bypass
+    # would make every later send uncredited and the report count depend on
+    # traffic volume. The flit is otherwise ordinary, so it completes and the
+    # link carries on.
+    #
+    # CHI_LCRD_UNDERFLOW reports alongside, at both vantages, and that is
+    # inherent: a flit sent at zero credit IS an underflow. The test declares
+    # both.
+    self.req_send_without_credit_negctl = 0
+
+    # Granter half. The initial REQ credit advertisement is withheld, so the
+    # peer's send pool stays at zero, and the first inbound REQ FLITPEND instead
+    # draws a single grant timed to be sampled in the flit's own cycle. The
+    # withheld advertisement is queued behind it, so the total budget the
+    # receiver hands out over the run is unchanged.
+    #
+    # One-shot. Left armed it would grant in every REQ flit's cycle, and after
+    # the first the pool is no longer at zero, so the rule would be judging
+    # ordinary pipelined traffic rather than the case it is about.
+    self.req_lcrd_grant_on_flitpend_negctl = False
+
   # ==========================================================================
   # is_valid -- runtime configuration self-check.
   #
@@ -907,6 +935,8 @@ class VipChiCfgAgent:
       "rnf_snp_resp_data_negctl": self.rnf_snp_resp_data_negctl,
       "snf_persist_before_comp_negctl": self.snf_persist_before_comp_negctl,
       "snf_write_zero_bare_comp_negctl": self.snf_write_zero_bare_comp_negctl,
+      "req_send_without_credit_negctl": self.req_send_without_credit_negctl,
+      "req_lcrd_grant_on_flitpend_negctl": self.req_lcrd_grant_on_flitpend_negctl,
       "snf_duplicate_dat_beat": self.snf_duplicate_dat_beat,
       "snf_corrupt_tag": self.snf_corrupt_tag,
       "snf_reorder_ordered_service": self.snf_reorder_ordered_service,

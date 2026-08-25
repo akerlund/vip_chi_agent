@@ -897,6 +897,34 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0.
   bit snf_write_zero_bare_comp_negctl = 1'b0;
 
+  // Negative controls for the grant-cycle L-credit rule, which needs a flit and
+  // the grant that authorises it sampled in the SAME cycle with the send pool at
+  // zero. Neither end can produce that alone: the flit and the grant are driven
+  // by opposite ends of the link, so both knobs below are needed together and
+  // the test that uses them sets one on each agent.
+  //
+  // Sender half. A REQ send skips the credit manager entirely instead of waiting
+  // at zero. Counted rather than a flag, because an unbounded bypass would make
+  // every later send uncredited and the report count depend on traffic volume.
+  // The flit is otherwise ordinary, so it completes and the link carries on.
+  //
+  // CHI_LCRD_UNDERFLOW reports alongside, at both vantages, and that is inherent:
+  // a flit sent at zero credit IS an underflow. The test declares both.
+  // Default 0.
+  int unsigned req_send_without_credit_negctl = 0;
+
+  // Granter half. The initial REQ credit advertisement is withheld, so the
+  // peer's send pool stays at zero, and the first inbound REQ FLITPEND instead
+  // draws a single grant timed to be sampled in the flit's own cycle. The
+  // withheld advertisement is queued behind it, so the total budget the receiver
+  // hands out over the run is unchanged.
+  //
+  // One-shot. Left armed it would grant in every REQ flit's cycle, and after the
+  // first the pool is no longer at zero, so the rule would be judging ordinary
+  // pipelined traffic rather than the case it is about.
+  // Default 0.
+  bit req_lcrd_grant_on_flitpend_negctl = 1'b0;
+
   // ---------------------------------------------------------------------------
   // Constructor.
   // ---------------------------------------------------------------------------
@@ -1336,6 +1364,8 @@ class vip_chi_cfg_agent extends uvm_object;
         this.rnf_txsactive_snoop_drop_negctl ||
         this.snf_persist_before_comp_negctl ||
         this.snf_write_zero_bare_comp_negctl ||
+        (this.req_send_without_credit_negctl != 0) ||
+        this.req_lcrd_grant_on_flitpend_negctl ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
         this.snf_corrupt_tag ||
         this.lasm_abort_activation || this.flit_without_flitpend ||

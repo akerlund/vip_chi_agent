@@ -216,6 +216,9 @@ class vip_chi_driver_snf(uvm_driver):
     # L-credits once the link is coming down, and a drain racing a credit loop
     # that keeps refilling the pool would never converge.
     self.link_deactivating = False
+    # Armed by cfg.req_lcrd_grant_on_flitpend_negctl while the initial REQ
+    # advertisement is being withheld, and cleared by the single grant it draws.
+    self.req_grant_on_flitpend_armed = False
     # Countdowns for the two negative controls: one holds ACTIVATE by withholding
     # the acknowledge, the other holds DEACTIVATE past its drain by withholding
     # the drop.
@@ -235,7 +238,14 @@ class vip_chi_driver_snf(uvm_driver):
     self.flit_without_pend_done = False
 
   def schedule_initial_credit_grants(self):
-    self.req_lcrdv_pending += self.cfg.initial_req_credits
+    # The REQ advertisement is held back under the grant-on-FLITPEND control so
+    # the peer's send pool stays at zero; the credit loop releases it behind the
+    # single grant it draws, leaving the run's total budget unchanged.
+    if self.cfg.req_lcrd_grant_on_flitpend_negctl:
+      self.req_grant_on_flitpend_armed = True
+    else:
+      self.req_lcrdv_pending += self.cfg.initial_req_credits
+
     self.rsp_lcrdv_pending += self.cfg.initial_rsp_credits
     self.dat_lcrdv_pending += self.cfg.initial_dat_credits
 
@@ -592,12 +602,27 @@ class vip_chi_driver_snf(uvm_driver):
       self.drive_idle_sideband()
       self.tx_activity_tick()
       grant = not self.link_deactivating
-      bus.drive(txreqlcrdv=1 if (self.req_lcrdv_pending and grant) else 0)
+      # A grant drawn by the inbound FLITPEND lands one cycle later, which is the
+      # cycle the announced flit occupies -- the coincidence the grant-cycle rule
+      # is about, and one an ordinary receiver cannot produce because its grants
+      # are queued rather than provoked.
+      req_grant_now = bool(
+        self.req_grant_on_flitpend_armed and bus.get("rxreqflitpend") and grant)
+      bus.drive(txreqlcrdv=1 if (
+        req_grant_now or (self.req_lcrdv_pending and grant)) else 0)
       bus.drive(txrsplcrdv=1 if (self.rsp_lcrdv_pending and grant) else 0)
       bus.drive(txdatlcrdv=1 if (self.dat_lcrdv_pending and grant) else 0)
       if self.req_lcrdv_pending and grant:
         self.req_lcrdv_pending -= 1
         self.req_lcrd_granted += 1
+
+      # Released after the queue is served, not before, so the credit just
+      # granted and the advertisement behind it cannot both be spent this cycle.
+      if req_grant_now:
+        self.req_grant_on_flitpend_armed = False
+        self.req_lcrd_granted += 1
+        if self.cfg.initial_req_credits:
+          self.req_lcrdv_pending += self.cfg.initial_req_credits - 1
       if self.rsp_lcrdv_pending and grant:
         self.rsp_lcrdv_pending -= 1
         self.rsp_lcrd_granted += 1
