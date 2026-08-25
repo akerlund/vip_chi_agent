@@ -23,7 +23,198 @@ Both **CHI-D** and **CHI-E** issues are supported, selected by `CFG_P.issue`.
 Exact CHI-E-only flit fields (memory tagging, `DBIDRespOrd`, wider IDs) are
 driven by the `*_e` driver / monitor / agent subclasses.
 
-### Documentation map
+## Why?
+
+Because CHI is hard to learn from the specification alone. IHI 0050 describes a
+link layer, a credit scheme, a transaction layer and a coherence protocol that
+only make sense together, and reading them apart is most of the difficulty. This
+VIP exists to study them by *running* them: start a sequence, and the link
+bring-up handshake, the L-credit pulses, the flits they authorise and the snoops
+that answer a coherent read are all on the wire, in the order the specification
+says they have to happen, where a waveform viewer can show them.
+
+That is also why there are two flows. The pyUVM/cocotb port runs the whole
+testcase catalogue on Verilator, so the waveform is reachable without a
+commercial licence at all. In the SystemVerilog flow,
+`cfg.record_transactions` additionally brackets each transaction with
+`begin_tr`/`end_tr`, so the viewer's transaction track shows whole transactions
+rather than raw flits across four channels and two links, with a retry re-issue
+recorded as a child of the attempt it replaces. The Python port records the same
+lifecycle but produces no stream, because pyUVM 4.0.1's recording backend is a
+stub.
+
+The checkers come from the same motive. A rule you can state, provoke on
+purpose, and watch fail is one you have understood; a green run that was never
+capable of failing teaches nothing. So every always-on checker here ships with a
+configuration knob that deliberately breaks the invariant it guards and a
+testcase that proves the check fires.
+
+## Feature snapshot
+
+This VIP is intended to cover the CHI agent behaviour normally expected in a
+reusable verification environment — the link layer and the coherence protocol
+together, not one endpoint answering reads. In short:
+
+- **Protocol surface**
+  - CHI-D and CHI-E, selected by `CFG_P.issue`, with the E-only flit fields
+    (memory tagging, `DBIDRespOrd`, wider IDs) driven by the `*_e` subclasses.
+  - All four channels — REQ, RSP, DAT, SNP — with owned flit structs whose
+    field order is checked position-by-position against the specification's
+    layout tables.
+  - Reads, writes, CopyBack, dataless requests, atomics (store / load / swap /
+    compare), CMOs and persistent CMOs, exclusives, and the CHI-E combined
+    Write+CMO family.
+  - The retry handshake (`RetryAck` / `PCrdGrant` / `PCrdReturn`) modelled as a
+    credit *pool* rather than a first-attempt pairing, because §2.6.5 lets a
+    re-issue carry a different TxnID from the request that was retried.
+  - Ordered streams (`Order`), `ReadReceipt`, separated reads, split-write
+    responses, and both legal completion forms of `CleanSharedPersistSep`.
+  - Memory tagging: `TagOp`, tag beats, per-beat tag uniformity, and read-back.
+- **Roles and topologies**
+  - One role-parameterized agent class plays six roles selected at elaboration:
+    RN-I requester, SN-F memory completer, HN-I proxy, coherent RN-F and HN-F,
+    and passive monitor.
+  - `N_RN x N_SN` HN-I pass-through proxy with QoS fan-in, a System Address Map
+    (`[base:limit] -> SN-port`) or stride fan-out, and node-id completion
+    routing.
+  - Coherent RN-F/HN-F pair over the SNP channel: RN-F cache model plus
+    autonomous snoop responder, HN-F directory plus snoop origination.
+  - Optional two-level memory — the HN-F issues downstream `ReadNoSnp` /
+    `WriteNoSnpFull` to a real SN-F instead of terminating against its own
+    `vip_mem`.
+- **Traffic generation**
+  - Directed, constrained-random and pipelined sequences, with a setter API
+    covering addressing, transfer shape, payload, identity, attributes and
+    flow control.
+  - Address iteration by explicit list or fixed stride, with optional alignment
+    enforcement.
+  - Multi-outstanding read, write and mixed pipelines, with the observed peak
+    depth readable back off the config.
+  - Raw-flit injection behind a master gate, for stimulus no legal sequence can
+    produce.
+  - Deliberate violation injection: every always-on checker has a knob that
+    breaks exactly the invariant it guards.
+- **Link layer and flow control**
+  - Per-channel L-credit managers that start at zero and learn from `LCRDV`
+    pulses, with configurable initial pools and send caps.
+  - The `{LINKACTIVEREQ, LINKACTIVEACK}` state machine — `STOP` / `ACTIVATE` /
+    `RUN` / `DEACTIVATE` — one per link rather than per direction, with flits
+    gated on `RUN` and credits on "not `STOP`".
+  - Graceful deactivation on the requester↔completer link, reaching a state
+    reset alone cannot: retire traffic, stop advertising receive credits, drop
+    the request, return every held L-credit as an `LCrdReturn`, and only then
+    reach `STOP` genuinely empty. Not yet supported on the coherent link.
+  - Activation delays chosen by the link state the peer is *already* in, which
+    is what makes bring-up races reachable at all.
+  - `TXSACTIVE` driven off the outstanding window, with a configurable legal
+    over-extension.
+- **Coherency**
+  - Cache states I, SC, UC, UD and SD as the wire encodes them, plus a per-byte
+    dirty mask on the requester. UDP shares UD's `Resp` encoding, so the mask is
+    the only thing that can tell them apart — and it is what makes a partial
+    store and a later fill merge rather than one discarding the other.
+  - Snoop families: `SnpShared`, `SnpClean`, `SnpOnce`, `SnpCleanShared`,
+    `SnpUnique`, `SnpCleanInvalid`, `SnpMakeInvalid`, and the DCT forwarding
+    forms.
+  - Exclusive monitor (LL/SC) with conflict-driven failure.
+  - Configurable granted state per coherent-read class, snoop latency, RN-F
+    cache capacity, and opt-in DCT.
+- **Timing and backpressure**
+  - Per-channel VALID delay models on REQ, RSP and DAT, drawn per flit — and
+    inside a burst, per beat.
+  - Uniform or truncated-gaussian delay distributions, with the CDF rebuilt
+    automatically when the knobs move.
+  - `hold_dat_credit` and `hold_snp_credit` starve a receive pool at runtime, so
+    the peer's send side stalls on a genuinely empty pool rather than on a
+    simulated one.
+  - SN-F DAT beat interleaving across in-flight reads, by round-robin or random
+    selection, with a configurable gather window.
+  - Descending-`DataID` read bursts, because CHI places a beat by its `DataID`
+    and not by its position on the wire.
+- **Observability and debug**
+  - Four analysis ports (REQ / RSP / DAT / SNP) feeding scoreboards, the
+    coherency checker and the coverage subscriber.
+  - Per-transaction milestones always stamped (`t_req_issued`, `t_dbid`,
+    `t_first_dat`, `t_last_dat`, `t_comp`, …), with opt-in per-beat DAT
+    timestamps.
+  - Per-transaction latency bounds on the monitor's reset-gated counter,
+    checked at each completion milestone and reported with opcode, bound and
+    measured value.
+  - Transaction recording for the waveform viewer's transaction track, with a
+    retry re-issue recorded as a child of the attempt it replaces. SystemVerilog
+    flow only; pyUVM 4.0.1's recording backend is a stub.
+  - Perf counters: per-requester read/write latency (min/avg/max), throughput,
+    retry count, and per-channel back-pressure cycles.
+  - Per-channel verbosity.
+- **Checking and coverage**
+  - 101 named rules — 84 bindable link/protocol/SNP assertions and 17
+    scoreboard rules — each carrying a stable identity, a severity, pass and
+    fail counters, and the specification clause it enforces. 97 of them are
+    mirrored in the Python port; the four that are not are X/Z rules Verilator's
+    two-state model cannot hold.
+  - A self-derived per-line ownership shadow (never the HN-F directory) whose
+    core invariant is *never two Unique owners of one line*, plus the same-line
+    hazard rule, snoop-response legality per opcode, and the Table 4-14
+    final-state rule on the requester.
+  - A predictable-data and atomic-RMW scoreboard, and an ordered-stream
+    acknowledgement-order check.
+  - Link activation and deactivation timeouts, which cover the one failure no
+    other rule can see: every cycle of a stuck link is individually legal.
+  - Per-rule pass counts, so a rule the test list never reached is reported as
+    NOT EXERCISED rather than reading like one that passed — attributed per bind
+    instance and exported per run, with dead (bind, rule) pairs classified as
+    vantage, geometry or missing stimulus.
+  - Functional coverage over opcode classes, sizes, errors and coherent groups,
+    including illegal bins for request/snoop pairings that no conformant home
+    can produce.
+  - Any single rule addressable at run time — disabled, demoted to a warning, or
+    silenced while still counting — by plusarg in SystemVerilog and by
+    environment variable in Python.
+  - `vip_chi_sva` and `vip_chi_if` stay UVM-free, so the assertions remain
+    bindable in a non-UVM bench; the tallies they publish are folded into the
+    UVM verdict at `report_phase` rather than printed into a log nothing reads.
+- **Reset and recovery**
+  - Reset-aware monitor, driver and sequencer; mid-traffic reset flushes queues,
+    credit shadows and pending transactions, stops sequences and drops
+    objections.
+  - Drivers re-run link activation from zero credits on release.
+  - Passive agents reset monitor state only; the multi-port HN-I and HN-F agents
+    cascade one watcher across every port, because a snoop spans two links.
+- **Configuration safety**
+  - The agent config self-validates (`is_valid()`): outstanding limits, credit
+    pools, completer policy and the coherent knobs are checked for illegal
+    combinations before the run rather than surfacing as a mid-simulation
+    mystery.
+  - Negative-control knobs are documented in one table with what each breaks and
+    which check it proves, rather than left to a grep.
+- **Integration hooks**
+  - SystemVerilog UVM and pyUVM/cocotb ports, one shared testcase catalogue.
+  - FuseSoC-based build and regression flows, under VCS and under Verilator.
+  - A single include entry point and one umbrella package.
+  - UVM `uvm_config_db` wiring for the HN-I System Address Map and QoS window.
+- **Parity and regression evidence**
+  - **226 SystemVerilog** testcases and **227 pyUVM** testcases, mirrored
+    between the two flows and gated by name so a test added on one side and not
+    the other fails rather than quietly halving the coverage.
+  - Cross-port gates on the surfaces that can drift while both ports pass their
+    own tests: enum encodings and flit field order, config fields, opcode sets,
+    classifier coverage, import paths and assertion-gate sourcing.
+  - Cross-port gates on what the two ports *decided*, not only on what they
+    declare: which rules fired per testcase, and what the coherency checkers
+    counted on the same stimulus.
+  - Opcode evidence as a join of what the classifiers claim against what the
+    regression actually drove, so an opcode family that is driven and unclaimed
+    is reported rather than passing silently.
+  - Every prose count of the regression size is checked against the testcases
+    that exist, so the documentation cannot rot ahead of the tree.
+
+Scope boundary: this is a CHI agent VIP, not an interconnect model. A full
+interconnect / system environment, the SYSCO sideband, and CHI issues A/B/C/F
+are non-goals; DVM, stash and multi-SN striping behind the HN-F are deferred
+rather than partially implemented. See
+[docs/FUTURE_WORK.md](docs/FUTURE_WORK.md) for that boundary.
+
+## Documentation map
 
 This README covers the quick-start path, the agent architecture, and the
 higher-level features. The heavy reference material lives under `docs/`:
@@ -601,6 +792,12 @@ The `_e` monitor republishes the CHI-E-only fields on the same ports.
   "down and drained" flag — poll that rather than the sideband, which falls as
   soon as the handshake completes and says nothing about the drain.
 
+  Scoped to the RN-I↔SN-F link. On the coherent topology the drain's
+  `LCrdReturn` reaches an HN-F whose REQ dispatch has no arm for opcode 0, so a
+  deactivation request there ends the run rather than tearing the link down; a
+  coherent link is returned to `STOP` by reset instead. See
+  [docs/FUTURE_WORK.md](docs/FUTURE_WORK.md).
+
   `DEACTIVATE` is the one state in which a sender may still transmit, and only
   L-credit returns: the flit-gating rules admit opcode 0 there and nothing else.
 - **Peer-state-relative activation delay** — `cfg.lasm_req_delay_by_state[]`
@@ -649,9 +846,9 @@ check is vacuous (e.g.
 ### Per-check identity, enable and statistics
 
 Every protocol rule has a stable identity (`vip_chi_check_id_t` in SV,
-`CHECK_IDS` in Python — the same 54 names, in the same order), a severity, and
+`CHECK_IDS` in Python — the same 84 names, in the same order), a severity, and
 pass/fail counters. The scoreboard's rules carry the same identity in a second
-registry of 13 (`vip_chi_sb_check_id_t` / `CHECK_IDS_SB`, all named `CHI_SB_*`);
+registry of 17 (`vip_chi_sb_check_id_t` / `CHECK_IDS_SB`, all named `CHI_SB_*`);
 they are a separate enum because the SVA IDs size four arrays inside *every*
 `vip_chi_if` instance while a scoreboard rule is judged once per component, but
 they share the export schema, so one aggregation reads both. Two things follow

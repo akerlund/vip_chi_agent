@@ -41,6 +41,12 @@ CLAIMS = (
   (ROOT / "testbench" / "TEST_CASES.md",
    re.compile(r"\*\*(\d+)\s+SystemVerilog\*\*\s+testcases.*?\*\*(\d+)\s+pyUVM",
               re.S)),
+  # The README's feature snapshot quotes the same pair. It is the first thing a
+  # reader sees and the last thing anyone thinks to update, which is the worst
+  # combination a hand-maintained number can have.
+  (ROOT / "README.md",
+   re.compile(r"\*\*(\d+)\s+SystemVerilog\*\*\s+testcases.*?\*\*(\d+)\s+pyUVM",
+              re.S)),
 )
 
 # Documents that quote a single bare count of the whole regression.

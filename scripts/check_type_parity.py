@@ -245,12 +245,61 @@ def _compare_flit_layouts(sv: str, py_types) -> list[str]:
   return [f"flit field order parity mismatch: {len(failures)}"]
 
 
+def _compare_readme_registry_sizes(py_types) -> list[str]:
+  """The README quotes both registry sizes. Check them against the registries.
+
+  It quoted 54 and 13 while the registries held 84 and 17, which is the ordinary
+  fate of a number written once into prose: the enums grew a rule at a time and
+  nothing pointed back at the sentence describing them. This is the cheap half
+  of the fix -- the counts are already loaded here, so comparing them costs one
+  regular expression and removes the possibility.
+  """
+  readme = ROOT / "README.md"
+  text = readme.read_text(encoding="utf-8")
+  expected = {
+    "protocol": len(py_types.CHECK_IDS),
+    "scoreboard": len(py_types.CHECK_IDS_SB),
+  }
+  claims = [
+    ("protocol", re.compile(r"`CHECK_IDS` in Python\s+—\s+the same (\d+) names")),
+    ("scoreboard", re.compile(r"registry of (\d+) \(`vip_chi_sb_check_id_t`")),
+    ("protocol", re.compile(r"(\d+) bindable link/protocol/SNP assertions")),
+    ("scoreboard", re.compile(r"assertions and (\d+)\s+\n?\s*scoreboard rules")),
+  ]
+
+  errors: list[str] = []
+  for kind, pattern in claims:
+    match = pattern.search(text)
+    if not match:
+      errors.append(f"README no longer states the {kind} registry size "
+                    f"in the form {pattern.pattern!r}")
+      continue
+    stated = int(match.group(1))
+    if stated != expected[kind]:
+      errors.append(f"README says {stated} {kind} rules; the registry holds "
+                    f"{expected[kind]}")
+
+  total = re.search(r"(\d+) named rules —", text)
+  if not total:
+    errors.append("README no longer states the combined rule count")
+  elif int(total.group(1)) != sum(expected.values()):
+    errors.append(f"README says {total.group(1)} named rules in total; the two "
+                  f"registries hold {sum(expected.values())}")
+
+  if errors:
+    return errors
+  print(f"README registry sizes: {expected['protocol']} protocol + "
+        f"{expected['scoreboard']} scoreboard, as stated")
+  return []
+
+
 def main() -> int:
   sv = _read_sv()
   py_types = _load_py_types()
 
   errors: list[str] = []
   errors.extend(_compare_check_registries(sv, py_types))
+  errors.extend(_compare_readme_registry_sizes(py_types))
   errors.extend(_compare_non_opcode_enums(sv, py_types))
   errors.extend(_compare_flit_layouts(sv, py_types))
 
