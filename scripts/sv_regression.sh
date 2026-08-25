@@ -247,6 +247,12 @@ python3 "$ROOT/scripts/check_test_counts.py" >> "$SUMMARY" 2>&1 || true
 # read on exactly the runs that cannot see the problem.
 python3 "$ROOT/scripts/check_import_path_parity.py" >> "$SUMMARY" 2>&1 || import_path_bad=1
 
+# The source of each assertion gate. A hard gate for the same reason: a gate that
+# moves inside the sampling edge does not fail anything -- it silently judges one
+# cycle with sampled values from one side of a transition and a gate from the
+# other, and the report that comes out looks like any other.
+python3 "$ROOT/scripts/check_gate_timing.py" >> "$SUMMARY" 2>&1 || gate_timing_bad=1
+
 # What the two ports' coherency checkers JUDGED on the same testcase. Every check
 # above compares a SURFACE -- enums, config fields, opcode sets, classifiers,
 # testcase lists -- and all of them pass when the ports agree about what exists.
@@ -293,4 +299,4 @@ python3 "$ROOT/scripts/check_bind_coverage.py" --csv "$OUT_DIR/check_tallies.csv
 python3 "$ROOT/scripts/check_opcode_evidence.py" "$OPCODE_CSV" \
   "$ROOT/build/py_regression/opcode_evidence.csv" >> "$SUMMARY" 2>&1 || opcode_gap=1
 
-exit $(( fail > 0 || ${bind_gap:-0} > 0 || ${illegal_bins_bad:-0} > 0 || ${opcode_gap:-0} > 0 || ${import_path_bad:-0} > 0 ))
+exit $(( fail > 0 || ${bind_gap:-0} > 0 || ${illegal_bins_bad:-0} > 0 || ${opcode_gap:-0} > 0 || ${import_path_bad:-0} > 0 || ${gate_timing_bad:-0} > 0 ))
