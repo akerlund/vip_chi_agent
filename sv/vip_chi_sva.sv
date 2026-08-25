@@ -329,22 +329,83 @@ module vip_chi_sva #(
   vip_chi_lasm_state_t rx_lasm_state;
   int unsigned         rx_lasm_dwell;
 
+  // Whether ACTIVATE has been observed since this LASM last sat in STOP. The
+  // legal-step rule judges one step at a time and cannot express "the link went
+  // up THROUGH ACTIVATE", which is a claim about a whole activation.
+  bit                  tx_activate_seen;
+  bit                  rx_activate_seen;
+
   always_ff @(posedge vif.clk) begin
     if (!vif.rst_n) begin
       // Out of reset the sideband is held idle, which the reset-idle rule
       // already requires, so STOP is the state the link genuinely restarts in.
-      tx_lasm_state <= VIP_CHI_LASM_STOP_E;
-      tx_lasm_dwell <= 0;
-      rx_lasm_state <= VIP_CHI_LASM_STOP_E;
-      rx_lasm_dwell <= 0;
+      tx_lasm_state    <= VIP_CHI_LASM_STOP_E;
+      tx_lasm_dwell    <= 0;
+      rx_lasm_state    <= VIP_CHI_LASM_STOP_E;
+      rx_lasm_dwell    <= 0;
+      tx_activate_seen <= 1'b0;
+      rx_activate_seen <= 1'b0;
     end
     else begin
       tx_lasm_state <= tx_lasm();
       tx_lasm_dwell <= (tx_lasm() == tx_lasm_state) ? (tx_lasm_dwell + 1) : 0;
       rx_lasm_state <= rx_lasm();
       rx_lasm_dwell <= (rx_lasm() == rx_lasm_state) ? (rx_lasm_dwell + 1) : 0;
+
+      if (tx_lasm() == VIP_CHI_LASM_ACTIVATE_E) begin
+        tx_activate_seen <= 1'b1;
+      end
+      else if (tx_lasm() == VIP_CHI_LASM_STOP_E) begin
+        tx_activate_seen <= 1'b0;
+      end
+
+      if (rx_lasm() == VIP_CHI_LASM_ACTIVATE_E) begin
+        rx_activate_seen <= 1'b1;
+      end
+      else if (rx_lasm() == VIP_CHI_LASM_STOP_E) begin
+        rx_activate_seen <= 1'b0;
+      end
     end
   end
+
+  // A second, different claim about the same edge: the link went up THROUGH
+  // ACTIVATE, not merely by a step the transition table permits.
+  //
+  // Section 14.5.1 makes the receiver acknowledge a request it has OBSERVED, and
+  // Table 14-2 states it from the transmitter's side -- it "remains in the
+  // ACTIVATE state while it is waiting for the receiver to acknowledge the move
+  // to the RUN state". So {req=1, ack=0} has to be visible for at least one
+  // cycle on every activation.
+  //
+  // The step rule alone does not say this. It judges consecutive samples, so it
+  // reports STOP -> RUN when the two signals move on the same edge -- but it can
+  // be turned OFF by a negative control aimed at a different illegal step,
+  // taking this claim with it. Stated separately, it holds independently.
+  property p_tx_lasm_activate_observed;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      ((tx_lasm() == VIP_CHI_LASM_RUN_E) &&
+       (tx_lasm_state != VIP_CHI_LASM_RUN_E)) |-> tx_activate_seen;
+  endproperty
+
+  property p_rx_lasm_activate_observed;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      ((rx_lasm() == VIP_CHI_LASM_RUN_E) &&
+       (rx_lasm_state != VIP_CHI_LASM_RUN_E)) |-> rx_activate_seen;
+  endproperty
+
+  assert property (p_tx_lasm_activate_observed)
+    chk_hit(VIP_CHI_CHK_LASM_ACTIVATE_OBSERVED_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_ACTIVATE_OBSERVED_E, $sformatf(
+      "TX link entered RUN without ACTIVATE ever being visible (txreq=%0b rxack=%0b); a receiver cannot acknowledge a request in the cycle it first appears",
+      $sampled(vif.txlinkactivereq), $sampled(vif.rxlinkactiveack)));
+
+  assert property (p_rx_lasm_activate_observed)
+    chk_hit(VIP_CHI_CHK_LASM_ACTIVATE_OBSERVED_E);
+  else
+    chk_miss(VIP_CHI_CHK_LASM_ACTIVATE_OBSERVED_E, $sformatf(
+      "RX link entered RUN without ACTIVATE ever being visible (rxreq=%0b txack=%0b); a receiver cannot acknowledge a request in the cycle it first appears",
+      $sampled(vif.rxlinkactivereq), $sampled(vif.txlinkactiveack)));
 
   // ---------------------------------------------------------------------------
   // The observed input race, tracked because it cannot be read off the wires.

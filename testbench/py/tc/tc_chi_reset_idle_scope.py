@@ -52,16 +52,13 @@
 # Requiring them to fire would be asserting when the agent happens to re-spawn
 # its driver, the same mistake as demanding an exact count in phase 3.
 #
-# The SV flow ALSO reports CHI_LASM_LEGAL_TRANSITION once here, and that one is a
-# defect this control found rather than collateral: the completer's acknowledge
-# lands on the same edge as the requester's request, so the activation handshake
-# skips ACTIVATE and steps STOP -> RUN. A receiver cannot acknowledge a request
-# in the cycle it first appears, so the checker is right and the driver is wrong.
-# Isolated by bisection in the SV flow -- knob-free pulses either side of it walk
-# STOP -> ACTIVATE -> RUN cleanly and only the pulse carrying the credit collapses
-# it. This flow does not exhibit it, which is itself evidence that the bring-up
-# timing is pinned down in neither port. It is suppressed and bounded in both so
-# the two ports keep one shape, and it belongs to its own commit and finding.
+# The activation handshake is required to be clean through this window, in both
+# flows and with no bound to spend. A receiver cannot acknowledge a request in
+# the cycle it first appears (section 14.5.1, Table 14-2), and the completer now
+# derives its acknowledge from the peer's observed request rather than from its
+# own link request -- which want_link raises whenever the link is not drained,
+# so one credit held through reset was enough to have the acknowledge already up
+# when the peer first asked.
 #
 # Every item on section 14.1.3's list is a signal that MEANS something, so there
 # is no member of it that can be driven without collateral. A control for a
@@ -103,7 +100,7 @@ COLLATERAL_C = ("CHI_RSP_LCRDV_REQUIRES_LINK", "CHI_LCRD_QUIESCENT_IN_STOP")
 # Not collateral: the collapsed activation handshake described in the header. At
 # most one per release, and zero in this flow.
 LASM_C = "CHI_LASM_LEGAL_TRANSITION"
-LASM_CEILING_C = 1
+ACTIVATE_C = "CHI_LASM_ACTIVATE_OBSERVED"
 
 
 class tc_chi_reset_idle_scope(chi_base_test):
@@ -209,8 +206,9 @@ class tc_chi_reset_idle_scope(chi_base_test):
     self.tb_env.rni_sva.off_check(RSP_C)
     self.tb_env.snf_sva.off_check(RSP_C)
     # And the two rules the same credit reaches after release. Suppressed rather
-    # than tolerated, and asserted below rather than ignored.
-    for rule in COLLATERAL_C + (LASM_C,):
+    # than tolerated, and asserted below rather than ignored. The activation
+    # rules are NOT among them: the handshake has to stay clean here.
+    for rule in COLLATERAL_C:
       self.tb_env.rni_sva.off_check(rule)
       self.tb_env.snf_sva.off_check(rule)
 
@@ -233,13 +231,14 @@ class tc_chi_reset_idle_scope(chi_base_test):
     for rule in COLLATERAL_C:
       self._require_bounded(rule)
 
-    rni = self.tb_env.rni_sva.fail_count.get(LASM_C, 0)
-    snf = self.tb_env.snf_sva.fail_count.get(LASM_C, 0)
-    assert rni <= LASM_CEILING_C and snf <= LASM_CEILING_C, (
-      f"{LASM_C} reported rni_e={rni} snf_e={snf} time(s), above the "
-      f"{LASM_CEILING_C} this testcase accounts for. The activation handshake "
-      f"has broken further than the one collapsed step already recorded "
-      f"against it")
+    for rule in (LASM_C, ACTIVATE_C):
+      rni = self.tb_env.rni_sva.fail_count.get(rule, 0)
+      snf = self.tb_env.snf_sva.fail_count.get(rule, 0)
+      assert rni == 0 and snf == 0, (
+        f"{rule} reported rni_e={rni} snf_e={snf} time(s). A credit held "
+        f"through reset must not change the activation handshake: the "
+        f"acknowledge answers the peer's observed request, so ACTIVATE is "
+        f"visible on every activation regardless of what is outstanding")
 
     # The other three saw a conformant reset window in phase 3 and must still be
     # silent. A rule reading the RSP credit off the DAT channel would pass

@@ -463,6 +463,7 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_LINK_RESTARTS_AFTER_RESET_E,
     VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E,
     VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E,
+    VIP_CHI_CHK_LASM_ACTIVATE_OBSERVED_E,
     VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E,
     VIP_CHI_CHK_LCRD_OVERFLOW_E,
     VIP_CHI_CHK_LCRD_UNDERFLOW_E,
@@ -701,6 +702,7 @@ package vip_chi_types_pkg;
       VIP_CHI_CHK_LINK_RESTARTS_AFTER_RESET_E:         return "E section 14.1.3 / D section 13.1.3";
       VIP_CHI_CHK_LINK_DEACTIVATE_WHEN_IDLE_E:         return "E section 14.7.4 / D section 13.7.4";
       VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E:             return "E section 14.6.2 / D section 13.6.2";
+      VIP_CHI_CHK_LASM_ACTIVATE_OBSERVED_E:            return "E section 14.5.1 Table 14-2 / D section 13.5.1";
       VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E:            return "E section 14.6.1 / D section 13.6.1";
       VIP_CHI_CHK_LCRD_OVERFLOW_E:                     return "E section 14.2.1 / D section 13.2.1";
       VIP_CHI_CHK_LCRD_UNDERFLOW_E:                    return "E section 14.2.1 / D section 13.2.1";

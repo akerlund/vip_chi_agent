@@ -339,10 +339,6 @@ class tc_chi_reset_idle_scope extends chi_base_test;
       VIP_CHI_CHK_SEV_OFF_E;
     super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E] =
       VIP_CHI_CHK_SEV_OFF_E;
-    super.tb_env.rni_agent.vif.check_severity[VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E] =
-      VIP_CHI_CHK_SEV_OFF_E;
-    super.tb_env.snf_agent.vif.check_severity[VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E] =
-      VIP_CHI_CHK_SEV_OFF_E;
 
     // The link has to carry traffic again before the second pulse: the write in
     // phase 1 is what armed the rules, and a reset takes link_ever_active's
@@ -365,9 +361,15 @@ class tc_chi_reset_idle_scope extends chi_base_test;
     // this flow clears the credit before they see it.
     this.require_bounded(VIP_CHI_CHK_RSP_LCRDV_REQUIRES_LINK_E);
     this.require_bounded(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E);
-    // The collapsed activation handshake: at most one, because it happens once
-    // per release. A climbing count would mean the bring-up broke further.
-    this.require_at_most(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E, 1);
+    // The activation handshake must be clean through this window. It used to be
+    // bounded at one instead: the completer derived its acknowledge from its own
+    // link request, and want_link raises that request whenever link_drained() is
+    // false -- one credit held through reset is enough -- so the acknowledge
+    // could already be up when the peer first asked and the link stepped
+    // STOP -> RUN. The acknowledge now answers the peer's observed request, so
+    // ACTIVATE is structural and the bound is zero.
+    this.require_at_most(VIP_CHI_CHK_LASM_LEGAL_TRANSITION_E, 0);
+    this.require_at_most(VIP_CHI_CHK_LASM_ACTIVATE_OBSERVED_E, 0);
 
     // The other three saw a conformant reset window in phase 3 and must still
     // be silent. A rule that reports the RSP credit on the DAT channel would be

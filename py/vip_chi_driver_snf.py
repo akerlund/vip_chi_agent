@@ -340,7 +340,15 @@ class vip_chi_driver_snf(uvm_driver):
     if self.bus.get("rxlinkactivereq"):
       want_link = self.activate_stall_remaining == 0
     else:
-      want_link = not self._link_drained()
+      # A DRAIN term, not an activation one: it keeps a link that is already up
+      # from going down while credits are still outstanding. Gated on this
+      # node's own sideband being up for exactly that reason -- with the link in
+      # STOP and the peer asking for nothing, an outstanding credit is not a
+      # reason to raise the request, and raising it there is what puts the
+      # acknowledge up before the peer has asked.
+      want_link = ((bool(self.bus.get("txlinkactivereq"))
+                    or bool(self.bus.get("txlinkactiveack")))
+                   and not self._link_drained())
 
     # 14.6.3's fourth ordering binds US, not the peer: "the deassertion of TXREQ
     # must not occur before the assertion of RXACK". The acknowledge lags the
@@ -370,6 +378,38 @@ class vip_chi_driver_snf(uvm_driver):
     if self.bus.input_race_hold() and not self.cfg.lasm_ignore_input_race:
       return
 
+    # The acknowledge answers the PEER's request, one cycle behind it. The read
+    # samples what the peer is asking for in this cycle and the drive lands in
+    # the next one -- which is what makes {rxreq=1, txack=0}, the ACTIVATE state
+    # of Table 14-1, visible for at least a cycle. Section 14.5.1 requires
+    # exactly that: the receiver acknowledges a request it has OBSERVED, and
+    # Table 14-2 says the transmitter "remains in the ACTIVATE state while it is
+    # waiting for the receiver to acknowledge the move to the RUN state".
+    #
+    # It must NOT be derived from our own txlinkactivereq. want_link raises that
+    # signal on this node's own initiative whenever link_drained() is false --
+    # one outstanding credit is enough -- so an acknowledge taken from it can
+    # already be high when the peer first asks, and the link steps STOP -> RUN
+    # with ACTIVATE never visible.
+    #
+    # want_link is a term because it carries cfg.lasm_stall_activation_cycles:
+    # where the stall withholds the acknowledge it must withhold it here too.
+    #
+    # The requester side has always been written this way; only the completer
+    # acknowledged its own request. See vip_chi_driver_rni.py.
+    # The acknowledge is a ONE-CYCLE DELAY of our own request, taken off the
+    # wire. The drive lands next cycle, so the wire read here carries what was
+    # driven last cycle and the acknowledge follows the request by exactly one
+    # cycle -- rising and falling both. Our request is itself a response to the
+    # peer's, so the peer sees {rxreq=1, txack=0} -- the ACTIVATE state of Table
+    # 14-1 -- for at least one cycle, which is what section 14.5.1 requires: the
+    # receiver acknowledges a request it has OBSERVED.
+    #
+    # That chain only holds while our request IS a response. want_link's else
+    # branch above is what keeps it one: a completer that raised its request on
+    # its own initiative would have its acknowledge up before the peer had asked
+    # for anything, and the link would step STOP -> RUN with ACTIVATE never
+    # visible.
     self.ack_driven = bool(self.bus.get("txlinkactivereq"))
 
     # Negative control for 14.6.3's SECOND ordering: "the deassertion of RXACK

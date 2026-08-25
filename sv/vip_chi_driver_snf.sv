@@ -258,7 +258,16 @@ class vip_chi_driver_snf #(
       want_link = (this.activate_stall_remaining == 0);
     end
     else begin
-      want_link = !this.link_drained();
+      // A DRAIN term, not an activation one: it keeps a link that is already up
+      // from going down while credits are still outstanding. Gated on this
+      // node's own sideband being up for exactly that reason -- with the link in
+      // STOP and the peer asking for nothing, an outstanding credit is not a
+      // reason to raise the request, and raising it there is what puts the
+      // acknowledge up before the peer has asked. Measured with a credit held
+      // through reset: txlinkactivereq asserted in the first cycle after release
+      // while the peer's rxlinkactivereq was still zero.
+      want_link = (this.vif_snf.txlinkactivereq || this.vif_snf.txlinkactiveack) &&
+                  !this.link_drained();
     end
 
 
@@ -292,10 +301,51 @@ class vip_chi_driver_snf #(
       return;
     end
 
+    // The acknowledge answers the PEER's request, one cycle behind it. The
+    // clocking-block read samples what the peer is asking for in this cycle and
+    // the drive is non-blocking, so the acknowledge lands in the next one --
+    // which is what makes {rxreq=1, txack=0}, the ACTIVATE state of Table 14-1,
+    // visible for at least a cycle. Section 14.5.1 requires exactly that: the
+    // receiver acknowledges a request it has OBSERVED, and Table 14-2 says the
+    // transmitter "remains in the ACTIVATE state while it is waiting for the
+    // receiver to acknowledge the move to the RUN state".
+    //
+    // It must NOT be derived from our own txlinkactivereq. want_link raises that
+    // signal on this node's own initiative whenever link_drained() is false --
+    // one outstanding credit is enough -- so an acknowledge taken from it can
+    // already be high when the peer first asks, and the link steps STOP -> RUN
+    // with ACTIVATE never visible. Measured: with a credit held through reset,
+    // txlinkactivereq is asserted in the first cycle after release while the
+    // peer's rxlinkactivereq is still zero.
+    //
+    // want_link is a term because it carries cfg.lasm_stall_activation_cycles:
+    // where the stall withholds the acknowledge it must withhold it here too.
+    // The other two terms are wires, which is what keeps this consistent across
+    // callers -- this task runs from several threads in a cycle (activate_link,
+    // the credit loop, the drain loops) and link_drained()'s counters move
+    // inside a cycle, so a value derived from them can differ between two calls
+    // in the same cycle. Two earlier versions drove the request from one value
+    // and the acknowledge from another and produced, in order, "RUN -> STOP
+    // (txreq=0 txack=0 rxreq=0 rxack=0)" -- everything falling together -- and
+    // then "RX link stepped RUN -> ACTIVATE", our own acknowledge falling before
+    // our own request.
+    //
+    // The requester side has always been written this way; only the completer
+    // acknowledged its own request. See vip_chi_driver_rni.sv, which drives
+    // txlinkactiveack straight from rxlinkactivereq.
     // The acknowledge is a ONE-CYCLE DELAY of our own request, taken off the
-    // wire, and that is the whole trick. The drive is non-blocking, so the wire
-    // read here carries what was driven last cycle and the acknowledge lands
-    // exactly one cycle behind the request -- rising and falling both.
+    // wire. The drive is non-blocking, so the wire read here carries what was
+    // driven last cycle and the acknowledge lands exactly one cycle behind the
+    // request -- rising and falling both. Our request is itself a response to
+    // the peer's, so the peer sees {rxreq=1, txack=0} -- the ACTIVATE state of
+    // Table 14-1 -- for at least one cycle, which is what section 14.5.1
+    // requires: the receiver acknowledges a request it has OBSERVED.
+    //
+    // That chain only holds while our request IS a response. want_link's else
+    // branch above is what keeps it one: a completer that raised its request on
+    // its own initiative would have its acknowledge up before the peer had asked
+    // for anything, and the link would step STOP -> RUN with ACTIVATE never
+    // visible.
     //
     // It reads NOTHING but wires, which is what makes it correct: this task runs
     // from several threads in a cycle (activate_link, the credit loop, the drain

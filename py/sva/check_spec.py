@@ -85,6 +85,7 @@ CHECK_SPEC_C = {
   # The Link Activation State Machine: the legal transition set, and the two
   # handshakes that must not stall forever.
   "CHI_LASM_LEGAL_TRANSITION":         "E section 14.6.2 / D section 13.6.2",
+  "CHI_LASM_ACTIVATE_OBSERVED":        "E section 14.5.1 Table 14-2 / D section 13.5.1",
   "CHI_LASM_ACTIVATION_TIMEOUT":       "E section 14.6.2 / D section 13.6.2",
   "CHI_LASM_DEACTIVATION_TIMEOUT":     "E section 14.6.2 / D section 13.6.2",
 

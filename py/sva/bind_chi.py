@@ -837,6 +837,11 @@ class bind_chi:
     self._tx_lasm = LasmState.STOP
     self._tx_lasm_dwell = 0
     self._rx_lasm = LasmState.STOP
+    # Whether ACTIVATE has been observed since this LASM last left RUN. The
+    # legal-step rule judges one step at a time and cannot express "the link
+    # went up through ACTIVATE", which is a claim about the whole activation.
+    self._tx_activate_seen = False
+    self._rx_activate_seen = False
     self._rx_lasm_dwell = 0
 
   def _reset_tracking_state(self) -> None:
@@ -1269,6 +1274,37 @@ class bind_chi:
         lasm_legal_step(cur, nxt),
         f"{who} link stepped {cur.name} -> {nxt.name}; the LASM may only hold "
         f"or advance STOP -> ACTIVATE -> RUN -> DEACTIVATE -> STOP")
+
+      # A second, different claim about the same edge: the link went up THROUGH
+      # ACTIVATE, not merely by a step the transition table permits.
+      #
+      # Section 14.5.1 makes the receiver acknowledge a request it has OBSERVED,
+      # and Table 14-2 states it from the transmitter's side -- it "remains in
+      # the ACTIVATE state while it is waiting for the receiver to acknowledge
+      # the move to the RUN state". So {req=1, ack=0} has to be visible for at
+      # least one cycle on every activation.
+      #
+      # The step rule alone does not say this. It judges consecutive samples, so
+      # it reports STOP -> RUN when the two signals move on the same edge -- but
+      # it is silent about an activation whose ACTIVATE cycle exists only
+      # between two of its own evaluations, and it can be turned OFF by a
+      # negative control that wants a different illegal step, taking this claim
+      # with it. Stated separately, it holds independently.
+      seen = (self._tx_activate_seen if who == "TX" else self._rx_activate_seen)
+      if nxt is LasmState.ACTIVATE:
+        seen = True
+      if nxt is LasmState.RUN and cur is not LasmState.RUN:
+        self._chk(
+          "CHI_LASM_ACTIVATE_OBSERVED",
+          seen,
+          f"{who} link entered RUN without ACTIVATE ever being visible; a "
+          f"receiver cannot acknowledge a request in the cycle it first appears")
+      if nxt is LasmState.STOP:
+        seen = False
+      if who == "TX":
+        self._tx_activate_seen = seen
+      else:
+        self._rx_activate_seen = seen
 
     cur = self._tx_lasm
     nxt = self._tx_lasm_of(s)
