@@ -49,6 +49,7 @@ _PATHS = [
   _ROOT / "py",
   _ROOT / "py" / "seq_lib",
   _ROOT / "submodules" / "vip_memory" / "py",
+  _ROOT / "submodules" / "vip_gauss" / "py",
   _PY_ROOT / "tb",
   _PY_ROOT / "tc",
 ]

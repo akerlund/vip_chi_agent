@@ -242,6 +242,11 @@ fi
 # sweep is the only place that knows both numbers at once.
 python3 "$ROOT/scripts/check_test_counts.py" >> "$SUMMARY" 2>&1 || true
 
+# The two launchers' Python import paths. A hard gate: a divergence here passes
+# every run.py sweep and fails every other launcher, so an advisory line would be
+# read on exactly the runs that cannot see the problem.
+python3 "$ROOT/scripts/check_import_path_parity.py" >> "$SUMMARY" 2>&1 || import_path_bad=1
+
 # What the two ports' coherency checkers JUDGED on the same testcase. Every check
 # above compares a SURFACE -- enums, config fields, opcode sets, classifiers,
 # testcase lists -- and all of them pass when the ports agree about what exists.
@@ -288,4 +293,4 @@ python3 "$ROOT/scripts/check_bind_coverage.py" --csv "$OUT_DIR/check_tallies.csv
 python3 "$ROOT/scripts/check_opcode_evidence.py" "$OPCODE_CSV" \
   "$ROOT/build/py_regression/opcode_evidence.csv" >> "$SUMMARY" 2>&1 || opcode_gap=1
 
-exit $(( fail > 0 || ${bind_gap:-0} > 0 || ${illegal_bins_bad:-0} > 0 || ${opcode_gap:-0} > 0 ))
+exit $(( fail > 0 || ${bind_gap:-0} > 0 || ${illegal_bins_bad:-0} > 0 || ${opcode_gap:-0} > 0 || ${import_path_bad:-0} > 0 ))
