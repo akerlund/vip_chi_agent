@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+import pathlib
 from pathlib import Path
 
 
@@ -63,6 +64,18 @@ def main() -> int:
     return 0
 
   selected = select_tests(args, cases)
+
+  # A full sweep starts its tally file empty. The export appends, so a file left
+  # from an earlier tree would sit under this sweep's rows -- and while
+  # check_tally_parity.py takes the LAST row per (run, bind, check) and is
+  # therefore safe, check_vacuity.py reads the same file and a stale run name
+  # would show as a testcase that no longer exists. A single -t run still
+  # appends, which is what lets one be added to a sweep's file on purpose.
+  if args.all:
+    stale = pathlib.Path(env(root)["VIP_CHI_CHECK_CSV"])
+    if stale.is_file():
+      stale.unlink()
+
   if args.build or selected:
     if not args.no_build:
       rc = build(root, args.clean)
@@ -196,6 +209,19 @@ def env(root: Path, case: TestCase | None = None) -> dict[str, str]:
   ]
   values = os.environ.copy()
   values["VIP_ROOT"] = str(root)
+
+  # The per-check tally export, defaulted rather than left to be remembered.
+  #
+  # check_tally_parity.py compares what the two ports DECIDED about the same
+  # stimulus, and it needs both ports' CSVs. The SystemVerilog sweep writes its
+  # own unconditionally; this one wrote nothing unless VIP_CHI_CHECK_CSV happened
+  # to be exported, so the comparison was a manual step -- and four divergences
+  # reached the tree while it was one. Defaulting the path makes the file exist
+  # after any sweep. An explicit setting still wins.
+  values.setdefault("VIP_CHI_CHECK_CSV",
+                    str(root / "build" / "py_regression" / "check_tallies.csv"))
+  csv_path = pathlib.Path(values["VIP_CHI_CHECK_CSV"])
+  csv_path.parent.mkdir(parents=True, exist_ok=True)
   values["PYTHONPATH"] = os.pathsep.join(
     [str(path) for path in paths] + [values.get("PYTHONPATH", "")]
   )

@@ -177,10 +177,22 @@ class chi_tb_env(uvm_env):
     if csv_path:
       self.scoreboard.export_check_csv(csv_path, run_name)
 
-    total = self.rni_sva.errors + self.snf_sva.errors
+    # The scoreboard is in this sum, and it was not before. In this port a
+    # scoreboard rule reports through the logger while the verdict comes from
+    # assertions, so a rule could fire and the testcase still pass -- which is
+    # how a conformant standalone Persist was reported on three testcases that
+    # all passed. The SystemVerilog port never had the gap: its chk_bad raises a
+    # uvm_error and the regression script gates on "UVM_ERROR :    0".
+    #
+    # Declared provocations are excluded, which is what expect_failure() is for.
+    # A negative control still asserts its own counts; what this catches is a
+    # rule firing unasked.
+    sb = self.scoreboard.total_unexpected_errors()
+    total = self.rni_sva.errors + self.snf_sva.errors + sb
     assert total == 0, (
       f"CHI protocol checkers reported {total} violation(s): "
-      f"rni_sva={self.rni_sva.errors} snf_sva={self.snf_sva.errors}")
+      f"rni_sva={self.rni_sva.errors} snf_sva={self.snf_sva.errors} "
+      f"scoreboard={sb}")
 
   def handle_reset(self):
     self.coverage.handle_reset()

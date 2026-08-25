@@ -49,14 +49,23 @@ import sys
 # why the two ports cannot agree, and anything not listed is a finding.
 EXPECTED_C: dict[str, str] = {
     "CHI_LCRD_QUIESCENT_IN_STOP":
-        " , open: in tc_chi_reset_idle_scope the pyUVM port reports a "
-        "credit stranded in STOP and the SystemVerilog port does not. Both "
-        "ports drive the violating credit from the same place with the same "
-        "knob, so the leading hypothesis is a ONE-CYCLE SKEW -- SystemVerilog "
-        "drives it through a clocking block and so lands it an edge later, by "
-        "which time the machine may already have left STOP, while cocotb's "
-        "drive takes effect immediately. NOT CONFIRMED. Listed so this check "
-        "stays usable; it is a finding, not a decision.",
+        "open, cause CONFIRMED by probing both ports at the reset release. It "
+        "is the STIMULUS, not the checker, and the original skew hypothesis is "
+        "refuted in the direction it was stated. cfg.reset_idle_violation parks "
+        "an RSP L-Credit for the reset window. At the release edge the "
+        "SystemVerilog port samples txrsplcrdv=0 -- its drive goes through a "
+        "clocking block, so the credit loop's ordinary zero has already "
+        "overwritten the parked value -- while the pyUVM port samples 1, "
+        "because a cocotb write takes effect immediately and persists until "
+        "something else writes it. Both ports zero their credit counters in "
+        "reset, so the counters are not the difference. One cycle later the "
+        "link is still in STOP, so the pyUVM port counts a credit advertised "
+        "there and reports; the SystemVerilog port has nothing to count. "
+        "Closing it means aligning WHEN the parked signal is released, and the "
+        "agent re-forks driver_start only on the first non-reset edge -- after "
+        "the checker has sampled -- so the clear has to move earlier than "
+        "driver_start. Listed so this check stays usable; it is a finding, not "
+        "a decision.",
 }
 
 # Rules one port does not implement at all. Read from the Python registry so this

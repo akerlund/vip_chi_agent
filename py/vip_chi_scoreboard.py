@@ -885,8 +885,27 @@ class vip_chi_scoreboard(uvm_component):
 
   @staticmethod
   def _persist_target_node(ctx) -> int:
-    """The node a PCMO's Persist must be addressed to: 2.8 names ReturnNID."""
-    return int(ctx.return_nid)
+    """The node a PCMO's Persist must be addressed to.
+
+    Section 2.8 names ReturnNID, and Table 2-8 is where it is normative: the
+    row is a Combined Write carrying a persistent CMO, where the Home has a
+    Requester to route the Persist back to and puts its node in ReturnNID.
+
+    A STANDALONE CleanSharedPersistSep is not that row. It carries no ReturnNID
+    of its own -- every such request in this tree leaves the field at zero --
+    and reading 13.10.4's general sentence as normative there would demand the
+    Persist be addressed to node 0, which would false-fail traffic no clause
+    plainly forbids. So the standalone form is judged against the requester's
+    own SrcID, which is where a completer with nothing else to go on sends it.
+
+    The SystemVerilog port drew this distinction and this one did not, so a
+    conformant standalone Persist was reported here and passed there --
+    found by check_tally_parity.py, which is the only thing that compares what
+    the two ports DECIDED about the same stimulus.
+    """
+    if req_opcode_combined_cmo_is_persist(int(ctx.opcode)):
+      return int(ctx.return_nid)
+    return int(ctx.requester_node)
 
   # ==========================================================================
   # Checker A - requester RSP.
@@ -1649,6 +1668,25 @@ class vip_chi_scoreboard(uvm_component):
           self.chk_fail[rule], source_revision()))
 
   # Total hard-error count (excludes the advisory reads_skipped / wrong_opcode).
+  def total_unexpected_errors(self):
+    """Failures on rules this run did NOT declare it was provoking.
+
+    total_errors() below is the legacy sum and counts everything, which is what
+    a negative control asserting on its own provocation needs. This is what an
+    ENVIRONMENT needs: the same sum with the declared provocations taken out, so
+    it can fail a test on a rule that fired unasked.
+
+    It closes a real gap rather than tidying one. In this port a scoreboard rule
+    reports through the logger, and the test verdict comes from assertions -- so
+    a scoreboard rule could fire and the testcase still pass. The SystemVerilog
+    port never had it: chk_bad raises a uvm_error, and the regression script
+    gates on "UVM_ERROR :    0". Found by check_tally_parity.py, which caught a
+    conformant standalone Persist being reported here and passing there; the
+    report had been in the log all along with nothing reading it.
+    """
+    return sum(n for rule, n in self.chk_fail.items()
+               if n and self.chk_severity[rule] is not CheckSeverity.OFF)
+
   def total_errors(self):
     return (self.n_incomplete + self.n_orphan + self.n_reuse
             + self.n_data_mismatch + self.n_relay_mismatch + self.n_route_mismatch

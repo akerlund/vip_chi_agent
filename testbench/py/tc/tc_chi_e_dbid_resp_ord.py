@@ -76,6 +76,11 @@ class tc_chi_e_dbid_resp_ord(chi_e_base_test):
     # CHI_SB_ORIGINATOR_LEGAL found this on its first sweep, in the SystemVerilog
     # port, before anyone had read Table B-3 for DBIDRespOrd.
     sb = self.tb_env.scoreboard
+    # The second half of this testcase switches the Home stand-in off and
+    # provokes the rule on purpose, so the environment's end-of-test check has
+    # to be told. Declared here rather than beside the provocation because the
+    # env reads it once, at the end.
+    sb.expect_failure("CHI_SB_ORIGINATOR_LEGAL")
     assert sb.n_originator_illegal == 0, (
       f"Appendix B reported {sb.n_originator_illegal} violation(s) on ordered "
       f"write traffic the stand-in is supposed to cover")

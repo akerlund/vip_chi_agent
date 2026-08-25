@@ -63,6 +63,12 @@ class tc_chi_e_dwt_dbid_return_nid_negctl(chi_e_base_test):
     self.raise_objection()
 
     sb = self.tb_env.scoreboard
+    # Declared, so the environment's end-of-test check knows this run provokes
+    # it on purpose. expect_failure only changes what the aggregation and the
+    # env make of the count -- the rule still evaluates, still counts and still
+    # reports, which is what the assertions below read.
+
+    sb.expect_failure(RULE_C)
     self.drain_observation_fifos()
 
     before_fail = sb.chk_fail.get(RULE_C, 0)

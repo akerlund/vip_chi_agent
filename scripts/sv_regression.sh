@@ -184,6 +184,27 @@ python3 "$ROOT/scripts/check_tagop_groups.py" >> "$SUMMARY" 2>&1 || true
 # than describing the code. No simulator needed.
 python3 "$ROOT/scripts/check_review_refs.py" >> "$SUMMARY" 2>&1 || true
 
+# What the two ports DECIDED about the same stimulus, per (testcase, rule).
+#
+# Every other cross-port gate compares a SURFACE -- config fields, enums, opcode
+# sets, classifiers, testcase lists -- and all of them pass when the ports agree
+# about what EXISTS. This one asks whether they agreed about what happened, which
+# is where the divergences have actually been: five of the six defects the first
+# licensed sweep found were one-port defects with the other port already right.
+#
+# It needs BOTH ports' CSVs. The Python one is now written to a defaulted path by
+# testbench/py/scripts/run.py, so it exists after any pyUVM sweep; until that
+# default existed this was a manual step, which is how four divergences reached
+# the tree. Advisory here, and it reports rather than gates when the pyUVM file
+# is absent -- a missing Python sweep is not a failure of this one.
+PY_TALLIES="$ROOT/build/py_regression/check_tallies.csv"
+if [ -f "$PY_TALLIES" ]; then
+  python3 "$ROOT/scripts/check_tally_parity.py" \
+    "$OUT_DIR/check_tallies.csv" "$PY_TALLIES" >> "$SUMMARY" 2>&1 || true
+else
+  echo "tally parity: no pyUVM CSV at $PY_TALLIES; run testbench/py/scripts/run.py -a" >> "$SUMMARY"
+fi
+
 # The regression sizes quoted in prose, against the testcases that exist. The
 # sweep is the only place that knows both numbers at once.
 python3 "$ROOT/scripts/check_test_counts.py" >> "$SUMMARY" 2>&1 || true
