@@ -151,7 +151,7 @@ class vip_chi_coherency_checker #(
   // MakeUnique completes on an RSP-only Comp (no CompData), so its unique grant is
   // resolved on the RSP stream, not obs_dat. Remember the line per (node,TxnID) at
   // the REQ so obs_rsp can mark the requester Unique and run the single-writer
-  // check -- otherwise a suppressed-snoop MakeUnique duplicate owner goes unseen. [F1]
+  // check -- otherwise a suppressed-snoop MakeUnique duplicate owner goes unseen.
   protected longint open_mu_line  [N_NODES_C][longint];
 
   // Why a reservation was last broken, recorded on the 1->0 transition (root
@@ -303,6 +303,12 @@ class vip_chi_coherency_checker #(
   protected vip_chi_resp_t       sr_resp_state_sample;
   protected bit                  sr_returned_data_sample;
 
+  // cg_req_snp_pairing samples, set where a snoop is correlated back to the
+  // request that caused it. Both fields are known only at that one point: the
+  // snoop flit carries no request opcode, and the request carries no snoop.
+  protected item_t::req_opcode_t rs_cause_req_sample;
+  protected item_t::snp_opcode_t rs_snp_opcode_sample;
+
   // cg_req_cache_transition samples, set where a request completes. The requester
   // axis had no coverage target of any kind before 3.2 -- cg_cache_transition
   // covers the snoop axis only -- which is a large part of why the held-state
@@ -391,6 +397,96 @@ class vip_chi_coherency_checker #(
       // form appears among its permitted responses.
       illegal_bins make_invalid_returns_no_data =
         binsof(cp_snp.snp_make_invalid) && binsof(cp_data.with_data);
+    }
+  endgroup
+
+  // ---------------------------------------------------------------------------
+  // The request x snoop surface: which snoop the Home sent for the request that
+  // caused it -- IHI 0050 E Table 4-5 (D Table 4-3) and the bullets under it.
+  //
+  // Table 4-5 is indexed by request opcode. A coverage model that carries the
+  // two opcodes in separate covergroups, sampled at separate call sites, cannot
+  // express a single row of it, so every rule of that shape is uncovered however
+  // many tests run. The two are brought together here because this is the only
+  // place both are known: the snoop flit carries no request opcode, and the
+  // request has long completed its REQ-channel sampling by the time the snoop
+  // goes out. cg_snp_resp_legality does the same for the neighbouring
+  // snoop x response axis.
+  //
+  // Sampled only where the correlation is REAL -- one outstanding request on the
+  // line, from another node. A spontaneous snoop is permitted and has no cause,
+  // and recording it against whichever request happened to be open would fill
+  // the cross with pairings the Home never chose.
+  // ---------------------------------------------------------------------------
+  covergroup cg_req_snp_pairing;
+    option.per_instance = 1;
+
+    // The snoop-generating requests, from Table 4-5's index column rather than
+    // from what this Home happens to issue -- a bin set drawn from the driver
+    // reads closed on a space that excludes the answers the driver never gives.
+    cp_req: coverpoint this.rs_cause_req_sample {
+      bins read_shared       = {VIP_CHI_REQ_READ_SHARED_C};
+      bins read_clean        = {VIP_CHI_REQ_READ_CLEAN_C};
+      bins read_once         = {VIP_CHI_REQ_READ_ONCE_C};
+      bins read_unique       = {VIP_CHI_REQ_READ_UNIQUE_C};
+      bins make_read_unique  = {VIP_CHI_REQ_MAKE_READ_UNIQUE_C};
+      bins clean_unique      = {VIP_CHI_REQ_CLEAN_UNIQUE_C};
+      bins clean_invalid     = {VIP_CHI_REQ_CLEAN_INVALID_C};
+      bins make_unique       = {VIP_CHI_REQ_MAKE_UNIQUE_C};
+      bins make_invalid      = {VIP_CHI_REQ_MAKE_INVALID_C};
+      bins write_unique_full = {VIP_CHI_REQ_WRITE_UNIQUE_FULL_C};
+      bins write_unique_zero = {VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C};
+    }
+
+    cp_snp: coverpoint this.rs_snp_opcode_sample {
+      bins snp_shared        = {VIP_CHI_SNP_SHARED_C};
+      bins snp_clean         = {VIP_CHI_SNP_CLEAN_C};
+      bins snp_once          = {VIP_CHI_SNP_ONCE_C};
+      bins snp_clean_shared  = {VIP_CHI_SNP_CLEAN_SHARED_C};
+      bins snp_unique        = {VIP_CHI_SNP_UNIQUE_C};
+      bins snp_clean_invalid = {VIP_CHI_SNP_CLEAN_INVALID_C};
+      bins snp_make_invalid  = {VIP_CHI_SNP_MAKE_INVALID_C};
+      bins snp_shared_fwd    = {VIP_CHI_SNP_SHARED_FWD_C};
+      bins snp_clean_fwd     = {VIP_CHI_SNP_CLEAN_FWD_C};
+      bins snp_once_fwd      = {VIP_CHI_SNP_ONCE_FWD_C};
+      bins snp_unique_fwd    = {VIP_CHI_SNP_UNIQUE_FWD_C};
+    }
+
+    cx_req_snp: cross cp_req, cp_snp {
+      // A request that must leave no other holder, answered with a snoop that
+      // lets the snoopee keep a copy. Whatever the snoopee then reports, a
+      // sharer survives a request whose whole purpose was to remove it, and no
+      // single flit looks wrong.
+      illegal_bins unique_request_leaves_a_copy =
+        (binsof(cp_req.read_unique)       ||
+         binsof(cp_req.make_read_unique)  ||
+         binsof(cp_req.clean_unique)      ||
+         binsof(cp_req.clean_invalid)     ||
+         binsof(cp_req.make_unique)       ||
+         binsof(cp_req.make_invalid)      ||
+         binsof(cp_req.write_unique_full) ||
+         binsof(cp_req.write_unique_zero)) &&
+        (binsof(cp_snp.snp_shared)       ||
+         binsof(cp_snp.snp_clean)        ||
+         binsof(cp_snp.snp_once)         ||
+         binsof(cp_snp.snp_clean_shared) ||
+         binsof(cp_snp.snp_shared_fwd)   ||
+         binsof(cp_snp.snp_clean_fwd)    ||
+         binsof(cp_snp.snp_once_fwd));
+
+      // The other direction: a read that asks for no more than a shared copy,
+      // answered with a snoop that invalidates every other holder. It is not
+      // merely wasteful -- the sharers lose a line nothing asked them to give
+      // up, and a Dirty one is made to write back on a request that never
+      // needed the data moved.
+      illegal_bins non_unique_read_invalidates =
+        (binsof(cp_req.read_shared) ||
+         binsof(cp_req.read_clean)  ||
+         binsof(cp_req.read_once))  &&
+        (binsof(cp_snp.snp_unique)       ||
+         binsof(cp_snp.snp_unique_fwd)   ||
+         binsof(cp_snp.snp_make_invalid) ||
+         binsof(cp_snp.snp_clean_invalid));
     }
   endgroup
 
@@ -549,7 +645,7 @@ class vip_chi_coherency_checker #(
     cp_to: coverpoint this.ct_to_sample {
       bins inv = {VIP_CHI_RESP_STATE_I_E};
       bins sc  = {VIP_CHI_RESP_STATE_SC_E};
-      // [F3] a snoop can never UPGRADE a holder, and none of the four binned
+      // A snoop can never UPGRADE a holder, and none of the four binned
       // opcodes leaves it Unique: the three invalidating ones end at I, and
       // SnpShared exists to create a sharer. Either outcome landing here is a
       // miswire, so it is flagged rather than silently vanishing as an unbinned
@@ -681,6 +777,7 @@ class vip_chi_coherency_checker #(
     this.cg_cache_transition = new();
     this.cg_req_cache_transition = new();
     this.cg_snp_resp_legality = new();
+    this.cg_req_snp_pairing = new();
     this.cg_directory_occupancy = new();
     this.cg_excl = new();
     this.cg_hnf_downstream = new();
@@ -1076,6 +1173,17 @@ class vip_chi_coherency_checker #(
     end
 
     this.n_snp_req_judged++;
+
+    // The cross, recorded for every correlated pair including the ones the rule
+    // below rejects: a cross that only ever saw conformant traffic would say
+    // nothing about what was exercised. The two illegal classes it declares are
+    // a strict subset of what vip_chi_snoop_permitted_for_req rejects -- checked
+    // by scripts/check_req_snp_illegal_bins.py -- so a run that trips one has
+    // already been reported by this rule.
+    this.rs_cause_req_sample = item_t::req_opcode_t'(cause_op);
+    this.rs_snp_opcode_sample = item_t::snp_opcode_t'(snp_op);
+    this.cg_req_snp_pairing.sample();
+
     if (!vip_chi_req_generates_snoop(cause_op)) begin
       this.n_snp_req_mismatch++;
       `uvm_error("VIP_CHI_COH", $sformatf(
@@ -1174,7 +1282,7 @@ class vip_chi_coherency_checker #(
     // MakeUnique is a no-data unique acquire (the requester will overwrite the
     // whole line). It is a store (breaks every reservation) AND grants the
     // requester Unique on an RSP-only Comp -- record the line so obs_rsp can mark
-    // ownership and run the single-writer check. [F1]
+    // ownership and run the single-writer check.
     else if (wop == VIP_CHI_REQ_MAKE_UNIQUE_E) begin
       this.open_mu_line[node][longint'(item.txn_id)] = line;
       this.clear_excl_all(line);
@@ -1750,10 +1858,10 @@ class vip_chi_coherency_checker #(
     // MakeUnique completion (RSP-only Comp): mark the requester the Unique owner
     // and run the single-writer check -- the ownership shadow is otherwise updated
     // only by CompData (obs_dat), so without this a MakeUnique never registers as
-    // an owner and a suppressed-snoop duplicate-owner bug would pass. [F1]
+    // an owner and a suppressed-snoop duplicate-owner bug would pass.
     if (this.open_mu_line[node].exists(longint'(item.txn_id))) begin
       line = this.open_mu_line[node][longint'(item.txn_id)];
-      // [F1] Validate the OBSERVED completion rather than inventing a state: a
+      // Validate the OBSERVED completion rather than inventing a state: a
       // MakeUnique must complete with a data-less Comp, and a completer that
       // returns any other opcode is a protocol error.
       if (item.rsp_opcode !== item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) begin
@@ -1895,6 +2003,7 @@ class vip_chi_coherency_checker #(
   function int get_comp_ack_window_snoop_count();    return this.n_eca_window_snoops;    endfunction
   function int get_comp_ack_window_unclosed_count(); return this.n_eca_windows_unclosed; endfunction
   function real get_snp_resp_legality_coverage(); return this.cg_snp_resp_legality.get_coverage(); endfunction
+  function real get_req_snp_pairing_coverage(); return this.cg_req_snp_pairing.get_coverage(); endfunction
   function int get_line_hazard_count(); return this.n_line_hazard; endfunction
   // Clean claim/release pairs. A test asserts on this to show the hazard rule
   // actually evaluated, rather than reading a zero violation count from a run
@@ -1947,6 +2056,11 @@ class vip_chi_coherency_checker #(
     `uvm_info(get_name(), $sformatf(
       "COHERENCY SNP REQ MATCH SUMMARY: snp_req_judged=%0d snp_req_mismatch=%0d snp_req_uncorrelated=%0d",
       this.n_snp_req_judged, this.n_snp_req_mismatch, this.n_snp_req_uncorrelated), UVM_LOW)
+    // Its own line: the report server wraps a long one, and a wrapped
+    // `field=value` is invisible to the sweeps that grep for these.
+    `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY REQ SNP PAIRING SUMMARY: req_snp_pairing_coverage=%0.1f",
+      this.cg_req_snp_pairing.get_coverage()), UVM_LOW)
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY HAZARD SUMMARY: line_hazards=%0d line_claims_cleared=%0d",
       this.n_line_hazard, this.n_line_clear), UVM_LOW)

@@ -38,8 +38,8 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
   localparam int            ABORT_REPORTS_C     = 2;
   localparam int            RACE_REPORTS_RNI_C  = 2;
   localparam int            RACE_REPORTS_SNF_C  = 0;
-  // 14.6.3's companion requirement, on the OBSERVER rather than the driver. The
-  // completer is where it lands, and where it currently fails -- see the check.
+  // 14.6.3's companion requirement, on the OBSERVER rather than the driver. Both
+  // ends must be silent -- see the check for what each one's inputs are.
   localparam int            HOLD_REPORTS_RNI_C  = 0;
   localparam int            HOLD_REPORTS_SNF_C  = 0;
 
@@ -189,15 +189,15 @@ class tc_chi_lasm_illegal_transition extends chi_base_test;
     // component that observes the input race is required to wait for both
     // signals before changing any output signals."
     //
-    // The requester's abort reaches the completer as an input race -- its two
-    // inputs step out of the order the four orderings require -- and the
-    // completer does NOT wait: its acknowledge, one cycle behind its own
-    // request, rises in the middle of the race. That is a real gap in this VIP,
-    // recorded rather than waived, and the count is pinned at 1 so the fix shows
-    // up here as this dropping to zero and nowhere else.
+    // NEITHER end may report. The requester's abort reaches the completer as an
+    // input race -- its two inputs step out of the order the four orderings
+    // require -- and the completer holds its outputs across it: it raises no
+    // activation of its own for a link it was only asked to hold up, so its
+    // acknowledge has nothing to rise against mid-race. The requester's own
+    // inputs are the completer's two outputs, and those stay ordered.
     //
-    // The requester reports NONE: its own inputs are the completer's two
-    // outputs, and those stay ordered.
+    // Asserted at both ends rather than waived at one, so a completer that
+    // starts moving an output inside the race fails here and nowhere else.
     rni_hold = super.tb_env.rni_agent.vif.check_fail_count[VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E];
     snf_hold = super.tb_env.snf_agent.vif.check_fail_count[VIP_CHI_CHK_LASM_INPUT_RACE_HOLD_E];
 

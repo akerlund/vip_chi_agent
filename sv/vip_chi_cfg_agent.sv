@@ -821,6 +821,18 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0.
   bit rnf_snp_resp_sd_negctl = 1'b0;
 
+  // Negative control for the snoop response-form rule. A dirty snoopee answers
+  // a snoop that returns no data -- SnpMakeInvalid -- on DAT, carrying the copy
+  // Chapter 4 requires it to discard.
+  //
+  // The control corrupts the DECISION, not the flit: the snoopee takes the
+  // data-bearing path a dirty holder takes for every other snoop, so the
+  // response that reaches the wire is one a real snoopee could emit, snapshot
+  // and all. A hand-built flit would exercise the checker's decoder instead of
+  // the rule.
+  // Default 0.
+  bit rnf_snp_resp_data_negctl = 1'b0;
+
   // ---------------------------------------------------------------------------
   // Constructor.
   // ---------------------------------------------------------------------------
@@ -1256,6 +1268,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.snf_resp_sep_data_negctl ||
         this.snf_tag_match_unrequested_negctl ||
         this.rnf_snp_resp_sd_negctl ||
+        this.rnf_snp_resp_data_negctl ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
         this.snf_corrupt_tag ||
         this.lasm_abort_activation || this.flit_without_flitpend ||

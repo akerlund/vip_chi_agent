@@ -2329,7 +2329,7 @@ class vip_chi_driver_hnf #(
         // concurrency was added without per-TxnID routing -- fatal loudly rather
         // than silently drop it (which would lose a real transaction's data).
         // Unreachable today; when a parallel engine lands, route/queue by
-        // channel + TxnID instead of removing this guard. [F5]
+        // channel + TxnID instead of removing this guard.
         `uvm_fatal(get_name(), $sformatf(
           "FATAL [%s] port %0d: unexpected DAT (opcode 0x%0h TxnID 0x%0h) while awaiting SnpResp for snoop TxnID 0x%0h -- concurrent-transaction flit with no per-TxnID routing (F5)",
           get_name(), k, dflit.opcode, dflit.txnid, snp_txn))
@@ -2366,7 +2366,7 @@ class vip_chi_driver_hnf #(
         // Non-matching RSP on the RN-facing channel while awaiting SnpResp. As on
         // the DAT path above, the serial engine never legitimately sees this;
         // fatal rather than silently drop a concurrent transaction's flit. When a
-        // parallel engine lands, route/queue by channel + TxnID. [F5]
+        // parallel engine lands, route/queue by channel + TxnID.
         `uvm_fatal(get_name(), $sformatf(
           "FATAL [%s] port %0d: unexpected RSP (opcode 0x%0h TxnID 0x%0h) while awaiting SnpResp for snoop TxnID 0x%0h -- concurrent-transaction flit with no per-TxnID routing (F5)",
           get_name(), k, rflit.opcode, rflit.txnid, snp_txn))

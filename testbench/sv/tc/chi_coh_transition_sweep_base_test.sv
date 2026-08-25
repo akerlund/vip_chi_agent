@@ -303,6 +303,20 @@ class chi_coh_transition_sweep_base_test #(
         super.tc_name, super.tb_env.coh_checker.get_snp_resp_legality_coverage()))
     end
 
+    // The neighbouring cross, on the CAUSE axis: which snoop the home chose for
+    // the request that provoked it. Table 4-5 is indexed by request opcode, so
+    // this is the axis its rows are written on, and the sweep is where it gets
+    // its spread -- seven requests against three primed states. The floor is
+    // measured from the sweep rather than derived from the table: most of Table
+    // 4-5's grid is unreachable from any one home's opcode set, and a floor
+    // nothing can meet would be turned off rather than fixed.
+    if ((super.tb_env.coh_checker.get_req_snp_pairing_coverage() > 0.0) &&
+        (super.tb_env.coh_checker.get_req_snp_pairing_coverage() < 25.0)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] the request-to-snoop cross closed only %0.1f%% under a coverage build -- the home is choosing fewer of Table 4-5's rows than this stimulus asks for",
+        super.tc_name, super.tb_env.coh_checker.get_req_snp_pairing_coverage()))
+    end
+
     // -------------------------------------------------------------------------
     // The requester axis. Same three-part discipline as D5/D6
     // above: the rule ran, it ran on the inputs that distinguish it, and nothing

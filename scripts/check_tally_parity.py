@@ -13,10 +13,8 @@ what the two ports DECIDED about the same stimulus.
 
 So a rule could fire in one port and be silent in the other, in the same
 testcase, with both numbers printed in both sweeps, and every gate would pass.
-That is not hypothetical: it is how and were found, by hand,
-after the fact -- and it is how this check came to be written, on a
-CHI_LCRD_QUIESCENT_IN_STOP divergence in tc_chi_reset_idle_scope that the full
-gate set had just passed clean.
+That is not hypothetical: divergences of exactly that shape have been found by
+hand, after the fact, on runs the full gate set had just passed clean.
 
 WHAT IS COMPARED, and why it is not the numbers. Fail COUNTS are not comparable
 between the ports, because the two express some rules at different granularity:

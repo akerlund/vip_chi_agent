@@ -441,6 +441,14 @@ class vip_chi_driver_rnf #(
     no_data   = vip_chi_snp_opcode_returns_no_data(
                   vip_chi_snp_opcode_t'(snp.opcode));
 
+    // The control puts a dirty holder on the data-bearing path for a snoop that
+    // returns none, which is the pairing Tables 4-9 / 4-11 do not list. Applied
+    // to the decision and not to the flit, so the snapshot below is taken too
+    // and the response is one a real snoopee could emit. See the knob.
+    if (this.cfg.rnf_snp_resp_data_negctl) begin
+      no_data = 1'b0;
+    end
+
     // Snapshot the beats to forward BEFORE mutating the model, so the response
     // carries the data held at snoop time. A snoop that returns no data takes
     // no snapshot: its dirty copy is discarded here rather than forwarded.
@@ -706,7 +714,7 @@ class vip_chi_driver_rnf #(
       // make process_snoop() forward a no-data SnpResp (the home then serves stale
       // memory) and make the DCT path wedge (the home waits for SnpRespDataFwded).
       // So materialize a defined image -- zeros, the freshly-"made" line the
-      // requester will overwrite -- sized to the coherence line. [fix F2]
+      // requester will overwrite -- sized to the coherence line.
       this.evict_for_capacity(line);
       this.cache_state[line] = vip_chi_req_final_state(
                                  vip_chi_req_opcode_t'(req.opcode), held, req.rsp_resp);

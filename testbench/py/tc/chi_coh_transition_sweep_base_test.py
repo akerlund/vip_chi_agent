@@ -57,6 +57,12 @@ _N_REQ_OPS = 4
 # and MakeUnique reaches UD from its opcode rather than from the held state, so
 # it is correctly not counted -- see resolve_req_final_state.
 _MIN_REQ_FINAL_RETAINED = 5
+# Distinct (request opcode, snoop opcode) pairs the sweep reaches. Measured from
+# the sweep itself rather than derived from Table 4-5: the table's full row set
+# is not reachable from this stimulus, and a floor nothing can meet would be
+# turned off rather than fixed. A DROP is the finding -- it means the home
+# stopped choosing a snoop it used to choose.
+_MIN_REQ_SNP_PAIRS = 7
 # Requester-sweep request kinds, indexing _SEQ_BY_KIND.
 _REQ_SWEEP_KINDS = (0, 1, 2, 6)
 _SEQ_BY_KIND = (
@@ -197,6 +203,16 @@ class chi_coh_transition_sweep_base_test(chi_coherent_base_test):
     assert len(triples) >= _MIN_SNP_RESP_TRIPLES, \
       f"the snoop-response legality cross reached only {len(triples)} distinct " \
       f"(opcode, state, with-data) triple(s) (< {_MIN_SNP_RESP_TRIPLES})"
+
+    # The neighbouring cross, on the CAUSE axis: which snoop the home chose for
+    # the request that provoked it. Table 4-5 is indexed by request opcode, so
+    # this is the axis its rows are written on, and the sweep is where it gets
+    # its spread -- seven requests against three primed states.
+    pairs = self.tb_env.coh_checker.get_req_snp_pairing_tuples()
+    assert len(pairs) >= _MIN_REQ_SNP_PAIRS, \
+      f"the request-to-snoop cross reached only {len(pairs)} distinct " \
+      f"(request, snoop) pair(s) (< {_MIN_REQ_SNP_PAIRS}); the home is choosing " \
+      f"fewer of Table 4-5's rows than this stimulus asks for"
 
     # The requester axis. Same three-part discipline as D5/D6
     # above: the rule ran, it ran on the inputs that distinguish it, and nothing

@@ -1,7 +1,7 @@
 // ===========================================================================
 // chi_coh_make_unique_negctl_base_test
 //
-// Negative control for Checker D's MakeUnique ownership tracking [F1]. The HN-F
+// Negative control for Checker D's MakeUnique ownership tracking. The HN-F
 // is put into snoop-suppression mode (cfg.hnf_suppress_snoops), so a MakeUnique
 // does NOT invalidate the other holder. RN-F0 first acquires the line Unique
 // (ReadUnique -> UC); RN-F1 then MakeUniques the SAME line. With snoops

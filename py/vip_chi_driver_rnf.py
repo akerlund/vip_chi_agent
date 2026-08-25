@@ -274,6 +274,13 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     was_dirty = self.state_is_dirty(cur)
     no_data = snp_opcode_returns_no_data(snp["opcode"])
 
+    # The control puts a dirty holder on the data-bearing path for a snoop that
+    # returns none, which is the pairing Tables 4-9 / 4-11 do not list. Applied
+    # to the decision and not to the flit, so the snapshot below is taken too and
+    # the response is one a real snoopee could emit. See the knob.
+    if self.cfg.rnf_snp_resp_data_negctl:
+      no_data = False
+
     # Snapshot the beats to forward BEFORE mutating the model. A snoop that
     # returns no data takes no snapshot: its dirty copy is discarded here rather
     # than forwarded.

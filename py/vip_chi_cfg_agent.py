@@ -627,6 +627,17 @@ class VipChiCfgAgent:
     # because what the checker judges is the response.
     self.rnf_snp_resp_sd_negctl = False
 
+    # Negative control for the snoop response-form rule. A dirty snoopee answers
+    # a snoop that returns no data -- SnpMakeInvalid -- on DAT, carrying the copy
+    # Chapter 4 requires it to discard.
+    #
+    # The control corrupts the DECISION, not the flit: the snoopee takes the
+    # data-bearing path a dirty holder takes for every other snoop, so the
+    # response that reaches the wire is one a real snoopee could emit, snapshot
+    # and all. A hand-built flit would exercise the checker's decoder instead of
+    # the rule.
+    self.rnf_snp_resp_data_negctl = False
+
   # ==========================================================================
   # is_valid -- runtime configuration self-check.
   #
@@ -840,6 +851,7 @@ class VipChiCfgAgent:
       "snf_resp_sep_data_negctl": self.snf_resp_sep_data_negctl,
       "snf_tag_match_unrequested_negctl": self.snf_tag_match_unrequested_negctl,
       "rnf_snp_resp_sd_negctl": self.rnf_snp_resp_sd_negctl,
+      "rnf_snp_resp_data_negctl": self.rnf_snp_resp_data_negctl,
       "snf_duplicate_dat_beat": self.snf_duplicate_dat_beat,
       "snf_corrupt_tag": self.snf_corrupt_tag,
       "snf_reorder_ordered_service": self.snf_reorder_ordered_service,

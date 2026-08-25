@@ -304,6 +304,10 @@ class vip_chi_coherency_checker(uvm_component):
     self.n_snp_dirty_lost = 0
     # cg_snp_resp_legality hit set: (snp_opcode, resp_state, with_data).
     self._srl_hit = set()
+    # cg_req_snp_pairing hit set: (cause_req_opcode, snp_opcode). The SV port
+    # carries this as a covergroup cross; this port has no covergroup object, so
+    # the surface is the set of pairs actually reached.
+    self._rsp_hit = set()
     # cg_cache_transition hit sets (one per covergroup item; see accessor).
     self._ct_from_hit = set()
     self._ct_snp_hit = set()
@@ -556,6 +560,14 @@ class vip_chi_coherency_checker(uvm_component):
       return
     cause_node, cause_op = causes[0]
     self.n_snp_req_judged += 1
+
+    # The cross, recorded for every correlated pair including the ones rejected
+    # below: a cross that only ever saw conformant traffic would say nothing
+    # about what was exercised. Table 4-5 is indexed by request opcode, so a
+    # coverage model carrying the two opcodes on separate axes cannot express a
+    # single row of it -- and this is the only point where both are known.
+    self._rsp_hit.add((_I(cause_op), _I(snp_op)))
+
     if not req_generates_snoop(cause_op):
       self.n_snp_req_mismatch += 1
       self.logger.error(
@@ -1173,6 +1185,12 @@ class vip_chi_coherency_checker(uvm_component):
     """
     return set(self._srl_hit)
 
+  def get_req_snp_pairing_tuples(self):
+    """The (cause request opcode, snoop opcode) pairs reached -- the pyUVM twin
+    of cg_req_snp_pairing's cross. Distinct pairs, not a count: one pair hit a
+    thousand times covers one point of Table 4-5."""
+    return set(self._rsp_hit)
+
   def get_line_hazard_count(self):
     return self.n_line_hazard
 
@@ -1265,6 +1283,11 @@ class vip_chi_coherency_checker(uvm_component):
       f"snp_req_judged={self.n_snp_req_judged} "
       f"snp_req_mismatch={self.n_snp_req_mismatch} "
       f"snp_req_uncorrelated={self.n_snp_req_uncorrelated}")
+    # Its own line: the report server wraps a long one, and a wrapped
+    # `field=value` is invisible to the sweeps that grep for these.
+    self.logger.info(
+      f"COHERENCY REQ SNP PAIRING SUMMARY: "
+      f"req_snp_pairs={len(self._rsp_hit)}")
     self.logger.info(
       f"COHERENCY HAZARD SUMMARY: line_hazards={self.n_line_hazard} "
       f"line_claims_cleared={self.n_line_clear}")

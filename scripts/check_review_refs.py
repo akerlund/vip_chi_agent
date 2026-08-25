@@ -52,10 +52,38 @@ _SUFFIXES_C = (".sv", ".svh", ".py", ".md", ".sh", ".core")
 _SKIP_C = ("rundir", "__pycache__", "/build/", "check_review_refs.py")
 
 # The review scaffolding, exactly. These fail.
+#
+# The bare-bracket form -- [F1], [fix F2] -- is an OLDER numbering than the
+# F-CORR-nnn scheme above, from a review whose document is already gone. It reads
+# as a typo rather than as a citation, which is why it survived the sweep that
+# removed the rest.
 _REF_RE_C = re.compile(
   r"\bF-(?:CORR|CHK|INTOP|COV|DOC)-\d+"
   r"|\bTR-[A-Z]+-\d+"
-  r"|\bbox \d+\.\d+")
+  r"|\bbox \d+\.\d+"
+  r"|\[(?:fix )?F\d+\]")
+
+# What removing one of the above by hand leaves behind: a citation deleted out of
+# the middle of a sentence, leaving the punctuation that framed it. Cheap to
+# spot mechanically and nearly invisible in review, because the sentence around
+# it still scans.
+#
+# Whole-line comments only, and an EMPTY pair of parentheses is not one of the
+# patterns: `reset()` and `is_valid()` are how the comments here name a function,
+# and a rule that reports those is turned off the same day it lands. What is
+# left is a paren against a comma, a paren with nothing but space inside, or a
+# paren with a space before its first word -- none of which anyone types on
+# purpose, all of which are what a deleted citation leaves.
+_ORPHAN_RE_C = re.compile(r"\(\s*,|,\s*\)|\(\s+\)|\(\s+\w")
+
+
+def _comment_text(line: str) -> str:
+  """The comment on a whole-line comment, or empty for anything else."""
+  stripped = line.strip()
+  for marker in ("//", "#"):
+    if stripped.startswith(marker):
+      return stripped[len(marker):]
+  return ""
 
 # A count of the whole regression, written where it has to be maintained.
 _COUNT_RE_C = re.compile(
@@ -84,7 +112,7 @@ def _files():
 
 
 def main() -> int:
-  refs, counts, history = [], [], []
+  refs, counts, history, orphans = [], [], [], []
 
   for p in _files():
     try:
@@ -100,6 +128,8 @@ def main() -> int:
         counts.append((rel, n, line.strip()[:88]))
       if _HISTORY_RE_C.search(line):
         history.append((rel, n, line.strip()[:88]))
+      if _ORPHAN_RE_C.search(_comment_text(line)):
+        orphans.append((rel, n, line.strip()[:88]))
 
   if counts:
     print(f"WARN -- a maintained count in a comment ({len(counts)}):")
@@ -115,6 +145,16 @@ def main() -> int:
     print("  Describe what the code does, not what it used to do wrong.")
     print()
 
+  if orphans:
+    print(f"FAIL -- punctuation left where a citation was removed "
+          f"({len(orphans)}):")
+    for rel, n, line in orphans[:25]:
+      print(f"  {rel}:{n}  {line}")
+    print()
+    print("  Repair the sentence rather than the punctuation: what is left")
+    print("  reads as written prose and nobody re-reads it.")
+    print()
+
   if refs:
     print(f"FAIL -- source comments cite review scaffolding ({len(refs)}):")
     for rel, n, tok, line in refs[:25]:
@@ -124,6 +164,9 @@ def main() -> int:
     print()
     print("  These IDs live in documents that are deleted when the review")
     print("  closes. Keep the specification citation and drop the ID.")
+    return 1
+
+  if orphans:
     return 1
 
   print("no source comment cites a finding ID, trace row or box number")

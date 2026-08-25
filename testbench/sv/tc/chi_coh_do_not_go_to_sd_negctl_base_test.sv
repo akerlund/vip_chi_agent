@@ -23,8 +23,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 //
-// The negative control for the DoNotGoToSD obedience rule ( task 2,
-// a later task).
+// The negative control for the DoNotGoToSD obedience rule.
 //
 // IHI 0050 E: "Snoopee receiving a Snoop request with the DoNotGoToSD bit set,
 // except when the Snoop is SnpOnceFwd, must not transition to SD." The SNP

@@ -175,6 +175,33 @@ python3 "$ROOT/scripts/check_classifier_coverage.py" >> "$SUMMARY" 2>&1 || true
 # the table stops being the authority either of them claims. No simulator needed.
 python3 "$ROOT/scripts/check_tagop_groups.py" >> "$SUMMARY" 2>&1 || true
 
+# The two illegal-bin checks, on the two coherency crosses. An illegal covergroup
+# bin is not part of the UVM report path: VCS treats the hit as a verification
+# error and ends the simulation, before the report summary this script greps
+# for, so a wrong bin fails a run in a way that reads like a simulator problem
+# rather than like a wrong bin.
+#
+#   check_snp_resp_illegal_bins.py  the bins of cg_snp_resp_legality against
+#                                   snp_resp_hits_illegal_bin, the predicate a
+#                                   negative control declares to suppress a
+#                                   deliberate hit. Two copies of one rule, and a
+#                                   drift makes the control unsuppressable again.
+#   check_req_snp_illegal_bins.py   the bins of cg_req_snp_pairing against
+#                                   Table 4-5 itself, as the D8 rule reads it.
+#                                   The direction that matters is one way round:
+#                                   a bin claiming a PERMITTED pairing ends the
+#                                   run on conformant traffic.
+#
+# GATES rather than advisory, by the same criterion check_bind_coverage.py meets
+# below: each compares two statements of one table that are both in this
+# repository, so neither needs a second flow, a simulator or a specification, and
+# there is nothing for either to be inconclusive about. The parity checks above
+# are advisory because a missing Python sweep is not a failure of this one; these
+# have no such excuse, and their failure mode is a run that breaks LATER with
+# nothing in its log to say why.
+python3 "$ROOT/scripts/check_snp_resp_illegal_bins.py" >> "$SUMMARY" 2>&1 || illegal_bins_bad=1
+python3 "$ROOT/scripts/check_req_snp_illegal_bins.py" >> "$SUMMARY" 2>&1 || illegal_bins_bad=1
+
 # Source comments must not point at the review scaffolding. Finding IDs, trace
 # rows and box numbers live in documents that are deleted when a review closes,
 # so a comment citing one is unreadable the moment that happens -- and in the
@@ -237,4 +264,4 @@ python3 "$ROOT/scripts/check_counter_parity.py" >> "$SUMMARY" 2>&1 || true
 python3 "$ROOT/scripts/check_bind_coverage.py" --csv "$OUT_DIR/check_tallies.csv" \
   >> "$SUMMARY" 2>&1 || bind_gap=1
 
-exit $(( fail > 0 || ${bind_gap:-0} > 0 ))
+exit $(( fail > 0 || ${bind_gap:-0} > 0 || ${illegal_bins_bad:-0} > 0 ))
