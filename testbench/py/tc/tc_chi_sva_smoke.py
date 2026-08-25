@@ -30,6 +30,7 @@ from pyuvm import uvm_test
 
 from sva.bind_chi import (bind_chi, _flit_slices, _FLIT_FIELDS_C,
                           _LINK_ACT_WINDOW_C)
+from sva.bind_chi_snp import bind_chi_snp
 from vip_chi_types_pkg import ChiCfg, DatOpcode, ReqOpcode, ReqOrder, Role, RspOpcode
 
 # The standalone topology's CHI-D datapath: 16 bytes, so a size-6 (64-byte)
@@ -132,6 +133,46 @@ def _snp(d="tx", pend=0, **fields):
 
 def _idle(n: int = 1):
   return [_sample(_RUN) for _ in range(n)]
+
+
+def _snp_sample(base: dict, **over) -> dict:
+  """One cycle as bind_chi_snp samples it.
+
+  A separate builder from _sample() because the two checkers sample different
+  key sets: bind_chi takes the snoop VALIDS only, this one takes the whole snoop
+  channel. A key the real sampler supplies and this one does not is a KeyError
+  the moment a rule reads it, which is how this builder came to exist.
+  """
+  s = dict(base)
+  for d in ("tx", "rx"):
+    s[f"{d}snpflitv"] = 0
+    s[f"{d}snpflitpend"] = 0
+    s[f"{d}snplcrdv"] = 0
+  s.update(over)
+  return s
+
+
+def _snp_checker() -> bind_chi_snp:
+  """A bind_chi_snp with no bus, for the two structural link rules.
+
+  Those two are the only rules in this repository that nothing in either
+  regression can reach: sending a snoop or advertising SNP credit with the link
+  down needs a driver that violates the link layer on the snoop channel, and
+  neither port has one. Driving the check by hand is what makes them falsifiable
+  at all.
+  """
+  c = bind_chi_snp.__new__(bind_chi_snp)
+  c.bus = None
+  c.log = logging.getLogger("tc_chi_sva_smoke_induced")
+  c.log.setLevel(logging.CRITICAL)
+  c.errors = 0
+  c.fail_count = {}
+  c.pass_count = {}
+  c.init_check_control()
+  c._checks_enable = True
+  c._lcrd = {"txsnp": 0, "rxsnp": 0}
+  c._link_ever_active = True
+  return c
 
 
 def _checker(role: Role = Role.RNI) -> bind_chi:
@@ -433,6 +474,48 @@ class tc_chi_sva_smoke(uvm_test):
     assert self._fired(c, "CHI_TXSACTIVE_COVERS_OUTSTANDING") == 1, (
       "the sideband was dropped three beats into a four-beat SnpRespData this "
       "node was sending and the receiving limb treated the snoop as answered")
+
+    # ---- The snoop channel's link gating, per machine ---------------------
+    # _RUN is already a DIVERGENT state -- txlinkactivereq/rxlinkactiveack up,
+    # rxlinkactivereq/txlinkactiveack down -- so the transmit machine is RUN and
+    # the receive machine is STOP. That is exactly the case the reduction could
+    # not tell apart: txsnplcrdv is a grant for the channel this node RECEIVES
+    # on, so it belongs to the receive machine, and under an OR of the two the
+    # transmit machine satisfied it on the receive machine's behalf.
+    c = _snp_checker()
+    c._check_snp_link_gating(_snp_sample(_RUN, txsnplcrdv=1))
+    assert self._fired(c, "CHI_SNP_LCRDV_REQUIRES_LINK") == 1, (
+      "SNP credit was advertised with the RECEIVE link in STOP and the rule "
+      "read the transmit machine instead")
+
+    # ...and the same signal is legal from ACTIVATE onward, which is how the
+    # initial pool reaches the peer before the link is RUN at all.
+    c = _snp_checker()
+    c._check_snp_link_gating(
+      _snp_sample(_RUN, rxlinkactivereq=1, txlinkactiveack=0, txsnplcrdv=1))
+    assert self._fired(c, "CHI_SNP_LCRDV_REQUIRES_LINK") == 0, (
+      "SNP credit advertised with the receive machine in ACTIVATE was "
+      "reported, and that is how every initial pool is granted")
+
+    # ---- ...and a snoop sent while the link is coming DOWN ----------------
+    # The gate, not the machine. txlinkactivereq low with the acknowledge still
+    # up is DEACTIVATE, and checks_enable IS the activation request -- so under
+    # the old gate this rule was switched off in one of the two states it can
+    # fail in, and the whole tear-down went unwatched on this channel.
+    c = _snp_checker()
+    c._check_snp_link_gating(
+      _snp_sample(_RUN, txlinkactivereq=0, txsnpflitv=1))
+    assert self._fired(c, "CHI_SNP_FLITV_REQUIRES_LINK") == 1, (
+      "a snoop sent with the transmit machine in DEACTIVATE was not reported")
+
+    # ---- ...but an interface that never came up judges nothing ------------
+    c = _snp_checker()
+    c._link_ever_active = False
+    c._check_snp_link_gating(_snp_sample(_RUN, txsnplcrdv=1, txsnpflitv=1))
+    assert self._fired(c, "CHI_SNP_LCRDV_REQUIRES_LINK") == 0 and \
+           self._fired(c, "CHI_SNP_FLITV_REQUIRES_LINK") == 0, (
+      "an interface whose link has never been up was judged, which is what "
+      "would make an unbuilt agent's idle wires report")
 
     # ---- Write data sent with no DBID grant behind it ---------------------
     c = _checker()

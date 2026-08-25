@@ -166,8 +166,17 @@ module vip_chi_snp_sva #(
     end
   end
 
+  // Gated on RESET ONLY, like the REQ/RSP/DAT shadow in vip_chi_sva and unlike
+  // the rest of the tracked state here. Under the checks_enable gate these counts
+  // were wiped the moment the link left RUN, so a credit granted before a
+  // tear-down was forgotten across it -- and the first snoop after the next
+  // bring-up could spend a stale credit with the underflow rule counting from
+  // zero either way. Surviving the gap is what makes the counts mean anything
+  // across it; only a reset genuinely discards both ends' state. The pyUVM twin
+  // has always cleared on reset alone, so this was also a cross-port difference
+  // in the model that no gate compares.
   always_ff @(posedge vif.clk or negedge vif.rst_n) begin
-    if (!checks_enable || !vif.rst_n) begin
+    if (!vif.rst_n) begin
       txsnp_lcrd_count <= 0;
       rxsnp_lcrd_count <= 0;
     end
@@ -361,13 +370,21 @@ module vip_chi_snp_sva #(
 
   // Structural properties (tx side: the SNP source drives txsnp*/receives credit
   // returns; on an RN-F interface these are idle so the checks are vacuous).
+  //
+  // Gated on link_ever_active rather than checks_enable, and these two are the
+  // SNP twins of the REQ/RSP/DAT rules that moved for the same reason.
+  // checks_enable IS this interface's activation request, so it is low in both
+  // DEACTIVATE and STOP -- exactly the two states in which "no snoop may go out"
+  // and "no credit may be advertised once the link is down" have any content. The
+  // gate switched each rule off in the only state it could fail in, and left the
+  // tear-down completely unwatched on this channel.
   property p_snp_flit_requires_link;
-    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+    @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
       vif.txsnpflitv |-> (tx_lasm() == VIP_CHI_LASM_RUN_E);
   endproperty
 
   property p_snp_lcrdv_requires_link;
-    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+    @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
       vif.txsnplcrdv |-> rx_link_is_active();
   endproperty
 

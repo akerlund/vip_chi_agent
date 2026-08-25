@@ -262,18 +262,64 @@ class bind_chi_snp:
   # ---------------------------------------------------------------------------
   @staticmethod
   def _lasm_of(s: dict) -> LasmState:
-    """This link's LASM as seen from this endpoint, matching bind_chi.
+    """The reduction: this interface in either direction.
 
-    One state machine per link, formed from the live request/acknowledge pair
-    whichever polarity this bind sits on. See the long docstring there.
+    Kept for the two places that ask about the INTERFACE rather than about one
+    machine -- has this link ever come up, and is it up now. Everything that
+    judges a signal uses the per-direction pair below instead.
     """
     return lasm(s["txlinkactivereq"] or s["rxlinkactivereq"],
                 s["txlinkactiveack"] or s["rxlinkactiveack"])
 
+  @staticmethod
+  def _tx_lasm_of(s: dict) -> LasmState:
+    """The TRANSMIT machine: our request, the peer's acknowledge."""
+    return lasm(s["txlinkactivereq"], s["rxlinkactiveack"])
+
+  @staticmethod
+  def _rx_lasm_of(s: dict) -> LasmState:
+    """The RECEIVE machine: the peer's request, our acknowledge."""
+    return lasm(s["rxlinkactivereq"], s["txlinkactiveack"])
+
   @classmethod
   def _link_is_active(cls, s: dict) -> bool:
-    """Anywhere but STOP. Credit returns are legal from ACTIVATE onward."""
+    """Anywhere but STOP, in either direction. The reduction, deliberately."""
     return cls._lasm_of(s) is not LasmState.STOP
+
+  def _check_snp_link_gating(self, cur: dict) -> None:
+    # PER DIRECTION, and which machine gates which signal follows 14.6.1's
+    # definition rather than the signal's name prefix. TXLINK is the channel
+    # whose payload is our output, RXLINK the one whose payload is our input,
+    # so for the snoop channel the two halves land on DIFFERENT machines:
+    #
+    #   txsnpflitv   we SEND snoops   -> the payload is our output  -> TX
+    #   txsnplcrdv   we GRANT credit  -> we RECEIVE snoops, so the
+    #                                    payload is our input       -> RX
+    #
+    # A home sends snoops and an RN-F receives them, so at either endpoint
+    # exactly one of the two is live -- and under the reduction each was judged
+    # against a state the OTHER direction could satisfy on its behalf. The SV
+    # twin has been per-direction since the split; this port had not followed.
+    #
+    # Gated on _link_ever_active rather than on the enable gate, and these two
+    # are the SNP twins of the REQ/RSP/DAT rules that moved for the same
+    # reason: the gate is this interface's activation request, so it is low in
+    # both DEACTIVATE and STOP -- exactly the two states in which "no snoop may
+    # go out" and "no credit may be advertised once the link is down" have any
+    # content.
+    if self._link_ever_active:
+      if cur["txsnpflitv"]:
+        tx_state = self._tx_lasm_of(cur)
+        self._chk(
+          "CHI_SNP_FLITV_REQUIRES_LINK",
+          tx_state is LasmState.RUN,
+          f"txsnpflitv asserted with the TRANSMIT link in {tx_state.name}, "
+          f"not RUN")
+      if cur["txsnplcrdv"]:
+        self._chk(
+          "CHI_SNP_LCRDV_REQUIRES_LINK",
+          self._rx_lasm_of(cur) is not LasmState.STOP,
+          "txsnplcrdv asserted with the RECEIVE link in STOP")
 
   def _sample(self) -> dict:
     g = self.bus.get_or
@@ -369,16 +415,12 @@ class bind_chi_snp:
       if self._link_is_active(cur):
         self._link_ever_active = True
 
+      # The two structural link rules, extracted so they can be driven by hand:
+      # nothing in the regression sends a snoop or advertises SNP credit with a
+      # link down, so a unit case is the only thing that reaches them.
+      self._check_snp_link_gating(cur)
+
       if enabled:
-        if cur["txsnpflitv"]:
-          self._chk(
-            "CHI_SNP_FLITV_REQUIRES_LINK",
-            self._lasm_of(cur) is LasmState.RUN,
-            "txsnpflitv asserted before link RUN")
-        if cur["txsnplcrdv"]:
-          self._chk(
-            "CHI_SNP_LCRDV_REQUIRES_LINK", self._link_is_active(cur),
-            "txsnplcrdv asserted before link activation")
         # FLITPEND announces a flit one cycle ahead; the obligation runs from
         # the flit backwards. See bind_chi._check_valid_requires_pend for why
         # this is one rule and not the two bullets the section lists.
