@@ -58,6 +58,7 @@ class vip_chi_driver_rnf #(
   ) extends vip_chi_driver_rni #(CFG_P, FLIT_TYPES_T, VIP_CHI_ROLE_RNF_E);
 
   typedef vip_chi_types #(CFG_P)::addr_t   addr_t;
+  typedef vip_chi_types #(CFG_P)::be_t     be_t;
   typedef FLIT_TYPES_T::vip_chi_snp_flit_t snp_flit_t;
   typedef FLIT_TYPES_T::snp_opcode_t       snp_opcode_t;
 
@@ -73,6 +74,17 @@ class vip_chi_driver_rnf #(
   // SnpRespData (M4b dirty forwarding). A parallel assoc array of dynamic arrays
   // (not a struct-with-dynarray) sidesteps the VCS assoc-of-struct quirk.
   protected data_t cache_data [addr_t][];
+
+  // Per-BEAT dirty byte mask, parallel to cache_data and the same length. One
+  // bit per byte, exactly the wire's own byte-enable width, set by the local
+  // store model.
+  //
+  // This is the distinction the Resp field cannot carry. Table 4-6 gives UD and
+  // UDP the same encoding, UD_PD, so a line's state says it is Unique and Dirty
+  // and says nothing about WHICH bytes. A mask that is all ones is UD; a mask
+  // with some bits set is UDP, and Table 4-14 footnote c treats the two
+  // differently when a read returns data for a line already held.
+  protected be_t cache_dirty_be [addr_t][];
 
   // Outbound SNP receive-credit pulses queued for the HN-F (drained one per
   // cycle onto txsnplcrdv by snp_credit_loop, mirroring the RSP/DAT credit path).
@@ -147,6 +159,7 @@ class vip_chi_driver_rnf #(
   function void handle_reset();
     this.cache_state.delete();
     this.cache_data.delete();
+    this.cache_dirty_be.delete();
     this.snp_lcrdv_pulses_pending = 0;
     super.handle_reset();
     this.reset_snp_outputs();
@@ -159,20 +172,114 @@ class vip_chi_driver_rnf #(
   // already be held with data (acquired via a coherent read). Test-facing.
   // ---------------------------------------------------------------------------
   function void make_line_dirty(input addr_t addr, input data_t xor_pattern);
+    this.store_into_line(addr, xor_pattern, '1);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Model a PARTIAL local store: the same mutation, applied to a subset of the
+  // bytes in each beat, which leaves the line UniqueDirtyPartial.
+  //
+  // UDP is not a wire state -- Table 4-6 encodes it as UD_PD, the same as UD --
+  // so it exists only as the dirty byte mask this records. It is the state
+  // Table 4-14 footnote c reserves the MERGE case for, and the only way to reach
+  // that case: without a mask every dirty line is fully dirty and the footnote's
+  // drop half is the whole of it.
+  //
+  // Test-facing, like its full-line twin.
+  // ---------------------------------------------------------------------------
+  function void make_line_dirty_partial(
+    input addr_t addr,
+    input data_t xor_pattern,
+    input be_t   dirty_bytes
+  );
+    this.store_into_line(addr, xor_pattern, dirty_bytes);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // The one writer behind both, so the mask and the beats cannot disagree.
+  // ---------------------------------------------------------------------------
+  protected function void store_into_line(
+    input addr_t addr,
+    input data_t xor_pattern,
+    input be_t   dirty_bytes
+  );
     addr_t line;
+    data_t bits;
 
     line = this.line_addr(addr);
     if (!this.cache_data.exists(line)) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] make_line_dirty on line 0x%0h that is not held with data",
+        "FATAL [%s] a local store into line 0x%0h that is not held with data",
         get_name(), line))
       return;
     end
 
-    foreach (this.cache_data[line][i]) begin
-      this.cache_data[line][i] = this.cache_data[line][i] ^ xor_pattern;
+    if (dirty_bytes == '0) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] a local store into line 0x%0h with no byte selected: a store that writes nothing cannot dirty the line, and recording it would make a CLEAN line report UD_PD",
+        get_name(), line))
+      return;
     end
+
+    bits = this.be_to_bitmask(dirty_bytes);
+
+    if (!this.cache_dirty_be.exists(line) ||
+        (this.cache_dirty_be[line].size() != this.cache_data[line].size())) begin
+      this.cache_dirty_be[line] = new[this.cache_data[line].size()];
+      foreach (this.cache_dirty_be[line][i]) begin
+        this.cache_dirty_be[line][i] = '0;
+      end
+    end
+
+    foreach (this.cache_data[line][i]) begin
+      this.cache_data[line][i] = this.cache_data[line][i] ^ (xor_pattern & bits);
+      this.cache_dirty_be[line][i] = this.cache_dirty_be[line][i] | dirty_bytes;
+    end
+
     this.cache_state[line] = VIP_CHI_RESP_STATE_UP_PD_DIRTY_E;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Give up a line's beats. One writer for both arrays, so a dirty mask cannot
+  // outlive the data it describes and be read against the next line allocated at
+  // the same address.
+  // ---------------------------------------------------------------------------
+  protected function void drop_line_data(input addr_t line);
+    if (this.cache_data.exists(line))     this.cache_data.delete(line);
+    if (this.cache_dirty_be.exists(line)) this.cache_dirty_be.delete(line);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Expand one beat's byte enables into a data-width bit mask.
+  // ---------------------------------------------------------------------------
+  protected function data_t be_to_bitmask(input be_t be);
+    data_t m;
+
+    m = '0;
+    for (int b = 0; b < CFG_P.DATA_BYTES_P; b++) begin
+      if (be[b]) begin
+        m[(8 * b) +: 8] = 8'hFF;
+      end
+    end
+    return m;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // TRUE when the line is dirty in SOME of its bytes but not all -- UDP rather
+  // than UD. A line with no mask recorded is fully dirty if its state says so:
+  // the mask only ever exists where a partial store put it.
+  // ---------------------------------------------------------------------------
+  protected function bit line_is_partial_dirty(input addr_t line);
+    if (!this.cache_dirty_be.exists(line)) begin
+      return 1'b0;
+    end
+
+    foreach (this.cache_dirty_be[line][i]) begin
+      if (this.cache_dirty_be[line][i] !== be_t'('1)) begin
+        return 1'b1;
+      end
+    end
+    return 1'b0;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -223,9 +330,7 @@ class vip_chi_driver_rnf #(
         "[%s] bounded cache: silently evicting clean line 0x%0h to allocate 0x%0h",
         get_name(), victim, new_line), UVM_HIGH)
       this.cache_state.delete(victim);
-      if (this.cache_data.exists(victim)) begin
-        this.cache_data.delete(victim);
-      end
+      this.drop_line_data(victim);
     end
   endfunction
 
@@ -466,7 +571,7 @@ class vip_chi_driver_rnf #(
     // copy if we just passed our dirty data to the home (we are now clean).
     if (nxt == VIP_CHI_RESP_STATE_I_E) begin
       if (this.cache_state.exists(line)) this.cache_state.delete(line);
-      if (this.cache_data.exists(line))  this.cache_data.delete(line);
+      this.drop_line_data(line);
     end
     else begin
       this.cache_state[line] = nxt;
@@ -475,7 +580,7 @@ class vip_chi_driver_rnf #(
       // clean. SnpOnce is a snapshot that leaves the holder dirty, so it forwards
       // a copy of its data but keeps holding it.
       if (was_dirty && !this.state_is_dirty(nxt) && this.cache_data.exists(line)) begin
-        this.cache_data.delete(line);
+        this.drop_line_data(line);
       end
     end
 
@@ -523,7 +628,7 @@ class vip_chi_driver_rnf #(
     // fwd retains SC; a snapshot SnpOnceFwd leaves both untouched.
     if (nxt == VIP_CHI_RESP_STATE_I_E) begin
       if (this.cache_state.exists(line)) this.cache_state.delete(line);
-      if (this.cache_data.exists(line))  this.cache_data.delete(line);
+      this.drop_line_data(line);
     end
     else begin
       this.cache_state[line] = nxt;
@@ -652,6 +757,51 @@ class vip_chi_driver_rnf #(
   // own: a UD holder that issues ReadClean stays UD however weak the grant, and
   // taking Resp verbatim would drop a writeback obligation this cache still owes.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Table 4-14 footnote c, TAKE: nothing locally modified is at stake, so the
+  // fetched line replaces whatever was held and the dirty mask goes with it.
+  // ---------------------------------------------------------------------------
+  protected function void take_fetched_beats(input addr_t line, input item_t req);
+    this.cache_data[line] = new[req.data.size()];
+    foreach (req.data[i]) begin
+      this.cache_data[line][i] = req.data[i];
+    end
+    if (this.cache_dirty_be.exists(line)) begin
+      this.cache_dirty_be.delete(line);
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Table 4-14 footnote c, MERGE: the line is UDP, so each byte comes from
+  // whichever copy is authoritative for it -- the local store where the mask is
+  // set, the fetch everywhere else.
+  //
+  // Neither of the other two outcomes is right here, and both lose data. Taking
+  // the fetch discards the store. Dropping the fetch keeps bytes this cache
+  // never had: a UDP line's clean bytes are precisely the ones it was never
+  // given, so what it is holding for them is filler.
+  //
+  // The mask SURVIVES the merge. The line is still Unique and still dirty in
+  // those bytes; only the clean ones changed hands, and the requester still owes
+  // the dirty ones to the next holder.
+  // ---------------------------------------------------------------------------
+  protected function void merge_fetched_beats(input addr_t line, input item_t req);
+    data_t bits;
+
+    if (req.data.size() != this.cache_data[line].size()) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] a merge on line 0x%0h fetched %0d beat(s) against %0d held; the two copies of one line must be the same length or there is no byte-for-byte question to answer",
+        get_name(), line, req.data.size(), this.cache_data[line].size()))
+      return;
+    end
+
+    foreach (req.data[i]) begin
+      bits = this.be_to_bitmask(this.cache_dirty_be[line][i]);
+      this.cache_data[line][i] =
+        (this.cache_data[line][i] & bits) | (req.data[i] & ~bits);
+    end
+  endfunction
+
   protected function void on_transaction_complete(input item_t req);
     addr_t         line;
     vip_chi_resp_t held;
@@ -670,17 +820,22 @@ class vip_chi_driver_rnf #(
                                  vip_chi_req_final_state(
                                    vip_chi_req_opcode_t'(req.opcode), held, req.rsp_resp);
       // Record the granted beats so a later snoop can forward them if the line
-      // is dirtied (make_line_dirty) before the snoop arrives -- but only when
-      // this cache is not already holding a newer copy. Table 4-14 footnote c:
-      // data received from memory must be DROPPED if the cache state is UD or SD.
-      // Overwriting there loses the locally-modified bytes while leaving the
-      // state correct, so every later data-integrity check agrees with the loss.
-      if (this.cfg.rnf_req_final_state_verbatim ||
-          !vip_chi_req_keeps_local_data(held)) begin
-        this.cache_data[line] = new[req.data.size()];
-        foreach (req.data[i]) begin
-          this.cache_data[line][i] = req.data[i];
-        end
+      // is dirtied before the snoop arrives -- under Table 4-14 footnote c,
+      // which decides between three outcomes and not two. See
+      // vip_chi_req_fill_action; the partial-dirty half of its question is the
+      // mask this cache keeps, since the wire cannot tell UD from UDP.
+      //
+      // The negative control takes the verbatim path, which is the pre-footnote
+      // behaviour in full: the fetched beats over the top of whatever was held.
+      if (this.cfg.rnf_req_final_state_verbatim) begin
+        this.take_fetched_beats(line, req);
+      end
+      else begin
+        case (vip_chi_req_fill_action(held, this.line_is_partial_dirty(line)))
+          VIP_CHI_FILL_TAKE_E:  this.take_fetched_beats(line, req);
+          VIP_CHI_FILL_MERGE_E: this.merge_fetched_beats(line, req);
+          default:              /* DROP: the held copy is the newer one */ ;
+        endcase
       end
     end
     else if (this.req_opcode_is_coherent_evicting_write(req.opcode) ||
@@ -690,7 +845,7 @@ class vip_chi_driver_rnf #(
       // MakeInvalid invalidate the requester's own copy; WriteUnique is
       // non-allocating. Either way the line leaves this cache (Invalid, no data).
       if (this.cache_state.exists(line)) this.cache_state.delete(line);
-      if (this.cache_data.exists(line))  this.cache_data.delete(line);
+      this.drop_line_data(line);
     end
     else if (req.opcode == req_opcode_t'(VIP_CHI_REQ_CLEAN_UNIQUE_C)) begin
       // CleanUnique upgrades a line the RN already holds (clean) to Unique-Clean;
@@ -723,6 +878,7 @@ class vip_chi_driver_rnf #(
       this.evict_for_capacity(line);
       this.cache_state[line] = vip_chi_req_final_state(
                                  vip_chi_req_opcode_t'(req.opcode), held, req.rsp_resp);
+      this.drop_line_data(line);
       this.cache_data[line]  = new[VIP_CHI_CACHE_LINE_BYTES_C / CFG_P.DATA_BYTES_P];
       foreach (this.cache_data[line][i]) begin
         this.cache_data[line][i] = '0;
@@ -745,6 +901,23 @@ class vip_chi_driver_rnf #(
   // ---------------------------------------------------------------------------
   // Test/scoreboard accessor: the held state for a line (I when never cached).
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Test accessor: the held beats and the dirty byte mask for a line. A test
+  // that has to say WHICH bytes survived a merge cannot ask the wire, because
+  // the wire never carries the mask.
+  // ---------------------------------------------------------------------------
+  function void get_cache_line(
+    input  addr_t addr,
+    output data_t beats [],
+    output be_t   dirty []
+  );
+    addr_t line;
+
+    line  = this.line_addr(addr);
+    beats = this.cache_data.exists(line)     ? this.cache_data[line]     : '{};
+    dirty = this.cache_dirty_be.exists(line) ? this.cache_dirty_be[line] : '{};
+  endfunction
+
   function vip_chi_resp_t get_cache_state(input addr_t addr);
     addr_t line;
 

@@ -1229,19 +1229,37 @@ def req_final_state(opcode: int, held: int, granted: int) -> int:
   return int(held)
 
 
-def req_keeps_local_data(held: int) -> bool:
-  """True when the Requester must DISCARD the data a read returned because the
-  line it already holds is the newer copy.
+class FillAction(IntEnum):
+  """What a Requester must do with the data a read returned.
 
   IHI 0050 E Table 4-14 footnote c: "Data received from memory must be dropped if
-  the cache state is UD or SD, or merged if the cache state is UDP." The
-  reachable half of that is the drop: this VIP has no byte-granular dirty
-  tracking, so UDP is not modeled and the merge case cannot arise. Overwriting a
-  dirty line with the fetched copy loses the locally-modified bytes outright --
-  the state stays right and the data goes wrong, which is worse than either alone
-  because every later data-integrity check then agrees with the loss.
+  the cache state is UD or SD, or merged if the cache state is UDP."
   """
-  return state_holds_dirty(held)
+  TAKE = 0
+  DROP = 1
+  MERGE = 2
+
+
+def req_fill_action(held: int, partial_dirty: bool) -> int:
+  """Table 4-14 footnote c, given the line the Requester already holds.
+
+  Three outcomes and not two, because UDP is a state the WIRE cannot express.
+  Table 4-6 gives UD and UDP the same Resp encoding, UD_PD, so the held state
+  alone cannot decide between dropping and merging; whether the dirty is PARTIAL
+  is carried beside it, in the requester's own per-beat dirty byte mask, and
+  passed in here.
+
+  Overwriting where the answer is DROP loses the locally-modified bytes outright
+  -- the state stays right and the data goes wrong, which is worse than either
+  alone because every later data-integrity check then agrees with the loss.
+  Dropping where the answer is MERGE loses the other direction: a UDP line's
+  clean bytes are the ones it never had, so keeping them is keeping nothing.
+  """
+  if not state_holds_dirty(held):
+    return int(FillAction.TAKE)
+  if partial_dirty:
+    return int(FillAction.MERGE)
+  return int(FillAction.DROP)
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,8 @@ from __future__ import annotations
 from vip_chi_types_pkg import (
   Role, Dir, Resp, RespErr, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode,
   CACHE_LINE_BYTES, mask, snp_opcode_returns_no_data,
-  req_final_state, req_keeps_local_data,
+  FillAction, req_fill_action,
+  req_final_state,
 )
 from vip_chi_driver_rni import vip_chi_driver_rni
 
@@ -77,6 +78,16 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     # from this shadow; a PassDirty holder forwards these beats to the home.
     self.cache_state = {}
     self.cache_data = {}
+    # Per-BEAT dirty byte mask, parallel to cache_data and the same length. One
+    # bit per byte, exactly the wire's own byte-enable width, set by the local
+    # store model.
+    #
+    # This is the distinction the Resp field cannot carry. Table 4-6 gives UD and
+    # UDP the same encoding, UD_PD, so a line's state says it is Unique and Dirty
+    # and says nothing about WHICH bytes. A mask that is all ones is UD; a mask
+    # with some bits set is UDP, and Table 4-14 footnote c treats the two
+    # differently when a read returns data for a line already held.
+    self.cache_dirty_be = {}
     # Outbound SNP receive-credit pulses queued for the HN-F.
     self.snp_lcrdv_pulses_pending = 0
 
@@ -111,6 +122,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
   def handle_reset(self):
     self.cache_state = {}
     self.cache_data = {}
+    self.cache_dirty_be = {}
     self.snp_lcrdv_pulses_pending = 0
     super().handle_reset()
     self.reset_snp_outputs()
@@ -127,13 +139,114 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
   # and move the line to Unique-Dirty (PassDirty) so a later snoop forwards it.
   # ==========================================================================
   def make_line_dirty(self, addr, xor_pattern):
+    self.store_into_line(addr, xor_pattern, self._all_bytes())
+
+  def make_line_dirty_partial(self, addr, xor_pattern, dirty_bytes):
+    """A PARTIAL local store, leaving the line UniqueDirtyPartial.
+
+    UDP is not a wire state -- Table 4-6 encodes it as UD_PD, the same as UD --
+    so it exists only as the dirty byte mask this records. It is the state Table
+    4-14 footnote c reserves the MERGE case for, and the only way to reach that
+    case: without a mask every dirty line is fully dirty and the footnote's drop
+    half is the whole of it.
+
+    Test-facing, like its full-line twin.
+    """
+    self.store_into_line(addr, xor_pattern, dirty_bytes)
+
+  def _all_bytes(self):
+    return (1 << self.bus.cfg.data_bytes) - 1
+
+  def store_into_line(self, addr, xor_pattern, dirty_bytes):
+    """The one writer behind both, so the mask and the beats cannot disagree."""
     line = self.line_addr(addr)
     if line not in self.cache_data:
       raise AssertionError(
-        f"[{self.get_name()}] make_line_dirty on line 0x{line:x} "
+        f"[{self.get_name()}] a local store into line 0x{line:x} "
         f"that is not held with data")
-    self.cache_data[line] = [b ^ _I(xor_pattern) for b in self.cache_data[line]]
+
+    dirty_bytes = _I(dirty_bytes)
+    if not dirty_bytes:
+      raise AssertionError(
+        f"[{self.get_name()}] a local store into line 0x{line:x} with no byte "
+        f"selected: a store that writes nothing cannot dirty the line, and "
+        f"recording it would make a CLEAN line report UD_PD")
+
+    bits = self.be_to_bitmask(dirty_bytes)
+    held = self.cache_dirty_be.get(line)
+    if held is None or len(held) != len(self.cache_data[line]):
+      held = [0] * len(self.cache_data[line])
+
+    self.cache_data[line] = [b ^ (_I(xor_pattern) & bits)
+                             for b in self.cache_data[line]]
+    self.cache_dirty_be[line] = [m | dirty_bytes for m in held]
     self.cache_state[line] = int(Resp.UD_PD)
+
+  def be_to_bitmask(self, be):
+    """Expand one beat's byte enables into a data-width bit mask."""
+    be = _I(be)
+    m = 0
+    for b in range(self.bus.cfg.data_bytes):
+      if (be >> b) & 1:
+        m |= 0xFF << (8 * b)
+    return m
+
+  def line_is_partial_dirty(self, line):
+    """True when the line is dirty in SOME of its bytes but not all -- UDP.
+
+    A line with no mask recorded is fully dirty if its state says so: the mask
+    only ever exists where a partial store put it.
+    """
+    held = self.cache_dirty_be.get(line)
+    if held is None:
+      return False
+    return any(m != self._all_bytes() for m in held)
+
+  def drop_line_data(self, line):
+    """Give up a line's beats.
+
+    One writer for both dicts, so a dirty mask cannot outlive the data it
+    describes and be read against the next line allocated at the same address.
+    """
+    self.cache_data.pop(line, None)
+    self.cache_dirty_be.pop(line, None)
+
+  def take_fetched_beats(self, line, req):
+    """Table 4-14 footnote c, TAKE.
+
+    Nothing locally modified is at stake, so the fetched line replaces whatever
+    was held and the dirty mask goes with it.
+    """
+    self.cache_data[line] = [_I(x) for x in req.data]
+    self.cache_dirty_be.pop(line, None)
+
+  def merge_fetched_beats(self, line, req):
+    """Table 4-14 footnote c, MERGE.
+
+    The line is UDP, so each byte comes from whichever copy is authoritative for
+    it -- the local store where the mask is set, the fetch everywhere else.
+
+    Neither of the other two outcomes is right here, and both lose data. Taking
+    the fetch discards the store. Dropping the fetch keeps bytes this cache never
+    had: a UDP line's clean bytes are precisely the ones it was never given, so
+    what it is holding for them is filler.
+
+    The mask SURVIVES the merge. The line is still Unique and still dirty in
+    those bytes; only the clean ones changed hands, and the requester still owes
+    the dirty ones to the next holder.
+    """
+    if len(req.data) != len(self.cache_data[line]):
+      raise AssertionError(
+        f"[{self.get_name()}] a merge on line 0x{line:x} fetched "
+        f"{len(req.data)} beat(s) against {len(self.cache_data[line])} held; "
+        f"the two copies of one line must be the same length or there is no "
+        f"byte-for-byte question to answer")
+
+    merged = []
+    for i, fetched in enumerate(req.data):
+      bits = self.be_to_bitmask(self.cache_dirty_be[line][i])
+      merged.append((self.cache_data[line][i] & bits) | (_I(fetched) & ~bits))
+    self.cache_data[line] = merged
 
   # ==========================================================================
   # Bounded-cache silent eviction: drop the lowest-address CLEAN victim (no bus
@@ -158,7 +271,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
           f"{self.cfg.rnf_cache_max_lines} lines) is full of DIRTY lines while "
           f"allocating 0x{new_line:x}; dirty writeback-on-eviction is not modeled")
       self.cache_state.pop(victim, None)
-      self.cache_data.pop(victim, None)
+      self.drop_line_data(victim)
 
   # ==========================================================================
   # Extension hooks (called by the RN-I base).
@@ -292,13 +405,13 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
 
     if nxt == int(Resp.I):
       self.cache_state.pop(line, None)
-      self.cache_data.pop(line, None)
+      self.drop_line_data(line)
     else:
       self.cache_state[line] = nxt
       # Drop the retained dirty copy only if this snoop moved us OUT of a dirty
       # state (we handed our dirty data to the home and are now clean).
       if was_dirty and not self.state_is_dirty(nxt) and line in self.cache_data:
-        self.cache_data.pop(line, None)
+        self.drop_line_data(line)
 
     # The opcode is part of this decision and not only the held state -- see
     # vip_chi_types_pkg.snp_opcode_returns_no_data -- because a dirty holder
@@ -321,7 +434,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
 
     if nxt == int(Resp.I):
       self.cache_state.pop(line, None)
-      self.cache_data.pop(line, None)
+      self.drop_line_data(line)
     else:
       self.cache_state[line] = nxt
 
@@ -419,19 +532,28 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
       verbatim = bool(self.cfg.rnf_req_final_state_verbatim)
       self.cache_state[line] = (_I(req.rsp_resp) if verbatim
                                 else req_final_state(op, held, _I(req.rsp_resp)))
-      # Keep the granted beats for a later snoop to forward -- but only when this
-      # cache is not already holding a newer copy. Table 4-14 footnote c: data
-      # received from memory must be DROPPED if the cache state is UD or SD.
-      # Overwriting there loses the locally-modified bytes while leaving the
-      # state correct, so every later data-integrity check agrees with the loss.
-      if verbatim or not req_keeps_local_data(held):
-        self.cache_data[line] = [_I(x) for x in req.data]
+      # Keep the granted beats for a later snoop to forward -- under Table 4-14
+      # footnote c, which decides between three outcomes and not two. See
+      # req_fill_action; the partial-dirty half of its question is the mask this
+      # cache keeps, since the wire cannot tell UD from UDP.
+      #
+      # The negative control takes the verbatim path, which is the pre-footnote
+      # behaviour in full: the fetched beats over the top of whatever was held.
+      if verbatim:
+        self.take_fetched_beats(line, req)
+      else:
+        action = req_fill_action(held, self.line_is_partial_dirty(line))
+        if action == int(FillAction.TAKE):
+          self.take_fetched_beats(line, req)
+        elif action == int(FillAction.MERGE):
+          self.merge_fetched_beats(line, req)
+        # DROP: the held copy is the newer one.
     elif (self.req_opcode_is_coherent_evicting_write(op) or
           self.req_opcode_is_coherent_cmo(op) or
           self.req_opcode_is_coherent_write_unique(op)):
       # The line leaves this cache (Invalid, no data).
       self.cache_state.pop(line, None)
-      self.cache_data.pop(line, None)
+      self.drop_line_data(line)
     elif op == int(ReqOpcode.CLEAN_UNIQUE):
       # Upgrade a held (clean) line to Unique-Clean; no data transfer. An
       # exclusive store upgrades only on ExclOkay (else it lost; line untouched).
@@ -447,11 +569,22 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
       # sized to the coherence line so a later snoop can forward real beats.
       self.evict_for_capacity(line)
       self.cache_state[line] = req_final_state(op, held, _I(req.rsp_resp))
+      self.drop_line_data(line)
       n_beats = CACHE_LINE_BYTES // self.bus.cfg.data_bytes
       self.cache_data[line] = [0] * n_beats
 
   # ==========================================================================
   # Test/scoreboard accessor: the held state for a line (I when never cached).
   # ==========================================================================
+  def get_cache_line(self, addr):
+    """Test accessor: the held beats and the dirty byte mask for a line.
+
+    A test that has to say WHICH bytes survived a merge cannot ask the wire,
+    because the wire never carries the mask.
+    """
+    line = self.line_addr(addr)
+    return (list(self.cache_data.get(line, [])),
+            list(self.cache_dirty_be.get(line, [])))
+
   def get_cache_state(self, addr):
     return self.cache_state.get(self.line_addr(addr), int(Resp.I))
