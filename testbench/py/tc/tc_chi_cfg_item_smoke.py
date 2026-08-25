@@ -29,15 +29,15 @@ class tc_chi_cfg_item_smoke(uvm_test):
     assert cfg_item.enforce_addr_alignment is True, \
       "default enforce_addr_alignment mismatch"
     assert cfg_item.get_response is False, "default get_response mismatch"
-    assert cfg_item.atomic_strict_size is False, \
-      "default atomic_strict_size mismatch"
+    assert cfg_item.atomic_oversized_operands is False, \
+      "default atomic_oversized_operands mismatch"
 
     cfg_item.direction = Dir.WRITE
     cfg_item.data_type = DataType.COUNTER
     cfg_item.min_size = 2
     cfg_item.max_size = 4
     cfg_item.enforce_addr_alignment = False
-    cfg_item.atomic_strict_size = True
+    cfg_item.atomic_oversized_operands = True
     cfg_item.get_response = True
     cfg_item.reset()
 
@@ -52,8 +52,8 @@ class tc_chi_cfg_item_smoke(uvm_test):
       "reset() did not restore enforce_addr_alignment"
     assert cfg_item.get_response is False, \
       "reset() did not restore get_response"
-    assert cfg_item.atomic_strict_size is False, \
-      "reset() did not restore atomic_strict_size"
+    assert cfg_item.atomic_oversized_operands is False, \
+      "reset() did not restore atomic_oversized_operands"
 
     self.logger.info("Test (tc_chi_cfg_item_smoke) PASS")
     self.drop_objection()

@@ -42,6 +42,7 @@ from pyuvm import uvm_driver, ConfigDB
 
 from vip_chi_reject import reject
 from vip_chi_types_pkg import (
+  req_opcode_combined_cmo_is_persist, req_dwt_grant_uses_return_path,
   Role, Dir, DatOpcode, ReqOpcode, RspOpcode, RawChannel,
   req_opcode_is_atomic, lasm, chi_xfer_dat_beats, req_bit17_is_dodwt,
   req_has_modeled_completion, req_completion_uses_dat,
@@ -154,6 +155,9 @@ class vip_chi_driver_rni(uvm_driver):
     super().__init__(name, parent)
     self.bus = None
     self.cfg = None
+    # Which responses retired the most recent combined write's obligations; see
+    # collect_combined_write_obligations.
+    self.combined_completion_log = []
     self.role = Role.RNI
 
     self.next_txn_id = 0
@@ -962,6 +966,16 @@ class vip_chi_driver_rni(uvm_driver):
                 f"[{self.get_name()}] Non-store atomic grant opcode "
                 f"0x{grant['opcode']:x} was not DBIDResp/DBIDRespOrd")
             await self.collect_read_completion(req)
+          elif self.req_is_combined_write_cmo(req):
+            # A combined request's remaining completions are collected as ONE
+            # obligation set rather than write-then-CMO, because Issue E does
+            # not order them that way. Handled here and not after the branch:
+            # the write's own Comp is one of the obligations, and a completer
+            # is free to put CompCMO in front of it.
+            await self.collect_combined_write_obligations(
+              req, req_src_id, req_tgt_id, need_comp=wait_deferred)
+            if not wait_deferred:
+              self.stamp_rsp_flit_on_req(req, grant)
           elif wait_deferred:
             await self.collect_write_completion(req)
           else:
@@ -975,13 +989,16 @@ class vip_chi_driver_rni(uvm_driver):
                                   # or a combined CompDBIDResp.
                                   int(ReqOpcode.WRITE_UNIQUE_ZERO)):
             await self.collect_write_zero_completion(req)
+          elif self.req_is_combined_write_cmo(req):
+            # A combined write with no data phase. None exist today -- every
+            # combined form carries a write payload -- but the arm is here so a
+            # future dataless one does not silently skip its CMO obligations,
+            # which is what the old unconditional call after this chain gave
+            # for free.
+            await self.collect_combined_write_obligations(
+              req, req_src_id, req_tgt_id, need_comp=True)
           else:
             await self.collect_write_completion(req)
-
-        # The CMO half's completion, which arrives after the write's because the
-        # completer may only send it once the write data has landed.
-        if self.req_is_combined_write_cmo(req):
-          await self.collect_combined_cmo_completion(req, req_src_id, req_tgt_id)
 
         # WriteEvictOrEvict always sets ExpCompAck but acknowledges itself: the
         # data leg's CopyBackWrData IS the acknowledgement, and the no-data leg
@@ -999,9 +1016,16 @@ class vip_chi_driver_rni(uvm_driver):
       else:
         if self.req_expects_read_completion(req):
           await self.handle_retry(req)
-          if self.req_expects_read_receipt(req):
+          # A separated read retires on ReadReceipt + DataSepResp, not on
+          # RespSepData + DataSepResp. Table B-3 permits RespSepData from a Home
+          # only, and section 2.3.1 makes ReadReceipt the response the Slave
+          # owes -- so on this link, where this requester is the Home stand-in,
+          # ReadReceipt is what arrives. It arrives for every separated read,
+          # ordered or not. See F-CORR-013.
+          if (self.req_expects_read_receipt(req)
+              or _I(req.opcode) == int(ReqOpcode.READ_NO_SNP_SEP)):
             await self.collect_read_receipt(req)
-          if _I(req.opcode) == int(ReqOpcode.READ_NO_SNP_SEP):
+          if self.cfg.snf_resp_sep_data_negctl:
             await self.collect_resp_sep_data(req)
           await self.collect_read_completion(req)
 
@@ -1206,33 +1230,67 @@ class vip_chi_driver_rni(uvm_driver):
     req.rsp_resp_err = flit["resperr"]
     req.dbid = flit["dbid"]
 
-  async def wait_for_matching_rsp(self, req_txn_id):
+  async def take_rsp_flit(self):
+    """Take the next RSP flit off the wire and return the link credit for it.
+
+    The credit is returned here rather than at each caller's check, because it
+    is owed the moment the flit is accepted off the channel: whether the
+    requester likes what the flit says is a protocol question and the credit is
+    a link one. Three callers used to carry their own copy of this loop.
+    """
     bus = self.bus
     while not bus.get("rxrspflitv"):
       await bus.rising()
       self.drive_idle_sideband()
     flit = bus.sample_flit("rsp", "rx")
-    if flit["txnid"] != req_txn_id:
-      raise AssertionError(
-        f"[{self.get_name()}] RSP completion txnid 0x{flit['txnid']:x} "
-        f"!= request txnid 0x{req_txn_id:x}")
     self.schedule_rsp_credit_return()
     return flit
 
-  async def wait_for_standalone_persist_rsp(self, req_src_id, req_tgt_id):
-    """Standalone Persist has no applicable TxnID; match by routing fields."""
-    bus = self.bus
-    while not bus.get("rxrspflitv"):
-      await bus.rising()
-      self.drive_idle_sideband()
-    flit = bus.sample_flit("rsp", "rx")
-    if flit["srcid"] != req_tgt_id or flit["tgtid"] != req_src_id:
-      raise AssertionError(
-        f"[{self.get_name()}] Standalone Persist route "
-        f"0x{flit['srcid']:x}->0x{flit['tgtid']:x} does not match expected "
-        f"0x{req_tgt_id:x}->0x{req_src_id:x}")
-    self.schedule_rsp_credit_return()
+  async def wait_for_matching_rsp(self, req_txn_id, reject_rule=None):
+    """Take the next RSP flit and require it to carry the expected TxnID.
+
+    reject_rule routes the mismatch through reject() instead of raising, so a
+    negative control can record the refusal and let the run continue -- the
+    same treatment wait_for_standalone_persist_rsp gets, and the behaviour of a
+    demoted `uvm_fatal in the SV twin (F-CHK-003). It is passed only by the
+    callers that have a control aimed at them; everywhere else a completion on
+    the wrong TxnID is still a hard stop, because nothing downstream of here
+    can make sense of a flit that belongs to another transaction.
+    """
+    flit = await self.take_rsp_flit()
+    if flit["txnid"] != req_txn_id:
+      message = (f"[{self.get_name()}] RSP completion txnid 0x{flit['txnid']:x} "
+                 f"!= request txnid 0x{req_txn_id:x}")
+      if reject_rule is None:
+        raise AssertionError(message)
+      reject(reject_rule, message)
     return flit
+
+  async def wait_for_standalone_persist_rsp(self, expect_tgt_id, req_tgt_id):
+    """Standalone Persist has no applicable TxnID; match by routing fields.
+
+    The expected target is the node the REQUEST asked for -- IHI 0050 E 2.8
+    routes a PCMO's Persist to ReturnNID, so that is where the requester looks
+    for it, and not at its own SrcID. The two are the same node whenever a
+    requester wants its own Persist back, which is why reading SrcID here worked
+    for as long as nothing set ReturnNID to anything else. See F-CORR-012.
+
+    A route mismatch goes through reject() rather than raise, so a negative
+    control can record the refusal instead of dying on it -- the same treatment
+    the completion-form mismatch in collect_persist_sep_completion gets, and the
+    behaviour of a demoted `uvm_fatal in the SV twin (F-CHK-003).
+    """
+    flit = await self.take_rsp_flit()
+    self.check_persist_route(flit, expect_tgt_id, req_tgt_id)
+    return flit
+
+  def check_persist_route(self, flit, expect_tgt_id, req_tgt_id):
+    """A Persist carries no applicable TxnID, so its routing is its identity."""
+    if flit["srcid"] != req_tgt_id or flit["tgtid"] != expect_tgt_id:
+      reject("PERSIST_ROUTE",
+             f"[{self.get_name()}] Standalone Persist route "
+             f"0x{flit['srcid']:x}->0x{flit['tgtid']:x} does not match expected "
+             f"0x{req_tgt_id:x}->0x{expect_tgt_id:x}")
 
   async def drive_write_evict_or_evict(self, req, req_src_id, req_tgt_id):
     """WriteEvictOrEvict: the one write whose shape the COMPLETER chooses.
@@ -1266,8 +1324,35 @@ class vip_chi_driver_rni(uvm_driver):
 
     await self.drive_comp_ack(_I(req.txn_id), req_src_id, req_tgt_id)
 
+  def write_grant_txn_id(self, req) -> int:
+    """The TxnID this requester should expect its write grant under.
+
+    Ordinarily its own. Under Direct Write Transfer it is ReturnTxnID, because
+    section 2.5 puts the grant on the return path whole: "when DoDWT = 1,
+    ReturnTxnID value is expected to be the original Requester TxnID [...] Used
+    as the TxnID in the DBIDResp response", and Table 2-8 sends the TgtID to
+    ReturnNID alongside it.
+
+    The item's dodwt field is passed as bit 17 rather than its snp_attr,
+    because on the ITEM the two are separate fields and only one of them can be
+    set (con_dodwt_overload); it is the FLIT that overloads the bit. Under
+    Issue D the classifier answers false whatever is passed, so a D requester
+    keeps matching on its own TxnID with no issue test here.
+    """
+    if req_dwt_grant_uses_return_path(
+        self.bus.cfg.issue, _I(req.opcode), _I(req.dodwt)):
+      return _I(req.return_txn_id)
+    return _I(req.txn_id)
+
   async def collect_write_dbid_grant(self, req):
-    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    # Under DWT the grant is the one response whose TxnID the REQUEST chose, so
+    # a completer that ignores the rule sends it somewhere this requester is not
+    # listening. That refusal is the negative control's second observer, so it
+    # goes through reject() rather than raise.
+    grant_txn = self.write_grant_txn_id(req)
+    flit = await self.wait_for_matching_rsp(
+      grant_txn, reject_rule=("DWT_GRANT_ROUTE"
+                              if grant_txn != _I(req.txn_id) else None))
     req.dbid = flit["dbid"]
     op = flit["opcode"]
     if op == int(RspOpcode.COMP_DBID_RESP):
@@ -1279,7 +1364,27 @@ class vip_chi_driver_rni(uvm_driver):
       f"CompDBIDResp/DBIDResp/DBIDRespOrd")
 
   async def collect_write_completion(self, req):
-    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+    """Collect the write's Comp, stepping over a TagMatch that precedes it.
+
+    A write whose data carried TagOp = Match is owed a TagMatch response as
+    well, and IHI 0050 E orders it against nothing: section 2.3.1 says only that
+    the Slave sends it "after completing the required Tag Match operation", and
+    permits it before the write data has even arrived when the Slave does not
+    perform the check. So it may land either side of the write's own completion,
+    and this requester must not treat it as one.
+
+    Stepped over rather than collected into a milestone, deliberately: the
+    scoreboard is what judges TagMatch, and it sees every RSP the monitor does.
+    Adding a second observer here would only give the same fact two owners.
+    See F-COV-001.
+    """
+    while True:
+      flit = await self.wait_for_matching_rsp(_I(req.txn_id))
+      if flit["opcode"] == int(RspOpcode.TAG_MATCH):
+        await self.bus.rising()
+        self.drive_idle_sideband()
+        continue
+      break
     self.stamp_rsp_flit_on_req(req, flit)
     if flit["opcode"] != int(RspOpcode.COMP):
       raise AssertionError(
@@ -1305,26 +1410,102 @@ class vip_chi_driver_rni(uvm_driver):
     await self.bus.rising()
     self.drive_idle_sideband()
 
-  async def collect_combined_cmo_completion(self, req, req_src_id, req_tgt_id):
-    """Collect CompCMO, and the Persist the persistent forms add after it."""
-    await self.bus.rising()
-    self.drive_idle_sideband()
-    flit = await self.wait_for_matching_rsp(_I(req.txn_id))
-    if flit["opcode"] != int(RspOpcode.COMP_CMO):
-      raise AssertionError(
-        f"[{self.get_name()}] combined Write+CMO completion opcode "
-        f"0x{flit['opcode']:x} was not CompCMO")
+  async def collect_combined_write_obligations(self, req, req_src_id, req_tgt_id,
+                                               need_comp):
+    """Collect a combined Write + CMO's completions as an obligation SET.
 
-    if not self.req_expects_combined_persist(req):
-      return
+    Completion of a combined request is *both obligations met*, not *this
+    sequence observed*, and Issue E is explicit about how much freedom the
+    completer has in producing them. This used to be a fixed script -- write
+    completion, then exactly CompCMO, then exactly Persist -- which turned two
+    behaviours the specification permits into a stopped simulation:
 
-    await self.bus.rising()
-    self.drive_idle_sideband()
-    flit = await self.wait_for_standalone_persist_rsp(req_src_id, req_tgt_id)
-    if flit["opcode"] != int(RspOpcode.PERSIST):
+      * **CompPersist in place of CompCMO + Persist.** Section 2.8: the SN "is
+        permitted to combine CompCMO with Persist as a CompPersist response if
+        the two are sent to Home". The VIP already models the combined encoding
+        on the standalone CleanSharedPersistSep path (cfg.combined_persist_rsp),
+        so the requester had to handle it in one path and fatalled on it in the
+        other.
+      * **CompCMO before the write's completion.** The only ordering rule Issue
+        E places on CompCMO is that it "must only be sent after the associated
+        request is received". Nothing puts it after the write's Comp. The old
+        code consumed the write completion first, so a completer that led with
+        CompCMO had it collected by the write path and died on "was not Comp".
+
+    The scoreboard already models it this way -- need_comp_cmo / comp_cmo_seen
+    are flags, not a sequence -- so the driver was stricter than the checker
+    behind it. See F-INTOP-008.
+
+    An opcode that satisfies no OUTSTANDING obligation is still refused, and
+    that is the whole strictness this keeps: tolerance of order is not tolerance
+    of anything at all. A second CompCMO is as wrong as a ReadReceipt here.
+    """
+    # What actually retired each obligation, for the tests to read back.
+    #
+    # A testcase that only asserts "the transaction completed" cannot tell a
+    # completer that took the encoding it was asked for from one that quietly
+    # sent the default and was accepted anyway -- both complete. This list is
+    # what makes tc_chi_e_combined_write_comp_persist and
+    # tc_chi_e_combined_write_cmo_first evidence rather than restatements.
+    self.combined_completion_log = []
+
+    need_cmo = True
+    need_persist = self.req_expects_combined_persist(req)
+    # Section 2.8 routes a PCMO's Persist by ReturnNID and everything else by
+    # SrcID; see wait_for_standalone_persist_rsp.
+    persist_tgt = (_I(req.return_nid)
+                   if req_opcode_combined_cmo_is_persist(_I(req.opcode))
+                   else req_src_id)
+
+    while need_comp or need_cmo or need_persist:
+      await self.bus.rising()
+      self.drive_idle_sideband()
+      flit = await self.take_rsp_flit()
+      opcode = flit["opcode"]
+
+      if opcode == int(RspOpcode.COMP) and need_comp:
+        self.check_combined_rsp_txn(flit, req)
+        self.stamp_rsp_flit_on_req(req, flit)
+        self.combined_completion_log.append(opcode)
+        need_comp = False
+      elif opcode == int(RspOpcode.COMP_CMO) and need_cmo:
+        self.check_combined_rsp_txn(flit, req)
+        self.combined_completion_log.append(opcode)
+        need_cmo = False
+      elif opcode == int(RspOpcode.PERSIST) and need_persist:
+        self.check_persist_route(flit, persist_tgt, req_tgt_id)
+        self.combined_completion_log.append(opcode)
+        need_persist = False
+      elif (opcode == int(RspOpcode.COMP_PERSIST)
+            and need_cmo and need_persist):
+        # One response retiring two obligations, which is the whole point of
+        # the encoding. It is permitted only when both would go to the same
+        # node, so it is checked against the CMO's target and the persist's
+        # agreement with it is what made the combination legal in the first
+        # place.
+        self.check_combined_rsp_txn(flit, req)
+        self.combined_completion_log.append(opcode)
+        need_cmo = False
+        need_persist = False
+      else:
+        reject("COMBINED_WRITE_COMPLETION",
+               f"[{self.get_name()}] combined Write + CMO received RSP opcode "
+               f"0x{opcode:x} satisfying no outstanding obligation "
+               f"(comp={int(need_comp)} cmo={int(need_cmo)} "
+               f"persist={int(need_persist)})")
+        return
+
+  def check_combined_rsp_txn(self, flit, req):
+    """The TxnID-carrying half of a combined write's completions.
+
+    Persist is excluded by its caller and not by a test here: it carries no
+    applicable TxnID at all, so there is nothing to compare and the routing is
+    what identifies it.
+    """
+    if flit["txnid"] != _I(req.txn_id):
       raise AssertionError(
-        f"[{self.get_name()}] combined Write+PCMO persist opcode "
-        f"0x{flit['opcode']:x} was not Persist")
+        f"[{self.get_name()}] combined Write + CMO completion txnid "
+        f"0x{flit['txnid']:x} != request txnid 0x{_I(req.txn_id):x}")
 
   async def collect_write_zero_completion(self, req):
     """Collect a zero-write completion, in either of its two legal forms.
@@ -1390,7 +1571,9 @@ class vip_chi_driver_rni(uvm_driver):
 
     await self.bus.rising()
     self.drive_idle_sideband()
-    flit = await self.wait_for_standalone_persist_rsp(req_src_id, req_tgt_id)
+    flit = await self.wait_for_standalone_persist_rsp(
+      _I(req.return_nid) if req_opcode_combined_cmo_is_persist(_I(req.opcode))
+      else req_src_id, req_tgt_id)
     self.stamp_rsp_flit_on_req(req, flit)
     if flit["opcode"] != int(RspOpcode.PERSIST):
       raise AssertionError(
@@ -1525,25 +1708,83 @@ class vip_chi_driver_rni(uvm_driver):
   # Protocol-credit retry (no-op unless the request allowed retry and the SN-F
   # bounced it with a RetryAck).
   # ==========================================================================
+  def bank_pcrd_grant(self, flit) -> None:
+    """Record one granted P-credit, by type.
+
+    IHI 0050 E 2.11: "There is no fixed relationship between credits and
+    particular transactions" -- a credit belongs to its PCrdType and to this
+    link, not to whatever was bounced. Banking is therefore always the right
+    thing to do with a grant, whether or not the RetryAck it answers has been
+    seen yet.
+
+    State only -- the LINK credit is returned by the caller, because the two
+    callers differ on when: the pipelined loop returns it for every RSP before
+    dispatching on the opcode, the serial path only for the ones it consumes.
+
+    One function for both, deliberately. Two paths each carrying their own copy
+    of "what to do with a PCrdGrant" is exactly how F-INTOP-006 happened: the
+    pipelined one banked by type and absorbed a reordered grant, the serial one
+    did not, and nothing made them disagree visibly.
+    """
+    pcrd_type = flit["pcrdtype"]
+    self.pcrd_pool[pcrd_type] = self.pcrd_pool.get(pcrd_type, 0) + 1
+    self.pcrd_src[pcrd_type] = (flit["srcid"], flit["tgtid"])
+    self.check_pcrd_budget()
+
   async def collect_pcrd_grant(self, pcrd_type):
+    """Obtain the P-credit a RetryAck owed, from the bank or from the wire.
+
+    The bank is consulted FIRST, and that is the whole of what section 2.11
+    requires here: "It is possible that a reordering interconnect can reorder
+    the responses such that the PCrdGrant is received by the Requester before
+    the RetryAck response for the transaction is received. In this case, the
+    Requester must record the credit it has received, including the credit
+    type, so that it can assign the credit appropriately when it does receive
+    the RetryAck response."
+
+    This path used to demand the grant arrive next on the wire and fatal on
+    anything else, so a conformant reordering interconnect produced a VIP crash
+    reported as a DUT failure. The pipelined path in this same class already
+    banked credits by type; the two paths are selected by cfg.max_outstanding_*,
+    which is not something a reader of section 2.11 would think to check. See
+    F-INTOP-006.
+    """
     bus = self.bus
+    if self.pcrd_pool.get(pcrd_type, 0) > 0:
+      # Already banked -- the grant beat its own RetryAck here.
+      self.pcrd_pool[pcrd_type] -= 1
+      return
+
     while True:
       while not bus.get("rxrspflitv"):
         await bus.rising()
         self.drive_idle_sideband()
       flit = bus.sample_flit("rsp", "rx")
       if flit["opcode"] != int(RspOpcode.PCRD_GRANT):
-        raise AssertionError(
-          f"[{self.get_name()}] Expected PCrdGrant, got RSP opcode "
-          f"0x{flit['opcode']:x}")
-      if flit["pcrdtype"] != pcrd_type:
-        raise AssertionError(
-          f"[{self.get_name()}] PCrdGrant PCrdType 0x{flit['pcrdtype']:x} "
-          f"!= owed 0x{pcrd_type:x}")
+        # Nothing in 2.11 makes the grant the next response on the channel, and
+        # a completer may interleave other transactions' completions. The serial
+        # path has only one transaction outstanding, so there is nothing this
+        # can usefully be -- but it goes through reject() rather than raise, so
+        # a control can record the refusal instead of dying on it, and so the
+        # message names the assumption rather than the symptom.
+        self.schedule_rsp_credit_return()
+        reject("PCRD_GRANT_UNEXPECTED",
+               f"[{self.get_name()}] waiting for a PCrdGrant of type "
+               f"0x{pcrd_type:x}, got RSP opcode 0x{flit['opcode']:x}")
+        await bus.rising()
+        self.drive_idle_sideband()
+        continue
+
+      # Banked by type, never matched against the owed type on arrival: a
+      # completer with several outstanding RetryAcks may grant them in any
+      # order, and a grant of another type is this node's credit too.
+      self.bank_pcrd_grant(flit)
       self.schedule_rsp_credit_return()
       await bus.rising()
       self.drive_idle_sideband()
-      return
+      if self.pcrd_pool.get(pcrd_type, 0) > 0:
+        self.pcrd_pool[pcrd_type] -= 1
+        return
 
   async def handle_retry(self, req):
     bus = self.bus
@@ -1556,6 +1797,15 @@ class vip_chi_driver_rni(uvm_driver):
       if not bus.get("rxrspflitv"):
         return  # DAT beat -> read completion, no retry
       flit = bus.sample_flit("rsp", "rx")
+      if flit["opcode"] == int(RspOpcode.PCRD_GRANT):
+        # The grant overtook its own RetryAck (2.11's reordering case). Bank it
+        # and keep peeking: the RetryAck this request is waiting for is still
+        # coming, and collect_pcrd_grant will find the credit already in hand.
+        self.bank_pcrd_grant(flit)
+        self.schedule_rsp_credit_return()
+        await bus.rising()
+        self.drive_idle_sideband()
+        continue
       if flit["opcode"] != int(RspOpcode.RETRY_ACK):
         return  # a normal completion; leave it for the collector
       if flit["txnid"] != _I(req.txn_id):
@@ -1917,9 +2167,7 @@ class vip_chi_driver_rni(uvm_driver):
 
       # PCrdGrant is credit-typed, not TxnID-tied: bank one credit and step off.
       if op == int(RspOpcode.PCRD_GRANT):
-        self.pcrd_pool[flit["pcrdtype"]] = self.pcrd_pool.get(flit["pcrdtype"], 0) + 1
-        self.pcrd_src[flit["pcrdtype"]] = (flit["srcid"], flit["tgtid"])
-        self.check_pcrd_budget()
+        self.bank_pcrd_grant(flit)
         await bus.rising()
         self.drive_idle_sideband()
         continue

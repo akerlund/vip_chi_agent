@@ -38,7 +38,8 @@ class VipChiCfgItem:
     self.min_size = 0
     self.max_size = 6
     self.enforce_addr_alignment = True
-    self.atomic_strict_size = False
+    # See vip_chi_item for why this selects the DEVIATION and defaults off.
+    self.atomic_oversized_operands = False
     self.combined_write_cmo_enable = False
     self.write_unique_zero_enable = False
     self.write_evict_or_evict_enable = False
@@ -49,5 +50,5 @@ class VipChiCfgItem:
             f"data_type={DataType(self.data_type).name}, "
             f"size=[{self.min_size},{self.max_size}], "
             f"enforce_addr_alignment={self.enforce_addr_alignment}, "
-            f"atomic_strict_size={self.atomic_strict_size}, "
+            f"atomic_oversized_operands={self.atomic_oversized_operands}, "
             f"get_response={self.get_response})")

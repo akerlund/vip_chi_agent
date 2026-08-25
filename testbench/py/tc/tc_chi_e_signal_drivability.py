@@ -104,7 +104,12 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
     wr.set_size(6)
     wr.set_src_id(E_DBID_RESP_ORD_RNI_NODE_ID_C)
     wr.set_tgt_id(E_DBID_RESP_ORD_SNF_NODE_ID_C)
-    wr.set_lp_id(0x55)
+    # 0x55 across the 8-bit group position, split the way Issue E actually
+    # carries it: {GroupIDExt[2:0], LPID[4:0]} = {0b010, 0b10101} = 0b01010101.
+    # The bits on the wire are unchanged -- this test is about driving them --
+    # but LPID alone is 5 bits in both issues, so the top three now come from
+    # the GroupIDExt this test already sets to 0x2 below (F-CORR-026).
+    wr.set_lp_id(0b10101)
     wr.set_qos(0xB)
     wr.set_ns(NON_SECURE_C)
     wr.set_order(int(ReqOrder.REQ_ACCEPTED))
@@ -132,7 +137,7 @@ class tc_chi_e_signal_drivability(chi_e_base_test):
 
     assert (int(req_item.src_id) == E_DBID_RESP_ORD_RNI_NODE_ID_C and
             int(req_item.tgt_id) == E_DBID_RESP_ORD_SNF_NODE_ID_C and
-            int(req_item.lp_id) == 0x55 and int(req_item.qos) == 0xB and
+            int(req_item.lp_id) == 0b10101 and int(req_item.qos) == 0xB and
             int(req_item.ns) == NON_SECURE_C and
             int(req_item.order) == int(ReqOrder.REQ_ACCEPTED) and
             int(req_item.mem_attr) == 0xC and int(req_item.allow_retry) == 0 and

@@ -299,6 +299,13 @@ async def tc_chi_coh_d_read_clean_snoop(dut) -> None:
   await _run_d_coherent(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_coh_d_do_not_go_to_sd_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_do_not_go_to_sd_negctl(dut) -> None:
+  """Run this public testcase through the CHI-D coherent topology."""
+  test_name = "tc_chi_coh_d_do_not_go_to_sd_negctl"
+  await _run_d_coherent(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_coh_d_snoop_match_negctl", timeout_time=20, timeout_unit="ms")
 async def tc_chi_coh_d_snoop_match_negctl(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
@@ -625,6 +632,13 @@ async def tc_chi_coh_e_req_retain(dut) -> None:
 async def tc_chi_coh_e_req_final_state_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_req_final_state_negctl"
+  await _run_e_coherent(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_coh_e_do_not_go_to_sd_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_do_not_go_to_sd_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E coherent topology."""
+  test_name = "tc_chi_coh_e_do_not_go_to_sd_negctl"
   await _run_e_coherent(dut, test_name)
 
 
@@ -1299,6 +1313,13 @@ async def tc_chi_flit_without_flitpend(dut) -> None:
   await _run_d_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_flit_without_flitpend_snf", timeout_time=20, timeout_unit="ms")
+async def tc_chi_flit_without_flitpend_snf(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_flit_without_flitpend_snf"
+  await _run_d_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_recording_smoke", timeout_time=20, timeout_unit="ms")
 async def tc_chi_recording_smoke(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
@@ -1397,6 +1418,13 @@ async def tc_chi_d_retry(dut) -> None:
   await _run_d_link(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_d_retry_grant_first", timeout_time=20, timeout_unit="ms")
+async def tc_chi_d_retry_grant_first(dut) -> None:
+  """Run this public testcase through the CHI-D link topology."""
+  test_name = "tc_chi_d_retry_grant_first"
+  await _run_d_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_d_scoreboard_negctl", timeout_time=20, timeout_unit="ms")
 async def tc_chi_d_scoreboard_negctl(dut) -> None:
   """Run this public testcase through the CHI-D link topology."""
@@ -1453,6 +1481,90 @@ async def tc_chi_e_hni_passthrough(dut) -> None:
   await _run_e_hni(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_e_persist_return_nid_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_persist_return_nid_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_persist_return_nid_negctl"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_persist_return_nid", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_persist_return_nid(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_persist_return_nid"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_dwt_dbid_return_nid_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_dwt_dbid_return_nid_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_dwt_dbid_return_nid_negctl"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_dwt_dbid_return_nid", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_dwt_dbid_return_nid(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_dwt_dbid_return_nid"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_combined_write_comp_persist", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_combined_write_comp_persist(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_combined_write_comp_persist"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_combined_write_cmo_first", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_combined_write_cmo_first(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_combined_write_cmo_first"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_combined_write_obligation_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_combined_write_obligation_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_combined_write_obligation_negctl"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_persist_pgroup", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_persist_pgroup(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_persist_pgroup"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_tag_match", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_tag_match(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_tag_match"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_tag_match_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_tag_match_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_tag_match_negctl"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_persist_pgroup_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_persist_pgroup_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_persist_pgroup_negctl"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_combined_write_pgroup", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_combined_write_pgroup(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_combined_write_pgroup"
+  await _run_e_link(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_e_write_cmo", timeout_time=20, timeout_unit="ms")
 async def tc_chi_e_write_cmo(dut) -> None:
   """Run this public testcase through the wide CHI-E link topology."""
@@ -1506,6 +1618,13 @@ async def tc_chi_e_req_smoke(dut) -> None:
 async def tc_chi_e_sep_read(dut) -> None:
   """Run this public testcase through the CHI-E link topology."""
   test_name = "tc_chi_e_sep_read"
+  await _run_e_link(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_e_sep_read_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_e_sep_read_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E link topology."""
+  test_name = "tc_chi_e_sep_read_negctl"
   await _run_e_link(dut, test_name)
 
 

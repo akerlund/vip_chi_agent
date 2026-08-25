@@ -63,5 +63,54 @@ class tc_chi_e_dbid_resp_ord(chi_e_base_test):
     assert int(write_responses[0].rsp_opcode) == int(RspOpcode.COMP)
     assert int(write_responses[0].dbid) == int(req_item.txn_id)
 
-    self.logger.info("Test (tc_chi_e_dbid_resp_ord) PASS")
+    # Appendix B, both directions of the claim.
+    #
+    # Table B-3 gives DBIDRespOrd ONE From row, ICN(HN-F, HN-I, MN), while plain
+    # DBIDResp has three including "SN-F -> ... RN-I". So the response this test
+    # exists to prove is one a Slave may not send in a real system: section 2.6
+    # makes it a Point of Serialization guarantee, and a Slave is not the PoS
+    # for other Requesters. On this two-node link it is the only ordering point
+    # there is, which is why the checker grants it the stand-in -- and why the
+    # grant has to be visible rather than assumed.
+    #
+    # CHI_SB_ORIGINATOR_LEGAL found this on its first sweep, in the SystemVerilog
+    # port, before anyone had read Table B-3 for DBIDRespOrd. See F-CORR-013.
+    sb = self.tb_env.scoreboard
+    assert sb.n_originator_illegal == 0, (
+      f"Appendix B reported {sb.n_originator_illegal} violation(s) on ordered "
+      f"write traffic the stand-in is supposed to cover")
+    standin_after_traffic = sb.n_originator_standin
+    assert standin_after_traffic >= 1, (
+      "the completer-side stand-in never fired, so this test proves nothing "
+      "about DBIDRespOrd's originator")
+
+    # And the other direction: with the stand-in switched off the same response
+    # must be REPORTED. Without this the assertion above is satisfied by a rule
+    # that permits DBIDRespOrd from anyone.
+    sb.home_standin = False
+    self.drain_observation_fifos()
+
+    wr.reset()
+    wr.set_requests(1)
+    wr.set_initial_addr(E_DBID_RESP_ORD_ADDR_C + 0x100)
+    wr.set_size(6)
+    wr.set_src_id(E_DBID_RESP_ORD_RNI_NODE_ID_C)
+    wr.set_tgt_id(E_DBID_RESP_ORD_SNF_NODE_ID_C)
+    wr.set_order(int(ReqOrder.REQ_ORDER))
+    wr.set_exp_comp_ack(1)
+    wr.set_get_response(True)
+    wr.set_verbose(False)
+    await wr.start(self.tb_env.rni_agent.sequencer)
+    await self.wait_clocks(20)
+
+    assert sb.n_originator_illegal > 0, (
+      "with the Home stand-in switched off, a Slave's DBIDRespOrd must be "
+      "reported: Table B-3 permits it from the ICN only")
+    assert sb.n_originator_standin == standin_after_traffic, (
+      "the stand-in fired again after being switched off")
+
+    self.logger.info(
+      f"Test (tc_chi_e_dbid_resp_ord) PASS: DBIDRespOrd covered by the "
+      f"completer-side Home stand-in {standin_after_traffic} time(s), and "
+      f"reported {sb.n_originator_illegal} time(s) with it off")
     self.drop_objection()

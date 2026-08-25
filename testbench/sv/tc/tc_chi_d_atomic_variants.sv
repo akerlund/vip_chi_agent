@@ -224,6 +224,7 @@ class tc_chi_d_atomic_variants extends chi_base_test;
 
     this.atomic_store_seq.reset();
     this.atomic_store_seq.set_variant(variant);
+    this.atomic_store_seq.set_atomic_oversized_operands(1'b1);
     this.atomic_store_seq.set_requests(1);
     this.atomic_store_seq.set_initial_addr(addr);
     this.atomic_store_seq.set_size(beat_size);
@@ -274,6 +275,7 @@ class tc_chi_d_atomic_variants extends chi_base_test;
 
     this.atomic_load_seq.reset();
     this.atomic_load_seq.set_variant(variant);
+    this.atomic_load_seq.set_atomic_oversized_operands(1'b1);
     this.atomic_load_seq.set_requests(1);
     this.atomic_load_seq.set_initial_addr(addr);
     this.atomic_load_seq.set_size(beat_size);
@@ -321,6 +323,7 @@ class tc_chi_d_atomic_variants extends chi_base_test;
     initial_value = item_t::data_t'(addr);
 
     this.atomic_swap_seq.reset();
+    this.atomic_swap_seq.set_atomic_oversized_operands(1'b1);
     this.atomic_swap_seq.set_requests(1);
     this.atomic_swap_seq.set_initial_addr(addr);
     this.atomic_swap_seq.set_size(beat_size);

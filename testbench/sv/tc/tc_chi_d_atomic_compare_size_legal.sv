@@ -42,8 +42,9 @@
 // The rule is ARMED here -- not turned down to OFF -- which is the whole point:
 // the checks below are about a live rule seeing conformant traffic.
 //
-// atomic_strict_size is enabled as well, so the SOLVER's view of Table 2-17 is
-// exercised alongside the checker's. If the constraint's ceiling regressed to
+// Nothing is opted into here, and that is now the point: since F-CORR-008 the
+// solver draws Table 2-17's Sizes by default, so this testcase asks for nothing
+// special and gets the specification. If the constraint's ceiling regressed to
 // Size 4, randomization would fail outright rather than quietly drawing
 // something else, and this testcase would say so.
 //
@@ -115,8 +116,11 @@ class tc_chi_d_atomic_compare_size_legal extends chi_base_test;
     this.atomic_seq.set_requests(1);
     this.atomic_seq.set_initial_addr(ATOMIC_ADDR_C);
     this.atomic_seq.set_size(item_t::size_t'(size));
-    // The solver's half of Table 2-17. Unsatisfiable if the ceiling regresses.
-    this.atomic_seq.set_atomic_strict_size(1'b1);
+    // No opt-in of any kind here, and that is now the point: Table 2-17 is what
+    // a plain sequence draws, so this testcase asks for nothing special and gets
+    // the specification. If the constraint's ceiling regressed to Size 4,
+    // randomization would fail outright rather than quietly drawing something
+    // else.
     this.atomic_seq.set_get_response(1'b1);
     this.atomic_seq.set_verbose(1'b0);
     this.atomic_seq.set_data(data_beats);

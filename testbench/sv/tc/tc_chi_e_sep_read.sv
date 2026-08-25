@@ -42,6 +42,9 @@ class tc_chi_e_sep_read extends chi_e_base_test;
     item_t req_item;
     item_t responses[$];
     item_t rsp_item;
+    item_t obs;
+    bit    saw_read_receipt;
+    bit    saw_resp_sep_data;
 
     phase.raise_objection(this);
 
@@ -101,6 +104,58 @@ class tc_chi_e_sep_read extends chi_e_base_test;
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] Separated-read returned %0d beats instead of 1 (64 B = one wide beat)",
         super.tc_name, rsp_item.data.size()))
+    end
+
+    // Every RSP the link carried, not just the first: a stray RespSepData after
+    // the receipt would still be a Home-only response emitted by a Slave.
+    //
+    // Appendix B Table B-3 gives RespSepData one From row, ICN(HN-F, HN-I), and
+    // section 2.3.1 says it in prose -- "RespSepData is permitted from the Home
+    // only". What the Slave owes instead is the ReadReceipt, for every
+    // ReadNoSnpSep and not only for ordered ones. Asserted here as well as in
+    // the scoreboard so a Home-only response reappearing on a Slave's link fails
+    // at the point it is emitted. See F-CORR-013.
+    saw_read_receipt  = 1'b0;
+    saw_resp_sep_data = 1'b0;
+    while (super.tb_env.rni_rsp_fifo.try_get(obs)) begin
+      if (obs.rsp_opcode == item_t::rsp_opcode_t'(VIP_CHI_RSP_READ_RECEIPT_C)) begin
+        saw_read_receipt = 1'b1;
+      end
+      if (obs.rsp_opcode == item_t::rsp_opcode_t'(VIP_CHI_RSP_RESP_SEP_DATA_C)) begin
+        saw_resp_sep_data = 1'b1;
+      end
+    end
+
+    if (!saw_read_receipt) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] the Slave owes a ReadReceipt for every ReadNoSnpSep and none was seen on the RSP channel",
+        super.tc_name))
+    end
+    if (saw_resp_sep_data) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] a RespSepData was emitted on this link; section 2.3.1 permits it from the Home only",
+        super.tc_name))
+    end
+
+    if (super.tb_env.scoreboard.get_check_fail_count(
+          VIP_CHI_SB_CHK_ORIGINATOR_LEGAL_E) != 0) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] CHI_SB_ORIGINATOR_LEGAL reported %0d violation(s) on conformant separated-read traffic",
+        super.tc_name, super.tb_env.scoreboard.get_check_fail_count(
+          VIP_CHI_SB_CHK_ORIGINATOR_LEGAL_E)))
+    end
+
+    // The stand-in is the one departure, and it must be the ONLY one: exactly
+    // the ReadNoSnpSep REQ, nothing else on the link.
+    if (super.tb_env.scoreboard.get_originator_standin() != 1) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] the Home stand-in fired %0d time(s); it may cover the ReadNoSnpSep REQ and nothing else",
+        super.tc_name, super.tb_env.scoreboard.get_originator_standin()))
+    end
+    if (super.tb_env.scoreboard.get_originator_skipped() != 0) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] %0d flit(s) on this link had no Appendix B row and were not judged at all",
+        super.tc_name, super.tb_env.scoreboard.get_originator_skipped()))
     end
 
     `uvm_info(get_name(), $sformatf(

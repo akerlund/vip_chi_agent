@@ -289,6 +289,27 @@ So:
 A request can be retried multiple times; `TxnID` is held (not freed) across the
 retry, and the data/response phase only happens after a non-retried acceptance.
 
+**A credit belongs to a `PCrdType`, not to a transaction.** §2.11 states it
+outright — *"There is no fixed relationship between credits and particular
+transactions"* — and two consequences follow that are easy to get wrong:
+
+- **A granted credit may be spent on a different request** than the one whose
+  `RetryAck` earned it, provided the `PCrdType` matches. A requester banks
+  credits *by type* and draws from that bank; it does not hold one aside per
+  bounced transaction.
+- **`PCrdGrant` may arrive *before* the `RetryAck` it answers.** §2.11 names the
+  reordering explicitly and makes absorbing it mandatory: *"It is possible that
+  a reordering interconnect can reorder the responses such that the PCrdGrant is
+  received by the Requester before the RetryAck response for the transaction is
+  received. In this case, the Requester **must** record the credit it has
+  received, including the credit type, so that it can assign the credit
+  appropriately when it does receive the RetryAck response."* The specification
+  softens the likelihood — *"It is expected to be rare"* — but not the
+  requirement.
+
+Step 4 above therefore reads more precisely as: the requester re-sends once it
+*holds* a credit of the owed type, whenever and however that credit arrived.
+
 ---
 
 ## 9. Transaction identifiers
@@ -417,18 +438,50 @@ beats, echoing the request `TxnID`, with `RespErr` status. Done.
 
 ### 13.2 Separated read — `ReadNoSnpSep` (and `ReadReceipt`)
 
-A "separated" read splits the *response* (a status flit) from the *data*:
+A "separated" read splits the *response* (a status flit) from the *data*. Unlike
+every other flow in this file it is a **three-node** flow, and which node sends
+what is the whole point of it:
 
 ```text
-RN ──REQ: ReadNoSnpSep (TxnID, ReturnNID, ReturnTxnID)──▶ SN
-RN ◀─RSP: RespSepData (status)──── SN        (the data is coming, here's the status)
-RN ◀─DAT: DataSepResp (Data, keyed on ReturnTxnID)── SN
-RN ◀─RSP: ReadReceipt ──── SN                (only if the request needed ordering)
+RN ──REQ: Read* ─────────────────────────────────────▶ HN
+RN ◀─RSP: RespSepData (status) ───────────────────────  HN
+              HN ──REQ: ReadNoSnpSep (ReturnNID, ReturnTxnID)──▶ SN
+              HN ◀─RSP: ReadReceipt ──────────────────────────── SN
+RN ◀─DAT: DataSepResp (Data, keyed on ReturnTxnID) ─────────────  SN
 ```
-The two parts (`RespSepData` on RSP, `DataSepResp` on DAT) may arrive in **either
-order**; the requester correlates them by `ReturnTxnID` and is done when both have
-arrived. `ReadReceipt` is an extra ordering acknowledgement sent when the
-request's `Order` field demands it.
+
+Three restrictions from §2.3.1, all of them about the *sender*:
+
+- `ReadNoSnpSep` **must only be sent by the Home to the Slave**. Appendix B
+  Table B-1 gives it two `From` rows, `ICN(HN-F)→SN-F` and `ICN(HN-I)→SN-I`;
+  there is no row in which a Request Node sends it.
+- `RespSepData` **is permitted from the Home only** — Table B-3 gives it one
+  `From` row, `ICN(HN-F, HN-I)`. A Slave may not send it.
+- The Slave **must send `ReadReceipt` to the Home** after receiving
+  `ReadNoSnpSep`. That is the Slave's own owed response, not an ordering
+  courtesy: unlike `ReadReceipt` on an ordinary read, it is owed whether or not
+  the request's `Order` field demands one.
+
+The data leg goes to `ReturnNID`/`ReturnTxnID`, and Table B-4 lists `SN-F →
+RN-F, RN-D, RN-I` as its **expected** target — so the data reaches the original
+requester directly, bypassing the Home.
+
+**What this VIP does, and how it differs.** The `vip_chi_agent` topology is
+point-to-point `RN-I ↔ SN-F`: there is no Home component on the link. On the
+separated-read path the **RN-I agent stands in for the Home**, playing the
+Home's REQ leg — which is what the item constraint forcing `ReturnNID == SrcID`
+has always been compensating for. The Slave's half is then literally
+conformant: `ReadReceipt` goes to the Home stand-in and `DataSepResp` to the
+requester.
+
+The departure is the `ReadNoSnpSep` originator, and it is checked rather than
+assumed: `CHI_SB_ORIGINATOR_LEGAL` encodes Appendix B and grants the RN-I a
+Home's originator rights for that one opcode. `scoreboard.home_standin = 0`
+takes the grant away and makes the checker report the departure, which is what
+`tc_chi_e_sep_read_negctl` phase 2 asserts. Earlier versions of this VIP had the
+completer answer with `RespSepData` — a Home-only response emitted by a Slave —
+and nothing could see it, because the only party judging the flow was the VIP's
+own completer. See F-CORR-013.
 
 ### 13.3 Non-snooping write — `WriteNoSnpFull` / `WriteNoSnpPtl`
 

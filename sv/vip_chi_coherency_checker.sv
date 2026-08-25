@@ -126,6 +126,9 @@ class vip_chi_coherency_checker #(
   // bounds which states the response may legally report (see
   // vip_chi_snp_resp_state_gains_permission).
   protected vip_chi_resp_t pending_snp_from [N_NODES_C];
+  // The snoop's DoNotGoToSD bit, kept for the same reason the from-state is:
+  // the rule it feeds is about the RESPONSE, and by then the flit is gone.
+  protected bit            pending_snp_no_sd [N_NODES_C];
 
   // Downstream SN-F read correlation: a ReadNoSnp REQ (addr) -> its line, keyed by
   // the downstream TxnID, so the SN-F's later CompData establishes the line-data
@@ -241,6 +244,7 @@ class vip_chi_coherency_checker #(
   // set it up -- which is the shape of the bug this check exists to catch.
   protected int n_snp_no_data_on_dirty;
   protected int n_bad_snp_resp_state;
+  protected int n_bad_snp_sd_under_no_sd;
   // How many snoop responses check_snp_resp_state judged. The rule can only run
   // where a response is correlated to its snoop, so this is the honest measure of
   // whether it saw anything -- and it is the first count of DATA-LESS SnpResp
@@ -389,6 +393,50 @@ class vip_chi_coherency_checker #(
         binsof(cp_snp.snp_make_invalid) && binsof(cp_data.with_data);
     }
   endgroup
+
+  // Declared by a negative control that deliberately produces a snoop response
+  // the cross above calls illegal. It suppresses the SAMPLE for that pairing and
+  // nothing else -- the rules still report, which is what the control asserts.
+  //
+  // On the scoreboard the analogous declaration is expect_failure(), which
+  // changes severity for the CSV export and leaves the report alone. Here the
+  // opposite is needed, and for a mechanical reason rather than a stylistic one:
+  // an illegal covergroup bin is not part of the UVM report path at all, so no
+  // catcher and no severity can reach it, and the hit ends the simulation.
+  bit expect_illegal_snp_resp = 1'b0;
+
+  // The illegal_bins above, as a predicate. Entered twice, which is a real cost
+  // -- SystemVerilog gives no way to ask a covergroup whether a sample would
+  // land in an illegal bin, and a hit is unrecoverable, so the question has to
+  // be answerable BEFORE sampling. The two are compared by
+  // scripts/check_snp_resp_illegal_bins.py so an edit to one that misses the
+  // other is a gate failure rather than a silently unsuppressable control.
+  protected function bit snp_resp_hits_illegal_bin(
+    input vip_chi_snp_opcode_t op,
+    input vip_chi_resp_t       state,
+    input bit                  with_data
+  );
+    // invalidating_must_end_invalid
+    if ((op inside {VIP_CHI_SNP_UNIQUE_C, VIP_CHI_SNP_CLEAN_INVALID_C,
+                    VIP_CHI_SNP_MAKE_INVALID_C, VIP_CHI_SNP_UNIQUE_FWD_C}) &&
+        (state != VIP_CHI_RESP_STATE_I_E)) begin
+      return 1'b1;
+    end
+
+    // shared_must_not_keep_unique
+    if ((op inside {VIP_CHI_SNP_SHARED_C, VIP_CHI_SNP_SHARED_FWD_C}) &&
+        ((state == VIP_CHI_RESP_STATE_UC_E) ||
+         (state == VIP_CHI_RESP_STATE_UP_PD_DIRTY_E))) begin
+      return 1'b1;
+    end
+
+    // make_invalid_returns_no_data
+    if ((op == VIP_CHI_SNP_MAKE_INVALID_C) && with_data) begin
+      return 1'b1;
+    end
+
+    return 1'b0;
+  endfunction
 
   // ---------------------------------------------------------------------------
   // The requester-side transition surface: held state x request x granted state
@@ -663,6 +711,7 @@ class vip_chi_coherency_checker #(
       this.eca_txn[n]  = 0;
       this.pending_snp_valid[n] = 1'b0;
       this.pending_snp_from[n]  = VIP_CHI_RESP_STATE_I_E;
+      this.pending_snp_no_sd[n] = 1'b0;
     end
     this.n_line_hazard = 0;
     this.n_line_clear  = 0;
@@ -684,6 +733,7 @@ class vip_chi_coherency_checker #(
     this.n_bad_snp_resp_form      = 0;
     this.n_snp_no_data_on_dirty   = 0;
     this.n_bad_snp_resp_state     = 0;
+    this.n_bad_snp_sd_under_no_sd = 0;
     this.n_snp_resp_judged        = 0;
     // These three were left out when D5/D6 landed, and the omission is exactly
     // what a post-reset run reports as a divergence: Python clears them, SV did
@@ -1422,12 +1472,31 @@ class vip_chi_coherency_checker #(
                                               : VIP_CHI_RESP_STATE_I_E;
     legal      = 1'b1;
 
-    // Coverage first, and unconditionally: the cross has to see the legal
-    // pairings too, or its illegal bins would be the only thing it ever recorded.
+    // Coverage of the LEGAL pairings, which is what the cross is for: its
+    // illegal_bins are there to catch a pairing nobody meant to produce.
+    //
+    // A negative control means to produce one, and an illegal bin cannot be
+    // demoted the way a UVM report can -- VCS treats the hit as a verification
+    // error and ABORTS the run, before the UVM report summary is ever printed.
+    // So a control that injects an illegal snoop response could not pass:
+    // sv_regression.sh looks for "UVM_ERROR :    0" in a log that stops before
+    // that line exists, and reports FAIL with no UVM error anywhere in it.
+    // tc_chi_coh_{d,e}_do_not_go_to_sd_negctl failed exactly that way, in both
+    // issues, on the first sweep that ever ran them.
+    //
+    // Skipped only for the pairing the test declared it is injecting, and only
+    // while expect_illegal_snp_resp is set: the legal pairings in the same run
+    // are still recorded, and the RULES below still fire. Suppressing the rule
+    // would delete the evidence the control exists to gather; suppressing the
+    // bin deletes nothing, because a deliberate hit is not a measurement.
     this.sr_snp_opcode_sample    = item_t::snp_opcode_t'(op);
     this.sr_resp_state_sample    = state;
     this.sr_returned_data_sample = with_data;
-    this.cg_snp_resp_legality.sample();
+
+    if (!(this.expect_illegal_snp_resp && this.snp_resp_hits_illegal_bin(
+            op, state, with_data))) begin
+      this.cg_snp_resp_legality.sample();
+    end
 
     if (vip_chi_snp_opcode_invalidates(op) && (state != VIP_CHI_RESP_STATE_I_E)) begin
       this.n_bad_snp_resp_state++;
@@ -1444,6 +1513,31 @@ class vip_chi_coherency_checker #(
       `uvm_error("VIP_CHI_COH", $sformatf(
         "COHERENCY VIOLATION: node %0d answered shared snoop opcode 0x%0h on line 0x%0h still holding Unique (state 0x%0h); the grant that follows would create a second owner",
         node, op, line, state))
+    end
+
+    // -------------------------------------------------------------------------
+    // DoNotGoToSD, judged from the RESPONSE rather than from the flit.
+    //
+    // "Snoopee receiving a Snoop request with the DoNotGoToSD bit set, except
+    // when the Snoop is SnpOnceFwd, must not transition to SD." The SNP-channel
+    // rule CHI_SNP_DO_NOT_GO_TO_SD_LEGAL judges whether the bit was SET where
+    // the specification requires it; this judges whether the snoopee OBEYED it,
+    // which is a different claim and the one that matters to a third-party DUT.
+    //
+    // Neither D5 nor D6 catches it. D5 bounds the reported state by the opcode,
+    // and SD is not Unique, so a shared snoop answered SD passes it. D6 bounds
+    // the state by what the snoopee held, and an SD holder answering SD passes
+    // that too. The bit is a third bound and it needed its own arm.
+    // See F-INTOP-002 and F-INTOP-007.
+    // -------------------------------------------------------------------------
+    if ((state == VIP_CHI_RESP_STATE_SD_PD_DIRTY_E) &&
+        this.pending_snp_no_sd[node] &&
+        (op != VIP_CHI_SNP_ONCE_FWD_C)) begin
+      this.n_bad_snp_sd_under_no_sd++;
+      legal = 1'b0;
+      `uvm_error("VIP_CHI_COH", $sformatf(
+        "COHERENCY VIOLATION: node %0d answered snoop opcode 0x%0h on line 0x%0h reporting SD, but that snoop carried DoNotGoToSD = 1 and is not SnpOnceFwd; the snoopee must not transition to SD",
+        node, op, line))
     end
 
     // -------------------------------------------------------------------------
@@ -1591,6 +1685,7 @@ class vip_chi_coherency_checker #(
     // The from-state, kept because the shadow above no longer holds it and D6
     // needs it to bound what the response may legally report.
     this.pending_snp_from[node]   = cur;
+    this.pending_snp_no_sd[node]  = item.do_not_go_to_sd;
     this.n_snoops++;
   endfunction
 
@@ -1784,6 +1879,7 @@ class vip_chi_coherency_checker #(
   function int get_bad_snp_resp_form_count(); return this.n_bad_snp_resp_form; endfunction
   function int get_snp_no_data_on_dirty_count(); return this.n_snp_no_data_on_dirty; endfunction
   function int get_bad_snp_resp_state_count(); return this.n_bad_snp_resp_state; endfunction
+  function int get_bad_snp_sd_under_no_sd_count(); return this.n_bad_snp_sd_under_no_sd; endfunction
   function int get_snp_resp_judged_count(); return this.n_snp_resp_judged; endfunction
   function int get_snp_resp_gains_permission_count(); return this.n_snp_resp_gains_permission; endfunction
   function int get_snp_resp_adopted_count(); return this.n_snp_resp_adopted; endfunction
@@ -1828,6 +1924,11 @@ class vip_chi_coherency_checker #(
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY SNP RESP STATE SUMMARY: snp_resp_judged=%0d bad_snp_resp_state=%0d snp_dirty_lost=%0d",
       this.n_snp_resp_judged, this.n_bad_snp_resp_state, this.n_snp_dirty_lost), UVM_LOW)
+    // Its own line, for the reason the comment below repeats: the report server
+    // wraps long lines and a wrapped field=value pair cannot be swept with grep.
+    `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY DO NOT GO TO SD SUMMARY: bad_snp_sd_under_no_sd=%0d",
+      this.n_bad_snp_sd_under_no_sd), UVM_LOW)
     // Its own line for the same reason as the two above: the report server wraps
     // long lines, and a wrapped field=value pair cannot be swept for with grep.
     `uvm_info("VIP_CHI_COH", $sformatf(

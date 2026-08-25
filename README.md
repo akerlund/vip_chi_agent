@@ -254,6 +254,34 @@ What is *not* covered is the retry handshake anywhere other than the
 point-to-point RN-I↔SN-F path: neither proxy topology drives it, and no test
 bounces more than one transaction at a time.
 
+### The RN-I↔SN-F link is a Home→Slave link on the separated-read path
+
+Worth stating plainly, because it is the one place this VIP knowingly departs
+from the specification's node model.
+
+Appendix B Table B-1 puts `ReadNoSnpSep` on a Home→Slave link only — its two
+`From` rows are `ICN(HN-F)→SN-F` and `ICN(HN-I)→SN-I`, and §2.3.1 says the same
+in prose: it "must only be sent by the Home to the Slave". The point-to-point
+topology has no Home component between the RN-I and the SN-F, so on that one
+path **the RN-I agent stands in for a Home**, playing the Home's REQ leg. The
+item constraint forcing `ReturnNID == SrcID` on a separated read is what makes
+the data leg come back to it, and is the tell that the flow does not close as an
+RN-I flow.
+
+Everything else on the link is then literally conformant. The Slave answers
+`ReadReceipt` — Table B-3's `SN-F → ICN(HN-F)` row — and `DataSepResp` to
+`ReturnNID`, which Table B-4 lists as an *expected* target for an SN-F, not
+merely a permitted one. In particular the Slave does **not** send `RespSepData`:
+Table B-3 permits that from a Home only.
+
+The departure is checked rather than assumed. `CHI_SB_ORIGINATOR_LEGAL` encodes
+Appendix B's `From` column and grants an RN-I a Home's originator rights for
+exactly that one opcode; `scoreboard.home_standin = 0` takes the grant away and
+makes the checker report the link as illegal, which is what
+`tc_chi_e_sep_read_negctl` asserts. An exemption nothing can switch off is an
+exemption nobody can audit. `docs/CHI_PRIMER.md` §13.2 draws the three-node flow
+the specification describes alongside the two-node one this VIP runs.
+
 ### SN-F Completer (Memory Responder)
 
 Autonomous auto-responder backed by an internal [vip_mem](submodules/vip_memory) store:
@@ -425,7 +453,7 @@ count and addressing (`set_requests`, `set_initial_addr`, `set_addr_list`,
 `set_counter_value`), identity/attributes (`set_src_id`, `set_tgt_id`,
 `set_qos`, `set_order`, `set_ns`, `set_mem_attr`), flow control (`set_allow_retry`,
 `set_exp_comp_ack`, `set_excl`, `set_pcrd_type`, `set_sep_read`), opcode-pool
-opt-ins (`set_atomic_strict_size`, `set_combined_write_cmo_enable`), and CHI-E MTE
+opt-ins (`set_atomic_oversized_operands`, `set_combined_write_cmo_enable`), and CHI-E MTE
 (`set_tagop`, `set_tag`, `set_tu`). Enable response capture with
 `set_get_response(1)` and collect with `get_responses()`; start with
 `seq.start(<sequencer>)`.

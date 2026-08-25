@@ -41,6 +41,10 @@ from vip_chi_types_pkg import (
   req_opcode_is_atomic, req_opcode_is_atomic_compare,
   exp_comp_ack_required, exp_comp_ack_prohibited,
   SnpAttr, req_dodwt_applicable, SnpAttrReq, snp_attr_requirement,
+  req_return_txn_id_applicable,
+  req_return_nid_applicable,
+  req_tagop_permitted_mask,
+  TAGOP_UPDATE,
 )
 
 _RO = ReqOpcode  # brevity in the opcode-set tables below
@@ -123,6 +127,59 @@ _SNP_ATTR_MUST_BE_ZERO = tuple(sorted(
   int(o) for o in _RO if snp_attr_requirement(int(o)) is SnpAttrReq.ZERO))
 
 
+# The REQ opcodes IHI 0050 E 13.10.4 marks ReturnNID INAPPLICABLE for, derived
+# from the classifier rather than restated, so the constraint and the checker
+# cannot disagree. The solver needs a closed list; req_return_nid_applicable is
+# the single source of truth for both.
+_RETURN_NID_INAPPLICABLE_C = tuple(sorted(
+  int(o) for o in ReqOpcode if not req_return_nid_applicable(int(o))))
+
+# The same for ReturnTxnID, from its own classifier. The two lists are NOT the
+# same -- CleanSharedPersistSep carries a ReturnNID and no ReturnTxnID -- which
+# is exactly why each is derived separately.
+_RETURN_TXN_ID_INAPPLICABLE_C = tuple(sorted(
+  int(o) for o in ReqOpcode if not req_return_txn_id_applicable(int(o))))
+
+
+# Table 12-2's permitted-TagOp mask, inverted into the opcode groups a
+# constraint can name. Derived from req_tagop_permitted_mask rather than
+# transcribed beside it, so the generator and CHI_REQ_TAGOP_LEGAL cannot
+# disagree about the same table: one of them would then be wrong, and a
+# generator that produces what the checker rejects is the worse of the two.
+#
+# 0b1111 -- every encoding permitted -- is dropped rather than emitted as a
+# no-op constraint. It covers Issue D (no memory tagging, and the issue gate
+# already holds TagOp at zero), CleanUnique (no row in Table 12-2) and
+# ReqLCrdReturn (a Don't Care by the note under it), all of which the classifier
+# returns unjudged on purpose.
+# CleanShared is excluded, and the exclusion is load-bearing rather than tidy:
+# check_classifier_coverage.py records it as unimplemented -- "no
+# con_opcode_legal, sequence or driver" -- and enforces that by failing on any
+# reference to it outside the type packages. Naming it in a constraint would
+# make that claim false while changing nothing, because con_opcode_legal still
+# refuses to generate it. The CHECKER still judges it: an inbound CleanShared
+# carrying a bad TagOp is reported by CHI_REQ_TAGOP_LEGAL, which is the only
+# vantage from which this VIP can see one at all.
+_TAGOP_UNGENERATABLE_C = (int(ReqOpcode.CLEAN_SHARED),)  # unimplemented-ok
+
+
+def _tagop_groups():
+  groups = {}
+  for op in ReqOpcode:
+    if int(op) in _TAGOP_UNGENERATABLE_C:
+      continue
+    m = req_tagop_permitted_mask(int(Issue.E), int(op))
+    if m == 0b1111:
+      continue
+    groups.setdefault(m, []).append(int(op))
+  return tuple(
+    (tuple(sorted(ops)), tuple(v for v in range(4) if (m >> v) & 1))
+    for m, ops in sorted(groups.items()))
+
+
+_TAGOP_GROUPS_C = _tagop_groups()
+
+
 @vsc.randobj
 class vip_chi_item(uvm_sequence_item):
 
@@ -190,7 +247,7 @@ class vip_chi_item(uvm_sequence_item):
     # ---- vsc STATE fields (synced from knobs in pre_randomize) -------------
     self.s_raw_override = vsc.uint8_t(0)
     self.s_enforce_align = vsc.uint8_t(1)
-    self.s_atomic_strict = vsc.uint8_t(0)
+    self.s_atomic_oversized = vsc.uint8_t(0)
     self.s_combined_cmo = vsc.uint8_t(0)
     self.s_write_unique_zero = vsc.uint8_t(0)
     self.s_write_evict_or_evict = vsc.uint8_t(0)
@@ -268,7 +325,23 @@ class vip_chi_item(uvm_sequence_item):
     self.min_size = 0
     self.max_size = 6
     self.enforce_addr_alignment = True
-    self.atomic_strict_size = False
+    # Ask for atomic operand Sizes that IHI 0050 E Table 2-17 / D Table 2-17 does
+    # NOT list -- a deliberate deviation, not extra rigour.
+    #
+    # The default is the specification. This used to be the other way round: the
+    # table was modelled but gated behind a knob that defaulted OFF, so every
+    # atomic a plain randomize() produced was unconstrained and the VIP's default
+    # stimulus was out of spec. A verification component whose default traffic
+    # violates the protocol it checks is the wrong way for the switch to point --
+    # see F-CORR-008.
+    #
+    # The deviation is kept because it is load-bearing: the atomic testcases drive
+    # a full bus-beat operand to exercise the operand DAT / RMW / return datapath
+    # at the widest beat, which is above the ordinary limit on every geometry
+    # here. They now ask for it by name, and CHI_ATOMIC_SIZE_LEGAL reports what
+    # they drive -- each of those testcases arms the rule at OFF and then requires
+    # that it fired, so the deviation stays visible rather than silent.
+    self.atomic_oversized_operands = False
     # Combined Write + CMO opt-in. Default OFF, and the default is the point:
     # these six are legal writes, so leaving them in the randomization pool
     # unconditionally would have every existing random write test start emitting
@@ -307,8 +380,8 @@ class vip_chi_item(uvm_sequence_item):
   def set_enforce_addr_alignment(self, value: bool) -> None:
     self.enforce_addr_alignment = bool(value)
 
-  def set_atomic_strict_size(self, value: bool) -> None:
-    self.atomic_strict_size = bool(value)
+  def set_atomic_oversized_operands(self, value: bool) -> None:
+    self.atomic_oversized_operands = bool(value)
 
   def set_combined_write_cmo_enable(self, value: bool) -> None:
     self.combined_write_cmo_enable = bool(value)
@@ -377,6 +450,36 @@ class vip_chi_item(uvm_sequence_item):
 
   def set_dat_tagop(self, value: int) -> None:
     self.dat_tagop = int(value)
+
+  def apply_dat_tagop(self, value: int) -> None:
+    """Set the WriteData TagOp and re-derive the TU bits it implies.
+
+    Section 12.5.2 is a list of per-opcode bullets, but every bullet says the
+    same thing about TU: inapplicable and zero under Transfer and under Match,
+    all bits asserted under Update. The one relaxation is WriteNoSnpPtl /
+    WriteUniquePtl / WriteUniquePtlStash, where "any combination of TU and BE
+    bits, including none or all, can be asserted" -- all-asserted is inside
+    that, so one rule covers the chapter without weakening it anywhere.
+
+    Under Invalid the section is stronger than TU alone -- "the Memory Tagging
+    fields must be set to zero and ignored by the Completer" -- and the zero
+    branch here is that.
+
+    Nothing related TagOp to TU before this: TU was whatever set_tu() left, and
+    zero otherwise, on every opcode and every TagOp alike. A write asking the
+    completer to Update tags while telling it, bit by bit, that none of them
+    should be updated is not a value a conformant Requester can send. See
+    F-CORR-009.
+
+    A test that pinned TU through set_tu() keeps its pin -- custom_tu is what
+    post_randomize honours, and this leaves it alone.
+    """
+    self.dat_tagop = int(value)
+    if self.custom_tu:
+      return
+    tu_all = mask(self.cfg.tu_width) if self._issue_e else 0
+    fill = tu_all if int(value) == TAGOP_UPDATE else 0
+    self.tu = [fill] * len(self.tu)
 
   def set_tag(self, values) -> None:
     self.custom_tag = [int(v) for v in values]
@@ -475,7 +578,7 @@ class vip_chi_item(uvm_sequence_item):
   def pre_randomize(self):
     self.s_raw_override = 1 if self.raw_override else 0
     self.s_enforce_align = 1 if self.enforce_addr_alignment else 0
-    self.s_atomic_strict = 1 if self.atomic_strict_size else 0
+    self.s_atomic_oversized = 1 if self.atomic_oversized_operands else 0
     self.s_combined_cmo = 1 if self.combined_write_cmo_enable else 0
     self.s_write_unique_zero = 1 if self.write_unique_zero_enable else 0
     self.s_write_evict_or_evict = 1 if self.write_evict_or_evict_enable else 0
@@ -519,7 +622,7 @@ class vip_chi_item(uvm_sequence_item):
         (self.addr & ((1 << self.size) - 1)) == 0
 
   @vsc.constraint
-  def con_atomic_compare_size(self):
+  def con_atomic_compare_beat_align(self):
     with vsc.if_then(self.s_raw_override == 0):
       with vsc.if_then(self.opcode == int(_RO.ATOMIC_COMPARE)):
         self.size >= self._clog2_db_p1
@@ -531,7 +634,7 @@ class vip_chi_item(uvm_sequence_item):
         self.opcode != int(_RO.ATOMIC_COMPARE)
 
   @vsc.constraint
-  def con_atomic_strict_size(self):
+  def con_atomic_table_2_17_size(self):
     """The permitted Sizes are the ones IHI 0050 E Table 2-17 lists, and no others:
 
       AtomicStore / AtomicLoad / AtomicSwap   1, 2, 4 or 8 byte   -> Size 0..3
@@ -549,14 +652,14 @@ class vip_chi_item(uvm_sequence_item):
     two 16-byte operands. Deriving the ceiling from the ordinary 8-byte limit
     instead of from the table gives Size <= 4, which excludes the legal 32-byte
     compare, and on the 16-byte cut that is worse than conservative:
-    con_atomic_compare_size requires Size >= clog2(data_bytes)+1 = 5 there, so a
+    con_atomic_compare_beat_align requires Size >= clog2(data_bytes)+1 = 5 there, so a
     <= 4 ceiling and a >= 5 floor left the strict mode with NO satisfiable Size and
     an AtomicCompare draw would have failed randomization outright. Reading the
     ceiling off Table 2-17 leaves exactly Size 5, which is the one value that is
     both legal and representable at beat granularity on that cut.
     """
     with vsc.if_then(self.s_raw_override == 0):
-      with vsc.if_then(self.s_atomic_strict == 1):
+      with vsc.if_then(self.s_atomic_oversized == 0):
         with vsc.if_then(self.opcode.inside(vsc.rangelist((0x28, 0x39)))):
           with vsc.if_then(self.opcode == int(_RO.ATOMIC_COMPARE)):
             self.size.inside(vsc.rangelist((1, 5)))
@@ -608,14 +711,46 @@ class vip_chi_item(uvm_sequence_item):
 
   @vsc.constraint
   def con_return_path_fields(self):
-    # Separated-read return routing is only meaningful for ReadNoSnpSep; all
-    # other requests clear the return path fields (mirrors SV con_return_path_fields).
+    # ReturnNID is zeroed only where IHI 0050 E 13.10.4 makes it INAPPLICABLE,
+    # which is a smaller set than "everything except ReadNoSnpSep".
+    #
+    # It used to be that larger set, and the difference is not academic. 13.10.4
+    # makes the field applicable "in ReadNoSnp, ReadNoSnpSep,
+    # CleanSharedPersistSep, WriteNoSnp, Combined Write, and Atomic requests",
+    # and it is the field that names the node a CompData, DataSepResp or PERSIST
+    # is sent to. Forcing it to zero on a Combined Write therefore made the one
+    # response 2.8 routes by ReturnNID -- the Persist answering a PCMO --
+    # impossible to address correctly: no test could set the field, so no test
+    # could show the driver targeting it at SrcID instead. See F-CORR-012, whose
+    # own tasks assume a stimulus this constraint did not permit.
+    #
+    # Zeroing is the only thing dropped. The VALUE still comes from the sequence,
+    # which pins `return_nid == return_nid_val` on every request it builds, and
+    # that value still defaults to 0 -- so a request nobody has asked to route
+    # is unchanged, and a test that wants a real return node can now say so.
+    #
+    # ReturnTxnID gets the same treatment from its own classifier, and it took
+    # two goes to get right. It was "zero on everything but ReadNoSnpSep", on
+    # the reasoning that 13.10.5 names it "the TxnID of a CompData or
+    # DataSepResp only, and a separated persist gets an RSP rather than data".
+    # That reasoning is wrong, and section 2.5 says so outright: "when DoDWT = 1,
+    # ReturnTxnID value is expected to be the original Requester TxnID [...]
+    # Used as the TxnID in the DBIDResp response". A DBIDResp is an RSP, so the
+    # premise that the field only ever addresses data was false -- and the
+    # constraint built on it made a conformant DWT write unrandomizable.
+    #
+    # The two lists still differ and are still derived separately:
+    # CleanSharedPersistSep carries a ReturnNID and no ReturnTxnID.
     with vsc.if_then(self.s_raw_override == 0):
       with vsc.if_then(self.opcode == int(_RO.READ_NO_SNP_SEP)):
         self.return_nid == self.src_id
       with vsc.if_then(self.opcode != int(_RO.READ_NO_SNP_SEP)):
-        self.return_nid == 0
-        self.return_txn_id == 0
+        with vsc.if_then(
+            self.opcode.inside(vsc.rangelist(*_RETURN_TXN_ID_INAPPLICABLE_C))):
+          self.return_txn_id == 0
+        with vsc.if_then(
+            self.opcode.inside(vsc.rangelist(*_RETURN_NID_INAPPLICABLE_C))):
+          self.return_nid == 0
 
   @vsc.constraint
   def con_exp_comp_ack_legal(self):
@@ -718,6 +853,36 @@ class vip_chi_item(uvm_sequence_item):
         self.datacheck == 0
       if not self.cfg.poison_en:
         self.poison == 0
+
+  # ==========================================================================
+  @vsc.constraint
+  def con_tagop_legal(self):
+    """Table 12-2: which TagOp encodings each request opcode may carry.
+
+    Until this existed TagOp was a plain rand field with one constraint on it --
+    the issue gate holding it at zero under CHI-D -- so under CHI-E every opcode
+    could carry every value. That is not a hole in coverage, it is a generator
+    that produces requests a conformant completer has no defined behaviour for,
+    and the VIP's own SN-F would store the tag and the scoreboard would predict
+    it, so the regression confirmed the wrong model. See F-CORR-009.
+
+    Written as opcode groups rather than as a call to the classifier, because a
+    function call in a constraint makes both arguments solve-ordered and turns a
+    declarative constraint into a post-hoc check that can simply fail. The
+    groups are DERIVED from the classifier at import (_TAGOP_GROUPS_C), so the
+    two cannot drift apart.
+
+    Only the randomized value is constrained. A sequence that pins TagOp through
+    set_tagop() pins it through an inline constraint, so an illegal pin now
+    fails randomization loudly instead of reaching the wire quietly -- which is
+    the point, and is how the ReadNoSnpSep-with-Update in tc_chi_base_seq_smoke
+    surfaced.
+    """
+    with vsc.if_then(self.s_raw_override == 0):
+      if self._issue_e:
+        for ops, permitted in _TAGOP_GROUPS_C:
+          with vsc.if_then(self.opcode.inside(vsc.rangelist(*ops))):
+            self.tagop.inside(vsc.rangelist(*permitted))
 
   # ==========================================================================
   # post_randomize -- size + fill the per-beat payload arrays, pick DAT opcode.

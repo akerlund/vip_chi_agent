@@ -35,6 +35,9 @@ import cocotb
 from pyuvm import uvm_driver, ConfigDB
 
 from vip_chi_types_pkg import (
+  req_opcode_combined_cmo_is_persist, req_dwt_grant_uses_return_path,
+  TAGOP_MATCH, TAGOP_INVALID,
+  pgroup_id_from_req,
   Role, ReqOpcode, RspOpcode, DatOpcode, Resp, RespErr, RawChannel,
   DatInterleavePolicy,
   chi_xfer_dat_beats, req_opcode_is_atomic, req_opcode_is_atomic_compare,
@@ -69,10 +72,8 @@ _COMBINED_WRITE_CMO = {
 # observable response rather than only a CompCMO. A memory node has no cache, so
 # CleanSh and CleanInv complete with no state change; the persist leg is the half
 # a test can actually watch land in the wrong order.
-_COMBINED_CMO_PERSIST = {
-  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
-  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
-}
+_COMBINED_CMO_PERSIST = frozenset(
+  o for o in ReqOpcode if req_opcode_combined_cmo_is_persist(int(o)))
 
 _AUTO_WRITE = ({int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL)}
                | _COMBINED_WRITE_CMO)
@@ -227,6 +228,10 @@ class vip_chi_driver_snf(uvm_driver):
     # exactly one banned step rather than one per cycle.
     self._ack_drop_done = False
     self._ack_drop_pending = False
+    # One-shot latch for cfg.flit_without_flitpend: the control drops the
+    # announcement in front of ONE flit, so the rest of the run is legal traffic
+    # the same rule must pass. See announce_flit.
+    self.flit_without_pend_done = False
 
   def schedule_initial_credit_grants(self):
     self.req_lcrdv_pending += self.cfg.initial_req_credits
@@ -642,6 +647,19 @@ class vip_chi_driver_snf(uvm_driver):
     bus = self.bus
     await bus.rising()
     self.drive_idle_sideband()
+    # Negative control (cfg.flit_without_flitpend): skip the announcement once,
+    # so exactly one flit goes out with FLITPEND low in the cycle before it and
+    # CHI_*_VALID_REQUIRES_PEND has a real violation to catch on THIS driver's
+    # flits. Returning without driving leaves FLITPEND at the 0 the previous
+    # send cleared it to.
+    #
+    # Here as well as in the requesters because the knob reaching only some
+    # drivers meant the rule was never shown to fire on the rest -- and which
+    # drivers it reached differed between the two ports, which check_cfg_parity
+    # could not see because the config SURFACE matched. See F-CHK-014.
+    if self.cfg.flit_without_flitpend and not self.flit_without_pend_done:
+      self.flit_without_pend_done = True
+      return
     bus.drive(**{f"tx{channel}flitpend": 1})
 
   # --------------------------------------------------------------------------
@@ -912,22 +930,58 @@ class vip_chi_driver_snf(uvm_driver):
   # never received a bare Comp, and persistence was signalled twice -- once alone
   # and again inside the combined response.
   # ==========================================================================
+  def req_pgroup_id(self, req) -> int:
+    """The PGroupID a persistent request asked its completions to carry back.
+
+    IHI 0050 E 13.10.8 gives the request-side encoding as an equation --
+    PGroupID[7:0] = {GroupIDExt[2:0], LPID[4:0]} -- so there is nothing to read
+    off a dedicated field, on either side. On the way back it rides DBID, which
+    Table 13-7 shares between DBID, PGroupID and StashGroupID.
+
+    The control corrupts it, which is the only way to tell a completer that
+    reflects the group from one that happens to send a value the requester
+    accepts. See F-INTOP-010.
+    """
+    # GroupIDExt exists only in the Issue E request flit, so it is read through
+    # the issue and not with a .get() default. A presence guard would have made
+    # this silently return a D-shaped PGroupID rather than raising, which is the
+    # failure mode the flit field map exists to prevent -- and it did raise, in
+    # the two CHI-D persist testcases, the first time this ran.
+    #
+    # Zero for D is not a placeholder: Issue D has no GroupIDExt, no
+    # CleanSharedPersistSep and no Combined Write, so there is no D transaction
+    # that carries a PGroupID for this to be wrong about. The SV twin says the
+    # same thing through a virtual hook, which is how that port has to spell it.
+    group_id_ext = req["groupidext"] if self.bus.cfg.is_e else 0
+    pgroup = pgroup_id_from_req(group_id_ext, req["lpid"])
+    if self.cfg.snf_persist_pgroup_corrupt_negctl:
+      pgroup = (pgroup + 1) & 0xFF
+    return pgroup
+
   async def drive_auto_persist_rsp(self, req):
     is_sep = req["opcode"] == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP)
     base = {
       "srcid": req["tgtid"], "tgtid": req["srcid"], "txnid": req["txnid"],
       "qos": req["qos"], "resp": int(Resp.I), "resperr": int(RespErr.OKAY),
     }
+    # 13.10.7: PGroupID is applicable in the Persist and CompPersist responses,
+    # and it travels in the bits Table 13-7 otherwise calls DBID. A persist
+    # response has no data buffer, so there was never a real DBID to displace --
+    # which is why the field sat at the request's TxnID and nobody noticed it
+    # was carrying the wrong thing.
+    persist_fields = dict(base, dbid=self.req_pgroup_id(req))
 
     if is_sep and self.cfg.combined_persist_rsp:
-      await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP_PERSIST)))
+      await self.drive_rsp(
+        dict(persist_fields, opcode=int(RspOpcode.COMP_PERSIST)))
       return
 
     await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP)))
 
     if is_sep:
       # Persist is not tied to a TxnID.
-      await self.drive_rsp(dict(base, txnid=0, opcode=int(RspOpcode.PERSIST)))
+      await self.drive_rsp(
+        dict(persist_fields, txnid=0, opcode=int(RspOpcode.PERSIST)))
 
   # ==========================================================================
   # Opcode classifiers / helpers.
@@ -1006,17 +1060,31 @@ class vip_chi_driver_snf(uvm_driver):
     })
 
   async def drive_auto_retry(self, req):
+    """Bounce one request, then grant the P-credit that lets it be re-issued.
+
+    cfg.snf_pcrd_grant_before_ack sends the two in the other order. That is not
+    a defect being injected: IHI 0050 E 2.11 says outright that "a reordering
+    interconnect can reorder the responses such that the PCrdGrant is received
+    by the Requester before the RetryAck response", and requires the requester
+    to absorb it. This VIP's completer never reordered anything, so the
+    requester's inability to absorb it could not be reached from inside the
+    regression at all. See F-INTOP-006.
+    """
     pcrd = 0x1
-    await self.drive_rsp({
+    retry_ack = {
       "opcode": int(RspOpcode.RETRY_ACK), "srcid": req["tgtid"],
       "tgtid": req["srcid"], "txnid": req["txnid"], "qos": req["qos"],
       "pcrdtype": pcrd, "resp": int(Resp.I), "resperr": int(RespErr.OKAY),
-    })
-    await self.drive_rsp({
+    }
+    pcrd_grant = {
       "opcode": int(RspOpcode.PCRD_GRANT), "srcid": req["tgtid"],
       "tgtid": req["srcid"], "txnid": 0, "qos": req["qos"],
       "pcrdtype": pcrd, "resp": int(Resp.I), "resperr": int(RespErr.OKAY),
-    })
+    }
+    order = ([pcrd_grant, retry_ack] if self.cfg.snf_pcrd_grant_before_ack
+             else [retry_ack, pcrd_grant])
+    for rsp in order:
+      await self.drive_rsp(rsp)
 
   async def drive_auto_write_comp(self, req):
     bus = self.bus
@@ -1029,7 +1097,33 @@ class vip_chi_driver_snf(uvm_driver):
     is_decerr = self.decerr_check(req_addr)
 
     err = int(RespErr.NDERR) if is_decerr else int(RespErr.OKAY)
+
+    # Direct Write Transfer moves the grant off the requester's own addressing.
+    # Table 2-8: with DoDWT set the DBIDResp goes to ReturnNID, and section 2.5
+    # sends its TxnID with it -- "when DoDWT = 1, ReturnTxnID [...] Used as the
+    # TxnID in the DBIDResp response". Both fields move together or neither
+    # does, so they are computed once, here, rather than at the drive_rsp call.
+    dwt = req_dwt_grant_uses_return_path(cfg.issue, req["opcode"], req["snpattr"])
+    if dwt and self.cfg.snf_dwt_dbid_target_srcid_negctl:
+      # Negative control: keep the pre-F-CORR-012 addressing under DoDWT = 1.
+      dwt = False
+    grant_tgt = req["returnnid"] if dwt else req_src
+    grant_txn = req["returntxnid"] if dwt else req_txn
+
     split = self.cfg.split_write_rsp
+    # Table 2-8's own footnote bounds the combined form: "The Comp for the Write
+    # can be combined with the DBIDResp if both are targeting the Home." Under
+    # DWT they need not, and when they do not, a CompDBIDResp would have to
+    # carry two different targets in one flit. The split is forced by where the
+    # responses go, not by DoDWT itself -- ReturnNID is PERMITTED to be the Home
+    # (section 2.5), and when it is, the combined form stays legal.
+    #
+    # The TxnID has to agree as well, which the footnote does not say because it
+    # is talking about targets: Comp is owed to the requester under the request's
+    # own TxnID, the DBIDResp under ReturnTxnID, and one flit carries one TxnID.
+    # So the node coinciding is necessary and not sufficient.
+    if dwt and (int(grant_tgt) != int(req_src) or int(grant_txn) != int(req_txn)):
+      split = True
     if split:
       grant_err = int(RespErr.OKAY)
       if cfg.is_e and self.cfg.ordered_dbid_resp and self.req_has_ordering(req):
@@ -1041,8 +1135,8 @@ class vip_chi_driver_snf(uvm_driver):
       grant_op = int(RspOpcode.COMP_DBID_RESP)
 
     await self.drive_rsp({
-      "opcode": grant_op, "srcid": req_tgt, "tgtid": req_src,
-      "txnid": req_txn, "dbid": req_txn, "qos": req["qos"],
+      "opcode": grant_op, "srcid": req_tgt, "tgtid": grant_tgt,
+      "txnid": grant_txn, "dbid": req_txn, "qos": req["qos"],
       "resp": int(Resp.I), "resperr": grant_err,
     })
 
@@ -1081,6 +1175,41 @@ class vip_chi_driver_snf(uvm_driver):
         if cfg.is_e and i < len(write_tags):
           self.tag_mem[self._row_index(req_addr + i * cfg.data_bytes)] = write_tags[i]
 
+    # The Tag Match answer, when the write asked for one.
+    #
+    # IHI 0050 E section 2.3.1: "If the WriteData message indicates that a Tag
+    # Match is required, then the Slave sends a TagMatch response after
+    # completing the required Tag Match operation." The indication is on the
+    # DATA, not the request -- TagOp = 0b11 (Match) on the WriteData beats -- so
+    # it is read from what arrived rather than from what was asked for.
+    #
+    # After the data, deliberately. The specification also permits the other
+    # order ("if the Slave does not support or does not perform the Tag Match
+    # operation then the Slave is permitted to send the TagMatch response after
+    # receiving the request without waiting for write data"), but that is the
+    # answer of a completer that did NOT do the check. This one has the tags in
+    # hand, so it answers where the check would have happened.
+    tag_match_owed = cfg.is_e and any(t[0] == TAGOP_MATCH for t in write_tags)
+    if self.cfg.snf_tag_match_unrequested_negctl and cfg.is_e:
+      # The control: answer whether or not the data asked. On a write that DID
+      # ask this is indistinguishable from correct behaviour, so the testcase
+      # driving it uses a write that did not.
+      tag_match_owed = True
+    if tag_match_owed:
+      await self.drive_tag_match_rsp(req, err)
+
+    # The write's own completion, and the CMO's, in either order.
+    #
+    # Issue E places one ordering rule on CompCMO -- section 2.8: it "must only
+    # be sent after the associated request is received" -- and none at all
+    # relative to the write's Comp. cfg.snf_cmo_before_write_comp takes the
+    # other option, which exists so a requester that silently assumed the
+    # write-first order has something that breaks it. See F-INTOP-008.
+    cmo_first = (self.cfg.snf_cmo_before_write_comp
+                 and req["opcode"] in _COMBINED_WRITE_CMO)
+    if cmo_first:
+      await self.drive_combined_cmo_rsp(req, err)
+
     if split:
       await self.drive_rsp({
         "opcode": int(RspOpcode.COMP), "srcid": req_tgt, "tgtid": req_src,
@@ -1093,11 +1222,32 @@ class vip_chi_driver_snf(uvm_driver):
     # address, and the CMO acts on the state the write leaves behind. Driving it
     # before the data had landed would answer for a cache maintenance that had
     # not happened yet.
-    if req["opcode"] in _COMBINED_WRITE_CMO:
+    if req["opcode"] in _COMBINED_WRITE_CMO and not cmo_first:
       await self.drive_combined_cmo_rsp(req, err)
 
     if req["expcompack"]:
       await self.wait_for_comp_ack(req_txn, req_src, req_tgt)
+
+  async def drive_tag_match_rsp(self, req, err):
+    """Answer a Match-tagged write with TagMatch.
+
+    Routed to ReturnNID, not SrcID. The table at IHI 0050 E section 4.7 gives
+    TagMatch's TgtID as "Request.SrcID" from a Home and "Request.ReturnNID" from
+    a Slave, and section 2.5 says the same from the field's side: "In WriteNoSnp
+    with TagOp Match [...] when DoDWT = 0, the value is used as the TgtID in the
+    TagMatch response only." This driver is the Slave.
+
+    The group identifier rides DBID, as PGroupID does on a Persist -- Table 13-7
+    shares those bits between DBID, PGroupID and StashGroupID, and 13.10.7 adds
+    TagGroupID to the list. So this needed no new flit field, which is the whole
+    reason F-COV-001 was cheap to close.
+    """
+    await self.drive_rsp({
+      "opcode": int(RspOpcode.TAG_MATCH), "srcid": req["tgtid"],
+      "tgtid": req["returnnid"], "txnid": req["txnid"],
+      "dbid": self.req_pgroup_id(req), "qos": req["qos"],
+      "resp": int(Resp.I), "resperr": err,
+    })
 
   async def drive_combined_cmo_rsp(self, req, err):
     """The CMO half of a combined Write + CMO completion.
@@ -1110,20 +1260,70 @@ class vip_chi_driver_snf(uvm_driver):
     For the persistent forms the spec additionally requires a Persist response
     AFTER the write data is received, which is the ordering rule this whole
     family turns on. Persist and CompCMO may be combined into a single
-    CompPersist when both target the same node; they are kept separate here
-    because two observable events are what a test can check an order between,
-    and the combined encoding would collapse exactly the evidence.
+    CompPersist when both target the same node, and cfg.combined_persist_rsp
+    asks for that encoding here as it already did on the standalone
+    CleanSharedPersistSep path. The DEFAULT stays separate, because two
+    observable events are what a test can check an order between and the
+    combined encoding collapses exactly that evidence -- but a requester has to
+    accept both, so the completer has to be able to produce both. See
+    F-INTOP-008, where the requester fatalled on an encoding this VIP could not
+    then generate.
     """
-    base = {
+    # Two responses, two field sets, and deliberately NOT one shared base.
+    #
+    # They do not go to the same node. IHI 0050 E 2.8: "The ReturnNID value in
+    # the request must be used as the target in the following responses by the
+    # Slave: in the DBIDResp, if the DoDWT bit in the request is set to one; in
+    # the Persist, if the CMO in the request is a PCMO." CompCMO is not in that
+    # list and keeps SrcID; the Persist is, and takes ReturnNID.
+    #
+    # A shared base is what hid that: one dict, one tgtid, and a per-response
+    # rule with nowhere to live. Splitting them costs four lines and makes the
+    # difference a thing you have to write down rather than one you have to
+    # remember. See F-CORR-012.
+    is_persist = req["opcode"] in _COMBINED_CMO_PERSIST
+    # Persist is not tied to a TxnID, and it is routed by ReturnNID.
+    # The control aims it at SrcID, which is what this driver did before
+    # F-CORR-012 and what 2.8 forbids for a PCMO.
+    persist_tgt = (req["srcid"] if self.cfg.snf_persist_target_srcid_negctl
+                   else req["returnnid"])
+
+    # 2.8 permits the combination only "if the two are sent to Home" -- CompCMO
+    # goes to SrcID and the Persist to ReturnNID, so the encoding is available
+    # exactly when those name the same node. Asking for it when they do not
+    # would put one flit where two different targets are owed, so the knob is
+    # honoured only where the protocol allows it rather than obeyed blindly.
+    if (is_persist and self.cfg.combined_persist_rsp
+        and int(persist_tgt) == int(req["srcid"])):
+      await self.drive_rsp({
+        "srcid": req["tgtid"], "tgtid": req["srcid"], "txnid": req["txnid"],
+        "dbid": self.req_pgroup_id(req), "qos": req["qos"], "resp": int(Resp.I),
+        "resperr": err, "opcode": int(RspOpcode.COMP_PERSIST),
+      })
+      return
+
+    await self.drive_rsp({
       "srcid": req["tgtid"], "tgtid": req["srcid"], "txnid": req["txnid"],
       "dbid": req["txnid"], "qos": req["qos"], "resp": int(Resp.I),
-      "resperr": err,
-    }
-    await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP_CMO)))
+      "resperr": err, "opcode": int(RspOpcode.COMP_CMO),
+    })
 
-    if req["opcode"] in _COMBINED_CMO_PERSIST:
-      # Persist is not tied to a TxnID.
-      await self.drive_rsp(dict(base, txnid=0, opcode=int(RspOpcode.PERSIST)))
+    # The negative control: a second CompCMO, which satisfies no obligation the
+    # first did not already. It is the shape an obligation SET has to keep
+    # refusing -- tolerating order must not become tolerating anything.
+    if self.cfg.snf_combined_cmo_duplicate_negctl:
+      await self.drive_rsp({
+        "srcid": req["tgtid"], "tgtid": req["srcid"], "txnid": req["txnid"],
+        "dbid": req["txnid"], "qos": req["qos"], "resp": int(Resp.I),
+        "resperr": err, "opcode": int(RspOpcode.COMP_CMO),
+      })
+
+    if is_persist:
+      await self.drive_rsp({
+        "srcid": req["tgtid"], "tgtid": persist_tgt, "txnid": 0,
+        "dbid": self.req_pgroup_id(req), "qos": req["qos"], "resp": int(Resp.I),
+        "resperr": err, "opcode": int(RspOpcode.PERSIST),
+      })
 
   async def drive_auto_write_zero_comp(self, req):
     cfg = self.bus.cfg
@@ -1177,13 +1377,33 @@ class vip_chi_driver_snf(uvm_driver):
   # different moment, rather than a second construction of the same thing that
   # can drift from it.
 
-  # RSP flits owed before the data leg. Ordered reads take a ReadReceipt;
-  # ReadNoSnpSep additionally takes RespSepData on RSP to the requester, separate
-  # from the DataSepResp data leg that goes to ReturnNID/ReturnTxnID.
+  # RSP flits owed before the data leg. Ordered reads take a ReadReceipt, and so
+  # does every ReadNoSnpSep -- ordered or not.
+  #
+  # This completer used to answer a separated read with RespSepData instead, and
+  # that is a response a Slave may not send. Appendix B Table B-3 gives
+  # RespSepData one From row, ICN(HN-F, HN-I), and section 2.3.1 says the same
+  # thing in prose: "RespSepData is permitted from the Home only." What the
+  # Slave owes is the other half of that section -- "The Slave must send the
+  # ReadReceipt response to the Home only after receiving ReadNoSnpSep" -- and
+  # the ReadReceipt was being sent only when req_has_ordering() was true, so on
+  # a non-ordered separated read the Slave's own owed response was never sent at
+  # all. Both halves of the flow were emitted by the wrong node class, and every
+  # test passed, because the only party judging the flow was this completer.
+  #
+  # The requester is the Home stand-in on this link (see cfg.rni_home_standin),
+  # so ReadReceipt addressed at req.SrcID is Table B-3's SN-F -> ICN(HN-F) row,
+  # and the DataSepResp data leg to ReturnNID is Table B-4's SN-F -> RN-I row,
+  # an EXPECTED target rather than a merely permitted one. See F-CORR-013.
   async def drive_read_prelude(self, req, resp_code, resp_err):
-    if self.req_has_ordering(req):
+    is_sep = req["opcode"] == int(ReqOpcode.READ_NO_SNP_SEP)
+
+    if self.req_has_ordering(req) or is_sep:
       await self.drive_auto_read_receipt(req)
-    if req["opcode"] == int(ReqOpcode.READ_NO_SNP_SEP):
+
+    if is_sep and self.cfg.snf_resp_sep_data_negctl:
+      # The pre-F-CORR-013 behaviour, kept as an injectable defect: a Slave
+      # emitting a Home-only response. CHI_SB_ORIGINATOR_LEGAL must report it.
       await self.drive_rsp({
         "opcode": int(RspOpcode.RESP_SEP_DATA), "srcid": req["tgtid"],
         "tgtid": req["srcid"], "txnid": req["txnid"], "dbid": req["txnid"],
@@ -1423,6 +1643,14 @@ class vip_chi_driver_snf(uvm_driver):
           "resp": int(Resp.I), "resperr": resp_err,
           "opcode": int(DatOpcode.COMP_DATA), "homenid": req_tgt,
           "txnid": req_txn, "srcid": req_tgt, "tgtid": req_src, "qos": req["qos"],
+          # Section 12.7: "The permitted TagOp values in the CompData response
+          # to Non-store Atomic transactions are Invalid and Transfer." Invalid,
+          # explicitly, and not by omission: this completer does not transfer
+          # tags out of an atomic, and the read path a few lines up DOES replay
+          # the stored TagOp -- which for an atomic could be Match, the one
+          # value section 12.7 forbids here. Stating it keeps the two paths from
+          # being confused for each other later. See F-CORR-009.
+          "tagop": int(TAGOP_INVALID), "tag": 0, "tu": 0,
         }
         await self.wait_dat_credit()
         await self.announce_flit("dat")

@@ -29,7 +29,7 @@ import os
 
 from cocotb.triggers import RisingEdge
 
-from sva.bind_chi import claim_export_tag
+from sva.bind_chi import claim_export_tag, source_revision
 from sva.check_spec import check_spec
 
 from vip_chi_types_pkg import (
@@ -178,13 +178,14 @@ class bind_chi_snp:
     new = not os.path.exists(path)
     with open(path, "a", encoding="utf-8") as fh:
       if new:
-        fh.write("run,bind,check,enabled,severity,passes,fails\n")
+        fh.write("run,bind,check,enabled,severity,passes,fails,rev\n")
       for rule in self._owned_rules():
         fh.write(
           f"{run_name},{self.log.name},{rule},"
           f"{int(self.check_enable.get(rule, True))},"
           f"{self.check_severity.get(rule, CheckSeverity.ERROR).name},"
-          f"{self.pass_count.get(rule, 0)},{self.fail_count.get(rule, 0)}\n")
+          f"{self.pass_count.get(rule, 0)},{self.fail_count.get(rule, 0)},"
+          f"{source_revision()}\n")
 
   # ---------------------------------------------------------------------------
   def _chk(self, rule: str, ok: bool, msg: str) -> None:

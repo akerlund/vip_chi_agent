@@ -74,6 +74,7 @@ class tc_chi_d_atomic extends chi_base_test;
 
     this.atomic_seq.reset();
     this.atomic_seq.set_atomic_op(VIP_CHI_ATOMIC_OP_STORE_0_E);
+    this.atomic_seq.set_atomic_oversized_operands(1'b1);
     this.atomic_seq.set_requests(1);
     this.atomic_seq.set_initial_addr(ATOMIC_ADDR_C);
     this.atomic_seq.set_size(beat_size);
@@ -119,6 +120,7 @@ class tc_chi_d_atomic extends chi_base_test;
 
     this.atomic_seq.reset();
     this.atomic_seq.set_atomic_op(VIP_CHI_ATOMIC_OP_LOAD_0_E);
+    this.atomic_seq.set_atomic_oversized_operands(1'b1);
     this.atomic_seq.set_requests(1);
     this.atomic_seq.set_initial_addr(ATOMIC_ADDR_C);
     this.atomic_seq.set_size(beat_size);
@@ -183,6 +185,7 @@ class tc_chi_d_atomic extends chi_base_test;
 
     this.atomic_seq.reset();
     this.atomic_seq.set_atomic_op(VIP_CHI_ATOMIC_OP_SWAP_E);
+    this.atomic_seq.set_atomic_oversized_operands(1'b1);
     this.atomic_seq.set_requests(1);
     this.atomic_seq.set_initial_addr(ATOMIC_ADDR_C);
     this.atomic_seq.set_size(beat_size);

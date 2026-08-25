@@ -223,13 +223,42 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
   #   Snp{Unique,CleanInvalid,MakeInvalid,UniqueFwd} -> Invalid
   #   SnpOnce / SnpOnceFwd -> unchanged (snapshot).
   # ==========================================================================
-  def snoop_next_state(self, snp_opcode, current):
+  # ==========================================================================
+  # Resulting state after a snoop, and where DoNotGoToSD is honoured.
+  #
+  # Two decisions meet here and they have to be read together (F-INTOP-002).
+  #
+  # The first is this VIP's never-SD reduction: a snoopee in this model adopts
+  # only I, SC or its current state, so SD is not in the range of this function
+  # at all. The second is the SNP flit's DoNotGoToSD bit -- "Snoopee receiving a
+  # Snoop request with the DoNotGoToSD bit set, except when the Snoop is
+  # SnpOnceFwd, must not transition to SD".
+  #
+  # Together those mean the bit is satisfied here by CONSTRUCTION rather than by
+  # obedience, and that is a fragile way to satisfy a rule: it holds only while
+  # the reduction does, and nothing would notice if SD were added to the state
+  # set later. So the bit is read explicitly below. The guard is inert today --
+  # nothing above it can produce SD -- and it is written anyway, because the day
+  # the reduction is lifted is the day someone needs this to already be right.
+  #
+  # SnpOnceFwd is the specification's own exception and is excluded from the
+  # guard, not overlooked.
+  # ==========================================================================
+  def snoop_next_state(self, snp_opcode, current, do_not_go_to_sd=0):
     op = _I(snp_opcode)
     if op in _SNP_TO_SHARED_OPS:
-      return int(Resp.I) if _I(current) == int(Resp.I) else int(Resp.SC)
-    if op in _SNP_TO_INVALID_OPS:
-      return int(Resp.I)
-    return _I(current)  # SnpOnce / SnpOnceFwd and anything else: no change
+      nxt = int(Resp.I) if _I(current) == int(Resp.I) else int(Resp.SC)
+    elif op in _SNP_TO_INVALID_OPS:
+      nxt = int(Resp.I)
+    else:
+      nxt = _I(current)  # SnpOnce / SnpOnceFwd and anything else: no change
+
+    if (nxt == int(Resp.SD_PD) and _I(do_not_go_to_sd)
+        and op != int(SnpOpcode.ONCE_FWD)):
+      # Staying in SD would not be a transition and is not caught here; this
+      # bounds where the snoop MOVES the line to.
+      return int(Resp.SC)
+    return nxt
 
   # ==========================================================================
   # Apply one snoop to the cache model and drive its SnpResp.
@@ -241,7 +270,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
 
     line = self.line_addr(snp["addr"])
     cur = self.cache_state.get(line, int(Resp.I))
-    nxt = self.snoop_next_state(snp["opcode"], cur)
+    nxt = self.snoop_next_state(snp["opcode"], cur, snp["donotgotosd"])
     was_dirty = self.state_is_dirty(cur)
     no_data = snp_opcode_returns_no_data(snp["opcode"])
 
@@ -276,7 +305,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
   async def process_snoop_fwd(self, snp):
     line = self.line_addr(snp["addr"])
     cur = self.cache_state.get(line, int(Resp.I))
-    nxt = self.snoop_next_state(snp["opcode"], cur)
+    nxt = self.snoop_next_state(snp["opcode"], cur, snp["donotgotosd"])
 
     fwd_data = list(self.cache_data[line]) if line in self.cache_data else []
 
@@ -297,6 +326,10 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
   # ==========================================================================
   async def drive_snp_resp(self, snp, resp_state):
     bus = self.bus
+    # The control reports SD without the shadow ever holding it -- what the rule
+    # judges is the response, so that is what the control corrupts. See the knob.
+    if self.cfg.rnf_snp_resp_sd_negctl:
+      resp_state = int(Resp.SD_PD)
     fields = {
       "opcode": int(RspOpcode.SNP_RESP), "resp": _I(resp_state),
       "resperr": int(RespErr.OKAY), "txnid": snp["txnid"],

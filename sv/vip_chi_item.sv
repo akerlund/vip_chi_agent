@@ -208,7 +208,23 @@ class vip_chi_item #(
   addr_t              min_addr     = '0;
   addr_t              max_addr     = '1;
   bit                 enforce_addr_alignment = 1'b1;
-  bit                 atomic_strict_size = 1'b0;
+  // Ask for atomic operand Sizes that IHI 0050 E Table 2-17 / D Table 2-17 does
+  // NOT list -- a deliberate deviation, not extra rigour.
+  //
+  // The default is the specification. This used to be the other way round: the
+  // table was modelled but gated behind a knob that defaulted OFF, so every
+  // atomic a plain randomize() produced was unconstrained and the VIP's default
+  // stimulus was out of spec. A verification component whose default traffic
+  // violates the protocol it checks is the wrong way for the switch to point --
+  // see F-CORR-008.
+  //
+  // The deviation is kept because it is load-bearing: the atomic testcases drive
+  // a full bus-beat operand to exercise the operand DAT / RMW / return datapath
+  // at the widest beat, which is above the ordinary limit on every geometry
+  // here. They now ask for it by name, and CHI_ATOMIC_SIZE_LEGAL reports what
+  // they drive -- each of those testcases arms the rule at OFF and then requires
+  // that it fired, so the deviation stays visible rather than silent.
+  bit                 atomic_oversized_operands = 1'b0;
   bit                 combined_write_cmo_enable = 1'b0;
   bit                 write_unique_zero_enable = 1'b0;
   bit                 write_evict_or_evict_enable = 1'b0;
@@ -294,8 +310,8 @@ class vip_chi_item #(
   // Opt in to CHI-size-legal atomic operand generation. Default off preserves the
   // existing full-beat stress tests.
   // ---------------------------------------------------------------------------
-  function void set_atomic_strict_size(input bit value);
-    this.atomic_strict_size = value;
+  function void set_atomic_oversized_operands(input bit value);
+    this.atomic_oversized_operands = value;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -492,6 +508,50 @@ class vip_chi_item #(
   // ---------------------------------------------------------------------------
   function void set_dat_tagop(input tagop_t value);
     this.dat_tagop = value;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Set the WriteData TagOp and re-derive the TU bits it implies.
+  //
+  // Section 12.5.2 is a list of per-opcode bullets, but every bullet says the
+  // same thing about TU: inapplicable and zero under Transfer and under Match,
+  // all bits asserted under Update. The one relaxation is WriteNoSnpPtl /
+  // WriteUniquePtl / WriteUniquePtlStash, where "any combination of TU and BE
+  // bits, including none or all, can be asserted" -- all-asserted is inside
+  // that, so one rule covers the chapter without weakening it anywhere.
+  //
+  // Under Invalid the section is stronger than TU alone -- "the Memory Tagging
+  // fields must be set to zero and ignored by the Completer" -- and the zero
+  // branch here is that.
+  //
+  // Nothing related TagOp to TU before this: TU was whatever set_tu() left, and
+  // zero otherwise, on every opcode and every TagOp alike. A write asking the
+  // completer to Update tags while telling it, bit by bit, that none of them
+  // should be updated is not a value a conformant Requester can send. See
+  // F-CORR-009.
+  //
+  // A test that pinned TU through set_tu() keeps its pin -- custom_tu is what
+  // post_randomize honours, and this leaves it alone.
+  // ---------------------------------------------------------------------------
+  function void apply_dat_tagop(input tagop_t value);
+
+    tu_t fill;
+
+    this.dat_tagop = value;
+
+    if (this.custom_tu.size() != 0) begin
+      return;
+    end
+
+    fill = '0;
+    if ((CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) &&
+        (value == tagop_t'(VIP_CHI_TAGOP_UPDATE_C))) begin
+      fill = '1;
+    end
+
+    foreach (this.tu[i]) begin
+      this.tu[i] = fill;
+    end
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -765,7 +825,7 @@ class vip_chi_item #(
     // payload is 2^Size bytes total, split in half (first half = compare, second
     // half = swap). So the operand-DAT length is chi_xfer_dat_beats(Size) for the
     // whole payload; the memory granule the RMW touches is the first half.
-    // con_atomic_compare_size keeps each half beat-aligned (Size >= clog2(bus)+1)
+    // con_atomic_compare_beat_align keeps each half beat-aligned (Size >= clog2(bus)+1)
     // so the split never falls inside a beat. [P2]
     if (vip_chi_types_pkg::vip_chi_req_opcode_is_atomic_compare(vip_chi_req_opcode_t'(opcode))) begin
       return vip_chi_types_pkg::chi_xfer_dat_beats(size, DATA_BYTES_C);
@@ -1084,7 +1144,7 @@ class vip_chi_item #(
     this.min_addr                = rhs_item.min_addr;
     this.max_addr                = rhs_item.max_addr;
     this.enforce_addr_alignment  = rhs_item.enforce_addr_alignment;
-    this.atomic_strict_size      = rhs_item.atomic_strict_size;
+    this.atomic_oversized_operands      = rhs_item.atomic_oversized_operands;
     this.combined_write_cmo_enable = rhs_item.combined_write_cmo_enable;
     this.write_unique_zero_enable = rhs_item.write_unique_zero_enable;
     this.write_evict_or_evict_enable = rhs_item.write_evict_or_evict_enable;
@@ -1226,7 +1286,7 @@ class vip_chi_item #(
         (this.min_addr                 !== rhs_item.min_addr) ||
         (this.max_addr                 !== rhs_item.max_addr) ||
         (this.enforce_addr_alignment   !== rhs_item.enforce_addr_alignment) ||
-        (this.atomic_strict_size       !== rhs_item.atomic_strict_size) ||
+        (this.atomic_oversized_operands       !== rhs_item.atomic_oversized_operands) ||
         (this.combined_write_cmo_enable !== rhs_item.combined_write_cmo_enable) ||
         (this.write_unique_zero_enable !== rhs_item.write_unique_zero_enable) ||
         (this.write_evict_or_evict_enable !== rhs_item.write_evict_or_evict_enable) ||
@@ -1410,7 +1470,7 @@ class vip_chi_item #(
   // beat boundary -- the SN-F RMW and the scoreboard predictor both model the
   // compare at beat granularity, so a sub-beat half is not supported. [P2]
   // ---------------------------------------------------------------------------
-  constraint con_atomic_compare_size {
+  constraint con_atomic_compare_beat_align {
     if (!raw_override && (opcode == req_opcode_t'(VIP_CHI_REQ_ATOMIC_COMPARE_C))) {
       size >= ($clog2(DATA_BYTES_C) + 1);
     }
@@ -1418,7 +1478,7 @@ class vip_chi_item #(
 
   // ---------------------------------------------------------------------------
   // Constraints: AtomicCompare is unmodellable on a wide bus. Its combined
-  // compare+swap Size must be at least one bus beat per half (con_atomic_compare_size:
+  // compare+swap Size must be at least one bus beat per half (con_atomic_compare_beat_align:
   // Size >= clog2(DATA_BYTES)+1). On a >= 64 B bus that floor is Size 7, which
   // exceeds the largest legal CHI Size (6 = 64 B), so no Size satisfies it -- a free
   // write-opcode draw that lands on AtomicCompare would make randomize() fail
@@ -1452,14 +1512,14 @@ class vip_chi_item #(
   // bytes being two 16-byte operands. Deriving the ceiling from the ordinary
   // 8-byte limit instead of from the table gives Size <= 4, which excludes the
   // legal 32-byte compare, and on the 16-byte cut that is worse than conservative:
-  // con_atomic_compare_size requires Size >= clog2(DATA_BYTES)+1 = 5 there, so a
+  // con_atomic_compare_beat_align requires Size >= clog2(DATA_BYTES)+1 = 5 there, so a
   // <= 4 ceiling and a >= 5 floor left the strict mode with NO satisfiable Size
   // and an AtomicCompare draw would have failed randomization outright. Reading
   // the ceiling off Table 2-17 leaves exactly Size 5, which is the one value that
   // is both legal and representable at beat granularity on that cut.
   // ---------------------------------------------------------------------------
-  constraint con_atomic_strict_size {
-    if (!raw_override && atomic_strict_size &&
+  constraint con_atomic_table_2_17_size {
+    if (!raw_override && !atomic_oversized_operands &&
         vip_chi_types_pkg::vip_chi_req_opcode_is_atomic(vip_chi_req_opcode_t'(opcode))) {
       if (opcode == req_opcode_t'(VIP_CHI_REQ_ATOMIC_COMPARE_C)) {
         size inside {[3'd1 : 3'd5]};
@@ -1645,13 +1705,54 @@ class vip_chi_item #(
   // Constraints: separated-read return routing is only meaningful for
   // ReadNoSnpSep; all other requests clear the return path fields.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // ReturnNID is zeroed only where IHI 0050 E 13.10.4 makes it INAPPLICABLE,
+  // which is a smaller set than "everything except ReadNoSnpSep".
+  //
+  // It used to be that larger set, and the difference is not academic. 13.10.4
+  // makes the field applicable "in ReadNoSnp, ReadNoSnpSep,
+  // CleanSharedPersistSep, WriteNoSnp, Combined Write, and Atomic requests", and
+  // it is the field that names the node a CompData, DataSepResp or PERSIST is
+  // sent to. Forcing it to zero on a Combined Write therefore made the one
+  // response 2.8 routes by ReturnNID -- the Persist answering a PCMO --
+  // impossible to address correctly: no test could set the field, so no test
+  // could show the driver targeting it at SrcID instead. See F-CORR-012, whose
+  // own tasks assume a stimulus this constraint did not permit.
+  //
+  // Zeroing is the only thing dropped. The VALUE still comes from the sequence,
+  // which pins return_nid on every request it builds, and that value still
+  // defaults to 0 -- so a request nobody has asked to route is unchanged, and a
+  // test that wants a real return node can now say so.
+  //
+  // ReturnTxnID keeps the narrower rule, deliberately: 13.10.5 gives it a
+  // shorter list than ReturnNID -- it names the TxnID of a CompData or
+  // DataSepResp only, and a separated persist gets an RSP rather than data -- so
+  // collapsing the two lists is exactly the mistake this comment exists to
+  // prevent. Two classifiers, asked separately, is what "narrower" means here.
+  //
+  // It used to mean something else in this port: ReturnTxnID was pinned to zero
+  // on every opcode but ReadNoSnpSep, with the classifier beside it unread. That
+  // is narrower than 13.10.5, not equal to it -- a DWT write carries a
+  // ReturnTxnID by section 2.5 ("When DoDWT = 1, ReturnTxnID value is expected
+  // to be the original Requester TxnID [...] Used as the TxnID in the DBIDResp
+  // response"), and pinning it to zero made that request unrandomizable rather
+  // than merely unlikely. The Python port derived its list from the classifier
+  // and did not have the defect; this one transcribed the answer and went stale.
+  // Found by tc_chi_e_dwt_dbid_return_nid failing to randomize at time 0.
+  // ---------------------------------------------------------------------------
   constraint con_return_path_fields {
     if (!raw_override && (opcode == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C))) {
       return_nid == src_id;
     }
     else if (!raw_override) {
-      return_nid == '0;
-      return_txn_id == '0;
+      if (!vip_chi_types_pkg::vip_chi_req_return_txn_id_applicable(
+             vip_chi_req_opcode_t'(opcode))) {
+        return_txn_id == '0;
+      }
+      if (!vip_chi_types_pkg::vip_chi_req_return_nid_applicable(
+             vip_chi_req_opcode_t'(opcode))) {
+        return_nid == '0;
+      }
     }
   }
 
@@ -1752,6 +1853,103 @@ class vip_chi_item #(
   // that Issue E introduced, so gating the pair together is what made
   // Non-snoopable structural on every coherent request in CHI-D.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Table 12-2: which TagOp encodings each request opcode may carry.
+  //
+  // Until this existed TagOp was a plain rand field with one constraint on it --
+  // the issue gate below holding it at zero under CHI-D -- so under CHI-E every
+  // opcode could carry every value. That is not a hole in coverage, it is a
+  // generator that produces requests a conformant completer has no defined
+  // behaviour for, and the VIP's own SN-F would store the tag and the scoreboard
+  // would predict it, so the regression confirmed the wrong model. See
+  // F-CORR-009.
+  //
+  // Written as opcode groups rather than as a call to
+  // vip_chi_req_tagop_permitted_mask(), because a function call in a constraint
+  // makes both arguments solve-ordered and turns a declarative constraint into a
+  // post-hoc check that can simply fail to solve. The groups here and the
+  // classifier that CHI_REQ_TAGOP_LEGAL reads are the same table entered twice,
+  // so scripts/check_tagop_groups.py compares them: a group edited on one side
+  // and not the other is a gate failure, not a silent disagreement between a
+  // generator and the checker judging it.
+  //
+  // Opcodes whose mask is every encoding are absent rather than listed with a
+  // no-op constraint: CleanUnique has no row in Table 12-2 and ReqLCrdReturn's
+  // TagOp is a Don't Care by the note under it, and the classifier returns both
+  // unjudged on purpose.
+  constraint con_tagop_legal {
+    if (!raw_override && (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E)) {
+
+      // Invalid only.
+      // CleanShared is absent, and the absence is load-bearing rather than
+      // tidy: check_classifier_coverage.py records it as unimplemented -- "no
+      // con_opcode_legal, sequence or driver" -- and enforces that by failing
+      // on any reference to it outside the type packages. Naming it here would
+      // make that claim false while changing nothing, because con_opcode_legal
+      // still refuses to generate it. The CHECKER still judges it: an inbound
+      // CleanShared carrying a bad TagOp is reported by CHI_REQ_TAGOP_LEGAL,
+      // which is the only vantage from which this VIP can see one at all.
+      if (opcode inside {VIP_CHI_REQ_PCRD_RETURN_C,
+                         VIP_CHI_REQ_CLEAN_INVALID_C,
+                         VIP_CHI_REQ_MAKE_INVALID_C,
+                         VIP_CHI_REQ_EVICT_C,
+                         VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C,
+                         VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C,
+                         VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C,
+                         VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C}) {
+        tagop inside {2'b00};
+      }
+
+      // Invalid, Transfer.
+      if (opcode inside {VIP_CHI_REQ_READ_SHARED_C,
+                         VIP_CHI_REQ_READ_CLEAN_C,
+                         VIP_CHI_REQ_READ_ONCE_C,
+                         VIP_CHI_REQ_PREFETCH_TGT_C,
+                         VIP_CHI_REQ_MAKE_READ_UNIQUE_C,
+                         VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C}) {
+        tagop inside {2'b00, 2'b01};
+      }
+
+      // Invalid, Update.
+      if (opcode inside {VIP_CHI_REQ_MAKE_UNIQUE_C,
+                         VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C,
+                         VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C,
+                         VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C}) {
+        tagop inside {2'b00, 2'b10};
+      }
+
+      // Invalid, Transfer, Update.
+      if (opcode inside {VIP_CHI_REQ_WRITE_CLEAN_FULL_C,
+                         VIP_CHI_REQ_WRITE_BACK_FULL_C,
+                         VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C,
+                         VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C,
+                         VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C}) {
+        tagop inside {2'b00, 2'b01, 2'b10};
+      }
+
+      // Atomics: Invalid, Match. Section 12.7 says the same in prose. The
+      // contiguous 0x28..0x39 range, as elsewhere.
+      if ((opcode >= VIP_CHI_REQ_ATOMIC_STORE_0_C) &&
+          (opcode <= VIP_CHI_REQ_ATOMIC_COMPARE_C)) {
+        tagop inside {2'b00, 2'b11};
+      }
+
+      // Invalid, Transfer, Match.
+      if (opcode inside {VIP_CHI_REQ_READ_NO_SNP_C,
+                         VIP_CHI_REQ_READ_UNIQUE_C,
+                         VIP_CHI_REQ_READ_NO_SNP_SEP_C}) {
+        tagop inside {2'b00, 2'b01, 2'b11};
+      }
+
+      // Invalid, Update, Match.
+      if (opcode inside {VIP_CHI_REQ_WRITE_UNIQUE_PTL_C,
+                         VIP_CHI_REQ_WRITE_UNIQUE_FULL_C,
+                         VIP_CHI_REQ_WRITE_NO_SNP_PTL_C}) {
+        tagop inside {2'b00, 2'b10, 2'b11};
+      }
+    }
+  }
+
   constraint con_issue_gated_fields {
     if (!raw_override && (CFG_P.ISSUE_P != VIP_CHI_ISSUE_E_E)) {
       tracetag     == 1'b0;

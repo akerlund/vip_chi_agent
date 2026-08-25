@@ -96,6 +96,7 @@ class vip_chi_base_seq #(
   protected node_id_t   tgt_id_val       = '0;
   protected lpid_t      lp_id_val        = '0;
   protected node_id_t   return_nid_val   = '0;
+  protected bit         return_nid_forced = 1'b0;
   protected txn_id_t    return_txn_id_val = '0;
   protected logic [VIP_CHI_QOS_WIDTH_C - 1:0] qos_val = '0;
   protected logic       tracetag_val     = 1'b0;
@@ -105,6 +106,9 @@ class vip_chi_base_seq #(
   protected groupidext_t group_id_ext_val = '0;
   protected tagop_t     tagop_val        = '0;
   protected tagop_t     dat_tagop_val    = '0;
+  // Whether the test pinned the WriteData TagOp itself. Unpinned, it is
+  // DERIVED from the request's TagOp -- see build_request_item.
+  protected bit         dat_tagop_forced = 1'b0;
   protected tag_t       tag_val          [];
   protected tu_t        tu_val           [];
   protected bit         sep_read_enabled = 1'b0;
@@ -136,15 +140,24 @@ class vip_chi_base_seq #(
   function void reset();
 
     vip_chi_dir_t saved_direction;
+    bit           saved_oversized;
 
     saved_direction = this.item_cfg.direction;
+    // Preserved for the same reason direction is: the wide-operand stress
+    // profile is a property of the SEQUENCE, not of one
+    // request, so it survives reset() the way direction does. Without this a
+    // reset() mid-testcase would silently restore Table 2-17 and the next
+    // set_size() above the ordinary limit would fail randomization rather than
+    // drive the operand the testcase exists to drive.
+    saved_oversized = this.item_cfg.atomic_oversized_operands;
     this.cfg.reset();
     this.item_cfg.reset();
     this.addr_iter.reset();
     this.payload_buf.reset();
     this.counter_iter.reset();
 
-    this.item_cfg.direction = saved_direction;
+    this.item_cfg.direction                 = saved_direction;
+    this.item_cfg.atomic_oversized_operands = saved_oversized;
     this.ns_val             = 1'b1;
     this.order_val          = VIP_CHI_ORDER_NONE_E;
     this.mem_attr_val       = 4'b0;
@@ -161,6 +174,7 @@ class vip_chi_base_seq #(
     this.tgt_id_val         = '0;
     this.lp_id_val          = '0;
     this.return_nid_val     = '0;
+    this.return_nid_forced  = 1'b0;
     this.return_txn_id_val  = '0;
     this.qos_val            = '0;
     this.tracetag_val       = 1'b0;
@@ -172,6 +186,7 @@ class vip_chi_base_seq #(
     this.group_id_ext_val   = '0;
     this.tagop_val          = '0;
     this.dat_tagop_val      = '0;
+    this.dat_tagop_forced   = 1'b0;
     this.tag_val.delete();
     this.tu_val.delete();
     this.sep_read_enabled   = 1'b0;
@@ -294,8 +309,8 @@ class vip_chi_base_seq #(
   // Enable CHI-size-legal atomic operands (ordinary atomics <=8B; AtomicCompare
   // <=16B combined). Default off preserves the existing full-beat stress tests.
   // ---------------------------------------------------------------------------
-  function void set_atomic_strict_size(input bit enabled);
-    this.item_cfg.atomic_strict_size = enabled;
+  function void set_atomic_oversized_operands(input bit enabled);
+    this.item_cfg.atomic_oversized_operands = enabled;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -387,7 +402,8 @@ class vip_chi_base_seq #(
   // Set the ReturnNID stamped onto every generated request.
   // ---------------------------------------------------------------------------
   function void set_return_nid(input node_id_t return_nid);
-    this.return_nid_val = return_nid;
+    this.return_nid_val    = return_nid;
+    this.return_nid_forced = 1'b1;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -462,7 +478,8 @@ class vip_chi_base_seq #(
   // Set the CHI-E DAT TagOp field stamped onto every generated write.
   // ---------------------------------------------------------------------------
   function void set_dat_tagop(input tagop_t dat_tagop);
-    this.dat_tagop_val = dat_tagop;
+    this.dat_tagop_val    = dat_tagop;
+    this.dat_tagop_forced = 1'b1;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -620,6 +637,8 @@ class vip_chi_base_seq #(
     logic          exp_comp_ack_eff;
     logic [3:0]    mem_attr_eff;
     logic [1:0]    order_eff;
+    node_id_t      return_nid_eff;
+    bit            tag_match_write;
     vip_chi_snp_attr_t snp_attr_eff;
 
     req = new($sformatf("req_%0d", request_idx));
@@ -638,7 +657,7 @@ class vip_chi_base_seq #(
     req.set_size_range(this.item_cfg.min_size, this.item_cfg.max_size);
     req.set_data_type(this.item_cfg.data_type);
     req.set_enforce_addr_alignment(this.item_cfg.enforce_addr_alignment);
-    req.set_atomic_strict_size(this.item_cfg.atomic_strict_size);
+    req.set_atomic_oversized_operands(this.item_cfg.atomic_oversized_operands);
     req.set_combined_write_cmo_enable(this.item_cfg.combined_write_cmo_enable);
     req.set_write_unique_zero_enable(this.item_cfg.write_unique_zero_enable);
     req.set_write_evict_or_evict_enable(this.item_cfg.write_evict_or_evict_enable);
@@ -691,6 +710,38 @@ class vip_chi_base_seq #(
       req.set_size(VIP_CHI_REQ_SIZE_64B_C);
     end
 
+    // ReturnNID, opcode-derived for the requests whose RESPONSE is routed by it.
+    //
+    // IHI 0050 E 2.8 sends a PCMO's Persist to ReturnNID rather than to SrcID,
+    // so a combined Write + persistent CMO that leaves the field at zero asks
+    // the completer to send the Persist to node 0. The requester wants it back,
+    // so the default is its own node -- the same shape ReadNoSnpSep already has,
+    // where the item pins return_nid == src_id.
+    //
+    // An explicit set_return_nid() still wins, which is what makes the routing
+    // testable at all: a test can point the Persist at a node that is NOT the
+    // requester and check where it lands. See F-CORR-012.
+    //
+    // A Match-tagged write is owed a TagMatch, and section 4.7's TgtID table
+    // routes that response to ReturnNID when a Slave sends it. Section 2.5 gives
+    // the expected value: "In WriteNoSnp with TagOp Match [...] the ReturnNID
+    // value is expected to be the original Requester Node ID but is permitted to
+    // be the Home Node ID." Left at the default of zero, the completer's answer
+    // goes to node 0 and never reaches the requester that asked for the check.
+    //
+    // Known at build time because the tag operation is a SEQUENCE setting
+    // (set_dat_tagop), not something decided per beat.
+    tag_match_write = (this.dat_tagop_val == tagop_t'(VIP_CHI_TAGOP_MATCH_C)) &&
+                      (direction_val == VIP_CHI_DIR_WRITE_E);
+
+    return_nid_eff = this.return_nid_forced ? this.return_nid_val
+                   : ((tag_match_write ||
+                       (vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+                          vip_chi_req_opcode_t'(opcode_val)) &&
+                        vip_chi_types_pkg::vip_chi_req_opcode_combined_cmo_is_persist(
+                          vip_chi_req_opcode_t'(opcode_val))))
+                      ? this.src_id_val : this.return_nid_val);
+
     // Order, opcode-derived for the single opcode that mandates a value.
     order_eff = (!this.order_forced &&
                  (req_opcode_t'(opcode_val) ==
@@ -704,7 +755,7 @@ class vip_chi_base_seq #(
       src_id        == local::this.src_id_val;
       tgt_id        == local::this.tgt_id_val;
       lp_id         == local::this.lp_id_val;
-      return_nid    == local::this.return_nid_val;
+      return_nid    == local::return_nid_eff;
       return_txn_id == local::this.return_txn_id_val;
       qos           == local::this.qos_val;
       tracetag      == local::this.tracetag_val;
@@ -731,7 +782,24 @@ class vip_chi_base_seq #(
       this.payload_buf.apply(req, this.item_cfg);
     end
 
-    req.set_dat_tagop(this.dat_tagop_val);
+    // Unpinned, the WriteData TagOp FOLLOWS the request's. Section 12.5: "The
+    // TagOp value in the WriteData message is typically the same as the value in
+    // the Request message, except when either the write data is snooped out or
+    // the write is canceled." 12.5.1 then gives the permitted WriteData values
+    // per request value, and Invalid is on every one of those lists -- so the old
+    // unconditional zero was never illegal, it just said "this write was
+    // cancelled" on every write that asked for a tag operation, and the completer
+    // had nothing to do. Nothing related the two fields at all before this.
+    //
+    // apply_dat_tagop also re-derives TU per 12.5.2; the item owns that because
+    // the item owns the widths. A test that pinned either keeps its pin --
+    // 12.5.1's Invalid case is a real behaviour a negative control needs to be
+    // able to produce. See F-CORR-009.
+    // Derive first, then let an explicit pin overwrite -- the same order as the
+    // Python port, so the two cannot end up agreeing by different routes.
+    req.apply_dat_tagop(this.dat_tagop_forced ? this.dat_tagop_val
+                                              : tagop_t'(this.tagop_val));
+
     if (this.tag_val.size() != 0) begin
       req.set_tag(this.tag_val);
     end

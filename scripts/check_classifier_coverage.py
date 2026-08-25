@@ -75,6 +75,11 @@ UNIMPLEMENTED_MARKER_C = "unimplemented"
 # definition and enum entry.
 _TYPE_PACKAGES_C = ("sv/vip_chi_types_pkg.sv", "py/vip_chi_types_pkg.py")
 
+# A reference carrying this marker names the opcode in order to EXCLUDE it, so
+# it is evidence of the opcode staying unimplemented rather than of it having
+# been implemented. See unimplemented_references.
+_OPT_OUT_MARKER_C = "unimplemented-ok"
+
 # Directories searched for uses. Build outputs and vendored copies are excluded
 # -- a stale extracted tree under testbench/*/rundir would report references
 # that no longer exist in the source.
@@ -94,6 +99,7 @@ def unimplemented_references(root: Path, name: str) -> list[str]:
     sv_re = re.compile(rf"\bVIP_CHI_REQ_{name}_C\b")
     py_re = re.compile(rf"\bReqOpcode\.{name}\b")
     hits = []
+    excused = []
     for d in _SEARCH_DIRS_C:
         base = root / d
         if not base.is_dir():
@@ -109,9 +115,24 @@ def unimplemented_references(root: Path, name: str) -> list[str]:
             except (OSError, UnicodeDecodeError):
                 continue
             for n, line in enumerate(text.split("\n"), 1):
-                if sv_re.search(line) or py_re.search(line):
-                    hits.append(f"{rel}:{n}")
-    return hits
+                if not (sv_re.search(line) or py_re.search(line)):
+                    continue
+                # A line-level opt-out, for the one shape of reference that is
+                # the OPPOSITE of an implementation: naming an opcode in order to
+                # exclude it from something. con_tagop_legal's group derivation
+                # skips CleanShared precisely BECAUSE it is unimplemented, and
+                # counting that as evidence of implementation would make the two
+                # gates contradict each other -- one passing only by making the
+                # other lie.
+                #
+                # Deliberately line-level and deliberately not silent: excused
+                # references are listed in the report, so an opt-out cannot hide
+                # a real use the way a whole-file exemption could.
+                if _OPT_OUT_MARKER_C in line:
+                    excused.append(f"{rel}:{n}")
+                    continue
+                hits.append(f"{rel}:{n}")
+    return hits, excused
 
 # Classifiers in vip_chi_types_pkg whose SV set is taken from the PYTHON twin
 # rather than parsed. That is a real weakening -- for these three the comparison
@@ -226,7 +247,7 @@ def main() -> int:
         if o in UNCLAIMED_BY_DESIGN:
             reason = UNCLAIMED_BY_DESIGN[o]
             if UNIMPLEMENTED_MARKER_C in reason:
-                refs = unimplemented_references(ROOT, names[o])
+                refs, excused = unimplemented_references(ROOT, names[o])
                 if refs:
                     rc = 1
                     print(f"  FAIL {names[o]:<34} 0x{o:02x}  claimed "
@@ -237,6 +258,11 @@ def main() -> int:
                     print(f"         Decide which classifiers now claim it -- "
                           f"_req_has_modeled_completion arms the section 2.5 "
                           f"TxnID-reuse rules -- then remove this entry.")
+                    continue
+                if excused:
+                    print(f"  ok   {names[o]:<34} 0x{o:02x}  {reason} "
+                          f"[named only to EXCLUDE it, in "
+                          f"{', '.join(excused)}]")
                     continue
                 print(f"  ok   {names[o]:<34} 0x{o:02x}  {reason} [verified: "
                       f"no references outside the type packages]")

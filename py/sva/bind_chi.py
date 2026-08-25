@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 
 from cocotb.triggers import RisingEdge
 
@@ -376,6 +377,48 @@ def claim_export_tag(run_name: str, tag: str) -> bool:
   return True
 
 
+# The revision that produced a tally row, so a cross-source comparison can be
+# exact rather than a proxy on file age.
+#
+# check_vacuity.py compares two ports' CSVs against each other, and both of the
+# sections that do so are meaningless if the inputs describe different code. It
+# warned on a >1h age gap, which caught the case that had actually happened
+# twice -- but age is the wrong measurement: it misses two sweeps run minutes
+# apart across a rebuild, and it false-positives on a deliberately archived
+# comparison. The revision answers the real question. See F-CHK-011.
+#
+# "dirty" is appended when the tree has uncommitted changes, because during
+# development that is the normal state and two sweeps of the same commit can
+# still be of different code. It is a weaker guarantee than the hash and it is
+# labelled as one rather than being silently dropped.
+#
+# Unknown rather than fatal when git is unavailable or this is not a checkout:
+# the export is a reporting aid, and a checker that refused to write its tallies
+# because it could not name a commit would be worse than one that says so.
+_REVISION_CACHE: list[str] = []
+
+
+def source_revision() -> str:
+  if _REVISION_CACHE:
+    return _REVISION_CACHE[0]
+  rev = "unknown"
+  try:
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+      os.path.abspath(__file__))))
+    head = subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"],
+                          capture_output=True, text=True, timeout=10)
+    if head.returncode == 0:
+      rev = head.stdout.strip()
+      status = subprocess.run(["git", "-C", root, "status", "--porcelain"],
+                              capture_output=True, text=True, timeout=10)
+      if status.returncode == 0 and status.stdout.strip():
+        rev += "-dirty"
+  except (OSError, subprocess.SubprocessError):
+    pass
+  _REVISION_CACHE.append(rev)
+  return rev
+
+
 class bind_chi:
   """CHI link-layer protocol checker for one interface.
 
@@ -663,16 +706,19 @@ class bind_chi:
         f"every per-bind question asked of the export afterwards is answered "
         f"about the wrong interface")
 
+    rev = source_revision()
+
     new = not os.path.exists(path)
     with open(path, "a", encoding="utf-8") as fh:
       if new:
-        fh.write("run,bind,check,enabled,severity,passes,fails\n")
+        fh.write("run,bind,check,enabled,severity,passes,fails,rev\n")
       for rule in self._owned_rules():
         fh.write(
           f"{run_name},{self.log.name},{rule},"
           f"{int(self.check_enable.get(rule, True))},"
           f"{self.check_severity.get(rule, CheckSeverity.ERROR).name},"
-          f"{self.pass_count.get(rule, 0)},{self.fail_count.get(rule, 0)}\n")
+          f"{self.pass_count.get(rule, 0)},{self.fail_count.get(rule, 0)},"
+          f"{rev}\n")
 
   def not_exercised(self):
     """This checker's rules that were neither passed nor failed, in registry order.
@@ -1545,6 +1591,32 @@ class bind_chi:
 
     for pool, grant, consume, cap in pairs:
       count = self._lcrd[pool]
+
+      # IHI 0050 E section 14.2.1, Note: "An L-Credit cannot be used in the
+      # cycle it is received." Judged BEFORE the grant is applied, because that
+      # is the only moment the two are still distinguishable -- grant-before-
+      # consume ordering below deliberately makes a same-cycle pair arithmetic-
+      # ally safe (0 -> 1 -> 0), which is right for the counter and is exactly
+      # what hides this.
+      #
+      # Only at zero. Above zero a same-cycle grant and consume is an ordinary
+      # pipelined link spending an EARLIER credit while a new one arrives, which
+      # the Note does not forbid; at zero there is no earlier credit and the
+      # flit can only be spending the one on the wire this cycle.
+      #
+      # Informative in the specification (it is a Note), so it is a rule rather
+      # than a fatal -- but it constrains the normative model, and the VIP's own
+      # driver cannot produce it, so a report here is always about the peer.
+      # See F-INTOP-003.
+      if grant and consume and count == 0:
+        self._chk(
+          "CHI_LCRD_USED_IN_GRANT_CYCLE", False,
+          f"{pool} flit sent in the same cycle its only L-credit was granted; "
+          f"section 14.2.1 says a credit cannot be used in the cycle it is "
+          f"received")
+      else:
+        self._chk("CHI_LCRD_USED_IN_GRANT_CYCLE", True, "")
+
       if grant:
         self._chk(
           "CHI_LCRD_OVERFLOW", count != cap,
@@ -2083,13 +2155,25 @@ class bind_chi:
     # Table 2-12 as a whitelist: the table closes each of its two blocks with
     # "All other values -- Not valid", so a tuple outside the nine rows is a
     # protocol error and every request has a tuple to judge.
+    #
+    # The SnpAttr the tuple is judged with is the DECODED one, for the same
+    # reason the Table 2-14 rule below decodes it: on the opcodes where REQ bit
+    # 17 is DoDWT there is no SnpAttr claim on the wire to judge, and Table 2-14
+    # lists every one of them as Non-snoopable only, so zero is the value the
+    # tuple must be read with. Reading the raw bit instead reported every
+    # conformant DoDWT = 1 write as a Snoopable Non-cacheable request -- a row
+    # the table indeed does not list, against a request that never made the
+    # claim. Found by tc_chi_e_dwt_dbid_return_nid, which is the first testcase
+    # able to put a one on that bit at all.
     ma = int(f["memattr"])
+    snp_attr_claim = (0 if req_bit17_is_dodwt(self._issue, opcode)
+                      else int(f["snpattr"]))
     self._chk("CHI_REQ_ATTR_COMBINATION_LEGAL",
-              req_attr_combination_legal(ma, f["snpattr"], f["likelyshared"],
+              req_attr_combination_legal(ma, snp_attr_claim, f["likelyshared"],
                                          f["order"]),
               f"request carried MemAttr 0x{ma:x} (Allocate {(ma >> 3) & 1} "
               f"Cacheable {(ma >> 2) & 1} Device {(ma >> 1) & 1} EWA {ma & 1}), "
-              f"SnpAttr {int(f['snpattr'])}, LikelyShared {int(f['likelyshared'])} "
+              f"SnpAttr {snp_attr_claim}, LikelyShared {int(f['likelyshared'])} "
               f"and Order 0b{int(f['order']):02b}, a combination Table 2-12 does "
               f"not list")
 

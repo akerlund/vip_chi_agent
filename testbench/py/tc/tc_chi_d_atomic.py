@@ -25,6 +25,7 @@ class tc_chi_d_atomic(chi_base_test):
     seq = vip_chi_atomic_seq("atomic_seq", cfg=self.chi_cfg)
     seq.reset()
     seq.set_atomic_op(op)
+    seq.set_atomic_oversized_operands(True)
     seq.set_requests(1)
     seq.set_initial_addr(ATOMIC_ADDR_C)
     seq.set_size(size)

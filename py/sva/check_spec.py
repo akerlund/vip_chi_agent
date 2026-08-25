@@ -78,6 +78,7 @@ CHECK_SPEC_C = {
   # L-Credit flow control -- the credit shadow, not the activation sequence.
   "CHI_LCRD_OVERFLOW":                 "E section 14.2.1 / D section 13.2.1",
   "CHI_LCRD_UNDERFLOW":                "E section 14.2.1 / D section 13.2.1",
+  "CHI_LCRD_USED_IN_GRANT_CYCLE":      "E section 14.2.1 Note / D section 13.2.1 Note",
   "CHI_SNP_LCRD_OVERFLOW":             "E section 14.2.1 / D section 13.2.1",
   "CHI_SNP_LCRD_UNDERFLOW":            "E section 14.2.1 / D section 13.2.1",
 

@@ -67,6 +67,9 @@ class vip_chi_driver_snf #(
   virtual vip_chi_if #(CFG_P, FLIT_TYPES_T, VIP_CHI_ROLE_SNF_E) vif_snf;
   vip_chi_cfg_agent                                            cfg;
   vip_mem #(MEM_C)                                             mem;
+  // One-shot latch for cfg.flit_without_flitpend; see announce_flit.
+  protected bit          flit_without_pend_done;
+
   protected bit                                                mem_row_written [longint];
   protected vip_chi_lcrd_mgr                                   rsp_lcrd_mgr;
   protected vip_chi_lcrd_mgr                                   dat_lcrd_mgr;
@@ -942,6 +945,20 @@ class vip_chi_driver_snf #(
     this.tx_flit_arb.get(1);
     @(this.vif_snf.g_drv.snf_cb);
     this.drive_idle_sideband();
+    // Negative control (cfg.flit_without_flitpend): skip the announcement once,
+    // so exactly one flit goes out with FLITPEND low in the cycle before it and
+    // CHI_*_VALID_REQUIRES_PEND has a real violation to catch on THIS driver's
+    // flits. Returning without driving leaves FLITPEND at the 0 the previous
+    // send cleared it to.
+    //
+    // Here as well as in the requesters because the knob reaching only some
+    // drivers meant the rule was never shown to fire on the rest -- and which
+    // drivers it reached differed between the two ports, which check_cfg_parity
+    // could not see because the config SURFACE matched. See F-CHK-014.
+    if (this.cfg.flit_without_flitpend && !this.flit_without_pend_done) begin
+      this.flit_without_pend_done = 1'b1;
+      return;
+    end
     if (ch == ANNOUNCE_RSP_E) begin
       this.vif_snf.g_drv.snf_cb.txrspflitpend <= 1'b1;
     end
@@ -1578,7 +1595,6 @@ class vip_chi_driver_snf #(
     retry_ack.rsp_resp      = VIP_CHI_RESP_STATE_I_E;
     retry_ack.rsp_resp_err  = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
     retry_ack.rsp_opcode    = item_t::rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C);
-    this.drive_rsp(retry_ack);
 
     pcrd_grant              = new("auto_pcrd_grant");
     pcrd_grant.role         = VIP_CHI_ROLE_SNF_E;
@@ -1590,7 +1606,34 @@ class vip_chi_driver_snf #(
     pcrd_grant.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
     pcrd_grant.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
     pcrd_grant.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C);
-    this.drive_rsp(pcrd_grant);
+
+    // cfg.snf_pcrd_grant_before_ack sends the two in the other order. That is
+    // not a defect being injected: IHI 0050 E 2.11 says outright that "a
+    // reordering interconnect can reorder the responses such that the PCrdGrant
+    // is received by the Requester before the RetryAck response", and requires
+    // the requester to absorb it -- "the Requester must record the credit it has
+    // received, including the credit type, so that it can assign the credit
+    // appropriately when it does receive the RetryAck response". This completer
+    // never reordered anything, so the requester's inability to absorb it could
+    // not be reached from inside the VIP at all.
+    //
+    // Both flits are BUILT before either is driven, so the two orders differ in
+    // nothing but the order. Building one inside each branch is how the two
+    // paths drift.
+    //
+    // The knob existed in this port for a session before anything read it --
+    // check_cfg_parity compares the config SURFACE, and a knob present in both
+    // ports satisfies it whether or not either port acts on it. tc_chi_d_retry_-
+    // grant_first is what found it, on the first sweep that ever ran it. See
+    // F-INTOP-006 and F-CHK-014.
+    if (this.cfg.snf_pcrd_grant_before_ack) begin
+      this.drive_rsp(pcrd_grant);
+      this.drive_rsp(retry_ack);
+    end
+    else begin
+      this.drive_rsp(retry_ack);
+      this.drive_rsp(pcrd_grant);
+    end
   endtask
 
   // ---------------------------------------------------------------------------
@@ -1794,6 +1837,12 @@ class vip_chi_driver_snf #(
     addr_t     mem_addr;
     int        beat_count;
     bit        is_decerr;
+    bit        dwt;
+    bit        split;
+    bit        cmo_first;
+    bit        tag_match_owed;
+    node_id_t  grant_tgt_id;
+    txn_id_t   grant_txn_id;
     vip_chi_resp_err_t completion_resp_err;
 
     req_addr   = addr_t'(req.addr);
@@ -1806,15 +1855,47 @@ class vip_chi_driver_snf #(
                         ? VIP_CHI_RESP_ERR_NONDATA_ERROR_E
                         : VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
 
+    // Direct Write Transfer moves the grant off the requester's own addressing.
+    // Table 2-8: with DoDWT set the DBIDResp goes to ReturnNID, and section 2.5
+    // sends its TxnID with it -- "when DoDWT = 1, ReturnTxnID [...] Used as the
+    // TxnID in the DBIDResp response". Both fields move together or neither
+    // does, so they are computed once, here, rather than at each assignment.
+    //
+    // req.snpattr IS the DoDWT bit where the classifier says so: REQ bit 17
+    // carries one field or the other and the flit layout names it for the more
+    // common of the two (F-CORR-003).
+    dwt = vip_chi_types_pkg::vip_chi_req_dwt_grant_uses_return_path(
+            CFG_P.ISSUE_P, vip_chi_req_opcode_t'(req.opcode), bit'(req.snpattr));
+    if (dwt && this.cfg.snf_dwt_dbid_target_srcid_negctl) begin
+      // Negative control: keep the pre-F-CORR-012 addressing under DoDWT = 1.
+      dwt = 1'b0;
+    end
+    grant_tgt_id = dwt ? node_id_t'(req.returnnid)  : req_src_id;
+    grant_txn_id = dwt ? txn_id_t'(req.returntxnid) : req_txn_id;
+
+    // Table 2-8's own footnote bounds the combined form: "The Comp for the Write
+    // can be combined with the DBIDResp if both are targeting the Home." Under
+    // DWT they need not, and when they do not, a CompDBIDResp would have to
+    // carry two different targets in one flit. The split is forced by where the
+    // responses go, not by DoDWT itself -- ReturnNID is PERMITTED to be the Home
+    // (section 2.5), and when it is, the combined form stays legal.
+    //
+    // The TxnID has to agree as well, which the footnote does not say because it
+    // is talking about targets: Comp is owed to the requester under the request's
+    // own TxnID, the DBIDResp under ReturnTxnID, and one flit carries one TxnID.
+    // So the node coinciding is necessary and not sufficient.
+    split = this.cfg.split_write_rsp ||
+            (dwt && ((grant_tgt_id != req_src_id) || (grant_txn_id != req_txn_id)));
+
     rsp          = new("auto_write_rsp");
     rsp.role     = VIP_CHI_ROLE_SNF_E;
     rsp.src_id   = req_tgt_id;
-    rsp.tgt_id   = req_src_id;
-    rsp.txn_id   = req_txn_id;
+    rsp.tgt_id   = grant_tgt_id;
+    rsp.txn_id   = grant_txn_id;
     rsp.dbid     = req_txn_id;
     rsp.qos      = req.qos;
     rsp.rsp_resp = VIP_CHI_RESP_STATE_I_E;
-    if (this.cfg.split_write_rsp) begin
+    if (split) begin
       rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
       if ((CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) &&
           this.cfg.ordered_dbid_resp &&
@@ -1831,7 +1912,7 @@ class vip_chi_driver_snf #(
     end
     this.drive_rsp(rsp);
 
-    if (this.cfg.split_write_rsp) begin
+    if (split) begin
       deferred_comp_rsp = new("auto_write_comp_rsp");
       deferred_comp_rsp.role         = VIP_CHI_ROLE_SNF_E;
       deferred_comp_rsp.src_id       = req_tgt_id;
@@ -1878,6 +1959,10 @@ class vip_chi_driver_snf #(
       write_data.push_back(data_t'(flit.data));
       write_be.push_back(be_t'(flit.be));
 
+      if (this.dat_flit_is_tag_match(flit)) begin
+        tag_match_owed = 1'b1;
+      end
+
       if (!is_decerr) begin
         this.capture_auto_write_issue_specific_fields(req_addr, beat_index, flit);
       end
@@ -1898,7 +1983,45 @@ class vip_chi_driver_snf #(
       end
     end
 
-    if (this.cfg.split_write_rsp) begin
+    // The Tag Match answer, when the write asked for one.
+    //
+    // IHI 0050 E section 2.3.1: "If the WriteData message indicates that a Tag
+    // Match is required, then the Slave sends a TagMatch response after
+    // completing the required Tag Match operation." The indication is on the
+    // DATA, not the request -- TagOp = 0b11 (Match) on the WriteData beats -- so
+    // it is read from what arrived rather than from what was asked for.
+    //
+    // After the data, deliberately. The specification also permits the other
+    // order ("if the Slave does not support or does not perform the Tag Match
+    // operation then the Slave is permitted to send the TagMatch response after
+    // receiving the request without waiting for write data"), but that is the
+    // answer of a completer that did NOT do the check. This one has the tags in
+    // hand, so it answers where the check would have happened.
+    if (this.cfg.snf_tag_match_unrequested_negctl &&
+        (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E)) begin
+      // The control: answer whether or not the data asked. On a write that DID
+      // ask this is indistinguishable from correct behaviour, so the testcase
+      // driving it uses a write that did not.
+      tag_match_owed = 1'b1;
+    end
+    if (tag_match_owed) begin
+      this.drive_tag_match_rsp(req, completion_resp_err);
+    end
+
+    // The write's own completion, and the CMO's, in either order.
+    //
+    // Issue E places one ordering rule on CompCMO -- section 2.8: it "must only
+    // be sent after the associated request is received" -- and none at all
+    // relative to the write's Comp. cfg.snf_cmo_before_write_comp takes the
+    // other option, which exists so a requester that silently assumed the
+    // write-first order has something that breaks it. See F-INTOP-008.
+    cmo_first = this.cfg.snf_cmo_before_write_comp &&
+                this.req_opcode_is_combined_write_cmo(req_opcode_t'(req.opcode));
+    if (cmo_first) begin
+      this.drive_combined_cmo_rsp(req, completion_resp_err);
+    end
+
+    if (split) begin
       this.drive_rsp(deferred_comp_rsp);
     end
 
@@ -1907,8 +2030,16 @@ class vip_chi_driver_snf #(
     // address, and the CMO acts on the state the write leaves behind. Driving it
     // before the data had landed would answer for a cache maintenance that had
     // not happened yet.
-    if (this.req_opcode_is_combined_write_cmo(req_opcode_t'(req.opcode))) begin
-      this.drive_combined_cmo_rsp(req, rsp.rsp_resp_err);
+    if (this.req_opcode_is_combined_write_cmo(req_opcode_t'(req.opcode)) &&
+        !cmo_first) begin
+      // completion_resp_err, NOT rsp.rsp_resp_err: under a split write the grant
+      // deliberately carries OKAY and the error rides the deferred Comp, so
+      // reading the error back off the grant handed the CMO half an OKAY it had
+      // not earned. The Python twin already passed the completion error, so this
+      // was a silent divergence -- reachable only with split_write_rsp set, a
+      // DECERR address and a combined write, which no test drives together.
+      // Forcing the split under DWT below would have widened it.
+      this.drive_combined_cmo_rsp(req, completion_resp_err);
     end
 
     if (req.expcompack) begin
@@ -1927,16 +2058,88 @@ class vip_chi_driver_snf #(
   // For the persistent forms the spec additionally requires a Persist response
   // AFTER the write data is received, which is the ordering rule this whole
   // family turns on. Persist and CompCMO may be combined into a single
-  // CompPersist when both target the same node; they are kept separate here
-  // because two observable events are what a test can check an order between,
-  // and the combined encoding would collapse exactly the evidence.
+  // CompPersist when both target the same node, and cfg.combined_persist_rsp
+  // asks for that encoding here as it already did on the standalone
+  // CleanSharedPersistSep path. The DEFAULT stays separate, because two
+  // observable events are what a test can check an order between and the
+  // combined encoding collapses exactly that evidence -- but a requester has to
+  // accept both, so the completer has to be able to produce both. See
+  // F-INTOP-008, where the requester fatalled on an encoding this VIP could not
+  // then generate.
+  // ---------------------------------------------------------------------------
+  // Answer a Match-tagged write with TagMatch.
+  //
+  // Routed to ReturnNID, not SrcID. The TgtID table in IHI 0050 E section 4.7
+  // gives TagMatch as "Request.SrcID" from a Home and "Request.ReturnNID" from a
+  // Slave, and section 2.5 says the same from the field's side: "In WriteNoSnp
+  // with TagOp Match [...] when DoDWT = 0, the value is used as the TgtID in the
+  // TagMatch response only." This driver is the Slave.
+  //
+  // The group identifier rides DBID, as PGroupID does on a Persist -- Table 13-7
+  // shares those bits between DBID, PGroupID and StashGroupID, and 13.10.7 adds
+  // TagGroupID to the list. So this needed no new flit field, which is the whole
+  // reason F-COV-001 was cheap to close.
+  // ---------------------------------------------------------------------------
+  protected task drive_tag_match_rsp(
+    input req_flit_t         req,
+    input vip_chi_resp_err_t resp_err
+  );
+    item_t tag_match_rsp;
+
+    tag_match_rsp              = new("auto_tag_match_rsp");
+    tag_match_rsp.role         = VIP_CHI_ROLE_SNF_E;
+    tag_match_rsp.src_id       = node_id_t'(req.tgtid);
+    tag_match_rsp.tgt_id       = node_id_t'(req.returnnid);
+    tag_match_rsp.txn_id       = txn_id_t'(req.txnid);
+    tag_match_rsp.dbid         = txn_id_t'(this.req_pgroup_id(req));
+    tag_match_rsp.qos          = req.qos;
+    tag_match_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
+    tag_match_rsp.rsp_resp_err = resp_err;
+    tag_match_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_TAG_MATCH_C);
+    this.drive_rsp(tag_match_rsp);
+  endtask
+
   // ---------------------------------------------------------------------------
   protected task drive_combined_cmo_rsp(
     input req_flit_t                req,
     input vip_chi_resp_err_t        resp_err
   );
-    item_t cmo_rsp;
-    item_t persist_rsp;
+    item_t    cmo_rsp;
+    item_t    persist_rsp;
+    item_t    dup_cmo_rsp;
+    item_t    comp_persist_rsp;
+    bit       is_persist;
+    node_id_t persist_tgt_id;
+
+    is_persist = this.req_opcode_combined_cmo_is_persist(req_opcode_t'(req.opcode));
+    // The control aims it at SrcID, which is what this driver did before
+    // F-CORR-012 and what 2.8 forbids for a PCMO.
+    persist_tgt_id = this.cfg.snf_persist_target_srcid_negctl
+                   ? node_id_t'(req.srcid)
+                   : node_id_t'(req.returnnid);
+
+    // 2.8 permits the combination only "if the two are sent to Home" -- CompCMO
+    // goes to SrcID and the Persist to ReturnNID, so the encoding is available
+    // exactly when those name the same node. Asking for it when they do not
+    // would put one flit where two different targets are owed, so the knob is
+    // honoured only where the protocol allows it rather than obeyed blindly.
+    if (is_persist && this.cfg.combined_persist_rsp &&
+        (persist_tgt_id == node_id_t'(req.srcid))) begin
+
+      comp_persist_rsp              = new("combined_comp_persist_rsp");
+      comp_persist_rsp.role         = VIP_CHI_ROLE_SNF_E;
+      comp_persist_rsp.src_id       = node_id_t'(req.tgtid);
+      comp_persist_rsp.tgt_id       = node_id_t'(req.srcid);
+      comp_persist_rsp.txn_id       = txn_id_t'(req.txnid);
+      comp_persist_rsp.dbid         = txn_id_t'(this.req_pgroup_id(req));
+      comp_persist_rsp.qos          = req.qos;
+      comp_persist_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
+      comp_persist_rsp.rsp_resp_err = resp_err;
+      comp_persist_rsp.rsp_opcode   =
+        item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C);
+      this.drive_rsp(comp_persist_rsp);
+      return;
+    end
 
     cmo_rsp              = new("combined_cmo_rsp");
     cmo_rsp.role         = VIP_CHI_ROLE_SNF_E;
@@ -1950,16 +2153,43 @@ class vip_chi_driver_snf #(
     cmo_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_CMO_C);
     this.drive_rsp(cmo_rsp);
 
-    if (!this.req_opcode_combined_cmo_is_persist(req_opcode_t'(req.opcode))) begin
+    // The negative control: a second CompCMO, which satisfies no obligation the
+    // first did not already. It is the shape an obligation SET has to keep
+    // refusing -- tolerating order must not become tolerating anything.
+    if (this.cfg.snf_combined_cmo_duplicate_negctl) begin
+
+      dup_cmo_rsp              = new("combined_cmo_rsp_duplicate");
+      dup_cmo_rsp.role         = VIP_CHI_ROLE_SNF_E;
+      dup_cmo_rsp.src_id       = node_id_t'(req.tgtid);
+      dup_cmo_rsp.tgt_id       = node_id_t'(req.srcid);
+      dup_cmo_rsp.txn_id       = txn_id_t'(req.txnid);
+      dup_cmo_rsp.dbid         = txn_id_t'(req.txnid);
+      dup_cmo_rsp.qos          = req.qos;
+      dup_cmo_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
+      dup_cmo_rsp.rsp_resp_err = resp_err;
+      dup_cmo_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_CMO_C);
+      this.drive_rsp(dup_cmo_rsp);
+    end
+
+    if (!is_persist) begin
       return;
     end
 
+    // The Persist does NOT go where the CompCMO went. IHI 0050 E 2.8: "The
+    // ReturnNID value in the request must be used as the target in the
+    // following responses by the Slave: in the DBIDResp, if the DoDWT bit in the
+    // request is set to one; in the Persist, if the CMO in the request is a
+    // PCMO." CompCMO is not in that list and keeps SrcID; the Persist is.
+    //
+    // The two items are built separately for exactly this reason -- a shared
+    // field set is what let the Python port carry the same defect with one
+    // shared tgtid and no place to write a per-response rule. See F-CORR-012.
     persist_rsp              = new("combined_persist_rsp");
     persist_rsp.role         = VIP_CHI_ROLE_SNF_E;
     persist_rsp.src_id       = node_id_t'(req.tgtid);
-    persist_rsp.tgt_id       = node_id_t'(req.srcid);
+    persist_rsp.tgt_id       = persist_tgt_id;
     persist_rsp.txn_id       = '0;   // Persist is not tied to a TxnID
-    persist_rsp.dbid         = txn_id_t'(req.txnid);
+    persist_rsp.dbid         = txn_id_t'(this.req_pgroup_id(req));
     persist_rsp.qos          = req.qos;
     persist_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
     persist_rsp.rsp_resp_err = resp_err;
@@ -2095,22 +2325,41 @@ class vip_chi_driver_snf #(
     end
   endfunction
 
-  // RSP flits owed before the data leg. Ordered reads take a ReadReceipt;
-  // ReadNoSnpSep additionally takes RespSepData on the RSP channel to the
-  // requester (original TxnID), separate from the DataSepResp data leg that goes
-  // to ReturnNID/ReturnTxnID. Combined reads send neither.
+  // RSP flits owed before the data leg. Ordered reads take a ReadReceipt, and so
+  // does every ReadNoSnpSep -- ordered or not. Combined reads send neither.
+  //
+  // This completer used to answer a separated read with RespSepData instead, and
+  // that is a response a Slave may not send. Appendix B Table B-3 gives
+  // RespSepData one From row, ICN(HN-F, HN-I), and section 2.3.1 says the same
+  // thing in prose: "RespSepData is permitted from the Home only." What the
+  // Slave owes is the other half of that section -- "The Slave must send the
+  // ReadReceipt response to the Home only after receiving ReadNoSnpSep" -- and
+  // the ReadReceipt was being sent only when req_has_ordering() was true, so on
+  // a non-ordered separated read the Slave's own owed response was never sent at
+  // all. Both halves of the flow were emitted by the wrong node class, and every
+  // test passed, because the only party judging the flow was this completer.
+  //
+  // The requester is the Home stand-in on this link (see cfg.rni_home_standin),
+  // so ReadReceipt addressed at req.SrcID is Table B-3's SN-F -> ICN(HN-F) row,
+  // and the DataSepResp data leg to ReturnNID is Table B-4's SN-F -> RN-I row,
+  // an EXPECTED target rather than a merely permitted one. See F-CORR-013.
   protected task drive_read_prelude(
     input req_flit_t         req,
     input vip_chi_resp_t     resp_code,
     input vip_chi_resp_err_t resp_err_code
   );
     item_t resp_sep_rsp;
+    bit    is_sep;
 
-    if (this.req_has_ordering(req)) begin
+    is_sep = (req_opcode_t'(req.opcode) == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C));
+
+    if (this.req_has_ordering(req) || is_sep) begin
       this.drive_auto_read_receipt(req);
     end
 
-    if (req_opcode_t'(req.opcode) == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C)) begin
+    // The pre-F-CORR-013 behaviour, kept as an injectable defect: a Slave
+    // emitting a Home-only response. CHI_SB_ORIGINATOR_LEGAL must report it.
+    if (is_sep && this.cfg.snf_resp_sep_data_negctl) begin
       resp_sep_rsp              = new("auto_read_resp_sep");
       resp_sep_rsp.role         = VIP_CHI_ROLE_SNF_E;
       resp_sep_rsp.src_id       = node_id_t'(req.tgtid);
@@ -2520,6 +2769,14 @@ class vip_chi_driver_snf #(
       compdata_rsp.dbid         = req_txn_id;
       compdata_rsp.qos          = req.qos;
       compdata_rsp.dat_opcode   = item_t::dat_opcode_t'(VIP_CHI_DAT_COMP_DATA_C);
+      // Section 12.7: "The permitted TagOp values in the CompData response to
+      // Non-store Atomic transactions are Invalid and Transfer." Invalid,
+      // explicitly, and not by omission: this completer does not transfer tags
+      // out of an atomic, and the read path DOES replay the stored TagOp --
+      // which for an atomic could be Match, the one value section 12.7 forbids
+      // here. Stating it keeps the two paths from being confused for each other
+      // later. See F-CORR-009.
+      compdata_rsp.dat_tagop    = item_t::tagop_t'(VIP_CHI_TAGOP_INVALID_C);
       compdata_rsp.rsp_resp     = resp_code;
       compdata_rsp.rsp_resp_err = resp_err_code;
       compdata_rsp.data         = new[granule_beat_count];
@@ -2569,6 +2826,60 @@ class vip_chi_driver_snf #(
   // never received a bare Comp, and persistence was signalled twice -- once
   // alone and again inside the combined response.
   // ---------------------------------------------------------------------------
+  // The PGroupID a persistent request asked its completions to carry back.
+  //
+  // IHI 0050 E 13.10.8 gives the request-side encoding as an equation --
+  // PGroupID[7:0] = {GroupIDExt[2:0], LPID[4:0]} -- so there is nothing to read
+  // off a dedicated field, on either side. On the way back it rides DBID, which
+  // Table 13-7 shares between DBID, PGroupID and StashGroupID.
+  //
+  // The control corrupts it, which is the only way to tell a completer that
+  // reflects the group from one that happens to send a value the requester
+  // accepts. See F-INTOP-010.
+  // ---------------------------------------------------------------------------
+  protected function logic [7 : 0] req_pgroup_id(input req_flit_t req);
+
+    logic [7 : 0] pgroup;
+
+    pgroup = vip_chi_types_pkg::vip_chi_pgroup_id_from_req(
+               this.req_group_id_ext(req), 8'(req.lpid));
+    if (this.cfg.snf_persist_pgroup_corrupt_negctl) begin
+      pgroup = pgroup + 8'd1;
+    end
+    return pgroup;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Optional issue-specific hook: does this WriteData beat ask for a Tag Match?
+  //
+  // TagOp exists only in the Issue E data flit, so it cannot be named in this
+  // parameterized base -- a D instantiation would fail to elaborate on the
+  // member reference. Same shape, and the same reason, as req_group_id_ext.
+  //
+  // FALSE for D is not a placeholder: Issue D has no memory tagging at all, so
+  // there is no D write that can ask for a check.
+  // ---------------------------------------------------------------------------
+  virtual protected function bit dat_flit_is_tag_match(input dat_flit_t flit);
+    return 1'b0;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Optional issue-specific hook for the REQ flit's GroupIDExt.
+  //
+  // The field exists only in the Issue E request flit, so it cannot be named in
+  // this parameterized base at all -- a D instantiation would fail to elaborate
+  // on the member reference, not at runtime. Same shape, and the same reason, as
+  // capture_auto_write_issue_specific_fields above.
+  //
+  // Zero here is not a placeholder: Issue D has no GroupIDExt, no
+  // CleanSharedPersistSep and no Combined Write, so there is no D transaction
+  // that carries a PGroupID for this to be wrong about.
+  // ---------------------------------------------------------------------------
+  virtual protected function logic [2 : 0] req_group_id_ext(input req_flit_t req);
+    return 3'b0;
+  endfunction
+
+  // ---------------------------------------------------------------------------
   protected task drive_auto_persist_rsp(input req_flit_t req);
     item_t rsp;
     item_t persist_rsp;
@@ -2585,7 +2896,13 @@ class vip_chi_driver_snf #(
     rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
     rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
 
+    // 13.10.7: PGroupID is applicable in the Persist and CompPersist responses,
+    // and it travels in the bits Table 13-7 otherwise calls DBID. A persist
+    // response has no data buffer, so there was never a real DBID to displace --
+    // which is why the field sat at its default and nobody noticed it was
+    // carrying the wrong thing.
     if (is_sep && this.cfg.combined_persist_rsp) begin
+      rsp.dbid       = txn_id_t'(this.req_pgroup_id(req));
       rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C);
       this.drive_rsp(rsp);
       return;
@@ -2600,6 +2917,7 @@ class vip_chi_driver_snf #(
       persist_rsp.src_id       = node_id_t'(req.tgtid);
       persist_rsp.tgt_id       = node_id_t'(req.srcid);
       persist_rsp.txn_id       = '0;   // Persist is not tied to a TxnID
+      persist_rsp.dbid         = txn_id_t'(this.req_pgroup_id(req));
       persist_rsp.qos          = req.qos;
       persist_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
       persist_rsp.rsp_resp_err = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;

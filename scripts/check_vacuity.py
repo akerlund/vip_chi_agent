@@ -75,6 +75,20 @@ def normalize_severity(raw: str) -> str:
   return raw.strip().removeprefix("VIP_CHI_CHK_SEV_").removesuffix("_E")
 
 
+def _print_stale_sections() -> None:
+  """Name the two sections a mismatched comparison invalidates.
+
+  Only these two compare sources against each other; the rest of the report is
+  a per-source tally and stays true whatever the inputs describe. Saying which
+  is the difference between a warning a reader can act on and one they learn to
+  scroll past.
+  """
+  print("  Re-run the older sweep before trusting EVIDENCE FROM ONE SOURCE "
+        "ONLY or\n  DEAD ON A BIND: both compare sources against each other, "
+        "so a mismatched\n  file reads as a rule the other port never "
+        "exercised.\n")
+
+
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__,
                                formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -117,6 +131,7 @@ def main() -> int:
   # meaning and the section is suppressed rather than answered wrongly.
   labels_exercising = defaultdict(set)
   labels_seen = []
+  revs_seen: set[str] = set()
   # (path, mtime) per input, for the staleness guard below.
   inputs_seen = []
 
@@ -132,8 +147,11 @@ def main() -> int:
       labels_seen.append(label)
     try:
       inputs_seen.append((path, Path(path).stat().st_mtime))
+      # The revision each input was produced at. Absent on rows written before
+      # the column existed, which is why the age fallback stays.
       with open(path, newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
+          revs_seen.add((row.get("rev") or "").strip())
           rule = row["check"]
           if rule not in passes and rule not in fails:
             known.append(rule)
@@ -269,27 +287,44 @@ def main() -> int:
 
   # Comparing sweeps from different code revisions produces confident nonsense:
   # a rule the older sweep predates reads as one port's rule that the other never
-  # exercised, and every per-bind verdict inherits the same skew. There is no
-  # revision stamped in the CSV, so age is the only proxy available -- and it has
-  # already caused this report to file a live rule as `sv only` twice.
+  # exercised, and every per-bind verdict inherits the same skew.
   #
-  # Warned rather than gated: comparing an archived sweep against a fresh one is
-  # a legitimate thing to do, and the tool should say what it is comparing rather
-  # than refuse to. The threshold is one hour because a full sweep of either port
-  # finishes in minutes, so a gap that wide is a different sitting, not a slow run.
-  if len(inputs_seen) > 1:
+  # The CSV now stamps the producing revision, so this is answered exactly
+  # rather than guessed at. Age remains as a FALLBACK, for rows written before
+  # the column existed and for an export that could not name a commit -- it is a
+  # weaker test and is labelled as one. See F-CHK-011.
+  #
+  # Warned rather than gated in both cases: comparing an archived sweep against a
+  # fresh one is a legitimate thing to do, and the tool should say what it is
+  # comparing rather than refuse to.
+  revs = {r for r in revs_seen if r and r != "unknown"}
+  dirty = {r for r in revs if r.endswith("-dirty")}
+
+  if len(revs) > 1:
+    print("WARNING: these CSVs were produced by different revisions, so they do "
+          "not describe the same code:")
+    for rev in sorted(revs):
+      print(f"  {rev}")
+    _print_stale_sections()
+  elif dirty and len(inputs_seen) > 1:
+    # One revision, but at least one sweep ran against uncommitted changes. Same
+    # commit is then not the same code, and the stamp cannot tell how different.
+    print(f"NOTE: {sorted(dirty)[0]} -- at least one sweep ran against a "
+          "modified tree, so a matching revision does not by itself mean the "
+          "two describe the same code.\n")
+
+  # The age fallback, only where the stamp could not answer.
+  if len(inputs_seen) > 1 and len(revs) <= 1 and not revs:
     newest = max(m for _, m in inputs_seen)
     oldest = min(m for _, m in inputs_seen)
     if (newest - oldest) > STALE_INPUT_SECONDS_C:
-      print(f"WARNING: these CSVs are {(newest - oldest) / 3600.0:.1f} hours "
-            "apart, so they may not describe the same code:")
+      print(f"WARNING: no revision stamp in these CSVs, and they are "
+            f"{(newest - oldest) / 3600.0:.1f} hours apart, so they may not "
+            "describe the same code:")
       for path, mtime in sorted(inputs_seen, key=lambda pair: pair[1]):
         stamp = datetime.fromtimestamp(mtime).isoformat(timespec="seconds")
         print(f"  {stamp}  {path}")
-      print("  Re-run the older sweep before trusting EVIDENCE FROM ONE SOURCE "
-            "ONLY or\n  DEAD ON A BIND: both compare sources against each "
-            "other, so a stale file\n  reads as a rule the other port never "
-            "exercised.\n")
+      _print_stale_sections()
 
   print(f"checks: {len(rules)}   binds: {len(binds_seen)}   runs: "
         f"{len({r for s in runs_exercising.values() for r in s})}")

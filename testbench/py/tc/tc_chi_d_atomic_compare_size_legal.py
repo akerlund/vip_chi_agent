@@ -19,8 +19,9 @@
 # The rule is ARMED here -- not turned down to OFF -- which is the whole point:
 # the assertions below are about a live rule seeing conformant traffic.
 #
-# atomic_strict_size is enabled as well, so the SOLVER's view of Table 2-17 is
-# exercised alongside the checker's. If the constraint's ceiling regressed to
+# Nothing is opted into here, and that is now the point: since F-CORR-008 the
+# solver draws Table 2-17's Sizes by default, so this testcase asks for nothing
+# special and gets the specification. If the constraint's ceiling regressed to
 # Size 4, randomization would fail outright rather than quietly drawing
 # something else, and this testcase would say so.
 # Runs under: testbench/py/tb/chi_tb_top.py
@@ -57,8 +58,11 @@ class tc_chi_d_atomic_compare_size_legal(chi_base_test):
     seq.set_requests(1)
     seq.set_initial_addr(ATOMIC_ADDR_C)
     seq.set_size(size)
-    # The solver's half of Table 2-17. Unsatisfiable if the ceiling regresses.
-    seq.set_atomic_strict_size(True)
+    # No opt-in of any kind here, and that is now the point: Table 2-17 is
+    # what a plain sequence draws, so this testcase asks for nothing special and
+    # gets the specification. If the constraint's ceiling regressed to Size 4,
+    # randomization would fail outright rather than quietly drawing something
+    # else.
     seq.set_get_response(True)
     seq.set_verbose(False)
     seq.set_data([COMPARE_OPERAND_C, COMPARE_SWAP_C])

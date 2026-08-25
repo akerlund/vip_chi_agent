@@ -253,7 +253,8 @@ def _parse_table(text: str, caption: re.Pattern) -> list[dict]:
       if width:
         # LSB-first inside a brace group: the leftmost term is the MSB, so a
         # composite reverses into the bit-zero-first sequence the table is in.
-        positions.append({"primary": list(reversed(names)), "names": set(names)})
+        positions.append({"primary": list(reversed(names)),
+                          "names": set(names), "width": width})
       elif positions:
         positions[-1]["names"].update(names)
 
@@ -284,18 +285,26 @@ def _vip_fields(sv: str, issue: str, channel: str) -> list[str]:
   return list(reversed(parity._struct_fields(block, _STRUCT_C[channel])))
 
 
-def _compare(vip: list[str], positions: list[dict]) -> tuple[list[str], list[str], list[str]]:
+def _compare(vip: list[str], positions: list[dict]):
   """Walk the VIP's fields against the spec's positions in order.
 
   One position may absorb several consecutive VIP fields: the VIP splits some
   brace groups the table prints as one set of bits ({GroupIDExt, LPID}) into
   separate struct members. A field that matches a position already passed is an
   ORDER difference; one that matches no position at all is UNKNOWN.
+
+  Also returns WHICH VIP fields landed on each position, because splitting a
+  brace group is only legal if the parts still add up to the position's width.
+  That is not a refinement of the order check, it is the other half of it: this
+  function passed a CHI-E request flit three bits too wide (F-CORR-026) while
+  reporting every field in its right place, and it was right to -- every field
+  WAS in its right place. Nobody was adding them up.
   """
   order: list[str] = []
   unknown: list[str] = []
   cursor = 0
   consumed = [False] * len(positions)
+  absorbed: dict[int, list[str]] = {}
 
   for field in vip:
     key = _norm(field)
@@ -304,6 +313,7 @@ def _compare(vip: list[str], positions: list[dict]) -> tuple[list[str], list[str
       for i in range(cursor, hit):
         pass
       consumed[hit] = True
+      absorbed.setdefault(hit, []).append(field)
       # Stay on this position while it still has unmatched constituents, so a
       # split brace group does not read as an ORDER difference.
       remaining = [n for n in positions[hit]["primary"] if n != key]
@@ -314,6 +324,7 @@ def _compare(vip: list[str], positions: list[dict]) -> tuple[list[str], list[str
     if back is not None:
       order.append(field)
       consumed[back] = True
+      absorbed.setdefault(back, []).append(field)
     else:
       unknown.append(field)
 
@@ -321,10 +332,72 @@ def _compare(vip: list[str], positions: list[dict]) -> tuple[list[str], list[str
     "/".join(positions[i]["primary"]) for i in range(len(positions))
     if not consumed[i] and positions[i]["primary"]
   ]
-  return order, unknown, missing
+  return order, unknown, missing, absorbed
 
 
-def _check_issue(sv: str, issue: str, pdf: Path, verbose: bool) -> tuple[list[str], list[str]]:
+def _fixed_width(position: dict) -> int | None:
+  """The position's width when the table states it as a plain integer.
+
+  None for everything else, and the "everything else" is the point: widths given
+  as a range ("7 to 11"), as a symbol ("M = 11", "SAW = 41 to 49") or as an
+  expression are configuration-dependent, and comparing them would mean
+  reimplementing the VIP's own width functions inside its checker. The plain
+  integers are the rows where the specification admits no freedom at all, so a
+  disagreement there is unambiguous.
+  """
+  token = position.get("width", "")
+  return int(token) if token.isdigit() else None
+
+
+def _vip_widths(py_types, issue: str, channel: str) -> dict[str, int]:
+  """Field -> width for one channel, from the PYTHON layout.
+
+  The Python port is used because its widths are values, computed by the same
+  code that packs the flits; the SV struct declares them as parameterized
+  expressions that would have to be re-evaluated to read. check_type_parity
+  holds the two ports' field sets together, and this script's order pass reads
+  the SV struct -- so a width taken from Python and an order taken from SV are
+  still describing one flit.
+
+  Read at the widest configuration. Every width this compares is a plain integer
+  in the table, so none of them varies with the configuration anyway -- but a
+  config has to be picked, and the widest is the one where a truncation shows.
+  """
+  cfg = py_types.ChiCfg(
+    issue=py_types.Issue.E if issue == "E" else py_types.Issue.D,
+    node_id_width=11, addr_width=52, data_bytes=64, mpam_en=True)
+  return {_norm(name): width for name, width in py_types.flit_layout(cfg, channel)}
+
+
+def _check_widths(vip_widths: dict[str, int], positions: list[dict],
+                  absorbed: dict[int, list[str]], table: str) -> list[str]:
+  """Every position whose width the table fixes must be filled exactly.
+
+  Summed, not compared one-to-one: the VIP splits some brace groups the table
+  prints as one set of bits, which is allowed, and what is not allowed is for
+  the parts to add up to something else. That is how a CHI-E request flit ran
+  three bits wide with every field in the right place -- GroupIDExt (3) and LPID
+  (8) sharing an 8-bit position between them. See F-CORR-026.
+  """
+  problems: list[str] = []
+  for index, fields in sorted(absorbed.items()):
+    want = _fixed_width(positions[index])
+    if want is None:
+      continue
+    known = [f for f in fields if _norm(f) in vip_widths]
+    if len(known) != len(fields):
+      continue
+    got = sum(vip_widths[_norm(f)] for f in known)
+    if got != want:
+      name = "/".join(positions[index]["primary"]) or "?"
+      problems.append(
+        f"{name}: Table {table} gives {want} bits, VIP declares {got} "
+        f"({' + '.join(f'{f}={vip_widths[_norm(f)]}' for f in known)})")
+  return problems
+
+
+def _check_issue(sv: str, issue: str, pdf: Path, verbose: bool,
+                 py_types) -> tuple[list[str], list[str]]:
   errors: list[str] = []
   inconclusive: list[str] = []
 
@@ -354,7 +427,7 @@ def _check_issue(sv: str, issue: str, pdf: Path, verbose: bool) -> tuple[list[st
       continue
 
     vip = _vip_fields(sv, issue, channel)
-    order, unknown, missing = _compare(vip, positions)
+    order, unknown, missing, absorbed = _compare(vip, positions)
 
     print(f"CHI-{issue} {channel}: spec Table {table} {len(positions)} positions, "
           f"VIP {len(vip)} fields")
@@ -367,6 +440,10 @@ def _check_issue(sv: str, issue: str, pdf: Path, verbose: bool) -> tuple[list[st
     for field in unknown:
       print(f"  UNKNOWN {field}: Table {table} lists no field under that name")
       errors.append(f"CHI-{issue} {channel} UNKNOWN {field}")
+    for problem in _check_widths(_vip_widths(py_types, issue, channel),
+                                 positions, absorbed, table):
+      print(f"  WIDTH   {problem}")
+      errors.append(f"CHI-{issue} {channel} WIDTH {problem}")
     if missing:
       print(f"  missing (advisory, {len(missing)}): {', '.join(missing)}")
 
@@ -401,6 +478,9 @@ def main() -> int:
     return 2
 
   sv = parity._read_sv()
+  # The Python port supplies the field WIDTHS the order pass cannot read off the
+  # SV struct's parameterized expressions. See _vip_widths.
+  py_types = parity._load_py_types()
   errors: list[str] = []
   inconclusive: list[str] = []
   checked = 0
@@ -414,7 +494,8 @@ def main() -> int:
     if not pdf.is_file():
       inconclusive.append(f"CHI-{issue}: {pdf} is not a file")
       continue
-    issue_errors, issue_inconclusive = _check_issue(sv, issue, pdf, args.verbose)
+    issue_errors, issue_inconclusive = _check_issue(sv, issue, pdf, args.verbose,
+                                                    py_types)
     errors.extend(issue_errors)
     inconclusive.extend(issue_inconclusive)
     checked += 1

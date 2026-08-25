@@ -350,7 +350,47 @@ class vip_chi_driver_rnf #(
   //   Snp{Shared,Clean,NotSharedDirty}Fwd -> retain SC; SnpUniqueFwd -> I;
   //   SnpOnceFwd -> unchanged (snapshot).
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Resulting state after a snoop, and where DoNotGoToSD is honoured.
+  //
+  // Two decisions meet here and they have to be read together (F-INTOP-002).
+  //
+  // The first is this VIP's never-SD reduction: a snoopee in this model adopts
+  // only I, SC or its current state, so SD is not in the range of this function
+  // at all. The second is the SNP flit's DoNotGoToSD bit -- "Snoopee receiving a
+  // Snoop request with the DoNotGoToSD bit set, except when the Snoop is
+  // SnpOnceFwd, must not transition to SD".
+  //
+  // Together those mean the bit is satisfied here by CONSTRUCTION rather than by
+  // obedience, and that is a fragile way to satisfy a rule: it holds only while
+  // the reduction does, and nothing would notice if SD were added to the state
+  // set later. So the bit is read explicitly below. The guard is inert today --
+  // nothing in the case above it can produce SD -- and it is written anyway,
+  // because the day the reduction is lifted is the day someone needs this to
+  // already be right.
+  //
+  // SnpOnceFwd is the specification's own exception and is excluded from the
+  // guard, not overlooked.
+  // ---------------------------------------------------------------------------
   protected function vip_chi_resp_t snoop_next_state(
+    input snp_opcode_t   snp_opcode,
+    input vip_chi_resp_t current,
+    input bit            do_not_go_to_sd = 1'b0
+  );
+    vip_chi_resp_t nxt;
+
+    nxt = this.snoop_next_state_raw(snp_opcode, current);
+
+    // Staying in SD would not be a transition and is not caught here; this
+    // bounds where the snoop MOVES the line to.
+    if ((nxt == VIP_CHI_RESP_STATE_SD_PD_DIRTY_E) && do_not_go_to_sd &&
+        (snp_opcode != snp_opcode_t'(VIP_CHI_SNP_ONCE_FWD_C))) begin
+      return VIP_CHI_RESP_STATE_SC_E;
+    end
+    return nxt;
+  endfunction
+
+  protected function vip_chi_resp_t snoop_next_state_raw(
     input snp_opcode_t   snp_opcode,
     input vip_chi_resp_t current
   );
@@ -396,7 +436,7 @@ class vip_chi_driver_rnf #(
 
     line      = this.line_addr(addr_t'(snp.addr));
     cur       = this.cache_state.exists(line) ? this.cache_state[line] : VIP_CHI_RESP_STATE_I_E;
-    nxt       = this.snoop_next_state(snp_opcode_t'(snp.opcode), cur);
+    nxt       = this.snoop_next_state(snp_opcode_t'(snp.opcode), cur, snp.donotgotosd);
     was_dirty = this.state_is_dirty(cur);
     no_data   = vip_chi_snp_opcode_returns_no_data(
                   vip_chi_snp_opcode_t'(snp.opcode));
@@ -459,7 +499,7 @@ class vip_chi_driver_rnf #(
 
     line = this.line_addr(addr_t'(snp.addr));
     cur  = this.cache_state.exists(line) ? this.cache_state[line] : VIP_CHI_RESP_STATE_I_E;
-    nxt  = this.snoop_next_state(snp_opcode_t'(snp.opcode), cur);
+    nxt  = this.snoop_next_state(snp_opcode_t'(snp.opcode), cur, snp.donotgotosd);
 
     // Snapshot the held beats (current value, clean or dirtied) BEFORE mutating.
     if (this.cache_data.exists(line)) begin
@@ -497,7 +537,10 @@ class vip_chi_driver_rnf #(
 
     flit = '0;
     flit.opcode  = rsp_opcode_t'(VIP_CHI_RSP_SNP_RESP_C);
-    flit.resp    = resp_state;
+    // The control reports SD without the shadow ever holding it -- what the rule
+    // judges is the response, so that is what the control corrupts. See the knob.
+    flit.resp    = this.cfg.rnf_snp_resp_sd_negctl
+                 ? VIP_CHI_RESP_STATE_SD_PD_DIRTY_E : resp_state;
     flit.resperr = VIP_CHI_RESP_ERR_NORMAL_OKAY_E;
     flit.txnid   = snp.txnid;
     flit.srcid   = node_id_t'(0);

@@ -32,6 +32,7 @@ class tc_chi_d_hni_atomic(chi_hni_base_test):
     atomic_seq = vip_chi_atomic_seq("atomic_seq", cfg=self.chi_cfg)
     atomic_seq.reset()
     atomic_seq.set_atomic_op(AtomicOp.STORE_0)
+    atomic_seq.set_atomic_oversized_operands(True)
     atomic_seq.set_requests(1)
     atomic_seq.set_initial_addr(WRITE_READ_ADDR_C)
     atomic_seq.set_size(beat_size)

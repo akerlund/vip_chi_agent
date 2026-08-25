@@ -34,18 +34,29 @@ import os
 from pyuvm import uvm_component
 
 from vip_chi_types_pkg import (
+  req_return_nid_applicable, req_dwt_grant_uses_return_path,
+  req_pgroup_id_applicable, pgroup_id_from_req,
+  TAGOP_MATCH,
+  rsp_opcode_is_write_grant,
+  req_opcode_combined_cmo_is_persist,
   Role, ReqOpcode, RspOpcode, DatOpcode, ReqOrder, RespErr,
   req_opcode_is_atomic, req_opcode_is_atomic_compare,
   req_opcode_is_atomic_returning_data, req_opcode_atomic_variant,
   CheckSeverity, CHECK_IDS_SB,
+  ORIGINATOR_REQ_C, ORIGINATOR_RSP_C, ORIGINATOR_DAT_C,
+  HOME_STANDIN_REQ_C, HOME_STANDIN_RSP_C,
 )
 from vip_chi_analysis_imp import vip_chi_analysis_imp
+from sva.bind_chi import source_revision
 
 # Rule names, spelled once. Every site below bumps a tally through one of these
 # rather than a bare string, so a typo is an AttributeError at import rather than
 # a rule that quietly tallies into a name nothing reports.
 SB_TXN_COMPLETES = "CHI_SB_TXN_COMPLETES"
 SB_RSP_HAS_OPEN_TXN = "CHI_SB_RSP_HAS_OPEN_TXN"
+SB_RSP_TGTID_CORRECT = "CHI_SB_RSP_TGTID_CORRECT"
+SB_PERSIST_PGROUP_MATCHES = "CHI_SB_PERSIST_PGROUP_MATCHES"
+SB_TAG_MATCH_OWED = "CHI_SB_TAG_MATCH_OWED"
 SB_DAT_HAS_OPEN_TXN = "CHI_SB_DAT_HAS_OPEN_TXN"
 SB_TXNID_NOT_REUSED = "CHI_SB_TXNID_NOT_REUSED"
 SB_COMPLETION_OPCODE_MODELLED = "CHI_SB_COMPLETION_OPCODE_MODELLED"
@@ -57,6 +68,15 @@ SB_READ_TAG_MATCHES = "CHI_SB_READ_TAG_MATCHES"
 SB_READ_TAGOP_REPLAYED = "CHI_SB_READ_TAGOP_REPLAYED"
 SB_TAGOP_STABLE_ACROSS_BEATS = "CHI_SB_TAGOP_STABLE_ACROSS_BEATS"
 SB_ORDERED_ACK_IN_ORDER = "CHI_SB_ORDERED_ACK_IN_ORDER"
+SB_ORIGINATOR_LEGAL = "CHI_SB_ORIGINATOR_LEGAL"
+
+# Appendix B, keyed by channel. The scoreboard sees REQ, RSP and DAT; see
+# vip_chi_types_pkg for why SNP has no entry.
+_ORIGINATOR_BY_CHANNEL_C = {
+  "REQ": ORIGINATOR_REQ_C,
+  "RSP": ORIGINATOR_RSP_C,
+  "DAT": ORIGINATOR_DAT_C,
+}
 
 # Combined Write + CMO, and the subset whose CMO half is persistent.
 _COMBINED_WRITE_CMO_C = {
@@ -67,10 +87,8 @@ _COMBINED_WRITE_CMO_C = {
   int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
   int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
 }
-_COMBINED_CMO_PERSIST_C = {
-  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
-  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
-}
+_COMBINED_CMO_PERSIST_C = frozenset(
+  o for o in ReqOpcode if req_opcode_combined_cmo_is_persist(int(o)))
 
 # Rules that stand down with check_data, so the export can say "not exercised BY
 # REQUEST" rather than reporting a knob the user turned off as a hole.
@@ -123,6 +141,17 @@ class vip_chi_sb_ctx:
     self.sep_read = False
     self.return_nid = 0
     self.return_txn_id = 0
+    # Direct Write Transfer: this request's DBIDResp is owed at ReturnNID under
+    # ReturnTxnID rather than at the requester's own SrcID/TxnID (Table 2-8).
+    self.dwt_grant = False
+    # The persistence group this request asked its Persist / CompPersist to
+    # carry back, and whether it asked for one at all (13.10.7 / 13.10.8).
+    self.pgroup_id = 0
+    self.has_pgroup = False
+    # Whether the write's DATA asked for a Tag Match (TagOp = 0b11), and
+    # whether the TagMatch response that owes came back.
+    self.tag_match_required = False
+    self.tag_match_seen = False
     # Required milestones.
     self.need_grant = False
     self.need_write_data = False
@@ -226,6 +255,7 @@ class vip_chi_scoreboard(uvm_component):
     self.open_ctx = {}             # key: ctx_key -> ctx
     self.ctx_by_dbid = {}          # key: dbid_key -> ctx
     self.sep_ret_ctx = {}          # key: ctx_key(return) -> ctx
+    self.dwt_ret_ctx = {}          # key: ctx_key(DWT grant address) -> ctx
 
     # Checker C predicted image (observed writes only).
     self.pred_mem = {}             # addr -> byte (0..255)
@@ -284,6 +314,31 @@ class vip_chi_scoreboard(uvm_component):
     self.n_reads_skipped = 0
     self.n_tag_reads_skipped = 0
     self.n_tag_checked = 0
+    # Appendix B judged / not judged. The skip count is not decoration: a table
+    # that has no row for an opcode must say so, or the pass count reads as
+    # coverage of packets the table never looked at.
+    self.n_originator_checked = 0
+    self.n_originator_skipped = 0
+    self.n_originator_standin = 0
+
+    # Does the RN-I agent stand in for a Home on the separated-read path?
+    #
+    # Appendix B Table B-1 puts ReadNoSnpSep on a Home->Slave link only, and this
+    # agent topology is point-to-point RN-I <-> SN-F with no Home component
+    # between them. So the RN-I plays the Home's REQ leg -- which is what the
+    # item constraint forcing ReturnNID == SrcID has always been compensating
+    # for -- and CHI_SB_ORIGINATOR_LEGAL grants it a Home's originator rights for
+    # exactly the opcodes in HOME_STANDIN_REQ_C.
+    #
+    # It lives on the scoreboard rather than on the config agent because it is
+    # checker policy, not driver behaviour: no driver reads it, and a config knob
+    # nothing reads is the shape F-CHK-014 was about.
+    #
+    # Default on, because that is what the VIP does. A test sets it False to take
+    # the stand-in away and see the departure reported -- an exemption nothing
+    # can switch off is an exemption nobody can audit, and turning it off is what
+    # proves this checker reaches the separated-read traffic at all.
+    self.home_standin = True
 
   # ==========================================================================
   def build_phase(self):
@@ -414,12 +469,77 @@ class vip_chi_scoreboard(uvm_component):
     return self.chk_fail[SB_ORDERED_ACK_IN_ORDER]
 
   @property
+  def n_originator_illegal(self):
+    return self.chk_fail[SB_ORIGINATOR_LEGAL]
+
+  @property
   def n_order_checked(self):
     return self.chk_pass[SB_ORDERED_ACK_IN_ORDER]
 
   # ==========================================================================
   # Keys.
   # ==========================================================================
+  # ==========================================================================
+  # Checker F -- Appendix B originator legality.
+  # ==========================================================================
+  def _check_originator(self, channel, opcode, item):
+    """May a node of THIS class originate this packet at all?
+
+    The question no other check in either port asks. Everything else here judges
+    a flit against the transaction it belongs to -- is it expected, does it
+    carry the right TxnID, is it addressed at the right node -- and all of that
+    can be satisfied by a flow no node in Appendix B is allowed to emit. That is
+    how ReadNoSnpSep-from-an-RN-I and RespSepData-from-an-SN-F survived: the
+    only party judging them was the VIP's own completer, which answered what it
+    was asked. See F-CORR-013.
+
+    Three outcomes, and the third is why the counters are separate:
+
+      * judged and legal, or judged and reported;
+      * unattributable -- the monitor could not name the emitting class, which
+        happens on a link whose peer role the VIP has no model for. Counting it
+        as a pass would claim evidence that was never gathered;
+      * not in the table -- an opcode Appendix B covers but this subset does
+        not. Same reasoning, different cause, so it is worth telling apart from
+        an unattributable flit when reading a report.
+    """
+    role = int(item.role)
+    if role == int(Role.MONITOR):
+      self.n_originator_skipped += 1
+      return
+
+    permitted = _ORIGINATOR_BY_CHANNEL_C[channel].get(int(opcode))
+    if permitted is None:
+      self.n_originator_skipped += 1
+      return
+
+    if role in permitted:
+      self.n_originator_checked += 1
+      self._pass(SB_ORIGINATOR_LEGAL)
+      return
+
+    # The two documented departures, both of them one node playing the Home's
+    # part because this link has no Home on it to play it: the RN-I originates
+    # the separated read's REQ leg, and the SN-F answers an ordered write with
+    # the Home-only DBIDRespOrd. See HOME_STANDIN_REQ_C / HOME_STANDIN_RSP_C.
+    if self.home_standin and (
+        (channel == "REQ" and role == int(Role.RNI)
+         and int(opcode) in HOME_STANDIN_REQ_C)
+        or (channel == "RSP" and role == int(Role.SNF)
+            and int(opcode) in HOME_STANDIN_RSP_C)):
+      self.n_originator_standin += 1
+      self.n_originator_checked += 1
+      self._pass(SB_ORIGINATOR_LEGAL)
+      return
+
+    self.n_originator_checked += 1
+    self._fail(SB_ORIGINATOR_LEGAL,
+      "Appendix B: a %s may not originate %s opcode 0x%x; the table permits "
+      "%s. Emitted src=0x%x tgt=0x%x txn=0x%x" % (
+        Role(role).name, channel, int(opcode),
+        ", ".join(sorted(Role(r).name for r in permitted)),
+        int(item.src_id), int(item.tgt_id), int(item.txn_id)))
+
   def _ctx_key(self, stream, requester_node, txn_id):
     return "%d_%x_%x" % (int(stream), int(requester_node), int(txn_id))
 
@@ -486,7 +606,13 @@ class vip_chi_scoreboard(uvm_component):
     if opc in (int(ReqOpcode.READ_NO_SNP), int(ReqOpcode.READ_NO_SNP_SEP)):
       ctx.kind = SB_READ
       ctx.need_read_data = True
-      if ctx.ordered:
+      # A separated read owes a ReadReceipt whether or not it is ordered.
+      # Section 2.3.1: "The Slave must send the ReadReceipt response to the Home
+      # only after receiving ReadNoSnpSep." That is the Slave's own owed
+      # response, not an ordering courtesy, and gating it on ctx.ordered is why
+      # a non-ordered separated read used to complete without one. See
+      # F-CORR-013.
+      if ctx.ordered or opc == int(ReqOpcode.READ_NO_SNP_SEP):
         ctx.need_receipt = True
     elif opc in _COMBINED_WRITE_CMO_C:
       # A write, plus the CMO half's own completion. The persistent forms owe a
@@ -605,7 +731,15 @@ class vip_chi_scoreboard(uvm_component):
   # Checker A/C - requester REQ.
   # ==========================================================================
   def _handle_req(self, stream, item):
-    if not self.enable or not self._is_outbound(item):
+    if not self.enable:
+      return
+
+    # Ahead of the outbound guard on purpose. Everything below this line is
+    # about the requester's own traffic; a REQ originated by a class that may
+    # not originate it is exactly the flit the guard would drop as "not ours".
+    self._check_originator("REQ", item.opcode, item)
+
+    if not self._is_outbound(item):
       return
 
     # Checker B: record the requester-issued REQ.
@@ -656,6 +790,40 @@ class vip_chi_scoreboard(uvm_component):
     self.open_ctx[key] = ctx
     self._ord_enroll(ctx)
 
+    # ReturnNID is recorded for every request that is allowed to carry one, not
+    # only for the separated read that first needed it. IHI 0050 E 2.8 routes a
+    # PCMO's Persist by the same field, so a scoreboard that only remembered it
+    # for reads had nothing to compare that Persist's TgtID against -- which is
+    # half of why F-CORR-012 went unnoticed.
+    if req_return_nid_applicable(int(item.opcode)):
+      ctx.return_nid = int(item.return_nid)
+
+    # Direct Write Transfer: the write's grant returns on ReturnNID/ReturnTxnID.
+    #
+    # The ctx is registered under the address the grant SHOULD arrive at, and
+    # stays registered under its own as well, so that a grant sent to either
+    # place is found. Which of the two indexes catches it is then the whole
+    # judgement -- and it is a judgement the lookup cannot fake, because a
+    # single index keyed on the correct address would report a misrouted grant
+    # as an orphan and CHI_SB_RSP_TGTID_CORRECT could never fail. That is the
+    # same trap _find_persist_rsp_ctx documents, reached from the other side.
+    # PGroupID is not a field: 13.10.8 gives it as an equation over GroupIDExt
+    # and LPID, and 13.10.7 sends it back in the bits Table 13-7 calls DBID.
+    # Recorded here so the responses have something to be compared against --
+    # without it the reflection is unobservable, which is the state F-INTOP-010
+    # found both ports in.
+    if req_pgroup_id_applicable(int(item.opcode)):
+      ctx.has_pgroup = True
+      ctx.pgroup_id = pgroup_id_from_req(item.group_id_ext, item.lp_id)
+
+    if req_dwt_grant_uses_return_path(self.cfg.issue, int(item.opcode),
+                                      int(item.dodwt)):
+      ctx.dwt_grant = True
+      ctx.return_nid = int(item.return_nid)
+      ctx.return_txn_id = int(item.return_txn_id)
+      self.dwt_ret_ctx[
+        self._ctx_key(stream, item.return_nid, item.return_txn_id)] = ctx
+
     # Separated read: the DataSepResp leg returns on ReturnNID/ReturnTxnID.
     if int(item.opcode) == int(ReqOpcode.READ_NO_SNP_SEP):
       ctx.sep_read = True
@@ -667,15 +835,58 @@ class vip_chi_scoreboard(uvm_component):
     # in the table so a later reuse of the TxnID is still caught.
     self._check_and_retire(ctx)
 
-  def _find_persist_rsp_ctx(self, stream, responder_node, requester_node):
-    """Standalone Persist has no applicable TxnID; match by routing fields."""
+  def _find_persist_rsp_ctx(self, stream, responder_node):
+    """Standalone Persist has no applicable TxnID; match by the responder alone.
+
+    Deliberately NOT by the target node, though that would narrow the match.
+    IHI 0050 E 2.8 routes the Persist to ReturnNID, so the target is the thing
+    CHI_SB_RSP_TGTID_CORRECT judges -- and a pairing that consumed it would make
+    that rule unable to fail: a Persist sent to the wrong node would simply not
+    match, and would be reported as an orphan rather than as a misrouted
+    response. A check that cannot fail is worse than no check, so the field the
+    rule reads is left out of the key.
+
+    The cost is that two persistent contexts open at once on one stream from the
+    same responder are ambiguous, and the first is taken. No test drives that
+    today; a Persist carries no TxnID, so there is nothing sharper to key on.
+    """
     for ctx in self.open_ctx.values():
       if (ctx.stream == stream and not ctx.retired and ctx.need_persist
           and not ctx.persist_seen
-          and ctx.responder_node == int(responder_node)
-          and ctx.requester_node == int(requester_node)):
+          and ctx.responder_node == int(responder_node)):
         return ctx
     return None
+
+  def _check_pgroup(self, ctx, item):
+    """A Persist / CompPersist must carry back the request's PGroupID.
+
+    IHI 0050 E 13.10.7 makes the field applicable in exactly these two
+    responses, and section 2.5 says what it is for: "The PGroupID value returned
+    in the Persist response can be used by a Requester to separately track
+    completions of Persist responses from each group." A completer that returns
+    the wrong group does not break the transaction -- it breaks the requester's
+    ability to tell two groups apart, which is a defect no completion-shape
+    check can see.
+
+    Silent where the request carried no group, rather than comparing against
+    zero: a Persist answering something that is not a persistent CMO has no
+    group to reflect, and 13.10.7's must-be-zero obligation there belongs to
+    whichever field owns those bits for that response.
+    """
+    if not ctx.has_pgroup:
+      return
+    got = int(item.dbid) & 0xFF
+    if got != int(ctx.pgroup_id):
+      self._fail(SB_PERSIST_PGROUP_MATCHES,
+        "Persist-family response returned PGroupID 0x%02x; the request asked "
+        "for 0x%02x (13.10.8: {GroupIDExt, LPID[4:0]})" % (got, int(ctx.pgroup_id)))
+    else:
+      self._pass(SB_PERSIST_PGROUP_MATCHES)
+
+  @staticmethod
+  def _persist_target_node(ctx) -> int:
+    """The node a PCMO's Persist must be addressed to: 2.8 names ReturnNID."""
+    return int(ctx.return_nid)
 
   # ==========================================================================
   # Checker A - requester RSP.
@@ -683,6 +894,8 @@ class vip_chi_scoreboard(uvm_component):
   def _handle_rsp(self, stream, item):
     if not self.enable:
       return
+
+    self._check_originator("RSP", item.rsp_opcode, item)
 
     opc = int(item.rsp_opcode)
     opc_modelled = True
@@ -708,20 +921,56 @@ class vip_chi_scoreboard(uvm_component):
     # Inbound completion. Standalone Persist is not TxnID-tied; all other RSPs
     # use the primary key (tgt_id == requester node, TxnID == request TxnID).
     if opc == int(RspOpcode.PERSIST):
-      ctx = self._find_persist_rsp_ctx(stream, item.src_id, item.tgt_id)
+      ctx = self._find_persist_rsp_ctx(stream, item.src_id)
       if ctx is None:
         self._fail(SB_RSP_HAS_OPEN_TXN,
           "Orphan Persist RSP (no open persistent ctx): stream=%d src=0x%x tgt=0x%x txn=0x%x" % (
             stream, int(item.src_id), int(item.tgt_id), int(item.txn_id)))
         return
+      # IHI 0050 E 2.8: "The ReturnNID value in the request must be used as the
+      # target in the following responses by the Slave: ... in the Persist, if
+      # the CMO in the request is a PCMO." Nothing in either port checked the
+      # TgtID of any response before this, on any channel, which is why a
+      # completer addressing the Persist at SrcID went unnoticed -- in the
+      # example topology the two are the same node. See F-CORR-012.
+      want_tgt = self._persist_target_node(ctx)
+      if int(item.tgt_id) != want_tgt:
+        self._fail(SB_RSP_TGTID_CORRECT,
+          "Persist addressed to 0x%x; section 2.8 routes a PCMO's Persist to the "
+          "request's ReturnNID, which was 0x%x (requester SrcID 0x%x)" % (
+            int(item.tgt_id), want_tgt, int(ctx.requester_node)))
+      else:
+        self._pass(SB_RSP_TGTID_CORRECT)
     else:
       key = self._ctx_key(stream, item.tgt_id, item.txn_id)
-      if key not in self.open_ctx:
+      ctx = self.open_ctx.get(key)
+      # A write grant, and only a write grant, is also looked up on the Direct
+      # Write Transfer return address. Restricting it to the grant opcodes is
+      # deliberate: Comp is owed at SrcID/TxnID whatever DoDWT says, so a Comp
+      # arriving on the return address is a genuine orphan and must keep being
+      # reported as one.
+      via_dwt = False
+      if ctx is None and rsp_opcode_is_write_grant(opc):
+        ctx = self.dwt_ret_ctx.get(key)
+        via_dwt = ctx is not None
+      if ctx is None:
         self._fail(SB_RSP_HAS_OPEN_TXN,
           "Orphan RSP (no open ctx): stream=%d tgt=0x%x txn=0x%x rsp_opcode=0x%x" % (
             stream, int(item.tgt_id), int(item.txn_id), opc))
         return
-      ctx = self.open_ctx[key]
+      # IHI 0050 E Table 2-8: with DoDWT set, the DBIDResp is targeted at the
+      # request's ReturnNID, and section 2.5 puts ReturnTxnID on it. Both
+      # registrations exist, so WHICH one caught this grant is the answer --
+      # arriving under the requester's own address is precisely the defect.
+      if ctx.dwt_grant and rsp_opcode_is_write_grant(opc):
+        if via_dwt:
+          self._pass(SB_RSP_TGTID_CORRECT)
+        else:
+          self._fail(SB_RSP_TGTID_CORRECT,
+            "Write grant (opcode 0x%x) addressed to 0x%x/txn 0x%x; DoDWT was set, "
+            "so Table 2-8 routes it to ReturnNID 0x%x under ReturnTxnID 0x%x" % (
+              opc, int(item.tgt_id), int(item.txn_id),
+              int(ctx.return_nid), int(ctx.return_txn_id)))
     self._pass(SB_RSP_HAS_OPEN_TXN)
 
     if opc == int(RspOpcode.COMP):
@@ -740,18 +989,56 @@ class vip_chi_scoreboard(uvm_component):
     elif opc == int(RspOpcode.RESP_SEP_DATA):
       # Separated read's response leg; retirement is on its DataSepResp.
       ctx.comp_err = int(item.rsp_resp_err)
+    elif opc == int(RspOpcode.TAG_MATCH):
+      ctx.tag_match_seen = True
+      # IHI 0050 E section 2.3.1 makes TagMatch owed exactly when the WriteData
+      # asked for the check. A TagMatch for a write that asked for none is not
+      # a harmless extra: the requester has no Match outstanding to retire with
+      # it, and a Requester that tracked Match completions by counting would go
+      # permanently out of step.
+      #
+      # Not ordered against anything here, deliberately. The section places the
+      # response "after completing the required Tag Match operation" and
+      # explicitly permits a Slave that does NOT perform the check to answer
+      # before the write data arrives -- so both orders are conformant and a
+      # rule that judged the order would false-fail one of them.
+      if ctx.tag_match_required:
+        self._pass(SB_TAG_MATCH_OWED)
+      else:
+        self._fail(SB_TAG_MATCH_OWED,
+          "TagMatch returned for a write whose data carried no TagOp = Match "
+          "(stream=%d txn=0x%x): section 2.3.1 owes the response only when the "
+          "WriteData asked for the check" % (stream, int(item.txn_id)))
+
     elif opc == int(RspOpcode.COMP_CMO):
       ctx.comp_cmo_seen = True
     elif opc == int(RspOpcode.PERSIST):
       ctx.persist_seen = True
+      self._check_pgroup(ctx, item)
     elif opc == int(RspOpcode.COMP_PERSIST):
-      # Comp AND Persist in one flit, so it ticks both milestones. Ticking only
-      # comp_seen would leave a separated persist answered by the legal combined
-      # response permanently owing a Persist that is never coming, and it would
-      # be reported incomplete for doing nothing wrong.
-      ctx.comp_seen = True
+      # Two milestones in one flit -- but WHICH two depends on the transaction,
+      # and IHI 0050 E names them separately.
+      #
+      # On a standalone CleanSharedPersistSep it is Comp and Persist: the Point
+      # of Coherency and the Point of Persistence, combined. Ticking only
+      # comp_seen would leave such a request permanently owing a Persist that is
+      # never coming, and it would be reported incomplete for doing nothing
+      # wrong.
+      #
+      # On a combined Write + PCMO it is CompCMO and Persist. Section 2.8: the
+      # SN "is permitted to combine CompCMO with Persist as a CompPersist
+      # response if the two are sent to Home". The write's own Comp is a third,
+      # separate response and is NOT folded in -- ticking comp_seen here would
+      # retire a write whose completion had not arrived, and leave comp_cmo_seen
+      # false so the request was reported incomplete anyway. Found while giving
+      # F-INTOP-008's requester something legal to accept.
+      if int(ctx.opcode) in _COMBINED_WRITE_CMO_C:
+        ctx.comp_cmo_seen = True
+      else:
+        ctx.comp_seen = True
+        ctx.comp_err = int(item.rsp_resp_err)
       ctx.persist_seen = True
-      ctx.comp_err = int(item.rsp_resp_err)
+      self._check_pgroup(ctx, item)
     elif opc == int(RspOpcode.RETRY_ACK):
       ctx.retry_seen = True
       # Not an acknowledgement -- the request was refused, so it leaves its
@@ -787,6 +1074,8 @@ class vip_chi_scoreboard(uvm_component):
     if not self.enable:
       return
 
+    self._check_originator("DAT", item.dat_opcode, item)
+
     if self._is_outbound(item):
       # Write / atomic-operand data: DBID and TxnID both carry the granted DBID,
       # so bind through the DBID side-index (try dbid then txnid).
@@ -797,6 +1086,12 @@ class vip_chi_scoreboard(uvm_component):
         ctx = self.ctx_by_dbid[key]
         ctx.write_data_sent = True
         ctx.wr_dat_item = item
+        # The Tag Match obligation is carried by the DATA, not the request.
+        # IHI 0050 E section 2.3.1: "If the WriteData message indicates that a
+        # Tag Match is required, then the Slave sends a TagMatch response."
+        # Table 13-34 gives TagOp = 0b11 as Match on a write.
+        if int(getattr(item, "dat_tagop", 0)) == TAGOP_MATCH:
+          ctx.tag_match_required = True
         self._maybe_commit_write(ctx)
         self._capture_atomic_old(ctx)
         self._resolve_atomic(ctx, None)
@@ -1148,10 +1443,15 @@ class vip_chi_scoreboard(uvm_component):
     dkey = self._dbid_key(ctx.stream, ctx.dbid)
     if self.ctx_by_dbid.get(dkey) is ctx:
       del self.ctx_by_dbid[dkey]
-    if ctx.sep_read:
+    # Both return-address indexes are keyed the same way, and a ctx is only ever
+    # in one of them, so one key serves both -- but the sep_read guard does not,
+    # because a DWT write is not a separated read and would have leaked its entry.
+    if ctx.sep_read or ctx.dwt_grant:
       skey = self._ctx_key(ctx.stream, ctx.return_nid, ctx.return_txn_id)
       if self.sep_ret_ctx.get(skey) is ctx:
         del self.sep_ret_ctx[skey]
+      if self.dwt_ret_ctx.get(skey) is ctx:
+        del self.dwt_ret_ctx[skey]
 
   # ==========================================================================
   # Checker B - completer-side REQ recording.
@@ -1216,6 +1516,7 @@ class vip_chi_scoreboard(uvm_component):
     self.open_ctx.clear()
     self.ctx_by_dbid.clear()
     self.sep_ret_ctx.clear()
+    self.dwt_ret_ctx.clear()
     self.pred_mem.clear()
     self.written.clear()
     self.int_req_cnt.clear()
@@ -1281,6 +1582,16 @@ class vip_chi_scoreboard(uvm_component):
         self.n_data_mismatch, self.n_relay_mismatch, self.n_route_mismatch,
         self.n_reads_skipped))
 
+    # Appendix B on its own line too. checked is the denominator: "0 illegal"
+    # means nothing without it, and skipped names the packets the table had no
+    # row for rather than folding them into either verdict.
+    self.logger.info(
+      "scoreboard originator summary: originator_checked=%d "
+      "originator_illegal=%d originator_home_standin=%d "
+      "(originator_skipped_unmodelled=%d)" % (
+        self.n_originator_checked, self.n_originator_illegal,
+        self.n_originator_standin, self.n_originator_skipped))
+
     # The MTE tag half on its OWN line, for the same reason the ordered-stream
     # summary below is: appended to the line above it falls past the report
     # server's wrap column, and a wrapped field name is a field nobody can sweep
@@ -1330,15 +1641,15 @@ class vip_chi_scoreboard(uvm_component):
     new = not os.path.exists(path)
     with open(path, "a", encoding="utf-8") as fh:
       if new:
-        fh.write("run,bind,check,enabled,severity,passes,fails\n")
+        fh.write("run,bind,check,enabled,severity,passes,fails,rev\n")
       for rule in CHECK_IDS_SB:
-        fh.write("%s,%s,%s,%d,%s,%d,%d\n" % (
+        fh.write("%s,%s,%s,%d,%s,%d,%d,%s\n" % (
           run_name, self.get_name(), rule, int(self.rule_enabled(rule)),
           self.chk_severity[rule].name, self.chk_pass[rule],
-          self.chk_fail[rule]))
+          self.chk_fail[rule], source_revision()))
 
   # Total hard-error count (excludes the advisory reads_skipped / wrong_opcode).
   def total_errors(self):
     return (self.n_incomplete + self.n_orphan + self.n_reuse
             + self.n_data_mismatch + self.n_relay_mismatch + self.n_route_mismatch
-            + self.n_order_violation)
+            + self.n_order_violation + self.n_originator_illegal)

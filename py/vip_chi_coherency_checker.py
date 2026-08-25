@@ -198,6 +198,9 @@ class vip_chi_coherency_checker(uvm_component):
     # is what bounds which states the response may legally report (see
     # snp_resp_state_gains_permission).
     self.pending_snp_from = [int(Resp.I)] * N_NODES
+    # The snoop's DoNotGoToSD bit, kept for the same reason the from-state is:
+    # the rule it feeds is about the RESPONSE, and by then the flit is gone.
+    self.pending_snp_no_sd = [False] * N_NODES
     # Downstream SN-F read correlation (downstream TxnID -> line).
     self.dn_rd_line = {}
     # Exclusive (LL/SC) monitor shadow (per node: line -> bool / clear-cause).
@@ -263,6 +266,7 @@ class vip_chi_coherency_checker(uvm_component):
     # set it up -- which is the shape of the bug this check exists to catch.
     self.n_snp_no_data_on_dirty = 0
     self.n_bad_snp_resp_state = 0
+    self.n_bad_snp_sd_under_no_sd = 0
     # How many snoop responses check_snp_resp_state judged. The rule only runs
     # where a response is correlated to its snoop, so this is the honest measure
     # of whether it saw anything -- and it is the first count of DATA-LESS
@@ -767,6 +771,30 @@ class vip_chi_coherency_checker(uvm_component):
         f"the grant that follows would create a second owner")
 
     # ------------------------------------------------------------------------
+    # DoNotGoToSD, judged from the RESPONSE rather than from the flit.
+    #
+    # "Snoopee receiving a Snoop request with the DoNotGoToSD bit set, except
+    # when the Snoop is SnpOnceFwd, must not transition to SD." The SNP-channel
+    # rule CHI_SNP_DO_NOT_GO_TO_SD_LEGAL judges whether the bit was set where the
+    # specification requires it; this judges whether the snoopee OBEYED it, which
+    # is a different claim and the one that matters to a third-party DUT.
+    #
+    # Neither D5 nor D6 catches it. D5 bounds the reported state by the opcode,
+    # and SD is not Unique, so a shared snoop answered SD passes it. D6 bounds
+    # the state by what the snoopee held, and an SD holder answering SD passes
+    # that too. The bit is a third bound and it needed its own arm.
+    # See F-INTOP-002 and F-INTOP-007.
+    # ------------------------------------------------------------------------
+    if (state == int(Resp.SD_PD) and self.pending_snp_no_sd[node]
+        and op != int(SnpOpcode.ONCE_FWD)):
+      self.n_bad_snp_sd_under_no_sd += 1
+      legal = False
+      self.logger.error(
+        f"COHERENCY VIOLATION: node {node} answered snoop opcode 0x{op:x} on "
+        f"line 0x{line:x} reporting SD, but that snoop carried DoNotGoToSD = 1 "
+        f"and is not SnpOnceFwd; the snoopee must not transition to SD")
+
+    # ------------------------------------------------------------------------
     # Catalogue rule D6: the reported state must not hold a permission the
     # snoopee did not have when the snoop arrived.
     #
@@ -947,6 +975,7 @@ class vip_chi_coherency_checker(uvm_component):
     # The from-state, kept because the shadow above no longer holds it and D6
     # needs it to bound what the response may legally report.
     self.pending_snp_from[node] = _I(cur)
+    self.pending_snp_no_sd[node] = bool(getattr(item, "do_not_go_to_sd", False))
     self.n_snoops += 1
 
   def obs_rsp(self, node, item):
@@ -1180,6 +1209,7 @@ class vip_chi_coherency_checker(uvm_component):
     return (self.n_multi_owner + self.n_coherent_data_mismatch +
             self.n_excl_violation + self.n_bad_make_unique +
             self.n_bad_snp_resp_form + self.n_bad_snp_resp_state +
+            self.n_bad_snp_sd_under_no_sd +
             self.n_bad_dataless_resp + self.n_snp_dirty_lost +
             self.n_snp_req_mismatch + self.n_eca_window_snoops +
             self.n_line_hazard)
@@ -1206,6 +1236,9 @@ class vip_chi_coherency_checker(uvm_component):
       f"snp_resp_judged={self.n_snp_resp_judged} "
       f"bad_snp_resp_state={self.n_bad_snp_resp_state} "
       f"snp_dirty_lost={self.n_snp_dirty_lost}")
+    self.logger.info(
+      f"COHERENCY DO NOT GO TO SD SUMMARY: "
+      f"bad_snp_sd_under_no_sd={self.n_bad_snp_sd_under_no_sd}")
     # Its own line for the same reason as the two above: the report server wraps
     # long lines, and a wrapped field=value pair cannot be swept for with grep.
     self.logger.info(

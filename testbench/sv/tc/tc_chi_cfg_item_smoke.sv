@@ -56,9 +56,9 @@ class tc_chi_cfg_item_smoke extends uvm_test;
         tc_name))
     end
 
-    if (cfg_item.atomic_strict_size != 1'b0) begin
+    if (cfg_item.atomic_oversized_operands != 1'b0) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] vip_chi_cfg_item default atomic_strict_size mismatch",
+        "FATAL [%s] vip_chi_cfg_item default atomic_oversized_operands mismatch",
         tc_name))
     end
 
@@ -66,7 +66,7 @@ class tc_chi_cfg_item_smoke extends uvm_test;
     cfg_item.data_type          = VIP_CHI_DATA_COUNTER_E;
     cfg_item.min_size           = 2;
     cfg_item.max_size           = 4;
-    cfg_item.atomic_strict_size = 1'b1;
+    cfg_item.atomic_oversized_operands = 1'b1;
     cfg_item.get_response       = 1'b1;
     cfg_item.reset();
 
@@ -100,9 +100,9 @@ class tc_chi_cfg_item_smoke extends uvm_test;
         tc_name))
     end
 
-    if (cfg_item.atomic_strict_size != 1'b0) begin
+    if (cfg_item.atomic_oversized_operands != 1'b0) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] vip_chi_cfg_item reset() did not restore atomic_strict_size",
+        "FATAL [%s] vip_chi_cfg_item reset() did not restore atomic_oversized_operands",
         tc_name))
     end
 

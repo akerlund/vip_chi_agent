@@ -131,6 +131,12 @@ class vip_chi_driver_hnf(uvm_component):
     # One-shot latch per RN port for cfg.flitpend_without_valid: the control
     # fires once per link so the count a test asserts on is unambiguous.
     self.rn_flitpend_negctl_done = [False] * n_rn
+    # One-shot latch for cfg.flit_without_flitpend, shared across both link
+    # directions: the control drops the announcement in front of exactly ONE
+    # flit anywhere on this driver, so the rest of the run is legal traffic the
+    # same rule must pass. Not per port -- one violation is what the rule's
+    # count is asserted against. See announce_rn_flit.
+    self.flit_without_pend_done = False
 
     self.sn_rsp_lcrdv_pending = [0] * n_sn
     self.sn_dat_lcrdv_pending = [0] * n_sn
@@ -288,6 +294,22 @@ class vip_chi_driver_hnf(uvm_component):
     while True:
       while any(b.in_reset() for b in self._reset_link_buses()):
         await bus.rising()
+      # Transmit arbitration here is by OWNERSHIP, not by a lock, and that is a
+      # decision rather than an omission.
+      #
+      # F-CORR-018 found the SN-F dropping a response it had already decided to send:
+      # two of its threads drove the same channel in the same cycle and the later
+      # assignment silently replaced the earlier flit. The RN-I and SN-F answer that
+      # with a one-deep semaphore. This driver answers it by structure -- EVERY flit
+      # this home sends leaves through the single serial response_engine below, and the
+      # level signals have exactly one writing loop each (txsactive and the L-credit
+      # valids from rn_credit_loop / sn_credit_loop, the activation handshake from
+      # rn_activate / sn_activate).
+      #
+      # So the invariant to preserve when adding a thread here: no channel may acquire
+      # a second writer. A new coroutine that sends a flit outside response_engine
+      # reintroduces F-CORR-018 in this driver, and unlike the RN-I there is no lock to
+      # catch it -- audited 2026-08-24, and the audit is only as good as this rule.
       self._tasks = [cocotb.start_soon(self.response_engine())]
       for p in range(len(self.rn_buses)):
         self._tasks.append(cocotb.start_soon(self.rn_credit_loop(p)))
@@ -727,12 +749,40 @@ class vip_chi_driver_hnf(uvm_component):
     rn = self.rn_buses[p]
     await rn.rising()
     self.drive_rn_idle_sideband(p)
+    # Negative control (cfg.flit_without_flitpend): skip the announcement once,
+    # so exactly one flit goes out with FLITPEND low in the cycle before it and
+    # CHI_*_VALID_REQUIRES_PEND has a real violation to catch on THIS driver's
+    # flits. Returning without driving leaves FLITPEND at the 0 the previous
+    # send cleared it to.
+    #
+    # The homes announced INLINE before F-CHK-014, so the control reached the
+    # requesters and nothing else -- and check_cfg_parity passed throughout,
+    # because the config SURFACE matched and which drivers READ the knob is
+    # behaviour no gate compared. scripts/check_flitpend_negctl.py compares it
+    # now.
+    if self.cfg.flit_without_flitpend and not self.flit_without_pend_done:
+      self.flit_without_pend_done = True
+      return
     rn.drive(**{f"tx{channel}flitpend": 1})
 
   async def announce_sn_flit(self, s, channel):
     """The downstream twin of announce_rn_flit."""
     sn = self.sn_buses[s]
     await sn.rising()
+    # Negative control (cfg.flit_without_flitpend): skip the announcement once,
+    # so exactly one flit goes out with FLITPEND low in the cycle before it and
+    # CHI_*_VALID_REQUIRES_PEND has a real violation to catch on THIS driver's
+    # flits. Returning without driving leaves FLITPEND at the 0 the previous
+    # send cleared it to.
+    #
+    # The homes announced INLINE before F-CHK-014, so the control reached the
+    # requesters and nothing else -- and check_cfg_parity passed throughout,
+    # because the config SURFACE matched and which drivers READ the knob is
+    # behaviour no gate compared. scripts/check_flitpend_negctl.py compares it
+    # now.
+    if self.cfg.flit_without_flitpend and not self.flit_without_pend_done:
+      self.flit_without_pend_done = True
+      return
     sn.drive(**{f"tx{channel}flitpend": 1})
 
   async def wait_rn_rsp_send_credit(self, p):

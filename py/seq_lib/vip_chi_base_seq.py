@@ -32,9 +32,11 @@ from cocotb.triggers import Event, Timer
 from pyuvm import uvm_sequence
 
 from vip_chi_types_pkg import (
+  req_opcode_is_combined_write_cmo, req_opcode_combined_cmo_is_persist,
   ChiCfg, VIP_CHI_DEFAULT_CFG, Dir, Role, DataType, ReqOpcode,
   exp_comp_ack_required, SnpAttr, SnpAttrReq, snp_attr_requirement,
   req_mem_attr_default, req_size_fixed_64b, REQ_SIZE_64B, ReqOrder,
+  TAGOP_MATCH,
 )
 from vip_chi_item import vip_chi_item
 from vip_chi_cfg_item import VipChiCfgItem
@@ -63,6 +65,13 @@ class vip_chi_base_seq(uvm_sequence):
   # ==========================================================================
   def reset(self):
     saved_direction = self.item_cfg.direction
+    # Preserved for the same reason direction is: the wide-operand stress
+    # profile is a property of the SEQUENCE, not of one request, so it survives
+    # reset() the way direction does. Without this a reset() mid-testcase would
+    # silently restore Table 2-17, and the next set_size() above the ordinary
+    # limit would fail randomization rather than drive the operand the testcase
+    # exists to drive.
+    saved_oversized = self.item_cfg.atomic_oversized_operands
     self.cfg.reset()
     self.item_cfg.reset()
     self.addr_iter.reset()
@@ -70,6 +79,7 @@ class vip_chi_base_seq(uvm_sequence):
     self.counter_iter.reset()
 
     self.item_cfg.direction = saved_direction
+    self.item_cfg.atomic_oversized_operands = saved_oversized
     self.ns_val = 1
     self.order_val = 0
     # MemAttr and SnpAttr are opcode-derived for the same reason ExpCompAck is,
@@ -108,6 +118,7 @@ class vip_chi_base_seq(uvm_sequence):
     self.tgt_id_val = 0
     self.lp_id_val = 0
     self.return_nid_val = 0
+    self.return_nid_forced = 0
     self.return_txn_id_val = 0
     self.qos_val = 0
     self.tracetag_val = 0
@@ -118,6 +129,9 @@ class vip_chi_base_seq(uvm_sequence):
     self.group_id_ext_val = 0
     self.tagop_val = 0
     self.dat_tagop_val = 0
+    # Whether the test pinned the WriteData TagOp itself. Unpinned, it is
+    # DERIVED from the request's TagOp -- see build_request_item.
+    self.dat_tagop_forced = 0
     self.tag_val = []
     self.tu_val = []
     self.sep_read_enabled = False
@@ -161,7 +175,7 @@ class vip_chi_base_seq(uvm_sequence):
     self.item_cfg.max_size = max_size
 
   def set_enforce_addr_alignment(self, value): self.item_cfg.enforce_addr_alignment = bool(value)
-  def set_atomic_strict_size(self, enabled): self.item_cfg.atomic_strict_size = bool(enabled)
+  def set_atomic_oversized_operands(self, enabled): self.item_cfg.atomic_oversized_operands = bool(enabled)
   def set_combined_write_cmo_enable(self, enabled):
     self.item_cfg.combined_write_cmo_enable = bool(enabled)
 
@@ -188,7 +202,9 @@ class vip_chi_base_seq(uvm_sequence):
   def set_src_id(self, src_id): self.src_id_val = int(src_id)
   def set_tgt_id(self, tgt_id): self.tgt_id_val = int(tgt_id)
   def set_lp_id(self, lp_id): self.lp_id_val = int(lp_id)
-  def set_return_nid(self, return_nid): self.return_nid_val = int(return_nid)
+  def set_return_nid(self, return_nid):
+    self.return_nid_val = int(return_nid)
+    self.return_nid_forced = 1
   def set_return_txn_id(self, return_txn_id): self.return_txn_id_val = int(return_txn_id)
   def set_qos(self, qos): self.qos_val = int(qos)
   def set_tracetag(self, tracetag): self.tracetag_val = int(tracetag)
@@ -200,7 +216,9 @@ class vip_chi_base_seq(uvm_sequence):
   def set_endian(self, endian): self.endian_val = int(endian)
   def set_group_id_ext(self, group_id_ext): self.group_id_ext_val = int(group_id_ext)
   def set_tagop(self, tagop): self.tagop_val = int(tagop)
-  def set_dat_tagop(self, dat_tagop): self.dat_tagop_val = int(dat_tagop)
+  def set_dat_tagop(self, dat_tagop):
+    self.dat_tagop_val = int(dat_tagop)
+    self.dat_tagop_forced = 1
   def set_tag(self, tag): self.tag_val = [int(t) for t in tag]
   def set_tu(self, tu): self.tu_val = [int(t) for t in tu]
   def set_ns(self, ns): self.ns_val = int(ns)
@@ -288,7 +306,7 @@ class vip_chi_base_seq(uvm_sequence):
     req.set_size_range(self.item_cfg.min_size, self.item_cfg.max_size)
     req.set_data_type(self.item_cfg.data_type)
     req.set_enforce_addr_alignment(self.item_cfg.enforce_addr_alignment)
-    req.set_atomic_strict_size(self.item_cfg.atomic_strict_size)
+    req.set_atomic_oversized_operands(self.item_cfg.atomic_oversized_operands)
     req.set_combined_write_cmo_enable(self.item_cfg.combined_write_cmo_enable)
     req.set_write_unique_zero_enable(self.item_cfg.write_unique_zero_enable)
     req.set_write_evict_or_evict_enable(self.item_cfg.write_evict_or_evict_enable)
@@ -326,6 +344,36 @@ class vip_chi_base_seq(uvm_sequence):
     if not self.size_forced and req_size_fixed_64b(opcode_val):
       req.set_size_range(REQ_SIZE_64B, REQ_SIZE_64B)
 
+    # ReturnNID, opcode-derived for the requests whose RESPONSE is routed by it.
+    #
+    # IHI 0050 E 2.8 sends a PCMO's Persist to ReturnNID rather than to SrcID, so
+    # a combined Write + persistent CMO that leaves the field at zero asks the
+    # completer to send the Persist to node 0. The requester wants it back, so
+    # the default is its own node -- the same shape ReadNoSnpSep already has,
+    # where the item pins return_nid == src_id.
+    #
+    # An explicit set_return_nid() still wins, which is what makes the routing
+    # testable at all: a test can point the Persist at a node that is NOT the
+    # requester and check where it lands. See F-CORR-012.
+    # A Match-tagged write is owed a TagMatch, and section 4.7's TgtID table
+    # routes that response to ReturnNID when a Slave sends it. Section 2.5 gives
+    # the expected value: "In WriteNoSnp with TagOp Match [...] the ReturnNID
+    # value is expected to be the original Requester Node ID but is permitted to
+    # be the Home Node ID." Left at the default of zero, the completer's answer
+    # goes to node 0 and never reaches the requester that asked for the check.
+    #
+    # Known at build time because the tag operation is a SEQUENCE setting
+    # (set_dat_tagop), not something decided per beat.
+    tag_match_write = (int(self.dat_tagop_val) == TAGOP_MATCH
+                       and direction_val == int(Dir.WRITE))
+
+    return_nid_eff = (self.return_nid_val if self.return_nid_forced
+                      else (self.src_id_val
+                            if tag_match_write
+                            or (req_opcode_is_combined_write_cmo(opcode_val)
+                                and req_opcode_combined_cmo_is_persist(opcode_val))
+                            else self.return_nid_val))
+
     # Order, opcode-derived for the single opcode that mandates a value.
     order_eff = (int(ReqOrder.REQ_ACCEPTED)
                  if (not self.order_forced
@@ -339,7 +387,7 @@ class vip_chi_base_seq(uvm_sequence):
       x.src_id == self.src_id_val
       x.tgt_id == self.tgt_id_val
       x.lp_id == self.lp_id_val
-      x.return_nid == self.return_nid_val
+      x.return_nid == return_nid_eff
       x.return_txn_id == self.return_txn_id_val
       x.qos == self.qos_val
       x.tracetag == self.tracetag_val
@@ -362,10 +410,29 @@ class vip_chi_base_seq(uvm_sequence):
 
     # CHI-E DAT tag metadata is stamped onto the post-randomize per-beat arrays
     # (mirrors the SV set_dat_tagop / set_tag / set_tu after randomize()).
-    req.dat_tagop = self.dat_tagop_val
+    #
+    # Unpinned, the WriteData TagOp FOLLOWS the request's. Section 12.5: "The
+    # TagOp value in the WriteData message is typically the same as the value in
+    # the Request message, except when either the write data is snooped out or
+    # the write is canceled." 12.5.1 then gives the permitted WriteData values
+    # per request value, and Invalid is on every one of those lists -- so the
+    # old unconditional zero was never illegal, it just said "this write was
+    # cancelled" on every write that asked for a tag operation, and the
+    # completer had nothing to do. Nothing related the two fields at all before
+    # this. See F-CORR-009.
+    #
+    # A test that pins it keeps its pin: 12.5.1's Invalid case is a real
+    # behaviour a negative control needs to be able to produce.
+    req.apply_dat_tagop(self.dat_tagop_val if self.dat_tagop_forced
+                        else self.tagop_val)
+
     for beat in range(len(req.tag)):
       if beat < len(self.tag_val):
         req.tag[beat] = self.tag_val[beat]
+
+    # TU follows the WriteData TagOp per 12.5.2, and apply_dat_tagop above is
+    # where that happens -- the item owns it because the item owns the widths.
+    # A test that pinned TU keeps its pin.
     for beat in range(len(req.tu)):
       if beat < len(self.tu_val):
         req.tu[beat] = self.tu_val[beat]

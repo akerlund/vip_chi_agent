@@ -257,6 +257,7 @@ CHECK_IDS = (
   "CHI_LCRD_QUIESCENT_IN_STOP",
   "CHI_LCRD_OVERFLOW",
   "CHI_LCRD_UNDERFLOW",
+  "CHI_LCRD_USED_IN_GRANT_CYCLE",
   "CHI_TXSACTIVE_COVERS_OUTSTANDING",
   "CHI_TXSACTIVE_DEASSERT_BOUNDED",
   # Transaction layer.
@@ -315,7 +316,7 @@ CHECK_IDS = (
   # unreachable.
   "CHI_EXPCOMPACK_REQUIRED_BUT_ZERO",
   # Atomic operand Size against IHI 0050 E Table 2-17 / D Table 2-17. The VIP
-  # has had an opinion about this since the first cut (con_atomic_strict_size)
+  # has had an opinion about this since the first cut (con_atomic_table_2_17_size)
   # and no rule reading it, so the constraint was unverified in both ports.
   # Stands down on a link whose testcase drives the recorded wide-operand
   # stress profile; see atomic_size_stress_allowed.
@@ -416,6 +417,9 @@ CHECK_IDS_SB = (
   # opened, a DAT for one whose return leg was never registered.
   "CHI_SB_TXN_COMPLETES",
   "CHI_SB_RSP_HAS_OPEN_TXN",
+  "CHI_SB_RSP_TGTID_CORRECT",
+  "CHI_SB_PERSIST_PGROUP_MATCHES",
+  "CHI_SB_TAG_MATCH_OWED",
   "CHI_SB_DAT_HAS_OPEN_TXN",
   "CHI_SB_TXNID_NOT_REUSED",
   "CHI_SB_COMPLETION_OPCODE_MODELLED",
@@ -432,6 +436,8 @@ CHECK_IDS_SB = (
   "CHI_SB_TAGOP_STABLE_ACROSS_BEATS",
   # Checker E -- ordered-stream acknowledgement order.
   "CHI_SB_ORDERED_ACK_IN_ORDER",
+  # Checker F -- Appendix B originator legality.
+  "CHI_SB_ORIGINATOR_LEGAL",
 )
 
 
@@ -540,6 +546,23 @@ class RspOpcode(IntEnum):
   # SEPARATE response, and a completer that answered a combined request with the
   # write completion alone would leave the CMO permanently outstanding.
   COMP_CMO = 0x14
+
+  # The Completer's answer to a write whose tags had to be CHECKED.
+  #
+  # IHI 0050 E section 12: TagOp = 0b11 on a write means Match -- "the Physical
+  # Tags in the write must be checked against the Allocation Tag values obtained
+  # from memory" -- and section 2.3.1 makes the response an obligation: "If the
+  # WriteData message indicates that a Tag Match is required, then the Slave
+  # sends a TagMatch response after completing the required Tag Match
+  # operation."
+  #
+  # Reachable from a sequence for as long as this VIP has had a TagOp field:
+  # TagOp is a bare 2-bit value with no enum and no constraint, so any test
+  # could ask for Match and get silence back. Modelling it needs no new flit
+  # field -- Table 13-7 shares the response's DBID bits with TagGroupID, exactly
+  # as it does with PGroupID. See F-COV-001.
+  TAG_MATCH = 0x0A
+
   SNP_RESP = 0x01
   SNP_RESP_FWDED = 0x09
 
@@ -581,16 +604,230 @@ class SnpOpcode(IntEnum):
 
 
 # Fixed spec-derived field widths (issue-independent).
+# ============================================================================
+# Appendix B -- which node class may ORIGINATE a packet.
+# ============================================================================
+# Appendix B is a table of From->To pairs, one block per packet type, and until
+# now neither port modelled it. The absence hid a whole class of defect: a flow
+# can be built out of legal opcodes carrying legal fields in a legal order and
+# still be illegal, because the node emitting it is not one the specification
+# lets emit it. Nothing else in the VIP asks that question -- the completer is
+# the only party judging the flow, and it answers whatever it is asked.
+#
+# The VIP's own separated read was exactly that shape: ReadNoSnpSep from an RN-I
+# and RespSepData from an SN-F, neither of which appears anywhere in Appendix B,
+# and every test of it passed in both ports. See F-CORR-013 / TR-APPB-001.
+#
+# Only the FROM column is encoded. The To column is a routing question the TgtID
+# checks already answer, and encoding it here would give one fact two owners.
+# That also means the per-opcode entry is the UNION of that opcode's From cells:
+# it says "a node of this class may originate this packet", not "may originate
+# it towards you".
+#
+# Node classes the VIP has no role for -- RN-D, SN-I and ICN(MN) -- are dropped
+# rather than approximated. The table is therefore a subset of Appendix B and
+# never a superset: a role it permits is a role Appendix B permits, so a
+# violation it reports is a real one.
+#
+# Reading these blocks needs the PDF, not the markdown conversion. The
+# conversion renders a merged left-hand cell as if each opcode had its own
+# From row, which turns a block's three From rows into one per opcode and
+# silently invents originators. It is the same failure mode as the flit tables
+# in F-CORR-002, and it is why ReadNoSnpSep looks RN-originated in the md.
+
+_ORIG_RNF_C = frozenset({Role.RNF})
+_ORIG_RN_C = frozenset({Role.RNF, Role.RNI})
+_ORIG_HOME_C = frozenset({Role.HNF, Role.HNI})
+_ORIG_RN_HOME_C = _ORIG_RN_C | _ORIG_HOME_C
+_ORIG_HOME_SNF_C = _ORIG_HOME_C | frozenset({Role.SNF})
+
+
+# Table B-1. The three-row blocks are RN-*->ICN, ICN(HN-F)->SN-F and
+# ICN(HN-I)->SN-I, so their union is every class but the Slave.
+ORIGINATOR_REQ_C = {
+  ReqOpcode.READ_NO_SNP: _ORIG_RN_HOME_C,
+  ReqOpcode.WRITE_NO_SNP_FULL: _ORIG_RN_HOME_C,
+  ReqOpcode.WRITE_NO_SNP_PTL: _ORIG_RN_HOME_C,
+  ReqOpcode.WRITE_NO_SNP_ZERO: _ORIG_RN_HOME_C,
+
+  # Two rows, both from a Home: ICN(HN-F)->SN-F and ICN(HN-I)->SN-I. There is
+  # no row in which a Request Node sends ReadNoSnpSep, and section 2.3.1 says
+  # the same thing in prose -- "must only be sent by the Home to the Slave".
+  ReqOpcode.READ_NO_SNP_SEP: _ORIG_HOME_C,
+
+  ReqOpcode.CLEAN_SHARED: _ORIG_RN_HOME_C,
+  ReqOpcode.CLEAN_SHARED_PERSIST: _ORIG_RN_HOME_C,
+  ReqOpcode.CLEAN_SHARED_PERSIST_SEP: _ORIG_RN_HOME_C,
+  ReqOpcode.CLEAN_INVALID: _ORIG_RN_HOME_C,
+  ReqOpcode.MAKE_INVALID: _ORIG_RN_HOME_C,
+
+  ReqOpcode.PCRD_RETURN: _ORIG_RN_HOME_C,
+
+  # PrefetchTgt is the one request a Request Node addresses straight at a
+  # Slave: RN-F, RN-D, RN-I -> SN-F, with no Home row at all.
+  ReqOpcode.PREFETCH_TGT: _ORIG_RN_C,
+
+  # Coherent requests are RN-F only -- an RN-I has no cache to act on.
+  ReqOpcode.READ_CLEAN: _ORIG_RNF_C,
+  ReqOpcode.READ_SHARED: _ORIG_RNF_C,
+  ReqOpcode.READ_UNIQUE: _ORIG_RNF_C,
+  ReqOpcode.MAKE_READ_UNIQUE: _ORIG_RNF_C,
+  ReqOpcode.CLEAN_UNIQUE: _ORIG_RNF_C,
+  ReqOpcode.MAKE_UNIQUE: _ORIG_RNF_C,
+  ReqOpcode.EVICT: _ORIG_RNF_C,
+  ReqOpcode.WRITE_BACK_FULL: _ORIG_RNF_C,
+  ReqOpcode.WRITE_EVICT_OR_EVICT: _ORIG_RNF_C,
+  ReqOpcode.WRITE_CLEAN_FULL: _ORIG_RNF_C,
+
+  # The ReadOnce / WriteUnique block: any Request Node, no Home row.
+  ReqOpcode.READ_ONCE: _ORIG_RN_C,
+  ReqOpcode.WRITE_UNIQUE_FULL: _ORIG_RN_C,
+  ReqOpcode.WRITE_UNIQUE_PTL: _ORIG_RN_C,
+  ReqOpcode.WRITE_UNIQUE_ZERO: _ORIG_RN_C,
+}
+
+# Atomics share one block: RN-*->ICN, ICN(HN-F)->SN-F, ICN(HN-I)->SN-I.
+# The contiguous 0x28..0x39 range; ATOMIC_REQ_OPCODES below says the same thing
+# but is declared after this table.
+for _op in range(0x28, 0x3A):
+  ORIGINATOR_REQ_C[ReqOpcode(_op)] = _ORIG_RN_HOME_C
+
+# Table B-1's preamble: "unless explicitly stated otherwise, a reference to a
+# Write transaction includes both the individual Write transaction and the
+# corresponding Combined Write transaction." So each Combined Write inherits the
+# row of the write it is built on -- these are all WriteNoSnp*.
+for _op in (ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH,
+            ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV,
+            ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP,
+            ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH,
+            ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV,
+            ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP):
+  ORIGINATOR_REQ_C[_op] = _ORIG_RN_HOME_C
+
+
+# Table B-2 is deliberately absent. It has two rows: every snoop but SnpDVMOp is
+# ICN(HN-F) -> RN-F, and SnpDVMOp is ICN(MN) -> RN-F/RN-D, a node class this VIP
+# has no role for. The one modellable row cannot be falsified here -- the RN-F
+# agent's only peer IS the HN-F, so the monitor attributes every snoop it can
+# see to HN-F by construction and the rule would pass without ever having been
+# able to fail. A vacuous rule is worse than a missing one: it reports evidence
+# it does not have. It becomes worth encoding when a second snoop source exists.
+
+
+# Table B-3.
+ORIGINATOR_RSP_C = {
+  RspOpcode.RETRY_ACK: _ORIG_HOME_SNF_C,
+  RspOpcode.PCRD_GRANT: _ORIG_HOME_SNF_C,
+  RspOpcode.COMP: _ORIG_HOME_SNF_C,
+  RspOpcode.COMP_DBID_RESP: _ORIG_HOME_SNF_C,
+  RspOpcode.COMP_CMO: _ORIG_HOME_SNF_C,
+  RspOpcode.READ_RECEIPT: _ORIG_HOME_SNF_C,
+  RspOpcode.DBID_RESP: _ORIG_HOME_SNF_C,
+  RspOpcode.PERSIST: _ORIG_HOME_SNF_C,
+  RspOpcode.COMP_PERSIST: _ORIG_HOME_SNF_C,
+
+  # One row, and it is the whole finding: RespSepData is ICN(HN-F, HN-I) ->
+  # RN-*, with no Slave row. Section 2.3.1 says it outright -- "RespSepData is
+  # permitted from the Home only."
+  RspOpcode.RESP_SEP_DATA: _ORIG_HOME_C,
+
+  # DBIDRespOrd has a Home row and no Slave row, unlike plain DBIDResp.
+  RspOpcode.DBID_RESP_ORD: _ORIG_HOME_C,
+
+  # TagMatch: ICN(HN-F) and SN-F. No HN-I row -- an HN-I has no tags.
+  RspOpcode.TAG_MATCH: frozenset({Role.HNF, Role.SNF}),
+
+  # Downstream responses.
+  RspOpcode.COMP_ACK: _ORIG_RN_C,
+  RspOpcode.SNP_RESP: _ORIG_RNF_C,
+  RspOpcode.SNP_RESP_FWDED: _ORIG_RNF_C,
+}
+
+
+# Table B-4.
+ORIGINATOR_DAT_C = {
+  # CompData has an upstream block (Home, SN-F, SN-I) and a peer-to-peer row,
+  # RN-F -> RN-*, which is why RN-F appears here and not on DataSepResp.
+  DatOpcode.COMP_DATA: _ORIG_HOME_SNF_C | frozenset({Role.RNF}),
+  DatOpcode.DATA_SEP_RESP: _ORIG_HOME_SNF_C,
+
+  DatOpcode.COPY_BACK_WR_DATA: _ORIG_RNF_C,
+  DatOpcode.NON_COPY_BACK_WR_DATA: _ORIG_RN_HOME_C,
+  DatOpcode.NCB_WR_DATA_COMP_ACK: _ORIG_RN_C,
+  DatOpcode.SNP_RESP_DATA: _ORIG_RNF_C,
+  DatOpcode.SNP_RESP_DATA_PTL: _ORIG_RNF_C,
+  DatOpcode.SNP_RESP_DATA_FWDED: _ORIG_RNF_C,
+}
+
+
+# The one place this VIP knowingly departs from Appendix B, named rather than
+# left implicit.
+#
+# The agent topology is point-to-point RN-I <-> SN-F: there is no Home component
+# between them. The separated read needs one -- Appendix B puts the ReadNoSnpSep
+# on a Home->Slave link -- so the RN-I agent plays the Home's REQ leg, and the
+# item constraint that sets ReturnNID == SrcID is what makes the data come back
+# to it. Everything else on the link is then conformant: the Slave's ReadReceipt
+# goes to the Home stand-in (Table B-3 SN-F -> ICN(HN-F)) and its DataSepResp to
+# the requester (Table B-4 SN-F -> RN-I, an EXPECTED target, not merely a
+# permitted one).
+#
+# cfg.rni_home_standin is on by default, which grants an RN-I the originator
+# rights of a Home for these opcodes and nothing else. Turning it off makes the
+# checker judge the link as literal Appendix B, which is what the negative
+# control does: the departure is then visible as a reported violation rather
+# than as an exemption nobody can see.
+HOME_STANDIN_REQ_C = frozenset({
+  ReqOpcode.READ_NO_SNP_SEP,
+})
+
+# The same departure seen from the completer's end, and found by the checker
+# above on its first sweep rather than by reading: the SN-F answers an ordered
+# write with DBIDRespOrd, and Table B-3 gives that response ONE From row --
+# ICN(HN-F, HN-I, MN). Plain DBIDResp has three, including
+# "SN-F -> ICN(HN-F), RN-F, RN-D, RN-I", so a Slave answering a Requester
+# directly is contemplated by the table; extending that to DBIDRespOrd is not.
+#
+# The reason it is not is section 2.6: "The Completer is a PoS. A PoS sending
+# DBIDResp or DBIDRespOrd means [...]" -- DBIDRespOrd carries a Point of
+# Serialization guarantee, ordering "all subsequent [...] requests to the same
+# address from the same source against this request". A Slave in a real system
+# is not the PoS for other Requesters and cannot make that promise.
+#
+# On this link it can, and that is the whole justification: the RN-I <-> SN-F
+# pair has no other ordering point in it, so the completer IS the PoS the
+# requester is talking to. Same shape as the separated read -- a node playing
+# the Home's part because the link has no Home on it -- and named the same way,
+# so it is auditable rather than assumed. Switching the stand-in off makes
+# CHI_SB_ORIGINATOR_LEGAL report it, which is what the negative control asserts.
+HOME_STANDIN_RSP_C = frozenset({
+  RspOpcode.DBID_RESP_ORD,
+})
+
 QOS_WIDTH = 4
 PCRD_TYPE_WIDTH = 4
 MPAM_WIDTH = 11
 TAGOP_WIDTH = 2
+
+# Table 13-34 "TagOp value encodings": 0b11 is "Match Fetch" -- Match on a write
+# (check the physical tags against memory), Fetch on a read. The twin of
+# VIP_CHI_TAGOP_MATCH_C in the SystemVerilog port.
+TAGOP_MATCH = 0b11
+# The other three encodings from the same table, named because section 12.5.2's
+# TU rules turn on them: Invalid zeroes every Memory Tagging field, Transfer and
+# Match make TU inapplicable, Update requires every TU bit asserted.
+TAGOP_INVALID = 0b00
+TAGOP_TRANSFER = 0b01
+TAGOP_UPDATE = 0b10
 GROUP_ID_EXT_WIDTH = 3
 SIZE_WIDTH = 3
 RESP_WIDTH = 3
 RESP_ERR_WIDTH = 2
 ORDER_WIDTH = 2
 MEMATTR_WIDTH = 4
+# DataID and CCID, both fixed at 2 bits by Table 13-9 / 12-9 regardless of the
+# data-bus width. See ChiCfg.data_id_width.
+DATA_ID_WIDTH = 2
 CBUSY_WIDTH = 3
 FWDSTATE_WIDTH = 3
 DATASOURCE_WIDTH = 4
@@ -640,7 +877,28 @@ class ChiCfg:
 
   @property
   def lpid_width(self) -> int:
-    return 8 if self.is_e else 5
+    """LPID is 5 bits in BOTH issues. Issue E does not widen it.
+
+    It used to return 8 for E, on the reasonable-looking reading that Issue E
+    "extends the group ID to 8 bits". It does -- but by prefixing GroupIDExt,
+    not by widening LPID. IHI 0050 E 13.10.8 states the extension as a
+    concatenation: "used to extend the persistent group ID size to 8 bits;
+    PGroupID[7:0] = {GroupIDExt[2:0], LPID[4:0]}". Carrying an 8-bit LPID AND a
+    3-bit GroupIDExt counted the extension twice and made the Issue E REQ flit
+    three bits wider than Table 13-6's.
+
+    The arithmetic is what settled it, and it did not need the table read at
+    all. Table 13-6 gives R = (87 + RAW + M + Y) to (99 + RAW + M + Y), a span
+    of 12 that is exactly the node-ID variation across this flit's three node-ID
+    fields -- so at the narrowest NodeID_Width the total must equal the minimum
+    exactly, and at the widest the maximum exactly. This VIP was +3 at all four
+    corners. Issue D, whose Table 12-6 total is R = (121 to 141) + M + X, lands
+    on both corners exactly, which is what validates the method rather than the
+    conclusion.
+
+    See F-CORR-026.
+    """
+    return 5
 
   # -- data-geometry-derived widths --
   @property
@@ -653,8 +911,27 @@ class ChiCfg:
 
   @property
   def data_id_width(self) -> int:
-    beats = self.num_dat_beats
-    return 1 if beats <= 1 else clog2(beats)
+    """DataID and CCID are 2 bits, at every data-bus width.
+
+    IHI 0050 E Table 13-9 and D Table 12-9 both give a flat "2" for each, in the
+    column that carries a formula wherever one is meant -- BE is "DW/8 = 16, 32,
+    64", Tag is "DW/32 = 4, 8, 16", Data is "DW = 128, 256, 512". These two are
+    not parameterized and the tables say so by not parameterizing them.
+
+    This used to be clog2(beats), which is the width DataID *needs* rather than
+    the width it *has*: at DW = 128 it happens to give 2 and is right by
+    accident; at 256 and 512 it gives 1, and the flit came out two bits narrow.
+
+    That went unseen because a second deviation cancelled it. The VIP gives
+    DataCheck and Poison a 1-bit placeholder when their buses are absent (as
+    mpam_field_width does), where the specification's totals take DC = P = 0 --
+    so the DAT flit ran +2 from the placeholders and -2 from these, landing
+    exactly on Table 13-9's total at DW = 256 and 512. Two errors summing to
+    zero at the two configurations anyone would check.
+
+    See F-CORR-026, whose width gate is what separated them.
+    """
+    return DATA_ID_WIDTH
 
   @property
   def datacheck_width(self) -> int:
@@ -1367,6 +1644,21 @@ def is_final_rsp_completion(opcode: int, rsp_opcode: int) -> bool:
 
 
 
+def req_opcode_combined_cmo_is_persist(opcode: int) -> bool:
+  """TRUE when a combined Write + CMO carries a PERSISTENT CMO.
+
+  The twin of vip_chi_req_opcode_combined_cmo_is_persist in the SystemVerilog
+  package. It lives here rather than in the driver that first needed it because
+  three places ask the question -- the completer, deciding whether to send a
+  Persist at all; the sequence, defaulting ReturnNID because 2.8 routes that
+  Persist by it; and the scoreboard, expecting the response -- and three copies
+  of a two-opcode set is how one of them ends up disagreeing.
+  """
+  op = int(opcode)
+  return op in (int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+                int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP))
+
+
 def req_opcode_is_combined_write_cmo(opcode: int) -> bool:
   """A single request carrying both a write and a cache maintenance operation.
 
@@ -1754,6 +2046,137 @@ def req_return_nid_applicable(opcode: int) -> bool:
   if int(opcode) == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP):
     return True
   return req_return_txn_id_applicable(opcode)
+
+
+def req_pgroup_id_applicable(opcode: int) -> bool:
+  """Whether REQ's 8-bit group field carries PGroupID for this opcode.
+
+  IHI 0050 E 13.10.7: "Applicable in the CleanSharedPersistSep request and the
+  Persist and CompPersist responses. Inapplicable and must be set to zero in all
+  other requests and responses."
+
+  Section 2.5 says more, and this follows section 2.5: "Use of this 8-bit field
+  is applicable in CleanSharedPersistSep and Combined Write with PCMO
+  transactions", and again as an obligation -- "PGroupID must be sent in the
+  CleanSharedPersistSep request and a Combined Write request that includes a
+  PCMO." 13.10.7's field summary omits the Combined Write; 2.5 states it twice,
+  once as a requirement. The two are read together and the wider set wins, which
+  is also the direction this VIP errs in on every other ambiguous applicability
+  question: a permissive rule cannot false-fail conformant traffic.
+
+  The twin of vip_chi_req_pgroup_id_applicable in the SystemVerilog types
+  package.
+  """
+  op = int(opcode)
+  if op == int(ReqOpcode.CLEAN_SHARED_PERSIST_SEP):
+    return True
+  return req_opcode_combined_cmo_is_persist(op)
+
+
+def rsp_pgroup_id_applicable(rsp_opcode: int) -> bool:
+  """Whether RSP's DBID field carries PGroupID for this response opcode.
+
+  IHI 0050 E Table 13-7 gives that 12-bit position three meanings --
+  "DBID[11:0] / {4'b0, PGroupID[7:0]} / {4'b0, StashGroupID[7:0]}" -- and
+  13.10.7 names the two responses where the middle one applies.
+
+  The twin of vip_chi_rsp_pgroup_id_applicable in the SystemVerilog types
+  package.
+  """
+  return int(rsp_opcode) in (int(RspOpcode.PERSIST), int(RspOpcode.COMP_PERSIST))
+
+
+def pgroup_id_from_req(group_id_ext: int, lp_id: int) -> int:
+  """PGroupID as the request carries it: 13.10.8's equation, literally.
+
+  IHI 0050 E 13.10.8, on Persistent CMO transactions: "used to extend the
+  persistent group ID size to 8 bits; PGroupID[7:0] = {GroupIDExt[2:0],
+  LPID[4:0]}."
+
+  So PGroupID is not a field of its own anywhere. On REQ it is a VIEW of the
+  8-bit position Table 13-6 shares between {GroupIDExt, LPID}, PGroupID,
+  StashGroupID and TagGroupID; on RSP it is a view of DBID. Adding a physical
+  PGroupID to either layout would make this VIP's flits wider than the
+  specification's -- and because both ports would have been widened together,
+  no parity check could have seen it. F-INTOP-010 asked for exactly that, on
+  App A's field lists; Table 13-6 and Table 13-7 say otherwise.
+
+  LPID's low five bits, not all of it: the equation names LPID[4:0] and this VIP
+  models LPID as 8 bits wide under Issue E. Taking the masked slice is right on
+  either reading of that width, which is why it is written as the spec writes it
+  rather than as whatever the local field happens to be.
+
+  The twin of vip_chi_pgroup_id_from_req in the SystemVerilog types package.
+  """
+  return ((int(group_id_ext) & 0x7) << 5) | (int(lp_id) & 0x1F)
+
+
+def rsp_opcode_is_write_grant(opcode: int) -> bool:
+  """The three responses that carry a write's DBID grant.
+
+  CompDBIDResp is included because it IS a DBIDResp with the Comp folded into
+  it: IHI 0050 E Table 2-8's footnote permits the combination only "if both are
+  targeting the Home", which is a statement about when the two responses may
+  share a flit, not about the grant ceasing to be a grant when they do. Any
+  rule about where a grant is addressed applies to all three encodings.
+
+  DBIDRespOrd is the ordered variant and differs only in the ordering guarantee
+  it adds, so it grants exactly as DBIDResp does.
+
+  The twin of vip_chi_rsp_opcode_is_write_grant in the SystemVerilog types
+  package.
+  """
+  return int(opcode) in (int(RspOpcode.DBID_RESP), int(RspOpcode.DBID_RESP_ORD),
+                         int(RspOpcode.COMP_DBID_RESP))
+
+
+def req_dwt_grant_uses_return_path(issue: int, opcode: int, bit17: int) -> bool:
+  """Whether a write's DBIDResp is routed by ReturnNID/ReturnTxnID, not SrcID.
+
+  IHI 0050 E Table 2-8, "Message field mapping in WriteNoSnpCMO from Home to
+  Slave and its responses", is the whole rule in three rows:
+
+      DoDWT  CMO type                    DBIDResp          Persist
+        1    All                         HN.Req.ReturnNID  HN.Req.ReturnNID
+        0    CleanShared / CleanInvalid  HN.Req.SrcID      -
+        0    Persistent                  HN.Req.SrcID      HN.Req.ReturnNID
+
+  So DoDWT alone selects the DBIDResp's target, and it selects nothing else:
+  the Persist column does not depend on it, which is why that limb is
+  req_opcode_combined_cmo_is_persist's job and not this one. Section 4.2.4 says
+  the same in prose -- "The Persist response [...] always uses the ReturnNID
+  value of the Request [...] irrespective of the DoDWT field value."
+
+  The TxnID travels with the target. Section 2.5: "When DoDWT = 1, ReturnTxnID
+  value is expected to be the original Requester TxnID [...] Used as the TxnID
+  in the DBIDResp response." A DBIDResp is the one response in this VIP that
+  changes BOTH of its addressing fields on a single request bit, which is why
+  the requester cannot keep matching it on TxnID alone.
+
+  Keyed on the bit, not only on the opcode, because DoDWT is a per-request
+  choice: the same WriteNoSnpFull is answered at SrcID or at ReturnNID
+  depending on it. The opcode still appears here because con_dodwt_overload
+  pins DoDWT to zero wherever 13.10.25 makes it inapplicable, so the two agree
+  by construction -- and asserting that agreement here would be circular, so
+  this reads the bit and lets the constraint own the applicability.
+
+  Takes the RAW bit 17 and the issue rather than a "dodwt" argument, because
+  there is no dodwt field to pass: REQ bit 17 is carried as "snpattr" in the
+  flit map and is DoDWT only where req_bit17_is_dodwt says so (F-CORR-003).
+  A caller handed a decoded bit would have to do that decode itself, and a
+  caller that read a "dodwt" key off a sampled flit would get a KeyError at
+  best and a silent zero at worst -- which is the whole shape of the defect
+  this VIP already carries once.
+
+  Table 2-8 is headed with the Combined Write, but section 2.5 states the same
+  DBIDResp rule for a plain "WriteNoSnp with TagOp not Match", and 13.10.25
+  makes DoDWT applicable in WriteNoSnpFull and WriteNoSnpPtl as well as in the
+  Combined forms. The rule is DWT's, not the CMO's.
+
+  The twin of vip_chi_req_dwt_grant_uses_return_path in the SystemVerilog types
+  package.
+  """
+  return bool(int(bit17)) and req_bit17_is_dodwt(int(issue), int(opcode))
 
 
 def req_tagop_permitted_mask(issue: int, opcode: int) -> int:

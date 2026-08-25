@@ -44,6 +44,7 @@ class vip_chi_driver_snf_e #(
   typedef vip_chi_types #(CFG_P)::tu_t     tu_t;
   typedef FLIT_TYPES_T::vip_chi_dat_flit_t dat_flit_t;
   typedef FLIT_TYPES_T::vip_chi_rsp_flit_t rsp_flit_t;
+  typedef FLIT_TYPES_T::vip_chi_req_flit_t req_flit_t;
 
   typedef struct packed {
     tagop_t dat_tagop;
@@ -112,6 +113,28 @@ class vip_chi_driver_snf_e #(
     flit.tagop = raw.tagop;
     flit.tag   = raw.tag;
     flit.tu    = raw.tu;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Does this WriteData beat ask for a Tag Match?
+  //
+  // TagOp exists only in the Issue E data flit, so the parameterized base cannot
+  // name the member. Table 13-34: 0b11 is Match on a write.
+  // ---------------------------------------------------------------------------
+  virtual protected function bit dat_flit_is_tag_match(input dat_flit_t flit);
+    return (tagop_t'(flit.tagop) == tagop_t'(VIP_CHI_TAGOP_MATCH_C));
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // GroupIDExt, which exists only in the Issue E request flit.
+  //
+  // The base class cannot name the member: it is parameterized over the issue,
+  // and a CHI-D instantiation would fail to elaborate on the reference. See
+  // req_pgroup_id there for what it is used for -- 13.10.8's
+  // PGroupID[7:0] = {GroupIDExt[2:0], LPID[4:0]}.
+  // ---------------------------------------------------------------------------
+  virtual protected function logic [2 : 0] req_group_id_ext(input req_flit_t req);
+    return 3'(req.groupidext);
   endfunction
 
   // ---------------------------------------------------------------------------

@@ -83,12 +83,26 @@ fi
 
 cd "$RUNDIR" || exit 1
 
+# The revision the tallies were produced at, passed to each run as a plusarg.
+#
+# check_vacuity.py compares the two ports' CSVs against each other, and both of
+# the sections that do so are meaningless if the inputs describe different code.
+# The exporter stamps whatever this supplies; "unknown" if it supplies nothing,
+# which is why this is computed once here rather than left to the simulator.
+# "-dirty" matters as much as the hash during development: two sweeps of one
+# commit can still be of different code. See F-CHK-011.
+SOURCE_REV="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then
+  SOURCE_REV="${SOURCE_REV}-dirty"
+fi
+
 pass=0
 fail=0
 hung=0
 for t in $(ls "$ROOT/testbench/sv/tc"/tc_*.sv | sed 's|.*/||; s|\.sv$||'); do
   timeout --signal=TERM "$TEST_TIMEOUT_S" \
     "$SIMV" +UVM_TESTNAME="$t" +vip_chi_check_csv="$CHECK_CSV" \
+    +vip_chi_rev="$SOURCE_REV" \
     -l "vcs_${t}.log" > /dev/null 2>&1
   rc=$?
   # 124 is timeout(1) reporting it fired. Counted apart from a failure on
@@ -150,6 +164,16 @@ python3 "$ROOT/scripts/check_cfg_parity.py" >> "$SUMMARY" 2>&1 || true
 # and how WriteUniqueZero arrived two commits later with TxnID reuse and the
 # completion timeout not applying to it. Needs no simulator and no specification.
 python3 "$ROOT/scripts/check_classifier_coverage.py" >> "$SUMMARY" 2>&1 || true
+
+# Table 12-2 entered twice: once as the classifier CHI_REQ_TAGOP_LEGAL reads when
+# it judges a flit, once as the opcode groups con_tagop_legal solves when it
+# decides what this VIP will emit. They cannot be one expression -- a function
+# call inside a SystemVerilog constraint makes every rand argument solve-ordered
+# -- so this compares them opcode by opcode. A generator and a checker that
+# disagree about the same table is the worse of the two failures: either the VIP
+# emits requests its own rule then reports, or both were edited wrong together and
+# the table stops being the authority either of them claims. No simulator needed.
+python3 "$ROOT/scripts/check_tagop_groups.py" >> "$SUMMARY" 2>&1 || true
 
 # The regression sizes quoted in prose, against the testcases that exist. The
 # sweep is the only place that knows both numbers at once.

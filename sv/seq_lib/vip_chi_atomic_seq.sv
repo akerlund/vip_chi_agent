@@ -80,12 +80,22 @@ class vip_chi_atomic_seq #(
   endtask
 
   // ---------------------------------------------------------------------------
-  // §22 L7 decision: atomic Size is not clamped by default. The atomic testcases
-  // deliberately drive a full bus-beat operand -- `set_size($clog2(DATA_BYTES_P))`,
+  // §22 L7 decision, INVERTED by F-CORR-008: atomic Size is clamped to IHI 0050
+  // E Table 2-17 / D Table 2-17 by default, and the wide-operand stress profile
+  // is what a sequence has to ask for.
+  //
+  // It used to be the other way round -- the table was modelled but gated behind
+  // a knob that defaulted off, so every atomic a plain randomize() produced was
+  // unconstrained and this VIP's default stimulus was out of spec. A component
+  // that checks a protocol should not violate it by default.
+  //
+  // The stress profile itself is unchanged and still load-bearing: the atomic
+  // testcases drive a full bus-beat operand -- `set_size($clog2(DATA_BYTES_P))`,
   // i.e. Size 4 (16 B) on CHI-D and Size 6 (64 B) on CHI-E -- to exercise the
-  // operand DAT / RMW / return datapath at the widest beat. Call
-  // set_atomic_strict_size(1) when a sequence should obey the CHI <=8-byte ordinary
-  // atomic operand limit instead of the stress profile.
+  // operand DAT / RMW / return datapath at the widest beat. They call
+  // set_atomic_oversized_operands(1) to say so. Note that AtomicCompare at
+  // Size 5 (32 B) is LEGAL by the table and needs no opt-in, which is why the
+  // compare legs of those testcases do not carry one.
   //
   // What that decision costs, now that it is checked. IHI 0050 E Table 2-17 / D
   // Table 2-17 permits at most 8 bytes for AtomicStore, AtomicLoad and AtomicSwap

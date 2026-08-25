@@ -42,7 +42,8 @@ class vip_chi_cfg_item extends uvm_object;
   int                 min_size               = 0;
   int                 max_size               = 6;
   bit                 enforce_addr_alignment = 1'b1;
-  bit                 atomic_strict_size     = 1'b0;
+  // See vip_chi_item for why this selects the DEVIATION and defaults off.
+  bit                 atomic_oversized_operands     = 1'b0;
   // Combined Write + CMO opt-in. Default OFF, and the default is the point:
   // these six are legal writes, so leaving them in the randomization pool
   // unconditionally would have every existing random write test start emitting
@@ -58,7 +59,7 @@ class vip_chi_cfg_item extends uvm_object;
   `uvm_field_int(min_size,                        UVM_PRINT)
   `uvm_field_int(max_size,                        UVM_PRINT)
   `uvm_field_int(enforce_addr_alignment,          UVM_PRINT)
-  `uvm_field_int(atomic_strict_size,              UVM_PRINT)
+  `uvm_field_int(atomic_oversized_operands,              UVM_PRINT)
   `uvm_field_int(combined_write_cmo_enable,       UVM_PRINT)
   `uvm_field_int(write_unique_zero_enable,        UVM_PRINT)
   `uvm_field_int(write_evict_or_evict_enable,     UVM_PRINT)
@@ -86,7 +87,7 @@ class vip_chi_cfg_item extends uvm_object;
     this.min_size      = 0;
     this.max_size      = 6;
     this.enforce_addr_alignment = 1'b1;
-    this.atomic_strict_size     = 1'b0;
+    this.atomic_oversized_operands     = 1'b0;
     this.combined_write_cmo_enable = 1'b0;
     this.write_unique_zero_enable = 1'b0;
     this.write_evict_or_evict_enable = 1'b0;

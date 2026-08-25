@@ -78,6 +78,7 @@ class tc_chi_d_multi_outstanding_atomic(chi_base_test):
     # -- Phase 2: pipeline N returning atomics (AtomicLoad0 = ADD). ------------
     atomic_seq.reset()
     atomic_seq.set_variant(0)          # Load0 => arithmetic ADD, returns pre-op value
+    atomic_seq.set_atomic_oversized_operands(True)
     atomic_seq.set_initial_addr(BASE_ADDR_C)
     atomic_seq.set_size(size)
     atomic_seq.set_data(op_q)          # one operand beat per atomic

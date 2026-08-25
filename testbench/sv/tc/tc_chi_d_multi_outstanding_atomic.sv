@@ -130,6 +130,7 @@ class tc_chi_d_multi_outstanding_atomic extends chi_base_test;
     // -- Phase 2: pipeline N returning atomics (AtomicLoad0 = ADD). ------------
     this.atomic_seq.reset();
     this.atomic_seq.set_variant(0);              // Load0 => arithmetic ADD, returns pre-op value
+    this.atomic_seq.set_atomic_oversized_operands(1'b1);
     this.atomic_seq.set_initial_addr(BASE_ADDR_C);
     this.atomic_seq.set_size(SIZE_C);
     this.atomic_seq.set_data(op_q);              // one operand beat per atomic

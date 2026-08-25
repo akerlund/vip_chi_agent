@@ -115,6 +115,20 @@ class vip_chi_sb_ctx #(
   node_id_t           return_nid;
   txn_id_t            return_txn_id;
 
+  // Direct Write Transfer: this request's DBIDResp is owed at ReturnNID under
+  // ReturnTxnID rather than at the requester's own SrcID/TxnID (Table 2-8).
+  bit                 dwt_grant;
+
+  // The persistence group this request asked its Persist / CompPersist to carry
+  // back, and whether it asked for one at all (13.10.7 / 13.10.8).
+  logic [7 : 0]       pgroup_id;
+  bit                 has_pgroup;
+
+  // Whether the write's DATA asked for a Tag Match (TagOp = 0b11), and whether
+  // the TagMatch response that owes came back.
+  bit                 tag_match_required;
+  bit                 tag_match_seen;
+
   // Completion contract: which milestones are REQUIRED to retire.
   bit  need_grant, need_write_data, need_read_data, need_comp;
   bit  need_receipt, need_persist, need_compack;
@@ -261,6 +275,7 @@ class vip_chi_scoreboard #(
   protected ctx_t open_ctx    [string];   // key: stream_reqnode_txn
   protected ctx_t ctx_by_dbid [string];   // key: stream_dbid  (binds write-DAT)
   protected ctx_t sep_ret_ctx [string];   // key: stream_returnnid_returntxn
+  protected ctx_t dwt_ret_ctx [string];   // key: stream_returnnid_returntxn
                                            // (binds a ReadNoSnpSep DataSepResp)
 
   // Checker C: independent, byte-granular predicted image (observed writes only).
@@ -304,6 +319,32 @@ class vip_chi_scoreboard #(
   // predictable-only discipline SKIPPED, which is neither a pass nor a failure,
   // and they are the denominator that makes a zero-mismatch run readable.
   protected int n_reads_skipped;
+
+  // Appendix B judged / not judged. The skip count is not decoration: a table
+  // that has no row for an opcode must say so, or the pass count reads as
+  // coverage of packets the table never looked at.
+  protected int n_originator_checked;
+  protected int n_originator_skipped;
+  protected int n_originator_standin;
+
+  // Does the RN-I agent stand in for a Home on the separated-read path?
+  //
+  // Appendix B Table B-1 puts ReadNoSnpSep on a Home->Slave link only, and this
+  // agent topology is point-to-point RN-I <-> SN-F with no Home component
+  // between them. So the RN-I plays the Home's REQ leg -- which is what the item
+  // constraint forcing ReturnNID == SrcID has always been compensating for --
+  // and CHI_SB_ORIGINATOR_LEGAL grants it a Home's originator rights for exactly
+  // the opcodes vip_chi_home_standin_req() names.
+  //
+  // It lives on the scoreboard rather than on the config agent because it is
+  // checker policy, not driver behaviour: no driver reads it, and a config knob
+  // nothing reads is the shape F-CHK-014 was about.
+  //
+  // Default 1, because that is what the VIP does. A test clears it to take the
+  // stand-in away and see the departure reported -- an exemption nothing can
+  // switch off is an exemption nobody can audit, and turning it off is what
+  // proves this checker reaches the separated-read traffic at all.
+  bit home_standin = 1'b1;
 
   // Checker C, MTE half: the predicted TAG image, alongside pred_mem/written and
   // committed by the same rule (an observed write that resolved OKAY).
@@ -410,6 +451,37 @@ class vip_chi_scoreboard #(
     return this.chk_fail[id];
   endfunction
 
+  // Checker F's advisory tallies. Public because a negative control has to be
+  // able to say WHICH way the rule was reached: an increment on the fail count
+  // alone cannot tell an illegal originator from the Home stand-in being taken
+  // away, and the two provocations must be counted apart.
+  function int get_originator_checked();
+    return this.n_originator_checked;
+  endfunction
+
+  function int get_originator_standin();
+    return this.n_originator_standin;
+  endfunction
+
+  function int get_originator_skipped();
+    return this.n_originator_skipped;
+  endfunction
+
+  // The scoreboard's own error total, for a testcase that wants "did anything go
+  // wrong" without naming a rule.
+  //
+  // Public where the individual tallies are protected, and summing exactly the
+  // set its Python twin total_errors() sums -- the two ports have to agree on
+  // what counts as an error or a testcase asserting zero means different things
+  // on each. Deliberately NOT every tally: n_wrong_opcode is a warning by
+  // design, and the tag mismatches belong to checks a test can turn off.
+  function int total_errors();
+    return (this.n_incomplete() + this.n_orphan() + this.n_reuse() +
+            this.n_data_mismatch() + this.n_relay_mismatch() +
+            this.n_route_mismatch() + this.n_order_violation() +
+            this.n_originator_illegal());
+  endfunction
+
   // ---------------------------------------------------------------------------
   // The legacy tallies, DERIVED from the registry rather than kept beside it.
   // ---------------------------------------------------------------------------
@@ -420,6 +492,10 @@ class vip_chi_scoreboard #(
   protected function int n_orphan();
     return this.chk_fail[VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E] +
            this.chk_fail[VIP_CHI_SB_CHK_DAT_HAS_OPEN_TXN_E];
+  endfunction
+
+  protected function int n_originator_illegal();
+    return this.chk_fail[VIP_CHI_SB_CHK_ORIGINATOR_LEGAL_E];
   endfunction
 
   protected function int n_wrong_opcode();
@@ -510,6 +586,72 @@ class vip_chi_scoreboard #(
 
   // At a requester agent, TX flits carry ROLE_P (RN-I), RX flits peer_role
   // (SN-F). Direction, not opcode, distinguishes requester-sourced flits.
+  // ---------------------------------------------------------------------------
+  // Checker F -- Appendix B originator legality.
+  // ---------------------------------------------------------------------------
+  // May a node of THIS class originate this packet at all?
+  //
+  // The question no other check in either port asks. Everything else here judges
+  // a flit against the transaction it belongs to -- is it expected, does it
+  // carry the right TxnID, is it addressed at the right node -- and all of that
+  // can be satisfied by a flow no node in Appendix B is allowed to emit. That is
+  // how ReadNoSnpSep-from-an-RN-I and RespSepData-from-an-SN-F survived: the
+  // only party judging them was the VIP's own completer, which answered what it
+  // was asked. See F-CORR-013.
+  //
+  // Three outcomes, and the third is why the counters are separate:
+  //
+  //   * judged and legal, or judged and reported;
+  //   * unattributable -- the monitor could not name the emitting class, which
+  //     happens on a link whose peer role the VIP has no model for. Counting it
+  //     as a pass would claim evidence that was never gathered;
+  //   * not in the table -- an opcode Appendix B covers but this subset does
+  //     not. Same reasoning, different cause, so it is worth telling apart from
+  //     an unattributable flit when reading a report.
+  protected function void check_originator(
+    input string              channel,
+    input int                 opcode,
+    input vip_chi_role_mask_t permitted,
+    input item_t              item
+  );
+    if (item.role == VIP_CHI_ROLE_MONITOR_E) begin
+      this.n_originator_skipped++;
+      return;
+    end
+
+    if (permitted == VIP_CHI_ORIG_NONE_C) begin
+      this.n_originator_skipped++;
+      return;
+    end
+
+    if (vip_chi_role_permitted(permitted, item.role)) begin
+      this.n_originator_checked++;
+      this.chk_ok(VIP_CHI_SB_CHK_ORIGINATOR_LEGAL_E);
+      return;
+    end
+
+    // The two documented departures, both of them one node playing the Home's
+    // part because this link has no Home on it to play it: the RN-I originates
+    // the separated read's REQ leg, and the SN-F answers an ordered write with
+    // the Home-only DBIDRespOrd. See vip_chi_home_standin_req / _rsp.
+    if (this.home_standin &&
+        (((channel == "REQ") && (item.role == VIP_CHI_ROLE_RNI_E) &&
+          vip_chi_home_standin_req(VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode))) ||
+         ((channel == "RSP") && (item.role == VIP_CHI_ROLE_SNF_E) &&
+          vip_chi_home_standin_rsp(VIP_CHI_MAX_RSP_OPCODE_WIDTH_C'(opcode))))) begin
+      this.n_originator_standin++;
+      this.n_originator_checked++;
+      this.chk_ok(VIP_CHI_SB_CHK_ORIGINATOR_LEGAL_E);
+      return;
+    end
+
+    this.n_originator_checked++;
+    this.chk_bad(VIP_CHI_SB_CHK_ORIGINATOR_LEGAL_E, $sformatf(
+      "ERROR [%s] Appendix B: a %s may not originate %s opcode 0x%0h; the table permits mask 0b%06b. Emitted src=0x%0h tgt=0x%0h txn=0x%0h",
+      get_name(), item.role.name(), channel, opcode, permitted,
+      item.src_id, item.tgt_id, item.txn_id));
+  endfunction
+
   protected function bit is_outbound(input item_t item);
     return (item.role == VIP_CHI_ROLE_RNI_E);
   endfunction
@@ -603,7 +745,15 @@ class vip_chi_scoreboard #(
       VIP_CHI_REQ_READ_NO_SNP_SEP_C: begin
         ctx.kind           = VIP_CHI_SB_READ;
         ctx.need_read_data = 1'b1;
-        if (ctx.ordered) begin
+        // A separated read owes a ReadReceipt whether or not it is ordered.
+        // Section 2.3.1: "The Slave must send the ReadReceipt response to the
+        // Home only after receiving ReadNoSnpSep." That is the Slave's own owed
+        // response, not an ordering courtesy, and gating it on ctx.ordered is
+        // why a non-ordered separated read used to complete without one. See
+        // F-CORR-013.
+        if (ctx.ordered ||
+            (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opc) ==
+             VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(VIP_CHI_REQ_READ_NO_SNP_SEP_C))) begin
           ctx.need_receipt = 1'b1;
         end
       end
@@ -757,7 +907,18 @@ class vip_chi_scoreboard #(
     string key;
     ctx_t  ctx;
 
-    if (!this.enable || !this.is_outbound(item)) begin
+    if (!this.enable) begin
+      return;
+    end
+
+    // Ahead of the outbound guard on purpose. Everything below this line is
+    // about the requester's own traffic; a REQ originated by a class that may
+    // not originate it is exactly the flit the guard would drop as "not ours".
+    this.check_originator("REQ", int'(item.opcode),
+      vip_chi_originator_req_mask(
+        VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(item.opcode)), item);
+
+    if (!this.is_outbound(item)) begin
       return;
     end
 
@@ -817,6 +978,50 @@ class vip_chi_scoreboard #(
     this.open_ctx[key] = ctx;
     this.ord_enroll(ctx);
 
+    // PGroupID is not a field: 13.10.8 gives it as an equation over GroupIDExt
+    // and LPID, and 13.10.7 sends it back in the bits Table 13-7 calls DBID.
+    // Recorded here so the responses have something to be compared against --
+    // without it the reflection is unobservable, which is the state F-INTOP-010
+    // found both ports in.
+    if (vip_chi_types_pkg::vip_chi_req_pgroup_id_applicable(item.opcode)) begin
+      ctx.has_pgroup = 1'b1;
+      ctx.pgroup_id  = vip_chi_types_pkg::vip_chi_pgroup_id_from_req(
+                         item.group_id_ext, 8'(item.lp_id));
+    end
+
+    // ReturnNID is recorded for every request that is allowed to carry one, not
+    // only for the separated read that first needed it. IHI 0050 E 2.8 routes a
+    // PCMO's Persist by the same field, so a scoreboard that only remembered it
+    // for reads had nothing to compare that Persist's TgtID against -- which is
+    // half of why F-CORR-012 went unnoticed.
+    //
+    // The Python port recorded it here and this one did not, so on a Combined
+    // Write + CleanSharedPersistSep with DoDWT = 0 neither branch below fired
+    // and ctx.return_nid stayed zero. tc_chi_e_persist_return_nid_negctl is what
+    // found it: a negative control that could not provoke the rule it exists to
+    // prove, because the expected target it compares against was never recorded.
+    if (vip_chi_types_pkg::vip_chi_req_return_nid_applicable(
+          vip_chi_req_opcode_t'(item.opcode))) begin
+      ctx.return_nid = item.return_nid;
+    end
+
+    // Direct Write Transfer: the write's grant returns on ReturnNID/ReturnTxnID.
+    //
+    // The ctx is registered under the address the grant SHOULD arrive at, and
+    // stays registered under its own as well, so that a grant sent to either
+    // place is found. Which of the two indexes catches it is then the whole
+    // judgement -- and it is a judgement the lookup cannot fake, because a
+    // single index keyed on the correct address would report a misrouted grant
+    // as an orphan and CHI_SB_RSP_TGTID_CORRECT could never fail. That is the
+    // same trap find_persist_rsp_ctx documents, reached from the other side.
+    if (vip_chi_types_pkg::vip_chi_req_dwt_grant_uses_return_path(
+          CFG_P.ISSUE_P, item.opcode, bit'(item.dodwt))) begin
+      ctx.dwt_grant     = 1'b1;
+      ctx.return_nid    = item.return_nid;
+      ctx.return_txn_id = item.return_txn_id;
+      this.dwt_ret_ctx[this.ctx_key(stream, item.return_nid, item.return_txn_id)] = ctx;
+    end
+
     // Separated read: the DataSepResp leg returns on ReturnNID/ReturnTxnID, not
     // the original TxnID, so index the ctx by the completion key that data leg
     // will actually carry. Without this the DataSepResp is a false orphan and
@@ -835,12 +1040,58 @@ class vip_chi_scoreboard #(
 
   // ---------------------------------------------------------------------------
   // Standalone Persist has no applicable TxnID. Find the open persistent
-  // transaction by stream and routing instead of the primary TxnID key.
+  // transaction by stream and responder instead of the primary TxnID key.
+  //
+  // Deliberately NOT by the target node, though that would narrow the match.
+  // IHI 0050 E 2.8 routes the Persist to ReturnNID, so the target is the thing
+  // CHI_SB_RSP_TGTID_CORRECT judges -- and a pairing that consumed it would make
+  // that rule unable to fail: a Persist sent to the wrong node would simply not
+  // match, and would be reported as an orphan rather than as a misrouted
+  // response. A check that cannot fail is worse than no check, so the field the
+  // rule reads is left out of the key.
+  //
+  // The cost is that two persistent contexts open at once on one stream from the
+  // same responder are ambiguous, and the first is taken. No test drives that
+  // today; a Persist carries no TxnID, so there is nothing sharper to key on.
+  // ---------------------------------------------------------------------------
+  // A Persist / CompPersist must carry back the request's PGroupID.
+  //
+  // IHI 0050 E 13.10.7 makes the field applicable in exactly these two
+  // responses, and section 2.5 says what it is for: "The PGroupID value returned
+  // in the Persist response can be used by a Requester to separately track
+  // completions of Persist responses from each group." A completer that returns
+  // the wrong group does not break the transaction -- it breaks the requester's
+  // ability to tell two groups apart, which is a defect no completion-shape
+  // check can see.
+  //
+  // Silent where the request carried no group, rather than comparing against
+  // zero: a Persist answering something that is not a persistent CMO has no
+  // group to reflect, and 13.10.7's must-be-zero obligation there belongs to
+  // whichever field owns those bits for that response.
+  // ---------------------------------------------------------------------------
+  protected function void check_pgroup(input ctx_t ctx, input item_t item);
+
+    logic [7 : 0] got;
+
+    if (!ctx.has_pgroup) begin
+      return;
+    end
+
+    got = 8'(item.dbid);
+    if (got != ctx.pgroup_id) begin
+      this.chk_bad(VIP_CHI_SB_CHK_PERSIST_PGROUP_MATCHES_E, $sformatf(
+        "Persist-family response returned PGroupID 0x%02h; the request asked for 0x%02h (13.10.8: {GroupIDExt, LPID[4:0]})",
+        got, ctx.pgroup_id));
+    end
+    else begin
+      this.chk_ok(VIP_CHI_SB_CHK_PERSIST_PGROUP_MATCHES_E);
+    end
+  endfunction
+
   // ---------------------------------------------------------------------------
   protected function bit find_persist_rsp_ctx(
     input  vip_chi_sb_stream_e stream,
     input  node_id_t           responder_node,
-    input  node_id_t           requester_node,
     output ctx_t               ctx
   );
 
@@ -849,8 +1100,7 @@ class vip_chi_scoreboard #(
           !this.open_ctx[k].retired &&
           this.open_ctx[k].need_persist &&
           !this.open_ctx[k].persist_seen &&
-          (this.open_ctx[k].responder_node == responder_node) &&
-          (this.open_ctx[k].requester_node == requester_node)) begin
+          (this.open_ctx[k].responder_node == responder_node)) begin
         ctx = this.open_ctx[k];
         return 1'b1;
       end
@@ -868,10 +1118,15 @@ class vip_chi_scoreboard #(
     ctx_t        ctx;
     rsp_opcode_t opc;
     bit          opc_modelled;
+    node_id_t    persist_tgt_expected;
 
     if (!this.enable) begin
       return;
     end
+
+    this.check_originator("RSP", int'(item.rsp_opcode),
+      vip_chi_originator_rsp_mask(
+        VIP_CHI_MAX_RSP_OPCODE_WIDTH_C'(item.rsp_opcode)), item);
 
     opc          = item.rsp_opcode;
     opc_modelled = 1'b1;
@@ -904,22 +1159,79 @@ class vip_chi_scoreboard #(
     // Inbound completion. Standalone Persist is not TxnID-tied; all other RSPs
     // use the primary key (tgt_id == requester node, TxnID == request TxnID).
     if (opc == VIP_CHI_RSP_PERSIST_C) begin
-      if (!this.find_persist_rsp_ctx(stream, item.src_id, item.tgt_id, ctx)) begin
+      if (!this.find_persist_rsp_ctx(stream, item.src_id, ctx)) begin
         this.chk_bad(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E, $sformatf(
           "Orphan Persist RSP (no open persistent ctx): stream=%0d src=0x%0h tgt=0x%0h txn=0x%0h",
           stream, item.src_id, item.tgt_id, item.txn_id));
         return;
       end
+
+      // IHI 0050 E 2.8: "The ReturnNID value in the request must be used as the
+      // target in the following responses by the Slave: ... in the Persist, if
+      // the CMO in the request is a PCMO." Nothing in either port checked the
+      // TgtID of any response before this, on any channel, which is why a
+      // completer addressing the Persist at SrcID went unnoticed -- in the
+      // example topology the two are the same node. See F-CORR-012.
+      // IHI 0050 E 2.8 is titled "Slave response to a Combined Write
+      // transaction" and it is that clause which names ReturnNID, so the rule
+      // is applied to the Persist answering a COMBINED WRITE + PCMO and to
+      // nothing else. A standalone CleanSharedPersistSep also draws a Persist,
+      // and every such request in this tree leaves ReturnNID at zero -- reading
+      // 13.10.4's general sentence as normative there would demand the Persist
+      // go to node 0 and would false-fail traffic no clause plainly forbids.
+      // Recorded on F-CORR-012 rather than decided in passing.
+      persist_tgt_expected =
+        vip_chi_types_pkg::vip_chi_req_opcode_combined_cmo_is_persist(
+          vip_chi_req_opcode_t'(ctx.opcode)) ? ctx.return_nid
+                                             : ctx.requester_node;
+
+      if (item.tgt_id != persist_tgt_expected) begin
+        this.chk_bad(VIP_CHI_SB_CHK_RSP_TGTID_CORRECT_E, $sformatf(
+          "Persist addressed to 0x%0h; section 2.8 routes a PCMO's Persist to the request's ReturnNID, which was 0x%0h (requester SrcID 0x%0h)",
+          item.tgt_id, persist_tgt_expected, ctx.requester_node));
+      end
+      else begin
+        this.chk_ok(VIP_CHI_SB_CHK_RSP_TGTID_CORRECT_E);
+      end
     end
     else begin
-      key = this.ctx_key(stream, item.tgt_id, item.txn_id);
-      if (!this.open_ctx.exists(key)) begin
+      bit via_dwt;
+
+      key     = this.ctx_key(stream, item.tgt_id, item.txn_id);
+      via_dwt = 1'b0;
+      // A write grant, and only a write grant, is also looked up on the Direct
+      // Write Transfer return address. Restricting it to the grant opcodes is
+      // deliberate: Comp is owed at SrcID/TxnID whatever DoDWT says, so a Comp
+      // arriving on the return address is a genuine orphan and must keep being
+      // reported as one.
+      if (this.open_ctx.exists(key)) begin
+        ctx = this.open_ctx[key];
+      end
+      else if (vip_chi_types_pkg::vip_chi_rsp_opcode_is_write_grant(vip_chi_rsp_opcode_t'(opc)) && this.dwt_ret_ctx.exists(key)) begin
+        ctx     = this.dwt_ret_ctx[key];
+        via_dwt = 1'b1;
+      end
+      else begin
         this.chk_bad(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E, $sformatf(
           "Orphan RSP (no open ctx): stream=%0d tgt=0x%0h txn=0x%0h rsp_opcode=0x%0h",
           stream, item.tgt_id, item.txn_id, opc));
         return;
       end
-      ctx = this.open_ctx[key];
+
+      // IHI 0050 E Table 2-8: with DoDWT set, the DBIDResp is targeted at the
+      // request's ReturnNID, and section 2.5 puts ReturnTxnID on it. Both
+      // registrations exist, so WHICH one caught this grant is the answer --
+      // arriving under the requester's own address is precisely the defect.
+      if (ctx.dwt_grant && vip_chi_types_pkg::vip_chi_rsp_opcode_is_write_grant(vip_chi_rsp_opcode_t'(opc))) begin
+        if (via_dwt) begin
+          this.chk_ok(VIP_CHI_SB_CHK_RSP_TGTID_CORRECT_E);
+        end
+        else begin
+          this.chk_bad(VIP_CHI_SB_CHK_RSP_TGTID_CORRECT_E, $sformatf(
+            "Write grant (opcode 0x%0h) addressed to 0x%0h/txn 0x%0h; DoDWT was set, so Table 2-8 routes it to ReturnNID 0x%0h under ReturnTxnID 0x%0h",
+            opc, item.tgt_id, item.txn_id, ctx.return_nid, ctx.return_txn_id));
+        end
+      end
     end
     this.chk_ok(VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E);
 
@@ -953,15 +1265,57 @@ class vip_chi_scoreboard #(
       end
       VIP_CHI_RSP_PERSIST_C: begin
         ctx.persist_seen = 1'b1;
+        this.check_pgroup(ctx, item);
+      end
+      VIP_CHI_RSP_TAG_MATCH_C: begin
+        ctx.tag_match_seen = 1'b1;
+        // IHI 0050 E section 2.3.1 makes TagMatch owed exactly when the
+        // WriteData asked for the check. A TagMatch for a write that asked for
+        // none is not a harmless extra: the requester has no Match outstanding
+        // to retire with it, and a Requester that tracked Match completions by
+        // counting would go permanently out of step.
+        //
+        // Not ordered against anything here, deliberately. The section places
+        // the response "after completing the required Tag Match operation" and
+        // explicitly permits a Slave that does NOT perform the check to answer
+        // before the write data arrives -- so both orders are conformant and a
+        // rule that judged the order would false-fail one of them.
+        if (ctx.tag_match_required) begin
+          this.chk_ok(VIP_CHI_SB_CHK_TAG_MATCH_OWED_E);
+        end
+        else begin
+          this.chk_bad(VIP_CHI_SB_CHK_TAG_MATCH_OWED_E, $sformatf(
+            "TagMatch returned for a write whose data carried no TagOp = Match (stream=%0d txn=0x%0h): section 2.3.1 owes the response only when the WriteData asked for the check",
+            stream, item.txn_id));
+        end
       end
       VIP_CHI_RSP_COMP_PERSIST_C: begin
-        // Comp AND Persist in one flit, so it ticks both milestones. Ticking
-        // only comp_seen would leave a separated persist answered by the legal
-        // combined response permanently owing a Persist that is never coming,
-        // and it would be reported incomplete for doing nothing wrong.
-        ctx.comp_seen    = 1'b1;
+        // Two milestones in one flit -- but WHICH two depends on the
+        // transaction, and IHI 0050 E names them separately.
+        //
+        // On a standalone CleanSharedPersistSep it is Comp and Persist: the
+        // Point of Coherency and the Point of Persistence, combined. Ticking
+        // only comp_seen would leave such a request permanently owing a Persist
+        // that is never coming, and it would be reported incomplete for doing
+        // nothing wrong.
+        //
+        // On a combined Write + PCMO it is CompCMO and Persist. Section 2.8:
+        // the SN "is permitted to combine CompCMO with Persist as a CompPersist
+        // response if the two are sent to Home". The write's own Comp is a
+        // third, separate response and is NOT folded in -- ticking comp_seen
+        // here would retire a write whose completion had not arrived, and leave
+        // comp_cmo_seen false so the request was reported incomplete anyway.
+        // Found while giving F-INTOP-008's requester something legal to accept.
+        if (vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
+              ctx.opcode)) begin
+          ctx.comp_cmo_seen = 1'b1;
+        end
+        else begin
+          ctx.comp_seen = 1'b1;
+          ctx.comp_err  = item.rsp_resp_err;
+        end
         ctx.persist_seen = 1'b1;
-        ctx.comp_err     = item.rsp_resp_err;
+        this.check_pgroup(ctx, item);
       end
       VIP_CHI_RSP_RETRY_ACK_C: begin
         ctx.retry_seen = 1'b1;
@@ -1009,6 +1363,10 @@ class vip_chi_scoreboard #(
       return;
     end
 
+    this.check_originator("DAT", int'(item.dat_opcode),
+      vip_chi_originator_dat_mask(
+        VIP_CHI_MAX_DAT_OPCODE_WIDTH_C'(item.dat_opcode)), item);
+
     if (this.is_outbound(item)) begin
       // Write / atomic-operand data: both the DBID and TxnID fields carry the
       // granted DBID (vip_chi_driver_rni.sv:777,781), so bind through the DBID
@@ -1021,6 +1379,13 @@ class vip_chi_scoreboard #(
         ctx = this.ctx_by_dbid[key];
         ctx.write_data_sent = 1'b1;
         ctx.wr_dat_item     = item;
+        // The Tag Match obligation is carried by the DATA, not the request.
+        // IHI 0050 E section 2.3.1: "If the WriteData message indicates that a
+        // Tag Match is required, then the Slave sends a TagMatch response."
+        // Table 13-34 gives TagOp = 0b11 as Match on a write.
+        if (item.dat_tagop == VIP_CHI_TAGOP_MATCH_C) begin
+          ctx.tag_match_required = 1'b1;
+        end
         this.maybe_commit_write(ctx);
         this.capture_atomic_old(ctx);
         // Cover the combined-grant store atomic, whose CompDBIDResp already set
@@ -1517,10 +1882,16 @@ class vip_chi_scoreboard #(
     if (this.ctx_by_dbid.exists(dkey) && (this.ctx_by_dbid[dkey] == ctx)) begin
       this.ctx_by_dbid.delete(dkey);
     end
-    if (ctx.sep_read) begin
+    // Both return-address indexes are keyed the same way, and a ctx is only ever
+    // in one of them, so one key serves both -- but the sep_read guard does not,
+    // because a DWT write is not a separated read and would have leaked its entry.
+    if (ctx.sep_read || ctx.dwt_grant) begin
       skey = this.ctx_key(ctx.stream, ctx.return_nid, ctx.return_txn_id);
       if (this.sep_ret_ctx.exists(skey) && (this.sep_ret_ctx[skey] == ctx)) begin
         this.sep_ret_ctx.delete(skey);
+      end
+      if (this.dwt_ret_ctx.exists(skey) && (this.dwt_ret_ctx[skey] == ctx)) begin
+        this.dwt_ret_ctx.delete(skey);
       end
     end
   endfunction
@@ -1568,6 +1939,7 @@ class vip_chi_scoreboard #(
     this.open_ctx.delete();
     this.ctx_by_dbid.delete();
     this.sep_ret_ctx.delete();
+    this.dwt_ret_ctx.delete();
     this.pred_mem.delete();
     this.written.delete();
     this.int_req_cnt.delete();
@@ -1663,6 +2035,14 @@ class vip_chi_scoreboard #(
       this.n_data_mismatch(), this.n_relay_mismatch(), this.n_route_mismatch(),
       this.n_reads_skipped), UVM_LOW);
 
+    // Appendix B on its own line too. checked is the denominator: "0 illegal"
+    // means nothing without it, and skipped names the packets the table had no
+    // row for rather than folding them into either verdict.
+    `uvm_info(get_name(), $sformatf(
+      "scoreboard originator summary: originator_checked=%0d originator_illegal=%0d originator_home_standin=%0d (originator_skipped_unmodelled=%0d)",
+      this.n_originator_checked, this.n_originator_illegal(),
+      this.n_originator_standin, this.n_originator_skipped), UVM_LOW);
+
     // The MTE tag half on its OWN line, for the same reason Checker E below is:
     // appended to the summary above it falls past the report server's wrap
     // column, and a wrapped field name is a field nobody can sweep for.
@@ -1721,6 +2101,7 @@ class vip_chi_scoreboard #(
   function void export_check_csv();
     string path;
     string run_name;
+    string source_rev;
     int    fd;
 
     if (!$value$plusargs("vip_chi_check_csv=%s", path)) begin
@@ -1729,6 +2110,25 @@ class vip_chi_scoreboard #(
 
     run_name = "unknown";
     void'($value$plusargs("UVM_TESTNAME=%s", run_name));
+
+    // The revision that produced these tallies, so a cross-source comparison
+    // can be exact rather than a proxy on file age.
+    //
+    // check_vacuity.py compares two ports' CSVs against each other, and both of
+    // the sections that do so are meaningless if the inputs describe different
+    // code. It warned on a >1h age gap, which caught the case that had actually
+    // happened twice -- but age is the wrong measurement: it misses two sweeps
+    // run minutes apart across a rebuild, and it false-positives on a
+    // deliberately archived comparison. See F-CHK-011.
+    //
+    // Passed in as a plusarg because SystemVerilog has no portable getenv, and
+    // shelling out from the simulator to ask git would be a worse dependency
+    // than a string the run script already knows. scripts/sv_regression.sh
+    // supplies it; "unknown" when nothing does, which is honest rather than
+    // fatal -- the export is a reporting aid and refusing to write tallies for
+    // want of a commit name would be worse than saying so.
+    source_rev = "unknown";
+    void'($value$plusargs("vip_chi_rev=%s", source_rev));
 
     // Append, and write the header only when the file is new -- the aggregation
     // script reads one file produced by a whole sweep.
@@ -1740,7 +2140,7 @@ class vip_chi_scoreboard #(
           "could not open %s for the check-tally export", path))
         return;
       end
-      $fdisplay(fd, "run,bind,check,enabled,severity,passes,fails");
+      $fdisplay(fd, "run,bind,check,enabled,severity,passes,fails,rev");
     end
     else begin
       $fclose(fd);
@@ -1754,10 +2154,10 @@ class vip_chi_scoreboard #(
 
     for (int unsigned i = 0; i < int'(VIP_CHI_SB_CHK_NUM_E); i++) begin
       vip_chi_sb_check_id_t id = vip_chi_sb_check_id_t'(i);
-      $fdisplay(fd, "%s,%s,%s,%0d,%s,%0d,%0d",
+      $fdisplay(fd, "%s,%s,%s,%0d,%s,%0d,%0d,%s",
         run_name, get_name(), vip_chi_sb_check_name(id),
         this.chk_rule_enabled(id), this.chk_severity[id].name(),
-        this.chk_pass[id], this.chk_fail[id]);
+        this.chk_pass[id], this.chk_fail[id], source_rev);
     end
 
     $fclose(fd);

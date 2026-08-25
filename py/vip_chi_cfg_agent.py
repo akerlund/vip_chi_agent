@@ -549,6 +549,84 @@ class VipChiCfgAgent:
     # proves it on every run.
     self.raw_req_txsactive_flit_scoped_negctl = False
 
+    # Negative control for CHI_SB_RSP_TGTID_CORRECT. The completer targets a
+    # PCMO's Persist at the request's SrcID instead of its ReturnNID.
+    #
+    # This is the DEFECT F-CORR-012 recorded, not an invented one: it is what both
+    # ports did until that finding was fixed, and it was invisible because the
+    # example topology gives a requester the same node for both fields. A control
+    # that reproduces it keeps the rule honest on every run rather than only on the
+    # day a mutation was tried.
+    self.snf_persist_target_srcid_negctl = False
+
+    # Negative control for the OTHER limb of the same Table 2-8 row: with DoDWT
+    # set, the write's DBIDResp must be addressed to ReturnNID and carry
+    # ReturnTxnID. Setting this keeps it at SrcID/TxnID, which is what both
+    # ports did before F-CORR-012 -- and, unlike the Persist limb, that defect
+    # was not merely invisible but unreachable, because DoDWT was pinned to zero
+    # by F-CORR-003 until that finding was fixed. The control exists so the rule
+    # is shown to fail on the wrong route rather than assumed to.
+    self.snf_dwt_dbid_target_srcid_negctl = False
+
+    # Completer ordering for a combined Write + CMO. IHI 0050 E section 2.8
+    # places exactly one ordering rule on CompCMO -- it "must only be sent after
+    # the associated request is received" -- and none relative to the write's
+    # own Comp. Default 0 keeps the write-first order every existing test sees;
+    # setting it emits the CMO half first, which is equally legal and is what a
+    # requester written against this VIP's habits rather than against the
+    # protocol will fall over on. See F-INTOP-008.
+    self.snf_cmo_before_write_comp = False
+
+    # Negative control for the combined-write obligation set: the completer
+    # sends a SECOND CompCMO. Accepting flits in any order must not become
+    # accepting any flit at all, and the duplicate is the cheapest response that
+    # satisfies nothing outstanding while still looking plausible.
+    self.snf_combined_cmo_duplicate_negctl = False
+
+    # Negative control for the PGroupID reflection rule: the completer returns
+    # the group identifier incremented by one. A wrong-but-plausible value
+    # rather than zero, because zero is also what a completer that never learned
+    # about the field would send, and the rule has to fail on both.
+    self.snf_persist_pgroup_corrupt_negctl = False
+
+    # Send a retried request's PCrdGrant BEFORE its RetryAck. IHI 0050 E 2.11
+    # names this reordering and requires the requester to absorb it -- "the
+    # Requester must record the credit it has received, including the credit
+    # type, so that it can assign the credit appropriately when it does receive
+    # the RetryAck response". So this is not a defect being injected; it is a
+    # legal completer behaviour the VIP could not previously produce, which is
+    # why the requester's inability to absorb it was unreachable.
+    #
+    # Not in has_negctl for that reason: nothing here is expected to be reported.
+    self.snf_pcrd_grant_before_ack = False
+
+    # Negative control for CHI_SB_ORIGINATOR_LEGAL: the completer answers a
+    # separated read with RespSepData, the response Appendix B Table B-3 permits
+    # from a Home only. This is what both ports did before F-CORR-013, kept as
+    # an injectable defect so the checker that would now have caught it has
+    # something to catch.
+    self.snf_resp_sep_data_negctl = False
+
+    # Negative control for CHI_SB_TAG_MATCH_OWED: the completer sends a TagMatch
+    # for a write whose data carried no TagOp = Match. Section 2.3.1 owes the
+    # response only when the WriteData asked for the check, and an unrequested
+    # one is not harmless -- a Requester tracking Match completions by counting
+    # would go permanently out of step.
+    self.snf_tag_match_unrequested_negctl = False
+
+    # Negative control for the DoNotGoToSD obedience rule. The snoopee reports SD
+    # in its SnpResp even when the snoop carried DoNotGoToSD = 1.
+    #
+    # Reaching this behaviour needs a control rather than a mutation because the
+    # responder cannot produce SD at all: its state map returns only I, SC or the
+    # current state, which is this VIP's never-SD reduction. So the rule that
+    # forbids transitioning to SD had nothing that could exercise it, and a rule
+    # nothing can exercise is indistinguishable from one that is absent.
+    #
+    # The control forces the REPORTED state only. It does not change the shadow,
+    # because what the checker judges is the response.
+    self.rnf_snp_resp_sd_negctl = False
+
   # ==========================================================================
   # is_valid -- runtime configuration self-check.
   #
@@ -635,14 +713,18 @@ class VipChiCfgAgent:
           "activation: only a requester raises txlinkactivereq, so there is no "
           "activation to abort")
 
-    # The requester pulses REQ+RSP FLITPEND; the home pulses SNP FLITPEND. Both
-    # run the control, and between them they cover all three rules.
-    # Implemented in the RN-I announce path, which RN-F inherits. On any other
-    # role it would set a flag nothing reads.
-    if self.flit_without_flitpend and self.role not in (Role.RNI, Role.RNF):
-      err("flit_without_flitpend is set on a role whose driver does not run the "
-          "control: the announcement it suppresses lives in the RN-I send path, "
-          "which only the requester roles use")
+    # No role restriction on flit_without_flitpend any more, and its absence is
+    # the point: every driver that announces a flit now honours the knob, so
+    # setting it on any role selects WHICH role drops its announcement. That is
+    # what makes the control able to prove CHI_*_VALID_REQUIRES_PEND fires on
+    # the home's and the completer's flits, not only the requester's.
+    #
+    # The restriction that used to be here read "on any other role it would set
+    # a flag nothing reads", which was true and was the defect: it recorded the
+    # gap as a rule instead of closing it. scripts/check_flitpend_negctl.py now
+    # holds every announcing driver to reading the knob, so this guard would go
+    # stale in the one direction that matters -- forbidding something that
+    # works. See F-CHK-014.
 
     if self.flitpend_without_valid and self.role not in (Role.RNI, Role.RNF,
                                                          Role.HNF):
@@ -749,6 +831,15 @@ class VipChiCfgAgent:
       "hnf_txsactive_early_drop_negctl": self.hnf_txsactive_early_drop_negctl,
       "raw_req_txsactive_flit_scoped_negctl":
         self.raw_req_txsactive_flit_scoped_negctl,
+      "snf_persist_target_srcid_negctl": self.snf_persist_target_srcid_negctl,
+      "snf_dwt_dbid_target_srcid_negctl": self.snf_dwt_dbid_target_srcid_negctl,
+      "snf_cmo_before_write_comp": self.snf_cmo_before_write_comp,
+      "snf_combined_cmo_duplicate_negctl": self.snf_combined_cmo_duplicate_negctl,
+      "snf_persist_pgroup_corrupt_negctl": self.snf_persist_pgroup_corrupt_negctl,
+      "snf_pcrd_grant_before_ack": self.snf_pcrd_grant_before_ack,
+      "snf_resp_sep_data_negctl": self.snf_resp_sep_data_negctl,
+      "snf_tag_match_unrequested_negctl": self.snf_tag_match_unrequested_negctl,
+      "rnf_snp_resp_sd_negctl": self.rnf_snp_resp_sd_negctl,
       "snf_duplicate_dat_beat": self.snf_duplicate_dat_beat,
       "snf_corrupt_tag": self.snf_corrupt_tag,
       "snf_reorder_ordered_service": self.snf_reorder_ordered_service,

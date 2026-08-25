@@ -10,12 +10,19 @@
 # The waiver for the wide-operand atomic stress profile, in one place, and it
 # proves itself.
 #
-# vip_chi_atomic_seq records a deliberate decision: atomic Size is not clamped by
-# default, and the atomic testcases drive `set_size(clog2(data_bytes))` -- Size 4
-# (16 B) on the CHI-D cut -- "to exercise the operand DAT / RMW / return datapath
-# at the widest beat". IHI 0050 E Table 2-17 / D Table 2-17 permits at most 8
-# bytes for AtomicStore, AtomicLoad and AtomicSwap, so every one of those requests
-# carries a Size the specification does not list for it.
+# vip_chi_atomic_seq records a deliberate decision: the atomic testcases drive
+# `set_size(clog2(data_bytes))` -- Size 4 (16 B) on the CHI-D cut -- "to exercise
+# the operand DAT / RMW / return datapath at the widest beat". IHI 0050 E Table
+# 2-17 / D Table 2-17 permits at most 8 bytes for AtomicStore, AtomicLoad and
+# AtomicSwap, so every one of those requests carries a Size the specification
+# does not list for it.
+#
+# Since F-CORR-008 the table is the DEFAULT and this profile is opt-in: each of
+# those testcases calls set_atomic_oversized_operands(1) on the sequence that
+# drives it. The waiver below and that opt-in are two halves of one statement --
+# "this testcase drives out-of-spec Sizes on purpose" -- and if either is removed
+# the other fails: without the opt-in randomization is unsatisfiable, without the
+# waiver the rule reports at ERROR.
 #
 # That was invisible until CHI_ATOMIC_SIZE_LEGAL existed. Now it reports, and the
 # five testcases holding the stress profile have to say so.

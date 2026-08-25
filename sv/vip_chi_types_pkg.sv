@@ -40,6 +40,17 @@ package vip_chi_types_pkg;
   localparam int VIP_CHI_QOS_WIDTH_C          = 4;
   localparam int VIP_CHI_PCRD_TYPE_WIDTH_C    = 4;
   localparam int VIP_CHI_TAGOP_WIDTH_C        = 2;
+
+  // Table 13-34 "TagOp value encodings": 0b11 is "Match Fetch" -- Match on a
+  // write (check the physical tags against memory), Fetch on a read. The twin of
+  // _TAGOP_MATCH_C in the Python port.
+  localparam logic [VIP_CHI_TAGOP_WIDTH_C - 1 : 0] VIP_CHI_TAGOP_MATCH_C = 2'b11;
+  // The other three encodings from the same table, named because section 12.5.2's
+  // TU rules turn on them: Invalid zeroes every Memory Tagging field, Transfer
+  // and Match make TU inapplicable, Update requires every TU bit asserted.
+  localparam logic [VIP_CHI_TAGOP_WIDTH_C - 1 : 0] VIP_CHI_TAGOP_INVALID_C  = 2'b00;
+  localparam logic [VIP_CHI_TAGOP_WIDTH_C - 1 : 0] VIP_CHI_TAGOP_TRANSFER_C = 2'b01;
+  localparam logic [VIP_CHI_TAGOP_WIDTH_C - 1 : 0] VIP_CHI_TAGOP_UPDATE_C   = 2'b10;
   localparam int VIP_CHI_GROUP_ID_EXT_WIDTH_C = 3;
   localparam int VIP_CHI_RESP_WIDTH_C         = 3;
   localparam int VIP_CHI_RESP_ERR_WIDTH_C     = 2;
@@ -174,9 +185,25 @@ package vip_chi_types_pkg;
   // write completion alone would leave the CMO permanently outstanding.
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_COMP_CMO_C       = 5'h14;
 
+  // The Completer's answer to a write whose tags had to be CHECKED.
+  //
+  // IHI 0050 E section 12: TagOp = 0b11 on a write means Match -- "the Physical
+  // Tags in the write must be checked against the Allocation Tag values obtained
+  // from memory" -- and section 2.3.1 makes the response an obligation: "If the
+  // WriteData message indicates that a Tag Match is required, then the Slave
+  // sends a TagMatch response after completing the required Tag Match
+  // operation."
+  //
+  // Reachable from a sequence for as long as this VIP has had a TagOp field:
+  // TagOp is a bare 2-bit value with no enum and no constraint, so any test
+  // could ask for Match and get silence back. Modelling it needs no new flit
+  // field -- Table 13-7 shares the response's DBID bits with TagGroupID, exactly
+  // as it does with PGroupID. See F-COV-001.
+  localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_TAG_MATCH_C      = 5'h0A;
+
   // Snoop-response RSP opcodes (Tier C). IHI0050 RSP encodings: SnpResp = 0x01,
-  // SnpRespFwded = 0x09 (0x0A is TagMatch). Both fit the CHI-D 4-bit and CHI-E
-  // 5-bit RSP opcode fields.
+  // SnpRespFwded = 0x09. Both fit the CHI-D 4-bit and CHI-E 5-bit RSP opcode
+  // fields.
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_SNP_RESP_C       = 5'h01;
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_SNP_RESP_FWDED_C = 5'h09;
 
@@ -236,6 +263,10 @@ package vip_chi_types_pkg;
   // ---------------------------------------------------------------------------
 
   localparam int          VIP_CHI_CACHE_LINE_BYTES_C   = 64;
+
+  // DataID and CCID, both fixed at 2 bits by Table 13-9 / 12-9 regardless of the
+  // data-bus width. See chi_data_id_width.
+  localparam int          VIP_CHI_DATA_ID_WIDTH_C      = 2;
   localparam int unsigned VIP_CHI_UNLIMITED_REQUESTS_C = '1;
 
   typedef enum logic {
@@ -435,6 +466,7 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E,
     VIP_CHI_CHK_LCRD_OVERFLOW_E,
     VIP_CHI_CHK_LCRD_UNDERFLOW_E,
+    VIP_CHI_CHK_LCRD_USED_IN_GRANT_CYCLE_E,
     VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E,
     VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E,
     // Transaction layer.
@@ -498,7 +530,7 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E,
     // Atomic operand Size against IHI 0050 E Table 2-17 / D Table 2-17, appended
     // for the same append-only reason. The VIP has had an opinion about this
-    // since the first cut -- con_atomic_strict_size -- and no rule reading it, so
+    // since the first cut -- con_atomic_table_2_17_size -- and no rule reading it, so
     // the constraint was unverified in both ports and the two mentions of the
     // table in the checkers both compute a beat count rather than judge a Size.
     // Off by default on a link whose testcase drives the recorded wide-operand
@@ -672,6 +704,7 @@ package vip_chi_types_pkg;
       VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E:            return "E section 14.6.1 / D section 13.6.1";
       VIP_CHI_CHK_LCRD_OVERFLOW_E:                     return "E section 14.2.1 / D section 13.2.1";
       VIP_CHI_CHK_LCRD_UNDERFLOW_E:                    return "E section 14.2.1 / D section 13.2.1";
+      VIP_CHI_CHK_LCRD_USED_IN_GRANT_CYCLE_E:          return "E section 14.2.1 Note / D section 13.2.1 Note";
       VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E:      return "E section 14.7.2 / D section 13.7.2";
       VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E:        return "E section 14.7.2 / D section 13.7.2";
       VIP_CHI_CHK_COMPLETION_FOLLOWS_REQ_E:            return "E section 2.3 / D section 2.3";
@@ -760,6 +793,9 @@ package vip_chi_types_pkg;
     // never opened, a DAT for one whose return leg was never registered.
     VIP_CHI_SB_CHK_TXN_COMPLETES_E = 0,
     VIP_CHI_SB_CHK_RSP_HAS_OPEN_TXN_E,
+    VIP_CHI_SB_CHK_RSP_TGTID_CORRECT_E,
+    VIP_CHI_SB_CHK_PERSIST_PGROUP_MATCHES_E,
+    VIP_CHI_SB_CHK_TAG_MATCH_OWED_E,
     VIP_CHI_SB_CHK_DAT_HAS_OPEN_TXN_E,
     VIP_CHI_SB_CHK_TXNID_NOT_REUSED_E,
     VIP_CHI_SB_CHK_COMPLETION_OPCODE_MODELLED_E,
@@ -776,6 +812,8 @@ package vip_chi_types_pkg;
     VIP_CHI_SB_CHK_TAGOP_STABLE_ACROSS_BEATS_E,
     // Checker E -- ordered-stream acknowledgement order.
     VIP_CHI_SB_CHK_ORDERED_ACK_IN_ORDER_E,
+    // Checker F -- Appendix B originator legality.
+    VIP_CHI_SB_CHK_ORIGINATOR_LEGAL_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_SB_CHK_NUM_E
   } vip_chi_sb_check_id_t;
@@ -788,6 +826,257 @@ package vip_chi_types_pkg;
     s = id.name();
     return {"CHI_SB_", s.substr(15, s.len() - 3)};
   endfunction
+
+
+  // ---------------------------------------------------------------------------
+  // Appendix B -- which node class may ORIGINATE a packet.
+  // ---------------------------------------------------------------------------
+  // Appendix B is a table of From->To pairs, one block per packet type, and
+  // until now neither port modelled it. The absence hid a whole class of defect:
+  // a flow can be built out of legal opcodes carrying legal fields in a legal
+  // order and still be illegal, because the node emitting it is not one the
+  // specification lets emit it. Nothing else in the VIP asks that question --
+  // the completer is the only party judging the flow, and it answers whatever it
+  // is asked.
+  //
+  // The VIP's own separated read was exactly that shape: ReadNoSnpSep from an
+  // RN-I and RespSepData from an SN-F, neither of which appears anywhere in
+  // Appendix B, and every test of it passed in both ports. See F-CORR-013 /
+  // TR-APPB-001.
+  //
+  // Only the FROM column is encoded. The To column is a routing question the
+  // TgtID checks already answer, and encoding it here would give one fact two
+  // owners. So a per-opcode mask is the UNION of that opcode's From cells: it
+  // says "a node of this class may originate this packet", not "may originate it
+  // towards you".
+  //
+  // Node classes the VIP has no role for -- RN-D, SN-I and ICN(MN) -- are
+  // dropped rather than approximated. The masks are therefore a subset of
+  // Appendix B and never a superset: a role they permit is a role Appendix B
+  // permits, so a violation reported against them is a real one.
+  //
+  // Reading these blocks needs the PDF, not the markdown conversion. The
+  // conversion renders a merged left-hand cell as if each opcode had its own
+  // From row, which turns a block's three From rows into one per opcode and
+  // silently invents originators. It is the same failure mode as the flit tables
+  // in F-CORR-002, and it is why ReadNoSnpSep looks RN-originated in the md.
+  //
+  // A mask rather than a set because SystemVerilog has no set literal that a
+  // package constant can hold: one bit per vip_chi_role_t, indexed by the enum's
+  // own value, so vip_chi_role_permitted() is a single bit select.
+  typedef logic [5 : 0] vip_chi_role_mask_t;
+
+  localparam vip_chi_role_mask_t VIP_CHI_ORIG_NONE_C     = 6'b000000;
+  localparam vip_chi_role_mask_t VIP_CHI_ORIG_RNF_C      = 6'b010000;
+  localparam vip_chi_role_mask_t VIP_CHI_ORIG_RN_C       = 6'b010100;
+  localparam vip_chi_role_mask_t VIP_CHI_ORIG_HOME_C     = 6'b101000;
+  localparam vip_chi_role_mask_t VIP_CHI_ORIG_RN_HOME_C  = 6'b111100;
+  localparam vip_chi_role_mask_t VIP_CHI_ORIG_HOME_SNF_C = 6'b101010;
+  // HN-F and SN-F, with no HN-I: TagMatch's two rows.
+  localparam vip_chi_role_mask_t VIP_CHI_ORIG_HNF_SNF_C  = 6'b100010;
+
+  function automatic bit vip_chi_role_permitted(
+    input vip_chi_role_mask_t mask,
+    input vip_chi_role_t      role
+  );
+    return mask[int'(role)];
+  endfunction
+
+  // Table B-1. The three-row blocks are RN-*->ICN, ICN(HN-F)->SN-F and
+  // ICN(HN-I)->SN-I, so their union is every class but the Slave. An opcode with
+  // no row here returns NONE, which the checker reads as "not modelled" and
+  // counts as a skip -- never as a violation.
+  function automatic vip_chi_role_mask_t vip_chi_originator_req_mask(
+    input logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] opcode
+  );
+    // Atomics share one block with the ReadNoSnp family: RN-*->ICN,
+    // ICN(HN-F)->SN-F, ICN(HN-I)->SN-I, over the contiguous 0x28..0x39 range.
+    if ((opcode >= VIP_CHI_REQ_ATOMIC_STORE_0_C) &&
+        (opcode <= VIP_CHI_REQ_ATOMIC_COMPARE_C)) begin
+      return VIP_CHI_ORIG_RN_HOME_C;
+    end
+
+    case (opcode)
+      VIP_CHI_REQ_READ_NO_SNP_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C,
+      VIP_CHI_REQ_CLEAN_SHARED_C,
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C,
+      VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C,
+      VIP_CHI_REQ_CLEAN_INVALID_C,
+      VIP_CHI_REQ_MAKE_INVALID_C,
+      VIP_CHI_REQ_PCRD_RETURN_C,
+      // Table B-1's preamble: "unless explicitly stated otherwise, a reference
+      // to a Write transaction includes both the individual Write transaction
+      // and the corresponding Combined Write transaction." Each Combined Write
+      // inherits the row of the write it is built on; these are all WriteNoSnp*.
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C:
+        return VIP_CHI_ORIG_RN_HOME_C;
+
+      // Two rows, both from a Home: ICN(HN-F)->SN-F and ICN(HN-I)->SN-I. There
+      // is no row in which a Request Node sends ReadNoSnpSep, and section 2.3.1
+      // says the same thing in prose -- "must only be sent by the Home to the
+      // Slave".
+      VIP_CHI_REQ_READ_NO_SNP_SEP_C:
+        return VIP_CHI_ORIG_HOME_C;
+
+      // PrefetchTgt is the one request a Request Node addresses straight at a
+      // Slave: RN-F, RN-D, RN-I -> SN-F, with no Home row at all.
+      VIP_CHI_REQ_PREFETCH_TGT_C:
+        return VIP_CHI_ORIG_RN_C;
+
+      // Coherent requests are RN-F only -- an RN-I has no cache to act on.
+      VIP_CHI_REQ_READ_CLEAN_C,
+      VIP_CHI_REQ_READ_SHARED_C,
+      VIP_CHI_REQ_READ_UNIQUE_C,
+      VIP_CHI_REQ_MAKE_READ_UNIQUE_C,
+      VIP_CHI_REQ_CLEAN_UNIQUE_C,
+      VIP_CHI_REQ_MAKE_UNIQUE_C,
+      VIP_CHI_REQ_EVICT_C,
+      VIP_CHI_REQ_WRITE_BACK_FULL_C,
+      VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_C:
+        return VIP_CHI_ORIG_RNF_C;
+
+      // The ReadOnce / WriteUnique block: any Request Node, no Home row.
+      VIP_CHI_REQ_READ_ONCE_C,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_C,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_C,
+      VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C:
+        return VIP_CHI_ORIG_RN_C;
+
+      default: return VIP_CHI_ORIG_NONE_C;
+    endcase
+  endfunction
+
+  // Table B-3.
+  function automatic vip_chi_role_mask_t vip_chi_originator_rsp_mask(
+    input logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] opcode
+  );
+    case (opcode)
+      VIP_CHI_RSP_RETRY_ACK_C,
+      VIP_CHI_RSP_PCRD_GRANT_C,
+      VIP_CHI_RSP_COMP_C,
+      VIP_CHI_RSP_COMP_DBID_RESP_C,
+      VIP_CHI_RSP_COMP_CMO_C,
+      VIP_CHI_RSP_READ_RECEIPT_C,
+      VIP_CHI_RSP_DBID_RESP_C,
+      VIP_CHI_RSP_PERSIST_C,
+      VIP_CHI_RSP_COMP_PERSIST_C:
+        return VIP_CHI_ORIG_HOME_SNF_C;
+
+      // One row, and it is the whole finding: RespSepData is
+      // ICN(HN-F, HN-I) -> RN-*, with no Slave row. Section 2.3.1 says it
+      // outright -- "RespSepData is permitted from the Home only."
+      VIP_CHI_RSP_RESP_SEP_DATA_C:
+        return VIP_CHI_ORIG_HOME_C;
+
+      // DBIDRespOrd has a Home row and no Slave row, unlike plain DBIDResp.
+      VIP_CHI_RSP_DBID_RESP_ORD_C:
+        return VIP_CHI_ORIG_HOME_C;
+
+      // TagMatch: ICN(HN-F) and SN-F. No HN-I row -- an HN-I has no tags.
+      VIP_CHI_RSP_TAG_MATCH_C:
+        return VIP_CHI_ORIG_HNF_SNF_C;
+
+      // Downstream responses.
+      VIP_CHI_RSP_COMP_ACK_C:
+        return VIP_CHI_ORIG_RN_C;
+      VIP_CHI_RSP_SNP_RESP_C,
+      VIP_CHI_RSP_SNP_RESP_FWDED_C:
+        return VIP_CHI_ORIG_RNF_C;
+
+      default: return VIP_CHI_ORIG_NONE_C;
+    endcase
+  endfunction
+
+  // Table B-4.
+  function automatic vip_chi_role_mask_t vip_chi_originator_dat_mask(
+    input logic [VIP_CHI_MAX_DAT_OPCODE_WIDTH_C - 1 : 0] opcode
+  );
+    case (opcode)
+      // CompData has an upstream block (Home, SN-F, SN-I) and a peer-to-peer
+      // row, RN-F -> RN-*, which is why RN-F appears here and not on
+      // DataSepResp.
+      VIP_CHI_DAT_COMP_DATA_C:
+        return (VIP_CHI_ORIG_HOME_SNF_C | VIP_CHI_ORIG_RNF_C);
+      VIP_CHI_DAT_DATA_SEP_RESP_C:
+        return VIP_CHI_ORIG_HOME_SNF_C;
+
+      VIP_CHI_DAT_COPY_BACK_WR_DATA_C,
+      VIP_CHI_DAT_SNP_RESP_DATA_C,
+      VIP_CHI_DAT_SNP_RESP_DATA_PTL_C,
+      VIP_CHI_DAT_SNP_RESP_DATA_FWDED_C:
+        return VIP_CHI_ORIG_RNF_C;
+
+      VIP_CHI_DAT_NON_COPY_BACK_WR_DATA_C:
+        return VIP_CHI_ORIG_RN_HOME_C;
+      VIP_CHI_DAT_NCB_WR_DATA_COMP_ACK_C:
+        return VIP_CHI_ORIG_RN_C;
+
+      default: return VIP_CHI_ORIG_NONE_C;
+    endcase
+  endfunction
+
+  // Table B-2 is deliberately absent. It has two rows: every snoop but SnpDVMOp
+  // is ICN(HN-F) -> RN-F, and SnpDVMOp is ICN(MN) -> RN-F/RN-D, a node class
+  // this VIP has no role for. The one modellable row cannot be falsified here --
+  // the RN-F agent's only peer IS the HN-F, so the monitor attributes every
+  // snoop it can see to HN-F by construction and the rule would pass without
+  // ever having been able to fail. A vacuous rule is worse than a missing one:
+  // it reports evidence it does not have. It becomes worth encoding when a
+  // second snoop source exists.
+
+  // The one place this VIP knowingly departs from Appendix B, named rather than
+  // left implicit.
+  //
+  // The agent topology is point-to-point RN-I <-> SN-F: there is no Home
+  // component between them. The separated read needs one -- Appendix B puts the
+  // ReadNoSnpSep on a Home->Slave link -- so the RN-I agent plays the Home's REQ
+  // leg, and the item constraint that sets ReturnNID == SrcID is what makes the
+  // data come back to it. Everything else on the link is then conformant: the
+  // Slave's ReadReceipt goes to the Home stand-in (Table B-3 SN-F -> ICN(HN-F))
+  // and its DataSepResp to the requester (Table B-4 SN-F -> RN-I, an EXPECTED
+  // target, not merely a permitted one).
+  //
+  // cfg.rni_home_standin is on by default, which grants an RN-I the originator
+  // rights of a Home for these opcodes and nothing else.
+  function automatic bit vip_chi_home_standin_req(
+    input logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] opcode
+  );
+    return (opcode == VIP_CHI_REQ_READ_NO_SNP_SEP_C);
+  endfunction
+
+  // The same departure seen from the completer's end, and found by the checker
+  // above on its first sweep rather than by reading: the SN-F answers an ordered
+  // write with DBIDRespOrd, and Table B-3 gives that response ONE From row --
+  // ICN(HN-F, HN-I, MN). Plain DBIDResp has three, including
+  // "SN-F -> ICN(HN-F), RN-F, RN-D, RN-I", so a Slave answering a Requester
+  // directly is contemplated by the table; extending that to DBIDRespOrd is not.
+  //
+  // The reason it is not is section 2.6: "The Completer is a PoS. A PoS sending
+  // DBIDResp or DBIDRespOrd means [...]" -- DBIDRespOrd carries a Point of
+  // Serialization guarantee, ordering "all subsequent [...] requests to the same
+  // address from the same source against this request". A Slave in a real system
+  // is not the PoS for other Requesters and cannot make that promise.
+  //
+  // On this link it can, and that is the whole justification: the RN-I <-> SN-F
+  // pair has no other ordering point in it, so the completer IS the PoS the
+  // requester is talking to. Same shape as the separated read -- a node playing
+  // the Home's part because the link has no Home on it -- and named the same
+  // way, so it is auditable rather than assumed.
+  function automatic bit vip_chi_home_standin_rsp(
+    input logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] opcode
+  );
+    return (opcode == VIP_CHI_RSP_DBID_RESP_ORD_C);
+  endfunction
+
 
 
   typedef enum logic [2 : 0] {
@@ -966,6 +1255,7 @@ package vip_chi_types_pkg;
     VIP_CHI_RSP_COMP_PERSIST_E   = VIP_CHI_RSP_COMP_PERSIST_C,
     VIP_CHI_RSP_DBID_RESP_ORD_E  = VIP_CHI_RSP_DBID_RESP_ORD_C,
     VIP_CHI_RSP_COMP_CMO_E       = VIP_CHI_RSP_COMP_CMO_C,
+    VIP_CHI_RSP_TAG_MATCH_E      = VIP_CHI_RSP_TAG_MATCH_C,
     VIP_CHI_RSP_SNP_RESP_E       = VIP_CHI_RSP_SNP_RESP_C,
     VIP_CHI_RSP_SNP_RESP_FWDED_E = VIP_CHI_RSP_SNP_RESP_FWDED_C
   } vip_chi_rsp_opcode_t;
@@ -2295,6 +2585,155 @@ package vip_chi_types_pkg;
   endfunction
 
   // ---------------------------------------------------------------------------
+  // TRUE when REQ's 8-bit group field carries PGroupID for this opcode.
+  //
+  // IHI 0050 E 13.10.7: "Applicable in the CleanSharedPersistSep request and the
+  // Persist and CompPersist responses. Inapplicable and must be set to zero in
+  // all other requests and responses."
+  //
+  // Section 2.5 says more, and this follows section 2.5: "Use of this 8-bit
+  // field is applicable in CleanSharedPersistSep and Combined Write with PCMO
+  // transactions", and again as an obligation -- "PGroupID must be sent in the
+  // CleanSharedPersistSep request and a Combined Write request that includes a
+  // PCMO." 13.10.7's field summary omits the Combined Write; 2.5 states it
+  // twice, once as a requirement. The two are read together and the wider set
+  // wins, which is also the direction this VIP errs in on every other ambiguous
+  // applicability question: a permissive rule cannot false-fail conformant
+  // traffic.
+  //
+  // The twin of req_pgroup_id_applicable in the Python types package.
+  function automatic bit vip_chi_req_pgroup_id_applicable(
+    input vip_chi_req_opcode_t opcode
+  );
+    if (opcode == VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_E) begin
+      return 1'b1;
+    end
+    return vip_chi_req_opcode_combined_cmo_is_persist(opcode);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // TRUE when RSP's DBID field carries PGroupID for this response opcode.
+  //
+  // IHI 0050 E Table 13-7 gives that 12-bit position three meanings --
+  // "DBID[11:0] / {4'b0, PGroupID[7:0]} / {4'b0, StashGroupID[7:0]}" -- and
+  // 13.10.7 names the two responses where the middle one applies.
+  //
+  // The twin of rsp_pgroup_id_applicable in the Python types package.
+  function automatic bit vip_chi_rsp_pgroup_id_applicable(
+    input vip_chi_rsp_opcode_t rsp_opcode
+  );
+    case (rsp_opcode)
+      VIP_CHI_RSP_PERSIST_E,
+      VIP_CHI_RSP_COMP_PERSIST_E: return 1'b1;
+      default:                    return 1'b0;
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // PGroupID as the request carries it: 13.10.8's equation, literally.
+  //
+  // IHI 0050 E 13.10.8, on Persistent CMO transactions: "used to extend the
+  // persistent group ID size to 8 bits; PGroupID[7:0] = {GroupIDExt[2:0],
+  // LPID[4:0]}."
+  //
+  // So PGroupID is not a field of its own anywhere. On REQ it is a VIEW of the
+  // 8-bit position Table 13-6 shares between {GroupIDExt, LPID}, PGroupID,
+  // StashGroupID and TagGroupID; on RSP it is a view of DBID. Adding a physical
+  // PGroupID to either layout would make this VIP's flits wider than the
+  // specification's -- and because both ports would have been widened together,
+  // no parity check could have seen it. F-INTOP-010 asked for exactly that, on
+  // App A's field lists; Table 13-6 and Table 13-7 say otherwise.
+  //
+  // LPID's low five bits, not all of it: the equation names LPID[4:0] and this
+  // VIP models LPID as 8 bits wide under Issue E. Taking the masked slice is
+  // right on either reading of that width, which is why it is written as the
+  // spec writes it rather than as whatever the local field happens to be.
+  //
+  // The twin of pgroup_id_from_req in the Python types package.
+  function automatic logic [7 : 0] vip_chi_pgroup_id_from_req(
+    input logic [2 : 0] group_id_ext,
+    input logic [7 : 0] lp_id
+  );
+    return {group_id_ext, lp_id[4 : 0]};
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // The three responses that carry a write's DBID grant.
+  //
+  // CompDBIDResp is included because it IS a DBIDResp with the Comp folded into
+  // it: IHI 0050 E Table 2-8's footnote permits the combination only "if both
+  // are targeting the Home", which is a statement about when the two responses
+  // may share a flit, not about the grant ceasing to be a grant when they do.
+  // Any rule about where a grant is addressed applies to all three encodings.
+  //
+  // DBIDRespOrd is the ordered variant and differs only in the ordering
+  // guarantee it adds, so it grants exactly as DBIDResp does.
+  //
+  // The twin of rsp_opcode_is_write_grant in the Python types package.
+  function automatic bit vip_chi_rsp_opcode_is_write_grant(
+    input vip_chi_rsp_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_RSP_DBID_RESP_E,
+      VIP_CHI_RSP_DBID_RESP_ORD_E,
+      VIP_CHI_RSP_COMP_DBID_RESP_E: return 1'b1;
+      default:                      return 1'b0;
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // TRUE when a write's DBIDResp is routed by ReturnNID/ReturnTxnID, not SrcID.
+  //
+  // IHI 0050 E Table 2-8, "Message field mapping in WriteNoSnpCMO from Home to
+  // Slave and its responses", is the whole rule in three rows:
+  //
+  //     DoDWT  CMO type                    DBIDResp          Persist
+  //       1    All                         HN.Req.ReturnNID  HN.Req.ReturnNID
+  //       0    CleanShared / CleanInvalid  HN.Req.SrcID      -
+  //       0    Persistent                  HN.Req.SrcID      HN.Req.ReturnNID
+  //
+  // So DoDWT alone selects the DBIDResp's target, and it selects nothing else:
+  // the Persist column does not depend on it, which is why that limb belongs to
+  // vip_chi_req_opcode_combined_cmo_is_persist and not here. Section 4.2.4 says
+  // the same in prose -- "The Persist response [...] always uses the ReturnNID
+  // value of the Request [...] irrespective of the DoDWT field value."
+  //
+  // The TxnID travels with the target. Section 2.5: "When DoDWT = 1,
+  // ReturnTxnID value is expected to be the original Requester TxnID [...] Used
+  // as the TxnID in the DBIDResp response." A DBIDResp is the one response in
+  // this VIP that changes BOTH of its addressing fields on a single request
+  // bit, which is why the requester cannot keep matching it on TxnID alone.
+  //
+  // Keyed on the bit, not only on the opcode, because DoDWT is a per-request
+  // choice: the same WriteNoSnpFull is answered at SrcID or at ReturnNID
+  // depending on it. The opcode still appears because con_dodwt_overload pins
+  // DoDWT to zero wherever 13.10.25 makes it inapplicable, so the two agree by
+  // construction -- and asserting that agreement here would be circular, so
+  // this reads the bit and lets the constraint own the applicability.
+  //
+  // Takes the RAW bit 17 and the issue rather than a "dodwt" argument, because
+  // there is no dodwt field to pass: REQ bit 17 is carried as SnpAttr in the
+  // flit layout and is DoDWT only where vip_chi_req_bit17_is_dodwt says so
+  // (F-CORR-003). A caller handed a decoded bit would have to do that decode
+  // itself, and a caller reading a DoDWT field off a sampled flit would get
+  // whatever SnpAttr happened to be -- which is the whole shape of the defect
+  // this VIP already carries once.
+  //
+  // Table 2-8 is headed with the Combined Write, but section 2.5 states the
+  // same DBIDResp rule for a plain "WriteNoSnp with TagOp not Match", and
+  // 13.10.25 makes DoDWT applicable in WriteNoSnpFull and WriteNoSnpPtl as well
+  // as in the Combined forms. The rule is DWT's, not the CMO's.
+  //
+  // The twin of req_dwt_grant_uses_return_path in the Python types package.
+  function automatic bit vip_chi_req_dwt_grant_uses_return_path(
+    input vip_chi_issue_t      issue,
+    input vip_chi_req_opcode_t opcode,
+    input bit                  bit17
+  );
+    return bit17 && vip_chi_req_bit17_is_dodwt(issue, opcode);
+  endfunction
+
+  // ---------------------------------------------------------------------------
   function automatic logic [3 : 0] vip_chi_req_tagop_permitted_mask(
     input vip_chi_issue_t      issue,
     input vip_chi_req_opcode_t opcode
@@ -2910,11 +3349,32 @@ package vip_chi_types_pkg;
 
   // ---------------------------------------------------------------------------
   // Return the LPID width for the selected CHI issue.
+  //
+  // LPID is 5 bits in BOTH issues. Issue E does not widen it.
+  //
+  // This used to return 8 for E, on the reasonable-looking reading that Issue E
+  // "extends the group ID to 8 bits". It does -- but by prefixing GroupIDExt,
+  // not by widening LPID. IHI 0050 E 13.10.8 states the extension as a
+  // concatenation: "used to extend the persistent group ID size to 8 bits;
+  // PGroupID[7:0] = {GroupIDExt[2:0], LPID[4:0]}". Carrying an 8-bit LPID AND a
+  // 3-bit GroupIDExt counted the extension twice and made the Issue E REQ flit
+  // three bits wider than Table 13-6's.
+  //
+  // The arithmetic is what settled it, and it did not need the table read at
+  // all. Table 13-6 gives R = (87 + RAW + M + Y) to (99 + RAW + M + Y), a span
+  // of 12 that is exactly the node-ID variation across this flit's three
+  // node-ID fields -- so at the narrowest NodeID_Width the total must equal the
+  // minimum exactly, and at the widest the maximum exactly. This VIP was +3 at
+  // all four corners. Issue D, whose Table 12-6 total is R = (121 to 141) + M +
+  // X, lands on both corners exactly, which is what validates the method rather
+  // than the conclusion.
+  //
+  // See F-CORR-026.
   // ---------------------------------------------------------------------------
   function automatic int chi_lpid_width(input vip_chi_issue_t issue);
     case (issue)
       VIP_CHI_ISSUE_D_E: return 5;
-      VIP_CHI_ISSUE_E_E: return 8;
+      VIP_CHI_ISSUE_E_E: return 5;
       default:           return 0;
     endcase
   endfunction
@@ -2960,16 +3420,32 @@ package vip_chi_types_pkg;
   endfunction
 
   // ---------------------------------------------------------------------------
-  // Return the DataID / CCID width derived from the max beat count.
+  // Return the DataID / CCID width. It is 2, at every data-bus width.
+  //
+  // IHI 0050 E Table 13-9 and D Table 12-9 both give a flat "2" for each, in the
+  // column that carries a formula wherever one is meant -- BE is "DW/8 = 16, 32,
+  // 64", Tag is "DW/32 = 4, 8, 16", Data is "DW = 128, 256, 512". These two are
+  // not parameterized and the tables say so by not parameterizing them.
+  //
+  // This used to be $clog2(beats), which is the width DataID *needs* rather than
+  // the width it *has*: at DW = 128 it happens to give 2 and is right by
+  // accident; at 256 and 512 it gives 1, and the flit came out two bits narrow.
+  //
+  // That went unseen because a second deviation cancelled it. The VIP gives
+  // DataCheck and Poison a 1-bit placeholder when their buses are absent (as
+  // mpam_field_width does), where the specification's totals take DC = P = 0 --
+  // so the DAT flit ran +2 from the placeholders and -2 from these, landing
+  // exactly on Table 13-9's total at DW = 256 and 512. Two errors summing to
+  // zero at the two configurations anyone would check.
+  //
+  // The data_bytes argument is kept so every caller and the Python twin keep the
+  // same shape, and so the day a table does parameterize this there is a place
+  // to put it.
+  //
+  // See F-CORR-026, whose width gate is what separated them.
   // ---------------------------------------------------------------------------
   function automatic int chi_data_id_width(input int data_bytes);
-    int beats;
-
-    beats = chi_num_dat_beats(data_bytes);
-    if (beats <= 1) begin
-      return 1;
-    end
-    return $clog2(beats);
+    return VIP_CHI_DATA_ID_WIDTH_C;
   endfunction
 
   // ---------------------------------------------------------------------------

@@ -132,7 +132,12 @@ class tc_chi_e_signal_drivability extends chi_e_base_test;
     super.rni_wr_seq.set_size(3'd6);
     super.rni_wr_seq.set_src_id(E_DBID_RESP_ORD_RNI_NODE_ID_C);
     super.rni_wr_seq.set_tgt_id(E_DBID_RESP_ORD_SNF_NODE_ID_C);
-    super.rni_wr_seq.set_lp_id(item_t::lpid_t'('h55));
+    // 0x55 across the 8-bit group position, split the way Issue E actually
+    // carries it: {GroupIDExt[2:0], LPID[4:0]} = {0b010, 0b10101} = 0b01010101.
+    // The bits on the wire are unchanged -- this test is about driving them --
+    // but LPID alone is 5 bits in both issues, so the top three now come from
+    // the GroupIDExt this test already sets to 0x2 below (F-CORR-026).
+    super.rni_wr_seq.set_lp_id(item_t::lpid_t'(5'b10101));
     super.rni_wr_seq.set_qos(4'hb);
     super.rni_wr_seq.set_ns(VIP_CHI_REQ_NON_SECURE_ACCESS_E);
     super.rni_wr_seq.set_order(VIP_CHI_ORDER_REQ_ACCEPTED_E);
@@ -161,7 +166,7 @@ class tc_chi_e_signal_drivability extends chi_e_base_test;
 
     if ((req_item.src_id != E_DBID_RESP_ORD_RNI_NODE_ID_C) ||
         (req_item.tgt_id != E_DBID_RESP_ORD_SNF_NODE_ID_C) ||
-        (req_item.lp_id  != item_t::lpid_t'('h55)) ||
+        (req_item.lp_id  != item_t::lpid_t'(5'b10101)) ||
         (req_item.qos    != 4'hb) ||
         (req_item.ns     != VIP_CHI_REQ_NON_SECURE_ACCESS_E) ||
         (req_item.order  != VIP_CHI_ORDER_REQ_ACCEPTED_E) ||

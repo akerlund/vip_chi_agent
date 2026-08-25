@@ -169,6 +169,20 @@ package chi_tb_pkg;
   // afterwards, and one address for all six would let a later form's data hide
   // an earlier form's dropped write. PACKAGE scope for the vcs1fe reason above.
   localparam item_e_t::addr_t    E_WRITE_CMO_ADDR_C   = item_e_t::addr_t'(52'h0012_3456_a000);
+  // Two addresses for the Persist-routing pair (F-CORR-012), clear of the
+  // write-CMO block above so a readback there cannot see this traffic.
+  localparam item_e_t::addr_t    E_PERSIST_RETURN_NID_ADDR_C = item_e_t::addr_t'(52'h0012_3456_b000);
+  localparam item_e_t::addr_t    E_PERSIST_RETURN_NID_NEGCTL_ADDR_C = item_e_t::addr_t'(52'h0012_3456_b100);
+  localparam item_e_t::addr_t    E_DWT_RETURN_NID_ADDR_C = item_e_t::addr_t'(52'h0012_3456_c000);
+  localparam item_e_t::addr_t    E_DWT_RETURN_NID_NEGCTL_ADDR_C = item_e_t::addr_t'(52'h0012_3456_c100);
+  localparam item_e_t::addr_t    E_COMBINED_WRITE_COMP_PERSIST_ADDR_C = item_e_t::addr_t'(52'h0012_3456_d000);
+  localparam item_e_t::addr_t    E_COMBINED_WRITE_CMO_FIRST_ADDR_C = item_e_t::addr_t'(52'h0012_3456_d100);
+  localparam item_e_t::addr_t    E_COMBINED_WRITE_OBLIGATION_NEGCTL_ADDR_C = item_e_t::addr_t'(52'h0012_3456_d200);
+  localparam item_e_t::addr_t    E_PERSIST_PGROUP_ADDR_C = item_e_t::addr_t'(52'h0012_3456_e000);
+  localparam item_e_t::addr_t    E_PERSIST_PGROUP_NEGCTL_ADDR_C = item_e_t::addr_t'(52'h0012_3456_e100);
+  localparam item_e_t::addr_t    E_COMBINED_WRITE_PGROUP_ADDR_C = item_e_t::addr_t'(52'h0012_3456_e200);
+  localparam item_e_t::addr_t    E_TAG_MATCH_ADDR_C = item_e_t::addr_t'(52'h0012_3456_f000);
+  localparam item_e_t::addr_t    E_TAG_MATCH_NEGCTL_ADDR_C = item_e_t::addr_t'(52'h0012_3456_f100);
   localparam int unsigned        E_WRITE_CMO_STRIDE_C = 'h1000;
   localparam item_e_t::txn_id_t  E_MTE_WRITE_TXN_ID_C = item_e_t::txn_id_t'(8'h61);
   localparam item_e_t::txn_id_t  E_MTE_READ_TXN_ID_C  = item_e_t::txn_id_t'(8'h62);

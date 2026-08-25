@@ -74,6 +74,12 @@ class vip_chi_driver_rni #(
 
   protected txn_id_t next_txn_id = '0;
 
+  // Which responses retired the most recent combined write's obligations; see
+  // collect_combined_write_obligations. Public so a testcase can assert that
+  // the completer actually used the encoding it was configured for, which
+  // "the transaction completed" cannot distinguish.
+  rsp_opcode_t combined_completion_log[$];
+
   // Outstanding-transaction TxnID pool. Sized by the number of in-flight
   // transactions (<= cfg.max_outstanding_*), NEVER by 2**txn_id_width: the
   // allocator only ever scans this queue, so it stays small and
@@ -942,6 +948,20 @@ class vip_chi_driver_rni #(
 
             this.collect_read_completion(req);
           end
+          else if (this.req_is_combined_write_cmo(req)) begin
+
+            // A combined request's remaining completions are collected as ONE
+            // obligation set rather than write-then-CMO, because Issue E does
+            // not order them that way. Handled here and not after the branch:
+            // the write's own Comp is one of the obligations, and a completer
+            // is free to put CompCMO in front of it.
+            this.collect_combined_write_obligations(
+              req, req_src_id, req_tgt_id, wait_for_deferred_comp);
+
+            if (!wait_for_deferred_comp) begin
+              this.stamp_rsp_flit_on_req(req, write_grant_flit);
+            end
+          end
           else if (wait_for_deferred_comp) begin
 
             this.collect_write_completion(req);
@@ -964,17 +984,20 @@ class vip_chi_driver_rni #(
 
             this.collect_write_zero_completion(req);
           end
+          else if (this.req_is_combined_write_cmo(req)) begin
+
+            // A combined write with no data phase. None exist today -- every
+            // combined form carries a write payload -- but the arm is here so a
+            // future dataless one does not silently skip its CMO obligations,
+            // which is what the old unconditional call after this chain gave
+            // for free.
+            this.collect_combined_write_obligations(
+              req, req_src_id, req_tgt_id, 1'b1);
+          end
           else begin
 
             this.collect_write_completion(req);
           end
-        end
-
-        // The CMO half's completion, which arrives after the write's because the
-        // completer may only send it once the write data has landed.
-        if (this.req_is_combined_write_cmo(req)) begin
-
-          this.collect_combined_cmo_completion(req, req_src_id, req_tgt_id);
         end
 
         // WriteEvictOrEvict always sets ExpCompAck but acknowledges itself: the
@@ -1001,13 +1024,18 @@ class vip_chi_driver_rni #(
           // Absorb any RetryAck/PCrdGrant and re-issue before the read
           // completion flow (a no-op unless retry was allowed and bounced).
           this.handle_retry(req);
-          if (this.req_expects_read_receipt(req)) begin
+          // A separated read retires on ReadReceipt + DataSepResp, not on
+          // RespSepData + DataSepResp. Table B-3 permits RespSepData from a Home
+          // only, and section 2.3.1 makes ReadReceipt the response the Slave
+          // owes -- so on this link, where this requester is the Home stand-in,
+          // ReadReceipt is what arrives. It arrives for every separated read,
+          // ordered or not. See F-CORR-013.
+          if (this.req_expects_read_receipt(req) ||
+              (req.opcode == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C))) begin
             this.collect_read_receipt(req);
           end
 
-          // A separated read receives its response on RSP (RespSepData) ahead of
-          // the DataSepResp data leg on DAT.
-          if (req.opcode == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C)) begin
+          if (this.cfg.snf_resp_sep_data_negctl) begin
 
             this.collect_resp_sep_data(req);
           end
@@ -1948,28 +1976,34 @@ class vip_chi_driver_rni #(
   // ---------------------------------------------------------------------------
   // Wait for one matching RSP flit on the inbound completion channel.
   // ---------------------------------------------------------------------------
+  // Take the next RSP flit off the wire and return the link credit for it.
+  //
+  // The credit is returned here rather than at each caller's check, because it
+  // is owed the moment the flit is accepted off the channel: whether the
+  // requester likes what the flit says is a protocol question and the credit is
+  // a link one. Three callers used to carry their own copy of this loop.
+  protected task take_rsp_flit(output rsp_flit_t flit);
+
+    while (!this.vif_rni.g_drv.rni_cb.rxrspflitv) begin
+
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
+    end
+
+    flit = this.vif_rni.g_drv.rni_cb.rxrspflit;
+    this.schedule_rsp_credit_return();
+  endtask
+
+  // ---------------------------------------------------------------------------
   protected task wait_for_matching_rsp(input txn_id_t req_txn_id, output rsp_flit_t flit);
 
-    forever begin
+    this.take_rsp_flit(flit);
 
-      while (!this.vif_rni.g_drv.rni_cb.rxrspflitv) begin
+    if (txn_id_t'(flit.txnid) != req_txn_id) begin
 
-        @(this.vif_rni.g_drv.rni_cb);
-        this.drive_idle_sideband();
-      end
-
-      flit = this.vif_rni.g_drv.rni_cb.rxrspflit;
-
-      if (txn_id_t'(flit.txnid) != req_txn_id) begin
-
-        `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] Write completion txn_id 0x%0h does not match request txn_id 0x%0h",
-        get_name(), flit.txnid, req_txn_id))
-      end
-
-      this.schedule_rsp_credit_return();
-
-      break;
+      `uvm_fatal(get_name(), $sformatf(
+      "FATAL [%s] Write completion txn_id 0x%0h does not match request txn_id 0x%0h",
+      get_name(), flit.txnid, req_txn_id))
     end
   endtask
 
@@ -1977,35 +2011,38 @@ class vip_chi_driver_rni #(
   // Standalone Persist has no applicable TxnID. Match the already-open
   // transaction by the requester/completer routing pair instead.
   // ---------------------------------------------------------------------------
+  // The expected target is the node the REQUEST asked for -- IHI 0050 E 2.8
+  // routes a PCMO's Persist to ReturnNID, so that is where the requester looks
+  // for it, and not at its own SrcID. The two are the same node whenever a
+  // requester wants its own Persist back, which is why reading SrcID here worked
+  // for as long as nothing set ReturnNID to anything else. See F-CORR-012.
   protected task wait_for_standalone_persist_rsp(
-    input  node_id_t  req_src_id,
+    input  node_id_t  expect_tgt_id,
     input  node_id_t  req_tgt_id,
     output rsp_flit_t flit
   );
 
-    forever begin
-
-      while (!this.vif_rni.g_drv.rni_cb.rxrspflitv) begin
-
-        @(this.vif_rni.g_drv.rni_cb);
-        this.drive_idle_sideband();
-      end
-
-      flit = this.vif_rni.g_drv.rni_cb.rxrspflit;
-
-      if ((node_id_t'(flit.srcid) != req_tgt_id) ||
-          (node_id_t'(flit.tgtid) != req_src_id)) begin
-
-        `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] Standalone Persist route 0x%0h->0x%0h does not match expected 0x%0h->0x%0h",
-        get_name(), flit.srcid, flit.tgtid, req_tgt_id, req_src_id))
-      end
-
-      this.schedule_rsp_credit_return();
-
-      break;
-    end
+    this.take_rsp_flit(flit);
+    this.check_persist_route(flit, expect_tgt_id, req_tgt_id);
   endtask
+
+  // ---------------------------------------------------------------------------
+  // A Persist carries no applicable TxnID, so its routing is its identity.
+  // ---------------------------------------------------------------------------
+  protected function void check_persist_route(
+    input rsp_flit_t flit,
+    input node_id_t  expect_tgt_id,
+    input node_id_t  req_tgt_id
+  );
+
+    if ((node_id_t'(flit.srcid) != req_tgt_id) ||
+        (node_id_t'(flit.tgtid) != expect_tgt_id)) begin
+
+      `uvm_fatal(get_name(), $sformatf(
+      "FATAL [%s] Standalone Persist route 0x%0h->0x%0h does not match expected 0x%0h->0x%0h",
+      get_name(), flit.srcid, flit.tgtid, req_tgt_id, expect_tgt_id))
+    end
+  endfunction
 
   // ---------------------------------------------------------------------------
   // Wait for the initial DBID-carrying write response before sending DAT.
@@ -2055,13 +2092,36 @@ class vip_chi_driver_rni #(
     this.drive_comp_ack(req.txn_id, req_src_id, req_tgt_id);
   endtask
 
+  // The TxnID this requester should expect its write grant under.
+  //
+  // Ordinarily its own. Under Direct Write Transfer it is ReturnTxnID, because
+  // section 2.5 puts the grant on the return path whole: "when DoDWT = 1,
+  // ReturnTxnID value is expected to be the original Requester TxnID [...] Used
+  // as the TxnID in the DBIDResp response", and Table 2-8 sends the TgtID to
+  // ReturnNID alongside it.
+  //
+  // The item's dodwt field is passed as bit 17 rather than its snp_attr, because
+  // on the ITEM the two are separate fields and only one of them can be set
+  // (con_dodwt_overload); it is the FLIT that overloads the bit. Under Issue D
+  // the classifier answers false whatever is passed, so a D requester keeps
+  // matching on its own TxnID with no issue test here.
+  protected function txn_id_t write_grant_txn_id(input item_t req);
+
+    if (vip_chi_types_pkg::vip_chi_req_dwt_grant_uses_return_path(
+          CFG_P.ISSUE_P, req_opcode_t'(req.opcode), bit'(req.dodwt))) begin
+      return txn_id_t'(req.return_txn_id);
+    end
+    return txn_id_t'(req.txn_id);
+  endfunction
+
+  // ---------------------------------------------------------------------------
   protected task collect_write_dbid_grant(
     inout  item_t     req,
     output bit        wait_for_deferred_comp,
     output rsp_flit_t flit
   );
 
-    this.wait_for_matching_rsp(req.txn_id, flit);
+    this.wait_for_matching_rsp(this.write_grant_txn_id(req), flit);
     req.dbid = txn_id_t'(flit.dbid);
 
     case (rsp_opcode_t'(flit.opcode))
@@ -2201,7 +2261,58 @@ class vip_chi_driver_rni #(
   // retried request be re-issued). PCrdGrant is not tied to a TxnID; a single-RN
   // requester simply consumes the next grant.
   // ---------------------------------------------------------------------------
+  // Record one granted P-credit, by type.
+  //
+  // IHI 0050 E 2.11: "There is no fixed relationship between credits and
+  // particular transactions" -- a credit belongs to its PCrdType and to this
+  // link, not to whatever was bounced. Banking is therefore always the right
+  // thing to do with a grant, whether or not the RetryAck it answers has been
+  // seen yet.
+  //
+  // State only -- the LINK credit is returned by the caller, because the two
+  // callers differ on when: the pipelined loop returns it for every RSP before
+  // dispatching on the opcode, the serial path only for the ones it consumes.
+  //
+  // One function for both, deliberately. Two paths each carrying their own copy
+  // of "what to do with a PCrdGrant" is exactly how F-INTOP-006 happened: the
+  // pipelined one banked by type and absorbed a reordered grant, the serial one
+  // did not, and nothing made them disagree visibly.
+  // ---------------------------------------------------------------------------
+  protected function void bank_pcrd_grant(input rsp_flit_t flit);
+
+    this.pcrd_pool[flit.pcrdtype]    += 1;
+    this.pcrd_granter[flit.pcrdtype]  = node_id_t'(flit.srcid);
+    this.pcrd_own_id[flit.pcrdtype]   = node_id_t'(flit.tgtid);
+    this.check_pcrd_budget();
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Obtain the P-credit a RetryAck owed, from the bank or from the wire.
+  //
+  // The bank is consulted FIRST, and that is the whole of what section 2.11
+  // requires here: "It is possible that a reordering interconnect can reorder
+  // the responses such that the PCrdGrant is received by the Requester before
+  // the RetryAck response for the transaction is received. In this case, the
+  // Requester must record the credit it has received, including the credit
+  // type, so that it can assign the credit appropriately when it does receive
+  // the RetryAck response."
+  //
+  // This path used to demand the grant arrive next on the wire and fatal on
+  // anything else, so a conformant reordering interconnect produced a VIP crash
+  // reported as a DUT failure. The pipelined path in this same class already
+  // banked credits by type; the two paths are selected by cfg.max_outstanding_*,
+  // which is not something a reader of section 2.11 would think to check. See
+  // F-INTOP-006.
+  // ---------------------------------------------------------------------------
   protected task collect_pcrd_grant(input vip_chi_pcrd_type_t pcrd_type);
+
+    rsp_flit_t flit;
+
+    // Already banked -- the grant beat its own RetryAck here.
+    if (this.pcrd_pool.exists(pcrd_type) && (this.pcrd_pool[pcrd_type] > 0)) begin
+      this.pcrd_pool[pcrd_type] -= 1;
+      return;
+    end
 
     forever begin
 
@@ -2211,28 +2322,39 @@ class vip_chi_driver_rni #(
         this.drive_idle_sideband();
       end
 
-      if (rsp_opcode_t'(this.vif_rni.g_drv.rni_cb.rxrspflit.opcode) !=
-          rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C)) begin
+      flit = this.vif_rni.g_drv.rni_cb.rxrspflit;
+
+      // Nothing in 2.11 makes the grant the next response on the channel, and a
+      // completer may interleave other transactions' completions. The serial
+      // path has only one transaction outstanding, so there is nothing this can
+      // usefully be -- the message names that assumption rather than the
+      // symptom, so a reader hitting it knows what to relax.
+      //
+      // Still a `uvm_fatal here, where the Python twin goes through reject():
+      // this port's driver refusals are fatals by design and a report catcher
+      // demotes the ones a control expects (F-CHK-003). Writing a recovery path
+      // after it would be dead code claiming a robustness this does not have.
+      if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C)) begin
 
         `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] Expected PCrdGrant after RetryAck, got RSP opcode 0x%0h",
-        get_name(), this.vif_rni.g_drv.rni_cb.rxrspflit.opcode))
+        "FATAL [%s] waiting for a PCrdGrant of type 0x%0h, got RSP opcode 0x%0h",
+        get_name(), pcrd_type, flit.opcode))
       end
 
-      // The PCrdGrant must return the PCrdType the RetryAck owed; a mismatch means
-      // the completer granted a credit for a different pool than it promised (7.4).
-      if (this.vif_rni.g_drv.rni_cb.rxrspflit.pcrdtype != pcrd_type) begin
-        `uvm_fatal(get_name(), $sformatf(
-          "FATAL [%s] PCrdGrant PCrdType 0x%0h != the 0x%0h owed by the RetryAck",
-          get_name(), this.vif_rni.g_drv.rni_cb.rxrspflit.pcrdtype, pcrd_type))
-      end
-
+      // Banked by type, never matched against the owed type on arrival: a
+      // completer with several outstanding RetryAcks may grant them in any
+      // order, and a grant of another type is this node's credit too.
+      this.bank_pcrd_grant(flit);
       this.schedule_rsp_credit_return();
 
       // Step off the accepted PCrdGrant beat before the caller re-issues.
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
-      break;
+
+      if (this.pcrd_pool.exists(pcrd_type) && (this.pcrd_pool[pcrd_type] > 0)) begin
+        this.pcrd_pool[pcrd_type] -= 1;
+        break;
+      end
     end
   endtask
 
@@ -2272,6 +2394,18 @@ class vip_chi_driver_rni #(
 
       flit = this.vif_rni.g_drv.rni_cb.rxrspflit;
 
+      // The grant overtook its own RetryAck (2.11's reordering case). Bank it
+      // and keep peeking: the RetryAck this request is waiting for is still
+      // coming, and collect_pcrd_grant will find the credit already in hand.
+      if (rsp_opcode_t'(flit.opcode) == rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C)) begin
+
+        this.bank_pcrd_grant(flit);
+        this.schedule_rsp_credit_return();
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+        continue;
+      end
+
       // A non-RetryAck RSP is a normal completion (write grant / ReadReceipt);
       // leave it in place for the collector to consume.
       if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_RETRY_ACK_C)) begin
@@ -2305,11 +2439,32 @@ class vip_chi_driver_rni #(
   // Wait for the final write completion on RSP and stamp it onto the request
   // object before returning it through the sequencer response path.
   // ---------------------------------------------------------------------------
+  // Collect the write's Comp, stepping over a TagMatch that precedes it.
+  //
+  // A write whose data carried TagOp = Match is owed a TagMatch response as
+  // well, and IHI 0050 E orders it against nothing: section 2.3.1 says only that
+  // the Slave sends it "after completing the required Tag Match operation", and
+  // permits it before the write data has even arrived when the Slave does not
+  // perform the check. So it may land either side of the write's own completion,
+  // and this requester must not treat it as one.
+  //
+  // Stepped over rather than collected into a milestone, deliberately: the
+  // scoreboard is what judges TagMatch, and it sees every RSP the monitor does.
+  // Adding a second observer here would only give the same fact two owners.
+  // See F-COV-001.
+  // ---------------------------------------------------------------------------
   protected task collect_write_completion(inout item_t req);
 
     rsp_flit_t flit;
 
-    this.wait_for_matching_rsp(req.txn_id, flit);
+    forever begin
+      this.wait_for_matching_rsp(req.txn_id, flit);
+      if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_TAG_MATCH_C)) begin
+        break;
+      end
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
+    end
     this.stamp_rsp_flit_on_req(req, flit);
 
     // This is the deferred completion after a split DBIDResp grant: the buffer
@@ -2326,44 +2481,134 @@ class vip_chi_driver_rni #(
   // ---------------------------------------------------------------------------
   // Collect CompCMO, and the Persist the persistent forms add after it.
   // ---------------------------------------------------------------------------
-  protected task collect_combined_cmo_completion(
+  // Collect a combined Write + CMO's completions as an obligation SET.
+  //
+  // Completion of a combined request is *both obligations met*, not *this
+  // sequence observed*, and Issue E is explicit about how much freedom the
+  // completer has in producing them. This used to be a fixed script -- write
+  // completion, then exactly CompCMO, then exactly Persist -- which turned two
+  // behaviours the specification permits into a stopped simulation:
+  //
+  //   * CompPersist in place of CompCMO + Persist. Section 2.8: the SN "is
+  //     permitted to combine CompCMO with Persist as a CompPersist response if
+  //     the two are sent to Home". The VIP already models the combined encoding
+  //     on the standalone CleanSharedPersistSep path (cfg.combined_persist_rsp),
+  //     so the requester had to handle it in one path and fatalled on it in the
+  //     other.
+  //   * CompCMO before the write's completion. The only ordering rule Issue E
+  //     places on CompCMO is that it "must only be sent after the associated
+  //     request is received". Nothing puts it after the write's Comp. The old
+  //     code consumed the write completion first, so a completer that led with
+  //     CompCMO had it collected by the write path and died on "was not Comp".
+  //
+  // The scoreboard already models it this way -- need_comp_cmo / comp_cmo_seen
+  // are flags, not a sequence -- so the driver was stricter than the checker
+  // behind it. See F-INTOP-008.
+  //
+  // An opcode that satisfies no OUTSTANDING obligation is still refused, and
+  // that is the whole strictness this keeps: tolerance of order is not tolerance
+  // of anything at all. A second CompCMO is as wrong as a ReadReceipt here.
+  // ---------------------------------------------------------------------------
+  protected task collect_combined_write_obligations(
     inout  item_t    req,
     input  node_id_t req_src_id,
-    input  node_id_t req_tgt_id
+    input  node_id_t req_tgt_id,
+    input  bit       need_comp_in
   );
 
     rsp_flit_t flit;
+    bit        need_comp;
+    bit        need_cmo;
+    bit        need_persist;
+    node_id_t  persist_tgt;
+    rsp_opcode_t opcode;
 
-    // Step off the write's completion beat first, so this wait cannot reconsume
-    // the flit that already retired the write half.
-    @(this.vif_rni.g_drv.rni_cb);
-    this.drive_idle_sideband();
+    // What actually retired each obligation, for the tests to read back.
+    //
+    // A testcase that only asserts "the transaction completed" cannot tell a
+    // completer that took the encoding it was asked for from one that quietly
+    // sent the default and was accepted anyway -- both complete.
+    this.combined_completion_log.delete();
 
-    this.wait_for_matching_rsp(req.txn_id, flit);
+    need_comp    = need_comp_in;
+    need_cmo     = 1'b1;
+    need_persist = this.req_expects_combined_persist(req);
 
-    if (flit.opcode != VIP_CHI_RSP_COMP_CMO_C) begin
+    // Section 2.8 routes a PCMO's Persist by ReturnNID and everything else by
+    // SrcID; see wait_for_standalone_persist_rsp.
+    persist_tgt = vip_chi_types_pkg::vip_chi_req_opcode_combined_cmo_is_persist(
+                    vip_chi_req_opcode_t'(req.opcode)) ? node_id_t'(req.return_nid)
+                                                       : req_src_id;
 
-      `uvm_fatal(get_name(), $sformatf(
-      "FATAL [%s] combined Write+CMO completion opcode 0x%0h was not CompCMO",
-      get_name(), flit.opcode))
-    end
+    while (need_comp || need_cmo || need_persist) begin
 
-    if (!this.req_expects_combined_persist(req)) begin
-      return;
-    end
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
 
-    @(this.vif_rni.g_drv.rni_cb);
-    this.drive_idle_sideband();
+      this.take_rsp_flit(flit);
+      opcode = rsp_opcode_t'(flit.opcode);
 
-    this.wait_for_standalone_persist_rsp(req_src_id, req_tgt_id, flit);
+      if ((opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) && need_comp) begin
 
-    if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
+        this.check_combined_rsp_txn(flit, req);
+        this.stamp_rsp_flit_on_req(req, flit);
+        this.combined_completion_log.push_back(opcode);
+        need_comp = 1'b0;
+      end
+      else if ((opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_CMO_C)) && need_cmo) begin
 
-      `uvm_fatal(get_name(), $sformatf(
-      "FATAL [%s] combined Write+PCMO persist opcode 0x%0h was not Persist",
-      get_name(), flit.opcode))
+        this.check_combined_rsp_txn(flit, req);
+        this.combined_completion_log.push_back(opcode);
+        need_cmo = 1'b0;
+      end
+      else if ((opcode == rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) && need_persist) begin
+
+        this.check_persist_route(flit, persist_tgt, req_tgt_id);
+        this.combined_completion_log.push_back(opcode);
+        need_persist = 1'b0;
+      end
+      else if ((opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C)) &&
+               need_cmo && need_persist) begin
+
+        // One response retiring two obligations, which is the whole point of
+        // the encoding. It is permitted only when both would go to the same
+        // node, so it is checked against the CMO's target and the persist's
+        // agreement with it is what made the combination legal in the first
+        // place.
+        this.check_combined_rsp_txn(flit, req);
+        this.combined_completion_log.push_back(opcode);
+        need_cmo     = 1'b0;
+        need_persist = 1'b0;
+      end
+      else begin
+
+        `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] combined Write + CMO received RSP opcode 0x%0h satisfying no outstanding obligation (comp=%0b cmo=%0b persist=%0b)",
+        get_name(), flit.opcode, need_comp, need_cmo, need_persist))
+        return;
+      end
     end
   endtask
+
+  // ---------------------------------------------------------------------------
+  // The TxnID-carrying half of a combined write's completions.
+  //
+  // Persist is excluded by its caller and not by a test here: it carries no
+  // applicable TxnID at all, so there is nothing to compare and the routing is
+  // what identifies it.
+  // ---------------------------------------------------------------------------
+  protected function void check_combined_rsp_txn(
+    input rsp_flit_t flit,
+    input item_t     req
+  );
+
+    if (txn_id_t'(flit.txnid) != txn_id_t'(req.txn_id)) begin
+
+      `uvm_fatal(get_name(), $sformatf(
+      "FATAL [%s] combined Write + CMO completion txnid 0x%0h != request txnid 0x%0h",
+      get_name(), flit.txnid, req.txn_id))
+    end
+  endfunction
 
   // ---------------------------------------------------------------------------
   // Collect a zero-write completion, in either of its two legal forms.
@@ -2451,7 +2696,11 @@ class vip_chi_driver_rni #(
     @(this.vif_rni.g_drv.rni_cb);
     this.drive_idle_sideband();
 
-    this.wait_for_standalone_persist_rsp(req_src_id, req_tgt_id, flit);
+    this.wait_for_standalone_persist_rsp(
+      vip_chi_types_pkg::vip_chi_req_opcode_combined_cmo_is_persist(
+        vip_chi_req_opcode_t'(req.opcode)) ? node_id_t'(req.return_nid)
+                                           : req_src_id,
+      req_tgt_id, flit);
     this.stamp_rsp_flit_on_req(req, flit);
 
     if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
@@ -3076,10 +3325,7 @@ class vip_chi_driver_rni #(
       // PCrdGrant is credit-typed, not TxnID-tied: bank one credit of its
       // PCrdType for a bounced entry to consume, then step off (no ctx lookup).
       if (op == rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C)) begin
-        this.pcrd_pool[flit.pcrdtype] += 1;
-        this.pcrd_granter[flit.pcrdtype] = node_id_t'(flit.srcid);
-        this.pcrd_own_id[flit.pcrdtype]  = node_id_t'(flit.tgtid);
-        this.check_pcrd_budget();
+        this.bank_pcrd_grant(flit);
         @(this.vif_rni.g_drv.rni_cb);
         this.drive_idle_sideband();
         continue;

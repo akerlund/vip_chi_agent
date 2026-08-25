@@ -565,6 +565,32 @@ module vip_chi_sva #(
   );
     int unsigned nxt;
     nxt = cur;
+
+    // IHI 0050 E section 14.2.1, Note: "An L-Credit cannot be used in the cycle
+    // it is received." Judged BEFORE the grant is applied, because that is the
+    // only moment the two are still distinguishable -- the grant-before-consume
+    // ordering below deliberately makes a same-cycle pair arithmetically safe
+    // (0 -> 1 -> 0), which is right for the counter and is exactly what hides
+    // this.
+    //
+    // Only at zero. Above zero a same-cycle grant and consume is an ordinary
+    // pipelined link spending an EARLIER credit while a new one arrives, which
+    // the Note does not forbid; at zero there is no earlier credit and the flit
+    // can only be spending the one on the wire this cycle.
+    //
+    // Informative in the specification (it is a Note), so it is a rule rather
+    // than a fatal -- but it constrains the normative model, and the VIP's own
+    // driver cannot produce it, so a report here is always about the peer.
+    // See F-INTOP-003.
+    if (grant && consume && (cur == 0)) begin
+      chk_miss(VIP_CHI_CHK_LCRD_USED_IN_GRANT_CYCLE_E, $sformatf(
+        "%s flit sent in the same cycle its only L-credit was granted; section 14.2.1 says a credit cannot be used in the cycle it is received",
+        chan));
+    end
+    else begin
+      chk_hit(VIP_CHI_CHK_LCRD_USED_IN_GRANT_CYCLE_E);
+    end
+
     if (grant) begin
       if (cur == cap) begin
         chk_miss(VIP_CHI_CHK_LCRD_OVERFLOW_E, $sformatf("%s L-credit grant overflowed the tracked count", chan));
@@ -1407,16 +1433,39 @@ module vip_chi_sva #(
           // above: the table closes each of its two blocks with "All other
           // values -- Not valid", so a tuple outside the nine rows is a protocol
           // error and every request has a tuple to judge.
+          //
+          // The SnpAttr the tuple is judged with is the DECODED one, for the same
+          // reason the Table 2-14 rule below decodes it: on the opcodes where REQ
+          // bit 17 is DoDWT there is no SnpAttr claim on the wire to judge, and
+          // Table 2-14 lists every one of them as Non-snoopable only, so zero is
+          // the value the tuple must be read with. Reading the raw bit instead
+          // reported every conformant DoDWT = 1 write as a Snoopable
+          // Non-cacheable request -- a row the table indeed does not list,
+          // against a request that never made the claim.
+          //
+          // The Python port decoded it and this one did not, which is why only
+          // this port failed. Neither could be reached until now:
+          // tc_chi_e_dwt_dbid_return_nid is the first testcase able to put a one
+          // on that bit at all, and until con_return_path_fields stopped pinning
+          // ReturnTxnID to zero it could not randomize. One defect was hiding
+          // another. See F-CORR-003 and F-CORR-012.
           if (!vip_chi_types_pkg::vip_chi_req_attr_combination_legal(
                 vif.txreqflit.memattr,
-                vip_chi_snp_attr_t'(vif.txreqflit.snpattr),
+                vip_chi_snp_attr_t'(
+                  vip_chi_types_pkg::vip_chi_req_bit17_is_dodwt(
+                    CFG_P.ISSUE_P,
+                    vip_chi_req_opcode_t'(vif.txreqflit.opcode))
+                  ? 1'b0 : vif.txreqflit.snpattr),
                 vif.txreqflit.likelyshared,
                 vip_chi_req_order_t'(vif.txreqflit.order))) begin
             chk_miss(VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E, $sformatf(
               "request was issued with MemAttr 0x%0h (Allocate %0b Cacheable %0b Device %0b EWA %0b), SnpAttr %0b, LikelyShared %0b and Order 0b%02b, a combination Table 2-12 does not list",
               vif.txreqflit.memattr, vif.txreqflit.memattr[3],
               vif.txreqflit.memattr[2], vif.txreqflit.memattr[1],
-              vif.txreqflit.memattr[0], vif.txreqflit.snpattr,
+              vif.txreqflit.memattr[0],
+              vip_chi_types_pkg::vip_chi_req_bit17_is_dodwt(
+                CFG_P.ISSUE_P, vip_chi_req_opcode_t'(vif.txreqflit.opcode))
+                ? 1'b0 : vif.txreqflit.snpattr,
               vif.txreqflit.likelyshared, vif.txreqflit.order));
           end
           else begin
@@ -1869,17 +1918,25 @@ module vip_chi_sva #(
             chk_hit(VIP_CHI_CHK_REQ_ORDER_LEGAL_E);
           end
 
-          // The same Table 2-12 rule from the receiving end.
+          // The same Table 2-12 rule from the receiving end, decoding bit 17
+          // the same way -- see the issuing side above for why.
           if (!vip_chi_types_pkg::vip_chi_req_attr_combination_legal(
                 vif.rxreqflit.memattr,
-                vip_chi_snp_attr_t'(vif.rxreqflit.snpattr),
+                vip_chi_snp_attr_t'(
+                  vip_chi_types_pkg::vip_chi_req_bit17_is_dodwt(
+                    CFG_P.ISSUE_P,
+                    vip_chi_req_opcode_t'(vif.rxreqflit.opcode))
+                  ? 1'b0 : vif.rxreqflit.snpattr),
                 vif.rxreqflit.likelyshared,
                 vip_chi_req_order_t'(vif.rxreqflit.order))) begin
             chk_miss(VIP_CHI_CHK_REQ_ATTR_COMBINATION_LEGAL_E, $sformatf(
               "request was received with MemAttr 0x%0h (Allocate %0b Cacheable %0b Device %0b EWA %0b), SnpAttr %0b, LikelyShared %0b and Order 0b%02b, a combination Table 2-12 does not list",
               vif.rxreqflit.memattr, vif.rxreqflit.memattr[3],
               vif.rxreqflit.memattr[2], vif.rxreqflit.memattr[1],
-              vif.rxreqflit.memattr[0], vif.rxreqflit.snpattr,
+              vif.rxreqflit.memattr[0],
+              vip_chi_types_pkg::vip_chi_req_bit17_is_dodwt(
+                CFG_P.ISSUE_P, vip_chi_req_opcode_t'(vif.rxreqflit.opcode))
+                ? 1'b0 : vif.rxreqflit.snpattr,
               vif.rxreqflit.likelyshared, vif.rxreqflit.order));
           end
           else begin

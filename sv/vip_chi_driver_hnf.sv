@@ -100,6 +100,12 @@ class vip_chi_driver_hnf #(
 
   // Backing store the home terminates reads/writes against (verbatim SN-F form).
   vip_mem #(MEM_C)     mem;
+  // One-shot latch for cfg.flit_without_flitpend, shared across both link
+  // directions: the control drops the announcement in front of exactly ONE
+  // flit anywhere on this driver, so the rest of the run is legal traffic the
+  // same rule must pass. See announce_rn_flit.
+  protected bit          flit_without_pend_done;
+
   protected bit        mem_row_written [longint];
 
   // Coherence directory, keyed by line-aligned address: the coherent state held
@@ -600,6 +606,24 @@ class vip_chi_driver_hnf #(
 
   // ---------------------------------------------------------------------------
   // Main home loop: response engine + per-RN credit/activate/capture threads.
+  // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Transmit arbitration here is by OWNERSHIP, not by a lock, and that is a
+  // decision rather than an omission.
+  //
+  // F-CORR-018 found the SN-F dropping a response it had already decided to send:
+  // two of its threads drove the same channel in the same cycle and the later
+  // assignment silently replaced the earlier flit. The RN-I and SN-F answer that
+  // with a one-deep semaphore. This driver answers it by structure -- EVERY flit
+  // this home sends leaves through the single serial response_engine below, and the
+  // level signals have exactly one writing loop each (txsactive and the L-credit
+  // valids from rn_credit_loop / sn_credit_loop, the activation handshake from
+  // rn_activate / sn_activate).
+  //
+  // So the invariant to preserve when adding a thread here: no channel may acquire
+  // a second writer. A new thread that sends a flit outside response_engine
+  // reintroduces F-CORR-018 in this driver, and unlike the RN-I there is no lock to
+  // catch it -- audited 2026-08-24, and the audit is only as good as this rule.
   // ---------------------------------------------------------------------------
   task driver_start();
     fork
@@ -1945,6 +1969,21 @@ class vip_chi_driver_hnf #(
   protected task announce_rn_flit(input int p, input announce_ch_t ch);
     @(this.vif_rn[p].g_drv.hnf_cb);
     this.drive_rn_idle_sideband(p);
+    // Negative control (cfg.flit_without_flitpend): skip the announcement once,
+    // so exactly one flit goes out with FLITPEND low in the cycle before it and
+    // CHI_*_VALID_REQUIRES_PEND has a real violation to catch on THIS driver's
+    // flits. Returning without driving leaves FLITPEND at the 0 the previous
+    // send cleared it to.
+    //
+    // The homes did not consult the knob before F-CHK-014, so the control
+    // reached the requesters and nothing else -- and check_cfg_parity passed
+    // throughout, because the config SURFACE matched and which drivers READ the
+    // knob is behaviour no gate compared. scripts/check_flitpend_negctl.py
+    // compares it now.
+    if (this.cfg.flit_without_flitpend && !this.flit_without_pend_done) begin
+      this.flit_without_pend_done = 1'b1;
+      return;
+    end
     case (ch)
       ANNOUNCE_RSP_E: this.vif_rn[p].g_drv.hnf_cb.txrspflitpend <= 1'b1;
       ANNOUNCE_SNP_E: this.vif_rn[p].g_drv.hnf_cb.txsnpflitpend <= 1'b1;
@@ -1954,6 +1993,21 @@ class vip_chi_driver_hnf #(
 
   protected task announce_sn_flit(input int s, input announce_ch_t ch);
     @(this.vif_sn[s].g_drv.rni_cb);
+    // Negative control (cfg.flit_without_flitpend): skip the announcement once,
+    // so exactly one flit goes out with FLITPEND low in the cycle before it and
+    // CHI_*_VALID_REQUIRES_PEND has a real violation to catch on THIS driver's
+    // flits. Returning without driving leaves FLITPEND at the 0 the previous
+    // send cleared it to.
+    //
+    // The homes did not consult the knob before F-CHK-014, so the control
+    // reached the requesters and nothing else -- and check_cfg_parity passed
+    // throughout, because the config SURFACE matched and which drivers READ the
+    // knob is behaviour no gate compared. scripts/check_flitpend_negctl.py
+    // compares it now.
+    if (this.cfg.flit_without_flitpend && !this.flit_without_pend_done) begin
+      this.flit_without_pend_done = 1'b1;
+      return;
+    end
     if (ch == ANNOUNCE_REQ_E) begin
       this.vif_sn[s].g_drv.rni_cb.txreqflitpend <= 1'b1;
     end
