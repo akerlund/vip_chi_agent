@@ -837,6 +837,13 @@ class bind_chi:
     self._tx_lasm = LasmState.STOP
     self._tx_lasm_dwell = 0
     self._rx_lasm = LasmState.STOP
+    # Cycles in which the two machines were in DIFFERENT states. This is the
+    # non-vacuity evidence for the split itself: while the two were OR-collapsed
+    # into one state, a divergence could not be represented at all, so a rule
+    # judging them separately is unfalsifiable without a run that actually drove
+    # them apart. A control asserts on this rather than assuming the stimulus
+    # reached the case.
+    self._lasm_divergent_cycles = 0
     # Whether ACTIVATE has been observed since this LASM last left RUN. The
     # legal-step rule judges one step at a time and cannot express "the link
     # went up through ACTIVATE", which is a claim about the whole activation.
@@ -987,6 +994,12 @@ class bind_chi:
     because two callers need the answer for a sample other than the current one.
     """
     return cls._lasm_of(s) is not LasmState.STOP
+
+  @property
+  def lasm_divergent_cycles(self) -> int:
+    """Cycles in which this endpoint's two link machines differed. See the
+    counter's declaration in __init__ for why a control asserts on it."""
+    return self._lasm_divergent_cycles
 
   @staticmethod
   def _tx_lasm_of(s: dict) -> LasmState:
@@ -1326,6 +1339,11 @@ class bind_chi:
     self._rx_lasm_dwell = (
       0 if rx_nxt is not self._rx_lasm else self._rx_lasm_dwell + 1)
     self._rx_lasm = rx_nxt
+
+    # See the counter's declaration: the two machines standing in different
+    # states is the case the OR-collapsed model could not represent.
+    if nxt is not rx_nxt:
+      self._lasm_divergent_cycles += 1
 
     # Credit quiescence is judged PER POOL, because each pool belongs to one
     # machine: tx* is what we may still send and is stranded when our transmit

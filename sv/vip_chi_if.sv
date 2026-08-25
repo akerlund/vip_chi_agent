@@ -82,6 +82,13 @@ interface vip_chi_if #(
   int unsigned check_pass_count [VIP_CHI_CHK_NUM_E];
   int unsigned check_fail_count [VIP_CHI_CHK_NUM_E];
 
+  // Cycles in which this endpoint's two link state machines stood in DIFFERENT
+  // states. Non-vacuity evidence for the Tx/Rx split: while the two were
+  // OR-collapsed into one state a divergence could not be represented at all,
+  // so a rule that judges them separately is unfalsifiable without a run that
+  // actually drove them apart. Written by vip_chi_sva, read by a test.
+  int unsigned lasm_divergent_cycles;
+
   // Per-check enable and severity, initialised by whichever checker owns each
   // ID. Published here for the same reason as the counters: a package may hold
   // no hierarchical reference, so this is the only handle a testcase has on an

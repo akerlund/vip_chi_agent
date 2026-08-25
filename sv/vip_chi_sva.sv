@@ -343,6 +343,7 @@ module vip_chi_sva #(
       tx_lasm_dwell    <= 0;
       rx_lasm_state    <= VIP_CHI_LASM_STOP_E;
       rx_lasm_dwell    <= 0;
+      vif.lasm_divergent_cycles <= 0;
       tx_activate_seen <= 1'b0;
       rx_activate_seen <= 1'b0;
     end
@@ -351,6 +352,12 @@ module vip_chi_sva #(
       tx_lasm_dwell <= (tx_lasm() == tx_lasm_state) ? (tx_lasm_dwell + 1) : 0;
       rx_lasm_state <= rx_lasm();
       rx_lasm_dwell <= (rx_lasm() == rx_lasm_state) ? (rx_lasm_dwell + 1) : 0;
+
+      // See vip_chi_if for what this counts: the two machines standing in
+      // different states is the case the OR-collapsed model could not represent.
+      if (tx_lasm() != rx_lasm()) begin
+        vif.lasm_divergent_cycles <= vif.lasm_divergent_cycles + 1;
+      end
 
       if (tx_lasm() == VIP_CHI_LASM_ACTIVATE_E) begin
         tx_activate_seen <= 1'b1;
