@@ -508,12 +508,30 @@ class vip_chi_driver_hnf(uvm_component):
         self.rn_snp_send[p].return_credit()
 
   async def rn_activate(self, p):
+    """Bring one RN-facing port up, in the two steps 14.6.1 keeps separate.
+
+    The receive credits go out on the peer's request, because they belong to
+    this home's RECEIVE link and advertising them is how that link bootstraps --
+    ACTIVATE is the state a receiver grants its initial budget in.
+
+    The transmit gate waits for the peer's ACKNOWLEDGE, because that is what
+    puts this home's TRANSMIT link in RUN, and RSP, DAT and SNP are its payload.
+    The two used to be one step keyed off the peer's request alone, which is
+    invisible while the peer acknowledges promptly -- two cycles apart -- and
+    wrong the moment it does not: the home would send into a transmit link still
+    in ACTIVATE. That is the collapse the per-direction state machines exist to
+    separate, seen from the driver rather than the checker.
+    """
     rn = self.rn_buses[p]
     while rn.rst_n.value and not rn.get("rxlinkactivereq"):
       await rn.rising()
     self.rn_req_lcrdv_pending[p] += self.cfg.initial_req_credits
     self.rn_rsp_lcrdv_pending[p] += self.cfg.initial_rsp_credits
     self.rn_dat_lcrdv_pending[p] += self.cfg.initial_dat_credits
+
+    while rn.rst_n.value and not rn.get("rxlinkactiveack"):
+      await rn.rising()
+
     self.rn_link_up[p] = True
     await self.drive_snp_flitpend_negctl(p)
 
@@ -748,6 +766,14 @@ class vip_chi_driver_hnf(uvm_component):
     follow), which is what the snoopee and the monitor read to find the last one.
     """
     rn = self.rn_buses[p]
+
+    # The one gate every RN-facing flit passes, so the transmit link is checked
+    # once rather than in each of the three send paths.
+    # cfg.hnf_send_before_tx_link_negctl stands it down.
+    while not self.rn_link_up[p] and not self.cfg.hnf_send_before_tx_link_negctl:
+      await rn.rising()
+      self.drive_rn_idle_sideband(p)
+
     await rn.rising()
     self.drive_rn_idle_sideband(p)
     # Negative control (cfg.flit_without_flitpend): skip the announcement once,

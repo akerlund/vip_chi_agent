@@ -277,7 +277,11 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
   # Extension hooks (called by the RN-I base).
   # ==========================================================================
   def post_activate_hook(self):
-    self.snp_lcrdv_pulses_pending += self.cfg.initial_snp_credits
+    # Less whatever the negative control already put on the wire ahead of the
+    # link, so the run's total budget is unchanged and only the timing moved.
+    early = int(self.cfg.rnf_snp_credit_before_link_negctl)
+    if self.cfg.initial_snp_credits > early:
+      self.snp_lcrdv_pulses_pending += self.cfg.initial_snp_credits - early
 
   def extra_rx_channels(self):
     self._spawn(self.snp_credit_loop())
@@ -292,6 +296,13 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
   # ==========================================================================
   async def snp_credit_loop(self):
     bus = self.bus
+
+    # Negative control: put credits on the wire before the receive link exists.
+    # Queued HERE rather than in post_activate_hook because the whole point is
+    # that the activation has not happened yet -- this task is spawned before it.
+    self.snp_lcrdv_pulses_pending += int(
+      self.cfg.rnf_snp_credit_before_link_negctl)
+
     while True:
       await bus.rising()
       # cfg.hold_snp_credit lets a test starve the HN-F's SNP send pool; the

@@ -335,6 +335,22 @@ class VipChiCfgAgent:
     # All zero by default, which reproduces today's behaviour exactly.
     self.lasm_req_delay_by_state = [0, 0, 0, 0]
 
+    # Cycles a RECEIVER holds off acknowledging the peer's activation request,
+    # counted from the cycle the request is first seen and spent once per run.
+    #
+    # Conformant, and that is the point of it: Table 14-2 has the transmitter
+    # "waiting for the receiver to acknowledge" as an ordinary dwell in ACTIVATE,
+    # and E section 14.6.3 / D section 13.6.3 bans only the acknowledge moving
+    # BEFORE the request. A slow acknowledge is a legal peer, so what it exposes
+    # is a defect at the other end rather than a violation at this one.
+    #
+    # It is the only lever that separates the two link state machines at a
+    # coherent endpoint. Delaying the REQUEST cannot: 14.6.3 forbids the
+    # acknowledge to lead the request, so a component that holds its request back
+    # must hold its acknowledge back with it, and both of the peer's machines
+    # move together again.
+    self.lasm_ack_delay_cycles = 0
+
     # Negative control for the LASM transition rule under a RACE rather than a
     # malformed sequence: the requester re-raises txlinkactivereq as soon as the
     # link enters DEACTIVATE, without waiting for the tear-down to reach STOP.
@@ -716,6 +732,38 @@ class VipChiCfgAgent:
     # ordinary pipelined traffic rather than the case it is about.
     self.req_lcrd_grant_on_flitpend_negctl = False
 
+    # Negative control for the transmit-link gate on a home's RN-facing ports:
+    # the home starts sending on the strength of the PEER's activation request
+    # instead of waiting for its own transmit link to reach RUN.
+    #
+    # That was this driver's behaviour, and it is invisible while the peer
+    # acknowledges promptly, because then the two events are two cycles apart.
+    # Paired with lasm_ack_delay_cycles at the RN-F it opens a window in which
+    # the home's transmit link is still in ACTIVATE and the home snoops into it.
+    #
+    # Every RN-facing channel goes out through the same gate, so a snoop is not
+    # the only thing that escapes: the responses that belong to the request being
+    # serviced go out early too. The test that uses this declares all three.
+    self.hnf_send_before_tx_link_negctl = False
+
+    # Negative control for the receive-link gate on SNP credits: the RN-F
+    # advertises this many of its initial SNP receive credits BEFORE its receive
+    # link exists, rather than after activation.
+    #
+    # E section 14.6.1 / D section 13.6.1 put txsnplcrdv on the RECEIVE link --
+    # the payload it credits is inbound -- and a receiver may not issue L-credits
+    # on a link in STOP. Reaching that state with a CONFORMANT peer is impossible
+    # during bring-up: the snoopee advertises once its own transmit link is
+    # acknowledged, and 14.6.3 forbids the home's acknowledge to lead the home's
+    # request, so the receive machine is already at least ACTIVATE by then. STOP
+    # before the handshake is the same STOP, and it is reachable from this end.
+    #
+    # Drawn OUT of the initial budget rather than added to it, so the receiver
+    # hands out the same number of credits over the run and only their timing
+    # moves. Pair it with lasm_req_delay_by_state[STOP] so the link is still in
+    # STOP when they go out.
+    self.rnf_snp_credit_before_link_negctl = 0
+
   # ==========================================================================
   # is_valid -- runtime configuration self-check.
   #
@@ -937,6 +985,8 @@ class VipChiCfgAgent:
       "snf_write_zero_bare_comp_negctl": self.snf_write_zero_bare_comp_negctl,
       "req_send_without_credit_negctl": self.req_send_without_credit_negctl,
       "req_lcrd_grant_on_flitpend_negctl": self.req_lcrd_grant_on_flitpend_negctl,
+      "hnf_send_before_tx_link_negctl": self.hnf_send_before_tx_link_negctl,
+      "rnf_snp_credit_before_link_negctl": self.rnf_snp_credit_before_link_negctl,
       "snf_duplicate_dat_beat": self.snf_duplicate_dat_beat,
       "snf_corrupt_tag": self.snf_corrupt_tag,
       "snf_reorder_ordered_service": self.snf_reorder_ordered_service,

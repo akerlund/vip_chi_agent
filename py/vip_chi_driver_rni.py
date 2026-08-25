@@ -265,6 +265,10 @@ class vip_chi_driver_rni(uvm_driver):
     # cfg.req_send_without_credit_negctl at reset.
     self.req_send_without_credit_remaining = int(
       self.cfg.req_send_without_credit_negctl)
+    # Set while cfg.lasm_ack_delay_cycles is still holding this receiver's
+    # acknowledge down. Read by drive_idle_sideband and written only by
+    # ack_delay_loop, so that method stays a pure function of wires and flags.
+    self._ack_held = bool(self.cfg.lasm_ack_delay_cycles)
     # Graceful-deactivation state (see deactivate_watch).
     #
     # link_deactivating suppresses NEW receive-credit grants: a receiver may not
@@ -388,7 +392,25 @@ class vip_chi_driver_rni(uvm_driver):
     if self.bus.input_race_hold():
       return
 
-    self.bus.drive(txlinkactiveack=self.bus.get("rxlinkactivereq"))
+    self.bus.drive(txlinkactiveack=(
+      0 if self._ack_held else self.bus.get("rxlinkactivereq")))
+
+  # --------------------------------------------------------------------------
+  async def ack_delay_loop(self):
+    """Hold this receiver's acknowledge down for cfg.lasm_ack_delay_cycles.
+
+    Counted while the peer's request is UP, so it measures the peer's dwell in
+    ACTIVATE rather than wall-clock time, and spent once: the delay is about
+    the bring-up, and re-arming it on a later re-activation would make a test
+    that cycles the link stall a different number of times each pass.
+    """
+    remaining = int(self.cfg.lasm_ack_delay_cycles)
+    self._ack_held = bool(remaining)
+    while remaining:
+      await self.bus.rising()
+      if self.bus.get("rxlinkactivereq"):
+        remaining -= 1
+    self._ack_held = False
 
   # ==========================================================================
   # TXSACTIVE outstanding-window drive.
@@ -565,6 +587,10 @@ class vip_chi_driver_rni(uvm_driver):
     # has stopped sending is exactly a test whose driver is parked waiting for
     # the next item and would never look at the flag.
     self._spawn(self.deactivate_watch())
+    # Counts cfg.lasm_ack_delay_cycles down in a task of its own, because
+    # drive_idle_sideband runs from several tasks in one cycle and a decrement
+    # inside it would run as many times.
+    self._spawn(self.ack_delay_loop())
     # Coherent-role extension point: RN-F forks its SNP receive-credit loop and
     # snoop responder here. No-op in RN-I.
     self.extra_rx_channels()
@@ -696,10 +722,10 @@ class vip_chi_driver_rni(uvm_driver):
     # is ordinary traffic.
     if self.cfg.lasm_abort_activation and not self.lasm_abort_done:
       self.lasm_abort_done = True
-      self._drive_link_req(1)
+      await self._drive_link_req_held(1)
       await bus.rising()
       self.drive_idle_sideband()
-      self._drive_link_req(0)
+      await self._drive_link_req_held(0)
       await bus.rising()
       self.drive_idle_sideband()
       # Let the completer's mirrored acknowledge retire before asking again, so
@@ -711,7 +737,7 @@ class vip_chi_driver_rni(uvm_driver):
 
     await self.wait_lasm_req_delay()
 
-    self._drive_link_req(1)
+    await self._drive_link_req_held(1)
     while True:
       await bus.rising()
       self.drive_idle_sideband()
@@ -735,6 +761,28 @@ class vip_chi_driver_rni(uvm_driver):
     """The only place txlinkactivereq is driven, so the shadow cannot drift."""
     self._req_driven = bool(value)
     self.bus.drive(txlinkactivereq=1 if value else 0)
+
+  async def _drive_link_req_held(self, value):
+    """The same write, with 14.6.3's obligation on the OBSERVER honoured.
+
+    While the peer's two outputs have arrived out of order and the second has
+    not yet followed, none of our outputs may move. drive_idle_sideband meets
+    that by SKIPPING, which works only because it recomputes its intent every
+    cycle. This writer is a ONE-SHOT -- skipping would lose the request
+    altogether -- so it waits instead, and being a coroutine is what lets it.
+    reset_vif keeps calling the plain writer: 14.1.3 has both peers holding the
+    sideband idle through reset, and ChiBus clears the hold there, so there is
+    nothing to wait out.
+
+    Bounded by construction, not by a timeout: the hold is armed for exactly one
+    cycle and resolve takes precedence over arm, so it cannot chain and this
+    cannot wait more than one.
+    """
+    while self.bus.input_race_hold():
+      await self.bus.rising()
+      self.drive_idle_sideband()
+
+    self._drive_link_req(value)
 
   async def wait_lasm_req_delay(self):
     """Hold off the activation request by cfg.lasm_req_delay_by_state.
@@ -829,7 +877,7 @@ class vip_chi_driver_rni(uvm_driver):
 
       # 2 + 3. Stand the grants down, then withdraw the request.
       self.link_deactivating = True
-      self._drive_link_req(0)
+      await self._drive_link_req_held(0)
 
       await bus.rising()
       self.drive_idle_sideband()
@@ -845,10 +893,10 @@ class vip_chi_driver_rni(uvm_driver):
       # credits and has not yet decided to drop its acknowledge.
       if self.cfg.lasm_reactivate_during_deactivate and not self.lasm_race_done:
         self.lasm_race_done = True
-        self._drive_link_req(1)
+        await self._drive_link_req_held(1)
         await bus.rising()
         self.drive_idle_sideband()
-        self._drive_link_req(0)
+        await self._drive_link_req_held(0)
         await bus.rising()
         self.drive_idle_sideband()
 

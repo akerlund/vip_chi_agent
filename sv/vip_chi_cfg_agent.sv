@@ -425,6 +425,24 @@ class vip_chi_cfg_agent extends uvm_object;
   // All zero by default, which reproduces today's behaviour exactly.
   int unsigned lasm_req_delay_by_state [4] = '{default: 0};
 
+  // Cycles a RECEIVER holds off acknowledging the peer's activation request,
+  // counted from the cycle the request is first seen and spent once per run.
+  //
+  // Conformant, and that is the point of it: Table 14-2 has the transmitter
+  // "waiting for the receiver to acknowledge" as an ordinary dwell in ACTIVATE,
+  // and E section 14.6.3 / D section 13.6.3 bans only the acknowledge moving
+  // BEFORE the request. A slow acknowledge is a legal peer, so what it exposes
+  // is a defect at the other end rather than a violation at this one.
+  //
+  // It is the only lever that separates the two link state machines at a
+  // coherent endpoint. Delaying the REQUEST cannot: 14.6.3 forbids the
+  // acknowledge to lead the request, so a component that holds its request back
+  // must hold its acknowledge back with it, and both of the peer's machines move
+  // together again.
+  //
+  // Zero by default, which reproduces today's behaviour exactly.
+  int unsigned lasm_ack_delay_cycles = 0;
+
   // Negative control for the LASM transition rule under a RACE rather than a
   // malformed sequence: the requester re-raises txlinkactivereq as soon as the
   // link enters DEACTIVATE, without waiting for the tear-down to reach STOP.
@@ -925,6 +943,40 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0.
   bit req_lcrd_grant_on_flitpend_negctl = 1'b0;
 
+  // Negative control for the transmit-link gate on a home's RN-facing ports: the
+  // home starts sending on the strength of the PEER's activation request instead
+  // of waiting for its own transmit link to reach RUN.
+  //
+  // That was this driver's behaviour, and it is invisible while the peer
+  // acknowledges promptly, because then the two events are two cycles apart.
+  // Paired with lasm_ack_delay_cycles at the RN-F it opens a window in which the
+  // home's transmit link is still in ACTIVATE and the home snoops into it.
+  //
+  // Every RN-facing channel goes out through the same gate, so a snoop is not
+  // the only thing that escapes: the responses that belong to the request being
+  // serviced go out early too. The test that uses this declares all three.
+  // Default 0.
+  bit hnf_send_before_tx_link_negctl = 1'b0;
+
+  // Negative control for the receive-link gate on SNP credits: the RN-F
+  // advertises this many of its initial SNP receive credits BEFORE its receive
+  // link exists, rather than after activation.
+  //
+  // E section 14.6.1 / D section 13.6.1 put txsnplcrdv on the RECEIVE link --
+  // the payload it credits is inbound -- and a receiver may not issue L-credits
+  // on a link in STOP. Reaching that state with a CONFORMANT peer is impossible
+  // during bring-up: the snoopee advertises once its own transmit link is
+  // acknowledged, and 14.6.3 forbids the home's acknowledge to lead the home's
+  // request, so the receive machine is already at least ACTIVATE by then. STOP
+  // before the handshake is the same STOP, and it is reachable from this end.
+  //
+  // Drawn OUT of the initial budget rather than added to it, so the receiver
+  // hands out the same number of credits over the run and only their timing
+  // moves. Pair it with lasm_req_delay_by_state[STOP] so the link is still in
+  // STOP when they go out.
+  // Default 0.
+  int unsigned rnf_snp_credit_before_link_negctl = 0;
+
   // ---------------------------------------------------------------------------
   // Constructor.
   // ---------------------------------------------------------------------------
@@ -1366,6 +1418,8 @@ class vip_chi_cfg_agent extends uvm_object;
         this.snf_write_zero_bare_comp_negctl ||
         (this.req_send_without_credit_negctl != 0) ||
         this.req_lcrd_grant_on_flitpend_negctl ||
+        this.hnf_send_before_tx_link_negctl ||
+        (this.rnf_snp_credit_before_link_negctl != 0) ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
         this.snf_corrupt_tag ||
         this.lasm_abort_activation || this.flit_without_flitpend ||

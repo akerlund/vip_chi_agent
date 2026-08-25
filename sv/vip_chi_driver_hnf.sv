@@ -756,8 +756,20 @@ class vip_chi_driver_hnf #(
   endtask
 
   // ---------------------------------------------------------------------------
-  // Wait for the RN-F to activate the link, then advertise the initial receive
-  // credits for every channel the home consumes (REQ + RSP + DAT).
+  // Bring one RN-facing port up, in the two steps E section 14.6.1 / D section
+  // 13.6.1 keeps separate.
+  //
+  // The receive credits go out on the peer's request, because they belong to
+  // this home's RECEIVE link and advertising them is how that link bootstraps --
+  // ACTIVATE is the state a receiver grants its initial budget in.
+  //
+  // The transmit gate waits for the peer's ACKNOWLEDGE, because that is what
+  // puts this home's TRANSMIT link in RUN, and RSP, DAT and SNP are its payload.
+  // The two used to be one step keyed off the peer's request alone, which is
+  // invisible while the peer acknowledges promptly -- two cycles apart -- and
+  // wrong the moment it does not: the home would send into a transmit link still
+  // in ACTIVATE. That is the collapse the per-direction state machines exist to
+  // separate, seen from the driver rather than the checker.
   // ---------------------------------------------------------------------------
   protected task rn_activate(input int p);
     do begin
@@ -767,6 +779,11 @@ class vip_chi_driver_hnf #(
     this.rn_req_lcrdv_pending[p] += this.cfg.initial_req_credits;
     this.rn_rsp_lcrdv_pending[p] += this.cfg.initial_rsp_credits;
     this.rn_dat_lcrdv_pending[p] += this.cfg.initial_dat_credits;
+
+    do begin
+      @(this.vif_rn[p].g_drv.hnf_cb);
+    end while (this.vif_rn[p].rst_n && !this.vif_rn[p].g_drv.hnf_cb.rxlinkactiveack);
+
     this.rn_link_up[p] = 1'b1;
     this.drive_snp_flitpend_negctl(p);
   endtask
@@ -1969,6 +1986,15 @@ class vip_chi_driver_hnf #(
   // the last one.
   // ---------------------------------------------------------------------------
   protected task announce_rn_flit(input int p, input announce_ch_t ch);
+
+    // The one gate every RN-facing flit passes, so the transmit link is checked
+    // once rather than in each of the three send paths.
+    // cfg.hnf_send_before_tx_link_negctl stands it down.
+    while (!this.rn_link_up[p] && !this.cfg.hnf_send_before_tx_link_negctl) begin
+      @(this.vif_rn[p].g_drv.hnf_cb);
+      this.drive_rn_idle_sideband(p);
+    end
+
     @(this.vif_rn[p].g_drv.hnf_cb);
     this.drive_rn_idle_sideband(p);
     // Negative control (cfg.flit_without_flitpend): skip the announcement once,

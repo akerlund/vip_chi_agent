@@ -150,6 +150,11 @@ class vip_chi_driver_rni #(
   protected vip_chi_lcrd_mgr req_lcrd_mgr;
   protected vip_chi_lcrd_mgr rsp_lcrd_mgr;
   protected vip_chi_lcrd_mgr dat_lcrd_mgr;
+  // Set while cfg.lasm_ack_delay_cycles is still holding this receiver's
+  // acknowledge down. Read by drive_idle_sideband and written only by
+  // ack_delay_loop, so that task stays a pure function of wires and flags.
+  protected bit              ack_held;
+
   // Remaining REQ sends that step around the credit manager, drawn from
   // cfg.req_send_without_credit_negctl at reset.
   protected int unsigned     req_send_without_credit_remaining;
@@ -280,6 +285,32 @@ class vip_chi_driver_rni #(
   // deassertion of RXACK must not precede the deassertion of TXREQ, and while
   // the LASM is still the OR of both directions a same-cycle fall would step the
   // collapsed state RUN -> STOP with no DEACTIVATE in between.
+  // ---------------------------------------------------------------------------
+  // Hold this receiver's acknowledge down for cfg.lasm_ack_delay_cycles once the
+  // peer has asked for the link.
+  //
+  // Counted while the peer's request is UP, so it measures the peer's dwell in
+  // ACTIVATE rather than wall-clock time, and spent once: the delay is about the
+  // bring-up, and re-arming it on a later re-activation would make a test that
+  // cycles the link stall a different number of times each pass.
+  // ---------------------------------------------------------------------------
+  protected task ack_delay_loop();
+
+    int unsigned remaining;
+
+    remaining      = this.cfg.lasm_ack_delay_cycles;
+    this.ack_held  = (remaining != 0);
+
+    while (remaining != 0) begin
+      @(this.vif_rni.g_drv.rni_cb);
+      if (this.vif_rni.g_drv.rni_cb.rxlinkactivereq) begin
+        remaining--;
+      end
+    end
+
+    this.ack_held = 1'b0;
+  endtask
+
   protected task drive_idle_sideband();
     // The plain mirror, deliberately: it is ALREADY the one-cycle delay
     // IHI 0050 E 14.6.3 / D 13.6.3 asks for. The drive is non-blocking, so the
@@ -303,7 +334,7 @@ class vip_chi_driver_rni #(
     end
 
     this.vif_rni.g_drv.rni_cb.txlinkactiveack <=
-      this.vif_rni.g_drv.rni_cb.rxlinkactivereq;
+      this.vif_rni.g_drv.rni_cb.rxlinkactivereq && !this.ack_held;
   endtask
 
   // ---------------------------------------------------------------------------
@@ -665,6 +696,11 @@ class vip_chi_driver_rni #(
       // sequencer: a test that has stopped sending is exactly a test whose
       // driver is parked in get_next_item and would never look at the flag.
       this.deactivate_watch();
+
+      // Counts cfg.lasm_ack_delay_cycles down in a thread of its own, because
+      // drive_idle_sideband runs from several threads in one cycle and a
+      // decrement inside it would run as many times.
+      this.ack_delay_loop();
 
       begin
 
@@ -1134,10 +1170,10 @@ class vip_chi_driver_rni #(
     // is ordinary traffic.
     if (this.cfg.lasm_abort_activation && !this.lasm_abort_done) begin
       this.lasm_abort_done = 1'b1;
-      this.drive_link_req(1'b1);
+      this.drive_link_req_held(1'b1);
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
-      this.drive_link_req(1'b0);
+      this.drive_link_req_held(1'b0);
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
       // Let the completer's mirrored acknowledge retire before asking again, so
@@ -1151,7 +1187,7 @@ class vip_chi_driver_rni #(
 
     this.wait_lasm_req_delay();
 
-    this.drive_link_req(1'b1);
+    this.drive_link_req_held(1'b1);
 
     do begin
 
@@ -1179,6 +1215,32 @@ class vip_chi_driver_rni #(
     this.req_driven = value;
     this.vif_rni.g_drv.rni_cb.txlinkactivereq <= value;
   endfunction
+
+  // ---------------------------------------------------------------------------
+  // The same write, with 14.6.3's obligation on the OBSERVER honoured: while the
+  // peer's two outputs have arrived out of order and the second has not yet
+  // followed, none of our outputs may move.
+  //
+  // drive_idle_sideband meets that by SKIPPING, which works only because it
+  // recomputes its intent every cycle. This writer is a ONE-SHOT -- skipping
+  // would lose the request altogether -- so it waits instead, and a task is what
+  // lets it. reset_outputs keeps calling the function directly: 14.1.3 has both
+  // peers holding the sideband idle through reset, and vip_chi_if clears the
+  // hold there, so there is nothing to wait out.
+  //
+  // Bounded by construction, not by a timeout: the interface arms the hold for
+  // exactly one cycle and resolve takes precedence over arm, so it cannot chain
+  // and this cannot wait more than one.
+  // ---------------------------------------------------------------------------
+  protected task drive_link_req_held(input bit value);
+
+    while (this.vif_rni.input_race_hold) begin
+      @(this.vif_rni.g_drv.rni_cb);
+      this.drive_idle_sideband();
+    end
+
+    this.drive_link_req(value);
+  endtask
 
   // ---------------------------------------------------------------------------
   // Hold off the activation request by cfg.lasm_req_delay_by_state, indexed by
@@ -1292,7 +1354,7 @@ class vip_chi_driver_rni #(
       // same cycle: the credit loop reads the flag on its next edge, which is
       // the same edge the lowered request reaches the wire on.
       this.link_deactivating = 1'b1;
-      this.drive_link_req(1'b0);
+      this.drive_link_req_held(1'b0);
 
       @(this.vif_rni.g_drv.rni_cb);
       this.drive_idle_sideband();
@@ -1308,10 +1370,10 @@ class vip_chi_driver_rni #(
       // credits and has not yet decided to drop its acknowledge.
       if (this.cfg.lasm_reactivate_during_deactivate && !this.lasm_race_done) begin
         this.lasm_race_done = 1'b1;
-        this.drive_link_req(1'b1);
+        this.drive_link_req_held(1'b1);
         @(this.vif_rni.g_drv.rni_cb);
         this.drive_idle_sideband();
-        this.drive_link_req(1'b0);
+        this.drive_link_req_held(1'b0);
         @(this.vif_rni.g_drv.rni_cb);
         this.drive_idle_sideband();
       end

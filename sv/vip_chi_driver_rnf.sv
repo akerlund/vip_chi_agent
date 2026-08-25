@@ -353,7 +353,12 @@ class vip_chi_driver_rnf #(
   // Advertise the initial SNP receive-credit budget once the link is up.
   // ---------------------------------------------------------------------------
   protected task post_activate_hook();
-    this.snp_lcrdv_pulses_pending += this.cfg.initial_snp_credits;
+    // Less whatever the negative control already put on the wire ahead of the
+    // link, so the run's total budget is unchanged and only the timing moved.
+    if (this.cfg.initial_snp_credits > this.cfg.rnf_snp_credit_before_link_negctl) begin
+      this.snp_lcrdv_pulses_pending +=
+        (this.cfg.initial_snp_credits - this.cfg.rnf_snp_credit_before_link_negctl);
+    end
   endtask
 
   // ---------------------------------------------------------------------------
@@ -374,6 +379,12 @@ class vip_chi_driver_rnf #(
   // ---------------------------------------------------------------------------
   protected task snp_credit_loop();
     bit snp_hold;
+
+    // Negative control: put credits on the wire before the receive link exists.
+    // Queued HERE rather than in post_activate_hook because the whole point is
+    // that the activation has not happened yet -- this loop is forked before it.
+    this.snp_lcrdv_pulses_pending += this.cfg.rnf_snp_credit_before_link_negctl;
+
     forever begin
       @(this.vif_rni.g_drv.rni_cb);
 
