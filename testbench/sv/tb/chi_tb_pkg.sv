@@ -181,6 +181,8 @@ package chi_tb_pkg;
   localparam item_e_t::addr_t    E_PERSIST_PGROUP_ADDR_C = item_e_t::addr_t'(52'h0012_3456_e000);
   localparam item_e_t::addr_t    E_PERSIST_PGROUP_NEGCTL_ADDR_C = item_e_t::addr_t'(52'h0012_3456_e100);
   localparam item_e_t::addr_t    E_COMBINED_WRITE_PGROUP_ADDR_C = item_e_t::addr_t'(52'h0012_3456_e200);
+  localparam item_e_t::addr_t    E_WRITE_ZERO_FORM_NEGCTL_ADDR_C = item_e_t::addr_t'(52'h0012_3456_e300);
+  localparam item_e_t::addr_t    E_PERSIST_SEP_FORM_NEGCTL_ADDR_C = item_e_t::addr_t'(52'h0012_3456_e400);
   localparam item_e_t::addr_t    E_TAG_MATCH_ADDR_C = item_e_t::addr_t'(52'h0012_3456_f000);
   localparam item_e_t::addr_t    E_TAG_MATCH_NEGCTL_ADDR_C = item_e_t::addr_t'(52'h0012_3456_f100);
   localparam int unsigned        E_WRITE_CMO_STRIDE_C = 'h1000;

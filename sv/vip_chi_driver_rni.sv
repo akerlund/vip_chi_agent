@@ -2635,6 +2635,11 @@ class vip_chi_driver_rni #(
       `uvm_fatal(get_name(), $sformatf(
       "FATAL [%s] Zero-write first response opcode 0x%0h was neither DBIDResp nor CompDBIDResp",
       get_name(), flit.opcode))
+      // Nothing follows a refused opening response. Undemoted the fatal ends the
+      // run and this is unreachable; a negative control DEMOTES it, and falling
+      // through would then wait for a grant the completer was never going to
+      // send -- a hang where the test means to record a refusal.
+      return;
     end
 
     @(this.vif_rni.g_drv.rni_cb);
@@ -2689,6 +2694,9 @@ class vip_chi_driver_rni #(
       `uvm_fatal(get_name(), $sformatf(
       "FATAL [%s] PersistSep first completion opcode 0x%0h was neither Comp nor CompPersist",
       get_name(), flit.opcode))
+      // As above: a refused opening completion ends the collection rather than
+      // falling through to wait for the Persist that would have followed a Comp.
+      return;
     end
 
     // Step off the accepted Comp beat so the next wait cannot reconsume the

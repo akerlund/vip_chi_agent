@@ -89,6 +89,8 @@ filesets:
       - tc/tc_chi_e_combined_write_comp_persist.sv:          {is_include_file: true}
       - tc/tc_chi_e_combined_write_cmo_first.sv:             {is_include_file: true}
       - tc/tc_chi_e_combined_write_obligation_negctl.sv:     {is_include_file: true}
+      - tc/tc_chi_e_write_zero_form_negctl.sv:               {is_include_file: true}
+      - tc/tc_chi_e_persist_sep_form_negctl.sv:              {is_include_file: true}
       - tc/tc_chi_e_persist_pgroup.sv:                       {is_include_file: true}
       - tc/tc_chi_e_persist_pgroup_negctl.sv:                {is_include_file: true}
       - tc/tc_chi_e_combined_write_pgroup.sv:                {is_include_file: true}

@@ -2319,6 +2319,15 @@ class vip_chi_driver_snf #(
     rsp.qos          = req.qos;
     rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
 
+    // The control drives the bare Comp alone -- no grant before it and nothing
+    // after it -- so the requester meets it as the FIRST response. See the knob.
+    if (this.cfg.snf_write_zero_bare_comp_negctl) begin
+      rsp.rsp_resp_err = completion_resp_err;
+      rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C);
+      this.drive_rsp(rsp);
+      return;
+    end
+
     if (!this.cfg.split_write_rsp) begin
       rsp.rsp_resp_err = completion_resp_err;
       rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_DBID_RESP_C);
@@ -2951,6 +2960,18 @@ class vip_chi_driver_snf #(
     // response has no data buffer, so there was never a real DBID to displace --
     // which is why the field sat at its default and nobody noticed it was
     // carrying the wrong thing.
+    // The control reproduces the pre-fix shape in full: Persist first, carrying
+    // the request's TxnID, then CompPersist. See the knob for why the TxnID
+    // collateral is part of the shape rather than an accident.
+    if (is_sep && this.cfg.snf_persist_before_comp_negctl) begin
+      rsp.dbid       = txn_id_t'(this.req_pgroup_id(req));
+      rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C);
+      this.drive_rsp(rsp);
+      rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C);
+      this.drive_rsp(rsp);
+      return;
+    end
+
     if (is_sep && this.cfg.combined_persist_rsp) begin
       rsp.dbid       = txn_id_t'(this.req_pgroup_id(req));
       rsp.rsp_opcode = item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_PERSIST_C);

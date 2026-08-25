@@ -1011,6 +1011,15 @@ class vip_chi_driver_snf(uvm_driver):
     # was carrying the wrong thing.
     persist_fields = dict(base, dbid=self.req_pgroup_id(req))
 
+    # The control reproduces the pre-fix shape in full: Persist first, carrying
+    # the request's TxnID, then CompPersist. See the knob for why the TxnID
+    # collateral is part of the shape rather than an accident.
+    if is_sep and self.cfg.snf_persist_before_comp_negctl:
+      await self.drive_rsp(dict(persist_fields, opcode=int(RspOpcode.PERSIST)))
+      await self.drive_rsp(
+        dict(persist_fields, opcode=int(RspOpcode.COMP_PERSIST)))
+      return
+
     if is_sep and self.cfg.combined_persist_rsp:
       await self.drive_rsp(
         dict(persist_fields, opcode=int(RspOpcode.COMP_PERSIST)))
@@ -1400,6 +1409,12 @@ class vip_chi_driver_snf(uvm_driver):
       "dbid": req["txnid"], "qos": req["qos"], "resp": int(Resp.I),
     }
     err = int(RespErr.NDERR) if is_decerr else int(RespErr.OKAY)
+
+    # The control drives the bare Comp alone -- no grant before it and nothing
+    # after it -- so the requester meets it as the FIRST response. See the knob.
+    if self.cfg.snf_write_zero_bare_comp_negctl:
+      await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP), resperr=err))
+      return
 
     if not self.cfg.split_write_rsp:
       await self.drive_rsp(dict(base, opcode=int(RspOpcode.COMP_DBID_RESP), resperr=err))

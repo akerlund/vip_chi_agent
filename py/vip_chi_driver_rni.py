@@ -1524,6 +1524,11 @@ class vip_chi_driver_rni(uvm_driver):
       reject("WRITE_ZERO_FIRST_RESPONSE",
              f"[{self.get_name()}] zero-write first response opcode "
              f"0x{flit['opcode']:x} was neither DBIDResp nor CompDBIDResp")
+      # Nothing follows a refused opening response. With no expectation armed
+      # reject() raises and this is unreachable; inside a control it returns, and
+      # falling through instead would wait for a grant the completer was never
+      # going to send.
+      return
 
     await self.bus.rising()
     self.drive_idle_sideband()
@@ -1567,6 +1572,9 @@ class vip_chi_driver_rni(uvm_driver):
       reject("PERSIST_SEP_FIRST_COMPLETION",
              f"[{self.get_name()}] PersistSep first completion opcode "
              f"0x{flit['opcode']:x} was neither Comp nor CompPersist")
+      # As above: a refused opening completion ends the collection rather than
+      # falling through to wait for the Persist that would have followed a Comp.
+      return
 
     await self.bus.rising()
     self.drive_idle_sideband()

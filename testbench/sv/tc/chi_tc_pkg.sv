@@ -85,6 +85,8 @@ package chi_tc_pkg;
   `include "tc_chi_e_combined_write_comp_persist.sv"
   `include "tc_chi_e_combined_write_cmo_first.sv"
   `include "tc_chi_e_combined_write_obligation_negctl.sv"
+  `include "tc_chi_e_write_zero_form_negctl.sv"
+  `include "tc_chi_e_persist_sep_form_negctl.sv"
   `include "tc_chi_e_persist_pgroup.sv"
   `include "tc_chi_e_persist_pgroup_negctl.sv"
   `include "tc_chi_e_combined_write_pgroup.sv"

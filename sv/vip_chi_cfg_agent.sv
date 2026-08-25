@@ -833,6 +833,32 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0.
   bit rnf_snp_resp_data_negctl = 1'b0;
 
+  // Negative control for the separated-persist completion form. The completer
+  // sends a standalone Persist FIRST, carrying the request's TxnID, and then
+  // CompPersist.
+  //
+  // That is neither of the two forms a requester must accept -- Comp then
+  // Persist, or CompPersist alone -- and it is the shape this VIP's own
+  // completer used to produce, which is why its requester used to demand it.
+  // Reproducing it in full means reproducing the TxnID with it: a standalone
+  // Persist is not tied to a transaction, so the non-zero TxnID trips
+  // CHI_RSP_FIELD_ZERO as well. That collateral is inherent to the shape and the
+  // test declares it.
+  // Default 0.
+  bit snf_persist_before_comp_negctl = 1'b0;
+
+  // Negative control for the zero-write completion form. The completer answers
+  // WriteNoSnpZero with a bare Comp.
+  //
+  // Neither DBIDResp-then-Comp nor a combined CompDBIDResp, and it is what this
+  // completer used to send: the request carries no write data, so the granted
+  // buffer is never used and the DBID looks pointless. The completion form is
+  // normative regardless of whether the requester uses what it is granted, and
+  // the requester must refuse the bare Comp as a FIRST response rather than wait
+  // for a grant that is never coming.
+  // Default 0.
+  bit snf_write_zero_bare_comp_negctl = 1'b0;
+
   // ---------------------------------------------------------------------------
   // Constructor.
   // ---------------------------------------------------------------------------
@@ -1269,6 +1295,8 @@ class vip_chi_cfg_agent extends uvm_object;
         this.snf_tag_match_unrequested_negctl ||
         this.rnf_snp_resp_sd_negctl ||
         this.rnf_snp_resp_data_negctl ||
+        this.snf_persist_before_comp_negctl ||
+        this.snf_write_zero_bare_comp_negctl ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||
         this.snf_corrupt_tag ||
         this.lasm_abort_activation || this.flit_without_flitpend ||

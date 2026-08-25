@@ -82,14 +82,24 @@ class chi_sb_rule_negctl_catcher extends uvm_report_catcher;
   // ---------------------------------------------------------------------------
   // Catch
   // ---------------------------------------------------------------------------
+  // UVM_FATAL as well as UVM_ERROR, because the two kinds of refusal this is
+  // aimed at report at different severities and a control cannot choose which.
+  // A scoreboard or checker rule raises a `uvm_error; a DRIVER refusing a
+  // response it was never owed raises a `uvm_fatal, because outside a control
+  // there is nothing sensible for it to do next. Demoting only the error would
+  // leave every driver-refusal control unwritable in this port -- which is the
+  // asymmetry with the pyUVM port's reject() that the mechanism exists to close.
+  //
+  // Only patterns a test registered are touched, so an unexpected fatal still
+  // ends the run.
   virtual function action_e catch();
 
-    if (get_severity() == UVM_ERROR) begin
+    if ((get_severity() == UVM_ERROR) || (get_severity() == UVM_FATAL)) begin
       foreach (this.patterns[i]) begin
         if (uvm_is_match(this.patterns[i], get_message())) begin
           this.n_caught[this.patterns[i]]++;
           set_severity(UVM_INFO);
-          set_id("VIP_CHI_EXPECTED_SB_ERROR");
+          set_id("VIP_CHI_EXPECTED_NEGCTL_REPORT");
           return THROW;
         end
       end
