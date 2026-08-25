@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 from chi_coherent_base_test import chi_coherent_base_test
+from chi_coherency_negctl_catcher import chi_coherency_negctl_catcher
 from chi_tb_pkg import WRITE_READ_ADDR_C
 from vip_chi_makeinvalid_seq import vip_chi_makeinvalid_seq
 from vip_chi_makeunique_seq import vip_chi_makeunique_seq
@@ -60,6 +61,14 @@ class chi_coh_snp_resp_data_negctl_base_test(chi_coherent_base_test):
     await self.wait_reset_settle()
 
     coh = self.tb_env.coh_checker
+
+    # The provocation is declared, not merely provoked. Checker D's violations
+    # are in the env's verdict, so a control that induces one and says nothing
+    # fails on its own stimulus; the catcher demotes exactly what this test asked
+    # for and counts it, and the count is held against the rule tallies below.
+    catcher = chi_coherency_negctl_catcher("coh_snp_resp_data_catcher")
+    coh.logger.addFilter(catcher)
+
     form_before = coh.get_bad_snp_resp_form_count()
     state_before = coh.get_bad_snp_resp_state_count()
     dirty_snoops_before = coh.get_snp_no_data_on_dirty_count()
@@ -91,7 +100,18 @@ class chi_coh_snp_resp_data_negctl_base_test(chi_coherent_base_test):
       "no no-data snoop reached a dirty holder, so the control had nothing to "
       "corrupt and the verdict below would be about nothing")
 
+    coh.logger.removeFilter(catcher)
+
     form_after = coh.get_bad_snp_resp_form_count()
+
+    # Every demoted report is a response-form report, and every movement in that
+    # tally produced one. The state rule is asserted silent below, so the form
+    # rule is the only source the catcher can have had.
+    assert catcher.claimed == (form_after - form_before), (
+      f"the catcher demoted {catcher.claimed} report(s) but the response-form "
+      f"tally moved by {form_after - form_before}: either a report escaped the "
+      f"catcher, or a rule other than the one under test also fired")
+
     assert form_after > form_before, (
       "a dirty snoopee answered SnpMakeInvalid with data and nothing said so. "
       "Either the control is not reaching the responder, or the rule is not "

@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 from chi_coherent_base_test import chi_coherent_base_test
+from chi_coherency_negctl_catcher import chi_coherency_negctl_catcher
 from chi_tb_pkg import WRITE_READ_ADDR_C
 
 SETTLE_C = 40
@@ -65,7 +66,27 @@ class chi_coh_do_not_go_to_sd_negctl_base_test(chi_coherent_base_test):
     self.raise_objection()
 
     coh = self.tb_env.coh_checker
+
+    # The provocation is declared, not merely provoked. Checker D's violations
+    # are in the env's verdict, so a control that induces one and says nothing
+    # fails on its own stimulus; the catcher demotes exactly what this test asked
+    # for and counts it, and the count is held against the rule tallies below.
+    catcher = chi_coherency_negctl_catcher("coh_do_not_go_to_sd_catcher")
+    coh.logger.addFilter(catcher)
+
     before = coh.n_bad_snp_sd_under_no_sd
+    # The rules that judge the same response beside the target one. This cut
+    # makes the snoopee report a state its own shadow never reaches, so their
+    # reports are collateral of the injection rather than independent findings --
+    # counted, so the catcher's total below is accounted for rather than absorbed.
+    #
+    # D6 is named explicitly because it is easy to miss: in the checker's report
+    # it sits between two OBSERVATIONAL counters, and a cross-check that took the
+    # violation set from their neighbourhood rather than from what actually
+    # reports would come up short by exactly this rule.
+    state_before = coh.n_bad_snp_resp_state
+    form_before = coh.n_bad_snp_resp_form
+    gains_before = coh.n_snp_resp_gains_permission
     assert before == 0, (
       f"the DoNotGoToSD obedience rule already reported {before} time(s) before "
       f"the control ran; the count below would prove nothing")
@@ -80,7 +101,20 @@ class chi_coh_do_not_go_to_sd_negctl_base_test(chi_coherent_base_test):
 
     await self.wait_clocks(SETTLE_C)
 
+    coh.logger.removeFilter(catcher)
+
     after = coh.n_bad_snp_sd_under_no_sd
+    collateral = ((coh.n_bad_snp_resp_state - state_before) +
+                  (coh.n_bad_snp_resp_form - form_before) +
+                  (coh.n_snp_resp_gains_permission - gains_before))
+
+    # Every demoted report is one of the four tallies, and every movement in
+    # those tallies produced a report. A mismatch either way means the control is
+    # not measuring what it claims to.
+    assert catcher.claimed == (after - before) + collateral, (
+      f"the catcher demoted {catcher.claimed} report(s) but the rule tallies "
+      f"moved by {(after - before) + collateral}: either a report escaped the "
+      f"catcher or a tally moved without one")
 
     if self.EXPECT_REPORT_C:
       assert after > before, (

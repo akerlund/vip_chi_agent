@@ -39,6 +39,7 @@ from vip_chi_cfg_agent import VipChiCfgAgent
 from vip_chi_perf_counters import vip_chi_perf_counters
 from vip_chi_coherency_checker import vip_chi_coherency_checker
 from vip_chi_coverage import vip_chi_coverage
+from chi_coherency_negctl_catcher import chi_coherency_violation_tally
 
 
 class chi_coherent_tb_env(uvm_env):
@@ -93,6 +94,17 @@ class chi_coherent_tb_env(uvm_env):
 
     self.perf = vip_chi_perf_counters("perf", self)
     self.coh_checker = vip_chi_coherency_checker("coh_checker", self)
+    # What carries Checker D into the verdict. It reports through its own logger
+    # rather than through an error count, so the end-of-test assertion below --
+    # which sums the link-layer binds -- cannot see it without this. The SV port
+    # needs no equivalent: its violations are uvm_error and the regression gates
+    # on the count.
+    #
+    # A handler rather than a logger filter, so the negative controls' catcher
+    # gets first refusal on the records it provoked; the tally's own comment has
+    # why that ordering is the whole mechanism.
+    self.coh_violation_tally = chi_coherency_violation_tally()
+    self.coh_checker.logger.addHandler(self.coh_violation_tally)
     self.cov = vip_chi_coverage("cov", self)
 
     # Protocol checkers, mirroring the coherent binds in the SV harness.
@@ -272,10 +284,16 @@ class chi_coherent_tb_env(uvm_env):
         if opcode_csv:
           checker.export_opcode_csv(opcode_csv, run_name)
     finally:
-      total = sum(checker.errors for checker in checkers)
+      # Checker D's unclaimed violations are in this sum. Declared provocations
+      # are excluded by the negative controls' catcher, which drops the record
+      # before it reaches the tally -- a control still asserts its own counts,
+      # and what this catches is a coherency rule firing unasked.
+      coh = self.coh_violation_tally.reported
+      total = sum(checker.errors for checker in checkers) + coh
       assert total == 0, (
         f"CHI protocol checkers reported {total} violation(s): "
-        + " ".join(f"{c.log.name}={c.errors}" for c in checkers if c.errors))
+        + " ".join(f"{c.log.name}={c.errors}" for c in checkers if c.errors)
+        + (f" coh_checker={coh}" if coh else ""))
 
   def handle_reset(self):
     self.perf.handle_reset()

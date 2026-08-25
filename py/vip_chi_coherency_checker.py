@@ -1308,7 +1308,13 @@ class vip_chi_coherency_checker(uvm_component):
     return 100.0 * (from_cov + req_cov + granted_cov + to_cov + cross_cov) / 5.0
 
   def total_violations(self):
+    # n_snp_resp_gains_permission is catalogue rule D6 and belongs here for the
+    # same reason as the rest: it sets legal = False and reports an error. It sits
+    # beside two OBSERVATIONAL counters in the adopt summary -- snp_resp_adopted
+    # and snp_resp_state_differs, neither of which is a violation -- which is the
+    # company that makes it easy to leave out.
     return (self.n_multi_owner + self.n_coherent_data_mismatch +
+            self.n_snp_resp_gains_permission +
             self.n_excl_violation + self.n_bad_make_unique +
             self.n_bad_snp_resp_form + self.n_bad_snp_resp_state +
             self.n_bad_snp_sd_under_no_sd +
