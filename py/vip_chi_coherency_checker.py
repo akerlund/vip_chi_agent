@@ -43,7 +43,7 @@ from vip_chi_types_pkg import (
   snp_resp_state_gains_permission,
   Resp, RespErr, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode, CACHE_LINE_BYTES,
   snp_opcode_returns_no_data, snp_opcode_invalidates,
-  snp_opcode_forbids_retaining_unique,
+  snp_opcode_forbids_retaining_unique, snp_opcode_is_forwarding,
   req_final_state, state_holds_dirty,
   snoop_permitted_for_req, req_generates_snoop,
 )
@@ -222,6 +222,13 @@ class vip_chi_coherency_checker(uvm_component):
     # negative control and this rule must keep working while it is.
     self.req_op_by_line = [{} for _ in range(N_NODES)]
     self.req_line_by_txn = [{} for _ in range(N_NODES)]
+    # The same correlation, carrying the two fields a forwarding snoop has to
+    # name its requester by. The opcode above answers "may this snoop be sent for
+    # that request"; these answer "is it addressed to it". Kept beside the opcode
+    # rather than in a table of their own so one release path retires all three
+    # and they cannot fall out of step.
+    self.req_src_by_line = [{} for _ in range(N_NODES)]
+    self.req_txn_by_line = [{} for _ in range(N_NODES)]
     # n_snp_req_judged is how many snoops were correlated to exactly one
     # outstanding request and therefore had a Table 4-5 row to be judged against;
     # n_snp_req_mismatch is how many of those carried an opcode that row does not
@@ -234,6 +241,22 @@ class vip_chi_coherency_checker(uvm_component):
     self.n_snp_req_judged = 0
     self.n_snp_req_mismatch = 0
     self.n_snp_req_uncorrelated = 0
+    # The positive half of the FwdNID/FwdTxnID rule. The SNP channel checker
+    # judges the negative half -- both fields zero on a snoop that has no
+    # requester to name -- from the flit alone, which is all a link-layer bind
+    # can see. Section 2.5 also states the other direction: FwdNID "must be the
+    # Node ID of the original Requester" and FwdTxnID "must be the TxnID of the
+    # original Request". Neither can be judged without knowing which request
+    # caused the snoop, so it is judged here, on the same correlation rule D8
+    # resolves and at the same moment.
+    #
+    # n_snp_fwd_judged counts forwarding snoops that had exactly one candidate
+    # cause and were therefore addressable; n_snp_fwd_mismatch how many of those
+    # named a different transaction than the one they were sent for. A forwarding
+    # snoop whose cause is ambiguous is counted by n_snp_req_uncorrelated with
+    # the rest, because the two rules decline for the same reason.
+    self.n_snp_fwd_judged = 0
+    self.n_snp_fwd_mismatch = 0
     # Catalogue rule D9 -- the CompAck ordering window. One slot per node is
     # enough because an RN-F runs its coherent transactions serially, so it never
     # has two acknowledgements outstanding at once.
@@ -520,16 +543,65 @@ class vip_chi_coherency_checker(uvm_component):
   # hazard_claim/hazard_release: same call sites, same lifetime, but ungated, so
   # turning the hazard rule off for its negative control does not also turn off
   # the request->snoop correspondence.
-  def req_track_claim(self, node, line, txn_id, opcode):
+  def req_track_claim(self, node, line, txn_id, src_id, opcode):
     self.req_op_by_line[node][line] = _I(opcode)
     self.req_line_by_txn[node][txn_id] = line
+    # SrcID is taken from the flit rather than from the node index: the index is
+    # this checker's own numbering of the ports it is wired to, and the rule is
+    # about the identifier the requester put on the wire.
+    self.req_src_by_line[node][line] = _I(src_id)
+    self.req_txn_by_line[node][line] = _I(txn_id)
 
   def req_track_release(self, node, txn_id):
     line = self.req_line_by_txn[node].pop(txn_id, None)
     if line is not None:
       self.req_op_by_line[node].pop(line, None)
+      self.req_src_by_line[node].pop(line, None)
+      self.req_txn_by_line[node].pop(line, None)
 
-  def check_snoop_matches_request(self, node, line, snp_op):
+  def check_snoop_fwd_names_requester(self, node, line, snp_op, fwd_nid, fwd_txn_id,
+                                      cause_node, cause_src, cause_txn):
+    """A forwarding snoop must name the requester it is forwarding to.
+
+    IHI 0050 E 2.5 states both halves of the FwdNID/FwdTxnID rule. The SNP
+    channel bind judges the half a link-layer checker can see -- the fields are
+    inapplicable and must be zero on every snoop that is not one of the six
+    forwarding forms -- and passed ANY value on the six that are. The positive
+    half is here because it needs the cause: FwdNID must be the Node ID of the
+    original Requester, FwdTxnID the TxnID of the original Request.
+
+    Both fields are judged even though only one of them can fail on this bench.
+    Every RN-F here drives SrcID zero, so the FwdNID comparison is 0 == 0 and
+    holds whatever the home puts in the field; it is the FwdTxnID half that
+    carries the weight until a test gives the two requesters distinct Node IDs.
+    Written as one rule rather than two because the specification writes it as
+    one and a home that mis-addresses a forward gets both fields from the same
+    place -- and reported field by field, so the message says which half broke.
+    """
+    if not snp_opcode_is_forwarding(_I(snp_op)):
+      return
+
+    self.n_snp_fwd_judged += 1
+
+    if _I(fwd_nid) != _I(cause_src):
+      self.n_snp_fwd_mismatch += 1
+      self.logger.error(
+        f"COHERENCY VIOLATION: forwarding snoop opcode 0x{_I(snp_op):x} sent to "
+        f"node {node} for line 0x{line:x} carries FwdNID 0x{_I(fwd_nid):x}, but "
+        f"the request that caused it (node {cause_node}, TxnID 0x{cause_txn:x}) "
+        f"came from SrcID 0x{cause_src:x} -- IHI 0050 E 2.5 requires FwdNID to "
+        f"be the Node ID of the original Requester")
+
+    if _I(fwd_txn_id) != _I(cause_txn):
+      self.n_snp_fwd_mismatch += 1
+      self.logger.error(
+        f"COHERENCY VIOLATION: forwarding snoop opcode 0x{_I(snp_op):x} sent to "
+        f"node {node} for line 0x{line:x} carries FwdTxnID 0x{_I(fwd_txn_id):x}, "
+        f"but the request that caused it (node {cause_node}, SrcID "
+        f"0x{cause_src:x}) is TxnID 0x{cause_txn:x} -- IHI 0050 E 2.5 requires "
+        f"FwdTxnID to be the TxnID of the original Request")
+
+  def check_snoop_matches_request(self, node, line, snp_op, fwd_nid, fwd_txn_id):
     """Catalogue rule D8: a snoop's opcode must be one IHI 0050 E Table 4-5 / D
     Table 4-3 permits for the request that caused it.
 
@@ -560,6 +632,8 @@ class vip_chi_coherency_checker(uvm_component):
       return
     cause_node, cause_op = causes[0]
     self.n_snp_req_judged += 1
+    cause_src = self.req_src_by_line[cause_node][line]
+    cause_txn = self.req_txn_by_line[cause_node][line]
 
     # The cross, recorded for every correlated pair including the ones rejected
     # below: a cross that only ever saw conformant traffic would say nothing
@@ -567,6 +641,9 @@ class vip_chi_coherency_checker(uvm_component):
     # coverage model carrying the two opcodes on separate axes cannot express a
     # single row of it -- and this is the only point where both are known.
     self._rsp_hit.add((_I(cause_op), _I(snp_op)))
+
+    self.check_snoop_fwd_names_requester(node, line, snp_op, fwd_nid, fwd_txn_id,
+                                         cause_node, cause_src, cause_txn)
 
     if not req_generates_snoop(cause_op):
       self.n_snp_req_mismatch += 1
@@ -622,7 +699,7 @@ class vip_chi_coherency_checker(uvm_component):
     # shadow below does not model: the hazard rule is about a requester
     # overlapping itself, which does not depend on what the request does.
     self.hazard_claim(node, line, _I(item.txn_id), wop)
-    self.req_track_claim(node, line, _I(item.txn_id), wop)
+    self.req_track_claim(node, line, _I(item.txn_id), item.src_id, wop)
     # Rule D9's arming step. ReadOnce is excluded here rather than at the
     # judgement, because section 2.8.3 names it as the request for which the home
     # need not wait -- the exception belongs to the transaction.
@@ -977,7 +1054,8 @@ class vip_chi_coherency_checker(uvm_component):
       self.n_snp_no_data_on_dirty += 1
     # Rule D8 runs on the request set outstanding at the moment the snoop
     # arrives.
-    self.check_snoop_matches_request(node, line, item.snp_opcode)
+    self.check_snoop_matches_request(node, line, item.snp_opcode,
+                                     item.fwd_nid, item.fwd_txn_id)
     # D9 alongside D8, and for the same reason: both judge the snoop as it
     # arrives, against state that the bookkeeping below is about to change.
     self.check_snoop_outside_comp_ack_window(node, line)
@@ -1166,6 +1244,12 @@ class vip_chi_coherency_checker(uvm_component):
   def get_snp_req_uncorrelated_count(self):
     return self.n_snp_req_uncorrelated
 
+  def get_snp_fwd_judged_count(self):
+    return self.n_snp_fwd_judged
+
+  def get_snp_fwd_mismatch_count(self):
+    return self.n_snp_fwd_mismatch
+
   def get_comp_ack_window_count(self):
     return self.n_eca_windows
 
@@ -1229,8 +1313,8 @@ class vip_chi_coherency_checker(uvm_component):
             self.n_bad_snp_resp_form + self.n_bad_snp_resp_state +
             self.n_bad_snp_sd_under_no_sd +
             self.n_bad_dataless_resp + self.n_snp_dirty_lost +
-            self.n_snp_req_mismatch + self.n_eca_window_snoops +
-            self.n_line_hazard)
+            self.n_snp_req_mismatch + self.n_snp_fwd_mismatch +
+            self.n_eca_window_snoops + self.n_line_hazard)
 
   def handle_reset(self):
     self._init_shadow()
@@ -1283,6 +1367,12 @@ class vip_chi_coherency_checker(uvm_component):
       f"snp_req_judged={self.n_snp_req_judged} "
       f"snp_req_mismatch={self.n_snp_req_mismatch} "
       f"snp_req_uncorrelated={self.n_snp_req_uncorrelated}")
+    # Its own line: the report server wraps a long one, and a wrapped
+    # `field=value` is invisible to the sweeps that grep for these.
+    self.logger.info(
+      f"COHERENCY SNP FWD NAMES SUMMARY: "
+      f"snp_fwd_judged={self.n_snp_fwd_judged} "
+      f"snp_fwd_mismatch={self.n_snp_fwd_mismatch}")
     # Its own line: the report server wraps a long one, and a wrapped
     # `field=value` is invisible to the sweeps that grep for these.
     self.logger.info(

@@ -498,6 +498,16 @@ class VipChiCfgAgent:
     # 13.10.16: applicable in Forward type snoops, inapplicable and must be zero
     # in all others). Proves CHI_SNP_FWD_FIELDS_ZERO fires.
     self.hnf_snp_fwd_fields_negctl = False
+    # The other half of the same field pair, and it needs a FORWARDING snoop to
+    # land on rather than a plain one. IHI 0050 E 2.5: FwdNID "must be the Node
+    # ID of the original Requester", FwdTxnID "must be the TxnID of the original
+    # Request". This adds one to each, so the snoop names a requester and a
+    # transaction that are not the ones it was sent for whatever the correct
+    # values happen to be -- a constant would prove nothing on a bench whose
+    # requesters already drive that constant. Proves the coherency checker's
+    # FwdNID/FwdTxnID rule fires; note the SNP channel bind cannot judge this
+    # one, since the flit alone does not say which request caused it.
+    self.hnf_snp_fwd_target_negctl = False
 
     # RetToSrc on a snoop whose opcode must carry zero -- E 4.9 / D 4.9 names
     # the set: Stash snoops, SnpCleanShared, SnpCleanInvalid, SnpMakeInvalid,
@@ -857,6 +867,7 @@ class VipChiCfgAgent:
       "hnf_snoop_before_comp_ack": self.hnf_snoop_before_comp_ack,
       "rn_drop_required_exp_comp_ack": self.rn_drop_required_exp_comp_ack,
       "hnf_snp_fwd_fields_negctl": self.hnf_snp_fwd_fields_negctl,
+      "hnf_snp_fwd_target_negctl": self.hnf_snp_fwd_target_negctl,
       "hnf_snp_ret_to_src_negctl": self.hnf_snp_ret_to_src_negctl,
       "hnf_snp_do_not_go_to_sd_negctl": self.hnf_snp_do_not_go_to_sd_negctl,
       "hnf_force_excl_success": self.hnf_force_excl_success,

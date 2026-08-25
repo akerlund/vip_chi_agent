@@ -70,6 +70,7 @@ class vip_chi_coherency_checker #(
 
   typedef vip_chi_item #(CFG_P) item_t;
   typedef item_t::txn_id_t      txn_id_t;
+  typedef item_t::node_id_t     node_id_t;
   typedef item_t::data_t        data_t;
 
   localparam int N_NODES_C = 2;
@@ -192,6 +193,13 @@ class vip_chi_coherency_checker #(
   // ---------------------------------------------------------------------------
   protected vip_chi_req_opcode_t req_op_by_line  [N_NODES_C][longint];
   protected longint              req_line_by_txn [N_NODES_C][longint];
+  // The same correlation, carrying the two fields a forwarding snoop has to
+  // name its requester by. The opcode above answers "may this snoop be sent for
+  // that request"; these answer "is it addressed to it". Kept beside the opcode
+  // rather than in a table of their own so one release path retires all three
+  // and they cannot fall out of step.
+  protected node_id_t            req_src_by_line [N_NODES_C][longint];
+  protected longint              req_txn_by_line [N_NODES_C][longint];
 
   protected int n_line_hazard;
   protected int n_line_clear;
@@ -211,6 +219,23 @@ class vip_chi_coherency_checker #(
   protected int n_snp_req_judged;
   protected int n_snp_req_mismatch;
   protected int n_snp_req_uncorrelated;
+
+  // The positive half of the FwdNID/FwdTxnID rule. The SNP channel checker
+  // judges the negative half -- both fields zero on a snoop that has no
+  // requester to name -- from the flit alone, which is all a link-layer bind can
+  // see. Section 2.5 also states the other direction: FwdNID "must be the Node
+  // ID of the original Requester" and FwdTxnID "must be the TxnID of the
+  // original Request". Neither can be judged without knowing which request
+  // caused the snoop, so it is judged here, on the same correlation rule D8
+  // resolves and at the same moment.
+  //
+  // n_snp_fwd_judged counts forwarding snoops that had exactly one candidate
+  // cause and were therefore addressable; n_snp_fwd_mismatch how many of those
+  // named a different transaction than the one they were sent for. A forwarding
+  // snoop whose cause is ambiguous is counted by n_snp_req_uncorrelated with the
+  // rest, because the two rules decline for the same reason.
+  protected int n_snp_fwd_judged;
+  protected int n_snp_fwd_mismatch;
 
   // Catalogue rule D9 -- the CompAck ordering window. One slot per node is
   // enough because an RN-F runs its coherent transactions serially, so it never
@@ -802,6 +827,8 @@ class vip_chi_coherency_checker #(
       this.hazard_by_txn[n].delete();
       this.req_op_by_line[n].delete();
       this.req_line_by_txn[n].delete();
+      this.req_src_by_line[n].delete();
+      this.req_txn_by_line[n].delete();
       this.req_eca_line[n].delete();
       this.eca_open[n] = 1'b0;
       this.eca_line[n] = 0;
@@ -815,6 +842,8 @@ class vip_chi_coherency_checker #(
     this.n_snp_req_judged       = 0;
     this.n_snp_req_mismatch     = 0;
     this.n_snp_req_uncorrelated = 0;
+    this.n_snp_fwd_judged       = 0;
+    this.n_snp_fwd_mismatch     = 0;
     this.n_eca_windows          = 0;
     this.n_eca_window_snoops    = 0;
     this.n_eca_windows_unclosed = 0;
@@ -1108,9 +1137,15 @@ class vip_chi_coherency_checker #(
   protected function void req_track_claim(input int                  node,
                                           input longint              line,
                                           input longint              txn_id,
+                                          input node_id_t            src_id,
                                           input vip_chi_req_opcode_t opcode);
     this.req_op_by_line[node][line]   = opcode;
     this.req_line_by_txn[node][txn_id] = line;
+    // SrcID is taken from the flit rather than from the node index: the index is
+    // this checker's own numbering of the ports it is wired to, and the rule is
+    // about the identifier the requester put on the wire.
+    this.req_src_by_line[node][line]  = src_id;
+    this.req_txn_by_line[node][line]  = txn_id;
   endfunction
 
   protected function void req_track_release(input int node, input longint txn_id);
@@ -1121,6 +1156,8 @@ class vip_chi_coherency_checker #(
     line = this.req_line_by_txn[node][txn_id];
     this.req_line_by_txn[node].delete(txn_id);
     this.req_op_by_line[node].delete(line);
+    this.req_src_by_line[node].delete(line);
+    this.req_txn_by_line[node].delete(line);
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -1145,14 +1182,20 @@ class vip_chi_coherency_checker #(
   // ---------------------------------------------------------------------------
   protected function void check_snoop_matches_request(input int                  node,
                                                       input longint              line,
-                                                      input vip_chi_snp_opcode_t snp_op);
+                                                      input vip_chi_snp_opcode_t snp_op,
+                                                      input node_id_t            fwd_nid,
+                                                      input txn_id_t             fwd_txn_id);
     int                  cause_node;
     int                  cause_count;
     vip_chi_req_opcode_t cause_op;
+    node_id_t            cause_src;
+    longint              cause_txn;
 
     cause_count = 0;
     cause_node  = -1;
     cause_op    = vip_chi_req_opcode_t'(0);
+    cause_src   = node_id_t'(0);
+    cause_txn   = 0;
     for (int k = 0; k < N_NODES_C; k++) begin
       if (k == node) begin
         continue;
@@ -1160,6 +1203,8 @@ class vip_chi_coherency_checker #(
       if (this.req_op_by_line[k].exists(line)) begin
         cause_node = k;
         cause_op   = this.req_op_by_line[k][line];
+        cause_src  = this.req_src_by_line[k][line];
+        cause_txn  = this.req_txn_by_line[k][line];
         cause_count++;
       end
     end
@@ -1184,6 +1229,9 @@ class vip_chi_coherency_checker #(
     this.rs_snp_opcode_sample = item_t::snp_opcode_t'(snp_op);
     this.cg_req_snp_pairing.sample();
 
+    this.check_snoop_fwd_names_requester(node, line, snp_op, fwd_nid, fwd_txn_id,
+                                         cause_node, cause_src, cause_txn);
+
     if (!vip_chi_req_generates_snoop(cause_op)) begin
       this.n_snp_req_mismatch++;
       `uvm_error("VIP_CHI_COH", $sformatf(
@@ -1196,6 +1244,53 @@ class vip_chi_coherency_checker #(
       `uvm_error("VIP_CHI_COH", $sformatf(
         "COHERENCY VIOLATION: snoop opcode 0x%0h sent to node %0d for line 0x%0h is not permitted for the request that caused it (node %0d, opcode 0x%0h) -- IHI 0050 E Table 4-5 / D Table 4-3 and the bullets under it",
         snp_op, node, line, cause_node, cause_op))
+    end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // A forwarding snoop must name the requester it is forwarding to.
+  //
+  // IHI 0050 E 2.5 states both halves of the FwdNID/FwdTxnID rule. The SNP
+  // channel bind judges the half a link-layer checker can see -- the fields are
+  // inapplicable and must be zero on every snoop that is not one of the six
+  // forwarding forms -- and passed ANY value on the six that are. The positive
+  // half is here because it needs the cause: FwdNID must be the Node ID of the
+  // original Requester, FwdTxnID the TxnID of the original Request.
+  //
+  // Both fields are judged even though only one of them can fail on this bench.
+  // Every RN-F here drives SrcID zero, so the FwdNID comparison is 0 == 0 and
+  // holds whatever the home puts in the field; it is the FwdTxnID half that
+  // carries the weight until a test gives the two requesters distinct Node IDs.
+  // Written as one rule rather than two because the specification writes it as
+  // one and a home that mis-addresses a forward gets both fields from the same
+  // place -- and reported field by field, so the message says which half broke.
+  // ---------------------------------------------------------------------------
+  protected function void check_snoop_fwd_names_requester(input int                  node,
+                                                          input longint              line,
+                                                          input vip_chi_snp_opcode_t snp_op,
+                                                          input node_id_t            fwd_nid,
+                                                          input txn_id_t             fwd_txn_id,
+                                                          input int                  cause_node,
+                                                          input node_id_t            cause_src,
+                                                          input longint              cause_txn);
+    if (!vip_chi_snp_opcode_is_forwarding(snp_op)) begin
+      return;
+    end
+
+    this.n_snp_fwd_judged++;
+
+    if (fwd_nid !== cause_src) begin
+      this.n_snp_fwd_mismatch++;
+      `uvm_error("VIP_CHI_COH", $sformatf(
+        "COHERENCY VIOLATION: forwarding snoop opcode 0x%0h sent to node %0d for line 0x%0h carries FwdNID 0x%0h, but the request that caused it (node %0d, TxnID 0x%0h) came from SrcID 0x%0h -- IHI 0050 E 2.5 requires FwdNID to be the Node ID of the original Requester",
+        snp_op, node, line, fwd_nid, cause_node, cause_txn, cause_src))
+    end
+
+    if (longint'(fwd_txn_id) !== cause_txn) begin
+      this.n_snp_fwd_mismatch++;
+      `uvm_error("VIP_CHI_COH", $sformatf(
+        "COHERENCY VIOLATION: forwarding snoop opcode 0x%0h sent to node %0d for line 0x%0h carries FwdTxnID 0x%0h, but the request that caused it (node %0d, SrcID 0x%0h) is TxnID 0x%0h -- IHI 0050 E 2.5 requires FwdTxnID to be the TxnID of the original Request",
+        snp_op, node, line, fwd_txn_id, cause_node, cause_src, cause_txn))
     end
   endfunction
 
@@ -1243,7 +1338,7 @@ class vip_chi_coherency_checker #(
     // shadow below does not model: the hazard rule is about a requester
     // overlapping itself, which does not depend on what the request does.
     this.hazard_claim(node, line, longint'(item.txn_id), longint'(wop));
-    this.req_track_claim(node, line, longint'(item.txn_id), wop);
+    this.req_track_claim(node, line, longint'(item.txn_id), item.src_id, wop);
     // Rule D9's arming step. ReadOnce is excluded here rather than at the
     // judgement, because section 2.8.3 names it as the request for which the
     // home need not wait -- the exception belongs to the transaction.
@@ -1783,7 +1878,8 @@ class vip_chi_coherency_checker #(
     end
     // Rule D8 runs before the shadow bookkeeping below so it judges the snoop as
     // it arrives, on the request set outstanding at that moment.
-    this.check_snoop_matches_request(node, line, vip_chi_snp_opcode_t'(item.snp_opcode));
+    this.check_snoop_matches_request(node, line, vip_chi_snp_opcode_t'(item.snp_opcode),
+                                     item.fwd_nid, item.fwd_txn_id);
     // D9 alongside D8, and for the same reason: both judge the snoop as it
     // arrives, against state that the bookkeeping below is about to change.
     this.check_snoop_outside_comp_ack_window(node, line);
@@ -1999,6 +2095,8 @@ class vip_chi_coherency_checker #(
   function int get_snp_req_judged_count();       return this.n_snp_req_judged;       endfunction
   function int get_snp_req_mismatch_count();     return this.n_snp_req_mismatch;     endfunction
   function int get_snp_req_uncorrelated_count(); return this.n_snp_req_uncorrelated; endfunction
+  function int get_snp_fwd_judged_count();       return this.n_snp_fwd_judged;       endfunction
+  function int get_snp_fwd_mismatch_count();     return this.n_snp_fwd_mismatch;     endfunction
   function int get_comp_ack_window_count();          return this.n_eca_windows;          endfunction
   function int get_comp_ack_window_snoop_count();    return this.n_eca_window_snoops;    endfunction
   function int get_comp_ack_window_unclosed_count(); return this.n_eca_windows_unclosed; endfunction
@@ -2056,6 +2154,11 @@ class vip_chi_coherency_checker #(
     `uvm_info(get_name(), $sformatf(
       "COHERENCY SNP REQ MATCH SUMMARY: snp_req_judged=%0d snp_req_mismatch=%0d snp_req_uncorrelated=%0d",
       this.n_snp_req_judged, this.n_snp_req_mismatch, this.n_snp_req_uncorrelated), UVM_LOW)
+    // Its own line: the report server wraps a long one, and a wrapped
+    // `field=value` is invisible to the sweeps that grep for these.
+    `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY SNP FWD NAMES SUMMARY: snp_fwd_judged=%0d snp_fwd_mismatch=%0d",
+      this.n_snp_fwd_judged, this.n_snp_fwd_mismatch), UVM_LOW)
     // Its own line: the report server wraps a long one, and a wrapped
     // `field=value` is invisible to the sweeps that grep for these.
     `uvm_info("VIP_CHI_COH", $sformatf(

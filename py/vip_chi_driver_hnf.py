@@ -150,6 +150,7 @@ class vip_chi_driver_hnf(uvm_component):
     # makes the count a test asserts on depend on how many snoops the traffic
     # happened to produce.
     self._snp_fwd_negctl_done: set = set()
+    self._snp_fwd_tgt_negctl_done: set = set()
     self._snp_rts_negctl_done: set = set()
     self._snp_sd_negctl_done: set = set()
     self.dn_txn_ctr = 0
@@ -1369,11 +1370,13 @@ class vip_chi_driver_hnf(uvm_component):
       "donotgotosd": int(snp_do_not_go_to_sd_required(rn.cfg.issue, op)),
     }
 
-    # The three field negative controls. Each corrupts one field of an otherwise
+    # The field negative controls. Each corrupts one field of an otherwise
     # ordinary snoop and fires once per port, and each is gated on the opcode
     # actually being one the rule judges -- a control that sets RetToSrc on a
     # SnpShared, or clears DoNotGoToSD on a SnpOnce, would provoke nothing and
-    # pass for it.
+    # pass for it. The fwd pair below are gated on OPPOSITE senses of the same
+    # predicate for that reason: the zero rule needs a snoop with no requester to
+    # name, the value rule a snoop that has one.
     if (self.cfg.hnf_snp_fwd_fields_negctl
         and k not in self._snp_fwd_negctl_done
         and not snp_opcode_is_forwarding(op)):
@@ -1381,6 +1384,23 @@ class vip_chi_driver_hnf(uvm_component):
       fields["fwdnid"] = 1
       self.logger.info(
         f"SNP negctl: FwdNID on non-Forward snoop opcode 0x{int(op):x}")
+
+    # Plus one rather than a constant: the corrupted value must differ from the
+    # correct one whatever the correct one is, and every requester on this bench
+    # drives SrcID zero -- so a constant zero would corrupt nothing and a
+    # constant one would stop working the day a test gives them real Node IDs.
+    if (self.cfg.hnf_snp_fwd_target_negctl
+        and k not in self._snp_fwd_tgt_negctl_done
+        and snp_opcode_is_forwarding(op)):
+      self._snp_fwd_tgt_negctl_done.add(k)
+      # Masked to the field width so the increment WRAPS rather than
+      # overflowing, which is what the SV cast does and is the only form that
+      # stays inside the flit at the top of the range.
+      fields["fwdnid"] = (_I(fwd_nid) + 1) & mask(rn.cfg.node_id_width)
+      fields["fwdtxnid"] = (_I(fwd_txn) + 1) & mask(rn.cfg.txn_id_width)
+      self.logger.info(
+        f"SNP negctl: FwdNID/FwdTxnID on forwarding snoop opcode 0x{int(op):x} "
+        "name a different requester than the one it was sent for")
 
     if (self.cfg.hnf_snp_ret_to_src_negctl
         and k not in self._snp_rts_negctl_done

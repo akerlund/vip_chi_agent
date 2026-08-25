@@ -176,6 +176,7 @@ class vip_chi_driver_hnf #(
   // for the same reason: a control that fires on every snoop makes the count a
   // test asserts on depend on how many snoops the traffic happened to produce.
   protected bit rn_snp_fwd_negctl_done [N_RNF_PORTS];
+  protected bit rn_snp_fwd_tgt_negctl_done [N_RNF_PORTS];
   protected bit rn_snp_rts_negctl_done [N_RNF_PORTS];
   protected bit rn_snp_sd_negctl_done  [N_RNF_PORTS];
 
@@ -2216,17 +2217,33 @@ class vip_chi_driver_hnf #(
     flit.donotgotosd = vip_chi_types_pkg::vip_chi_snp_do_not_go_to_sd_required(
                          CFG_P.ISSUE_P, op);
 
-    // The three field negative controls. Each corrupts one field of an otherwise
+    // The field negative controls. Each corrupts one field of an otherwise
     // ordinary snoop and fires once per port, and each is gated on the opcode
     // actually being one the rule judges -- a control that sets RetToSrc on a
     // SnpShared, or clears DoNotGoToSD on a SnpOnce, would provoke nothing and
-    // pass for it.
+    // pass for it. The fwd pair below are gated on OPPOSITE senses of the same
+    // predicate for that reason: the zero rule needs a snoop with no requester
+    // to name, the value rule a snoop that has one.
     if (this.cfg.hnf_snp_fwd_fields_negctl && !this.rn_snp_fwd_negctl_done[k] &&
         !vip_chi_types_pkg::vip_chi_snp_opcode_is_forwarding(op)) begin
       this.rn_snp_fwd_negctl_done[k] = 1'b1;
       flit.fwdnid = node_id_t'('h1);
       `uvm_info(get_name(), $sformatf(
         "INFO [%s] SNP negctl: FwdNID on non-Forward snoop opcode 0x%0h",
+        get_name(), op), UVM_LOW)
+    end
+
+    // Plus one rather than a constant: the corrupted value must differ from the
+    // correct one whatever the correct one is, and every requester on this bench
+    // drives SrcID zero -- so a constant zero would corrupt nothing and a
+    // constant one would stop working the day a test gives them real Node IDs.
+    if (this.cfg.hnf_snp_fwd_target_negctl && !this.rn_snp_fwd_tgt_negctl_done[k] &&
+        vip_chi_types_pkg::vip_chi_snp_opcode_is_forwarding(op)) begin
+      this.rn_snp_fwd_tgt_negctl_done[k] = 1'b1;
+      flit.fwdnid   = node_id_t'(flit.fwdnid   + node_id_t'(1));
+      flit.fwdtxnid = txn_id_t'(flit.fwdtxnid + txn_id_t'(1));
+      `uvm_info(get_name(), $sformatf(
+        "INFO [%s] SNP negctl: FwdNID/FwdTxnID on forwarding snoop opcode 0x%0h name a different requester than the one it was sent for",
         get_name(), op), UVM_LOW)
     end
 

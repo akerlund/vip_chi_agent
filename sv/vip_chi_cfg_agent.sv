@@ -643,6 +643,17 @@ class vip_chi_cfg_agent extends uvm_object;
   // CHI_SNP_FWD_FIELDS_ZERO fires. Default 0.
   bit hnf_snp_fwd_fields_negctl = 1'b0;
 
+  // The other half of the same field pair, and it needs a FORWARDING snoop to
+  // land on rather than a plain one. IHI 0050 E 2.5: FwdNID "must be the Node ID
+  // of the original Requester", FwdTxnID "must be the TxnID of the original
+  // Request". This adds one to each, so the snoop names a requester and a
+  // transaction that are not the ones it was sent for whatever the correct
+  // values happen to be -- a constant would prove nothing on a bench whose
+  // requesters already drive that constant. Proves the coherency checker's
+  // FwdNID/FwdTxnID rule fires; note the SNP channel bind cannot judge this one,
+  // since the flit alone does not say which request caused it. Default 0.
+  bit hnf_snp_fwd_target_negctl = 1'b0;
+
   // Sets RetToSrc on a snoop whose opcode must carry zero. IHI 0050 E 4.9 /
   // D 4.9 names the set: Stash snoops, SnpCleanShared, SnpCleanInvalid,
   // SnpMakeInvalid, SnpOnceFwd, SnpUniqueFwd. Proves
