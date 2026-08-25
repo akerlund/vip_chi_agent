@@ -37,6 +37,7 @@ module chi_tb_top;
   logic clk;
   logic rst_n;
   logic rst_n_int;
+  logic pulse_rst_n;
   int   reset_pulse_countdown;
   chi_tb_config tb_cfg;
 
@@ -640,8 +641,31 @@ module chi_tb_top;
     tb_cfg = null;
   end
 
+  // The pulse RELEASES off the sampling edge, and that is what the extra term is
+  // for. A property body reads SAMPLED values while its `disable iff` is
+  // evaluated with CURRENT ones, so a countdown that expires in a posedge's NBA
+  // region lifts the gate on a cycle whose every sampled value is still a
+  // reset-window value -- and the rule then reports the window it was gated off
+  // for. Registering the release on the falling edge makes both halves read the
+  // same cycle. Which posedges sample rst_n_int low is unchanged; only the
+  // half-cycle position of the rising transition moves.
+  //
+  // The countdown stays a direct term so the ASSERTION is still immediate: the
+  // race is on the release only, and delaying the assertion by half a cycle
+  // moves it past the one-cycle settling the reset tests allow the drivers.
+  //
+  // rst_n itself needs neither treatment -- it moves at #0 and #30, neither of
+  // which is a clock event.
+  //
+  // pulse_rst_n is unreset, and does not need to be: rst_n is low until #30 and
+  // `&&` with a zero operand is zero, so the X it holds until the first falling
+  // edge cannot reach rst_n_int.
+  always_ff @(negedge clk) begin
+    pulse_rst_n <= (reset_pulse_countdown == 0);
+  end
+
   always_comb begin
-    rst_n_int = rst_n && (reset_pulse_countdown == 0);
+    rst_n_int = rst_n && (reset_pulse_countdown == 0) && pulse_rst_n;
   end
 
   // A test arms a mid-run reset via tb_cfg.request_reset_pulse(n): the value is

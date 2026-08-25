@@ -45,26 +45,12 @@ import sys
 # Rules whose firing legitimately differs between the ports, each with the
 # reason. An entry here is a RECORDED DECISION, not a silencer -- it must name
 # why the two ports cannot agree, and anything not listed is a finding.
-EXPECTED_C: dict[str, str] = {
-    "CHI_LCRD_QUIESCENT_IN_STOP":
-        "open, cause CONFIRMED by probing both ports at the reset release. It "
-        "is the STIMULUS, not the checker, and the original skew hypothesis is "
-        "refuted in the direction it was stated. cfg.reset_idle_violation parks "
-        "an RSP L-Credit for the reset window. At the release edge the "
-        "SystemVerilog port samples txrsplcrdv=0 -- its drive goes through a "
-        "clocking block, so the credit loop's ordinary zero has already "
-        "overwritten the parked value -- while the pyUVM port samples 1, "
-        "because a cocotb write takes effect immediately and persists until "
-        "something else writes it. Both ports zero their credit counters in "
-        "reset, so the counters are not the difference. One cycle later the "
-        "link is still in STOP, so the pyUVM port counts a credit advertised "
-        "there and reports; the SystemVerilog port has nothing to count. "
-        "Closing it means aligning WHEN the parked signal is released, and the "
-        "agent re-forks driver_start only on the first non-reset edge -- after "
-        "the checker has sampled -- so the clear has to move earlier than "
-        "driver_start. Listed so this check stays usable; it is a finding, not "
-        "a decision.",
-}
+#
+# An entry that no longer diverges is reported too, and exits 1. A table of
+# exceptions nobody prunes is how a gate stops meaning anything: the entry would
+# go on excusing a divergence that had been fixed, and would keep excusing the
+# next one to appear under the same rule name.
+EXPECTED_C: dict[str, str] = {}
 
 # Rules one port does not implement at all. Read from the Python registry so this
 # cannot drift from the port itself.
@@ -131,6 +117,7 @@ def main(argv: list[str]) -> int:
         print(f"  run in Python only, not compared: {name}")
 
     diffs = []
+    used: set[str] = set()
     for run in sorted(runs):
         for check in sorted(checks):
             s = sv.get((run, check), 0) > 0
@@ -138,20 +125,31 @@ def main(argv: list[str]) -> int:
             if s == p:
                 continue
             if check in EXPECTED_C:
+                used.add(check)
                 print(f"  stated: {check} in {run} -- {EXPECTED_C[check]}")
                 continue
             where = "SV only" if s else "Python only"
             diffs.append((run, check, where,
                           sv.get((run, check), 0), py.get((run, check), 0)))
 
-    if not diffs:
+    stale = sorted(set(EXPECTED_C) - used)
+
+    if not diffs and not stale:
         print("\nevery rule that fires in one port fires in the other, "
               "on every shared testcase")
         return 0
 
-    print(f"\n{len(diffs)} rule(s) fired in one port and not the other:")
-    for run, check, where, sn, pn in diffs:
-        print(f"  {check}\n      {run}: {where}  (SV {sn} fail(s), Python {pn})")
+    if diffs:
+        print(f"\n{len(diffs)} rule(s) fired in one port and not the other:")
+        for run, check, where, sn, pn in diffs:
+            print(f"  {check}\n      {run}: {where}  "
+                  f"(SV {sn} fail(s), Python {pn})")
+
+    if stale:
+        print(f"\n{len(stale)} stated exception(s) no longer divergent -- "
+              f"delete the entry:")
+        for check in stale:
+            print(f"  {check}")
     return 1
 
 

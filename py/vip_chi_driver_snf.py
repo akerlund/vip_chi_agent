@@ -31,6 +31,7 @@ from __future__ import annotations
 import random
 
 import cocotb
+from cocotb.triggers import RisingEdge
 
 from pyuvm import uvm_driver, ConfigDB
 
@@ -275,6 +276,13 @@ class vip_chi_driver_snf(uvm_driver):
 
   def reset_vif(self):
     self.reset_outputs()
+
+  def release_reset_outputs(self):
+    """Drop the reset-window TXSACTIVE, in the cycle rst_n rises.
+
+    See the RN-I twin, including why the parked L-Credit is not cleared here.
+    """
+    self.bus.drive(txsactive=0)
 
   def handle_reset(self):
     self._kill_driver_tasks()
@@ -531,18 +539,14 @@ class vip_chi_driver_snf(uvm_driver):
     if self.agent_owned:
       return
     self.reset_vif()
-    while self.bus.in_reset():
+    if self.bus.in_reset():
+      await RisingEdge(self.bus.rst_n)
+      self.release_reset_outputs()
       await self.bus.rising()
     await self.driver_start()
 
   # ==========================================================================
   async def driver_start(self):
-    # See the RN-I twin: the reset-window txsactive is permitted during reset and
-    # must not survive the release, because the LASM sits in STOP until the
-    # activation handshake completes.
-    if self.cfg is not None:
-      if self.cfg.reset_permitted_high:
-        self.bus.drive(txsactive=0)
     self._spawn(self.credit_loop())
     self._spawn(self.deactivate_drain())
     await self.activate_link()

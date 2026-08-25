@@ -47,50 +47,34 @@
 // credits the ones it receives -- so one knob arms both ends.
 //
 // It has COLLATERAL, and that is a fact about the protocol rather than a flaw in
-// the control. A credit driven through reset can still be a credit when reset
-// releases: the link sits in STOP for a cycle or two before the activation
-// handshake completes, so CHI_RSP_LCRDV_REQUIRES_LINK and
-// CHI_LCRD_QUIESCENT_IN_STOP can see it too -- and they are RIGHT to. The first
-// version of this testcase assumed those two were gated on rst_n and therefore
-// blind to it; they are not.
+// the control. A credit driven through reset is still a credit when reset
+// releases. A driver that owns its outputs through a clocking block cannot change
+// them between the last reset edge and the first edge after it: the value sampled
+// at the second was decided at the first, before the driver could know the
+// release was coming. So the parked credit is judged for one cycle with the link
+// still in STOP, and CHI_RSP_LCRDV_REQUIRES_LINK and CHI_LCRD_QUIESCENT_IN_STOP
+// both report it -- and they are RIGHT to. The first version of this testcase
+// assumed those two were gated on rst_n and therefore blind to it; they are not.
 //
-// WHETHER they fire is a timing detail of the flow, not a property of the
-// protocol, and the two ports differ on it: this flow does not trip them and the
-// pyUVM flow re-spawns its driver a cycle or two later and does. So they are
-// suppressed and BOUNDED ABOVE rather than required -- a stuck credit would show
-// as a count that keeps climbing, which is the regression worth catching.
-// Requiring them to fire would be asserting when the agent happens to re-fork
-// its driver, which is the same mistake as demanding an exact count in phase 3.
+// Both are REQUIRED to fire, at both vantages. That is what makes phase 3 the
+// only place in either sweep where CHI_LCRD_QUIESCENT_IN_STOP can fail: a credit
+// banked into the pool the link then carries into STOP is the single situation
+// that rule exists to report, and nothing else here produces one.
 //
-// AND ONE OF THEM IS A DEFECT THIS CONTROL FOUND, not collateral.
-// CHI_LASM_LEGAL_TRANSITION reports STOP -> RUN once, at the release of the
-// pulse that carried the credit: the completer's acknowledge lands on the same
-// edge as the requester's request, so the handshake skips ACTIVATE entirely. A
-// receiver cannot acknowledge a request in the cycle it first appears, so the
-// checker is right and the driver is wrong.
-//
-// It was isolated by bisection rather than guessed: a knob-free pulse before it
-// and a knob-free pulse after it both walk STOP -> ACTIVATE -> RUN cleanly, and
-// only the pulse carrying the credit collapses it. Moving the clear out of
-// driver_start did not change it either, so it is the credit being present, not
-// the clearing of it. The pyUVM flow does not exhibit it at all, which is itself
-// evidence that the bring-up timing is not pinned down in either port.
-//
-// Suppressed and bounded here rather than worked around, because it belongs to
-// its own commit and its own finding. When it is fixed this suppression comes
-// out and the bound becomes zero.
+// The counts are asserted as a RANGE and not as a number. The rule is two
+// properties here and six per-pool checks in the pyUVM port, so one stranded
+// credit is one report at this end and three at that one, and the range is what
+// both ports can satisfy without either being wrong.
 //
 // Every item on 14.1.3's list is a signal that MEANS something, so no member of
 // it can be driven without collateral. A control for a closed list has to own
 // that rather than pick the signal that hides it.
 //
-// Phase 3's report count is bounded rather than exact, and the bound is the
-// honest form. The property needs rst_n low in this cycle AND the previous one,
-// so it cannot evaluate on the first low cycle, giving at most
-// RESET_CYCLES_C - 1 evaluations; the lower bound is one because the driver's
-// reset hook runs an implementation-defined number of cycles into the window.
-// Asserting a single exact number here would be asserting when the agent's
-// reset handler happens to run, which is not what this testcase is about.
+// The reset-window count is a range for a second reason. The property needs rst_n
+// low in this cycle AND the previous one, so it cannot evaluate on the first low
+// cycle, giving at most RESET_CYCLES_C - 1 evaluations; the lower bound is one
+// because the driver's reset hook runs an implementation-defined number of cycles
+// into the window.
 //
 // The SNP twin of these rules lives only on the coherent *_snp_sva binds, so its
 // control needs the HN-F/RN-F drivers rather than these two. The host already
@@ -194,7 +178,8 @@ class tc_chi_reset_idle_scope extends chi_base_test;
   // Exactly the rule the stimulus targets, at both ends, within the window the
   // pulse length allows.
   // ---------------------------------------------------------------------------
-  protected function void require_reported(input vip_chi_check_id_t id);
+  protected function void require_reported(input vip_chi_check_id_t id,
+                                           input string             what);
 
     int unsigned rni_fails;
     int unsigned snf_fails;
@@ -204,14 +189,14 @@ class tc_chi_reset_idle_scope extends chi_base_test;
 
     if ((rni_fails < 1) || (rni_fails > MAX_FAILS_C)) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] %s reported %0d time(s) at the RN-I against a credit driven through reset, expected 1..%0d; zero means TX***LCRDV is no longer checked at all, above the bound means it is firing outside the reset window",
-        super.tc_name, vip_chi_check_name(id), rni_fails, MAX_FAILS_C))
+        "FATAL [%s] %s reported %0d time(s) at the RN-I against %s, expected 1..%0d; zero means the rule no longer sees it at all, above the bound means it is firing outside the window",
+        super.tc_name, vip_chi_check_name(id), rni_fails, what, MAX_FAILS_C))
     end
 
     if ((snf_fails < 1) || (snf_fails > MAX_FAILS_C)) begin
       `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] %s reported %0d time(s) at the SN-F, expected 1..%0d; the completer vantage is not judging its own outputs",
-        super.tc_name, vip_chi_check_name(id), snf_fails, MAX_FAILS_C))
+        "FATAL [%s] %s reported %0d time(s) at the SN-F against %s, expected 1..%0d; the completer vantage is not judging its own outputs",
+        super.tc_name, vip_chi_check_name(id), snf_fails, what, MAX_FAILS_C))
     end
 
   endfunction
@@ -220,22 +205,6 @@ class tc_chi_reset_idle_scope extends chi_base_test;
   // Collateral: bounded ABOVE only, for the reason given in the header. Zero is
   // a legitimate answer -- it means the credit did not outlive the release here.
   // ---------------------------------------------------------------------------
-  protected function void require_bounded(input vip_chi_check_id_t id);
-
-    int unsigned rni_fails;
-    int unsigned snf_fails;
-
-    rni_fails = super.tb_env.rni_agent.vif.check_fail_count[id];
-    snf_fails = super.tb_env.snf_agent.vif.check_fail_count[id];
-
-    if ((rni_fails > MAX_FAILS_C) || (snf_fails > MAX_FAILS_C)) begin
-      `uvm_fatal(get_name(), $sformatf(
-        "FATAL [%s] %s reported rni_e=%0d snf_e=%0d time(s), above the %0d the reset window can explain. The injected credit is outliving the release rather than being cleared when the driver restarts",
-        super.tc_name, vip_chi_check_name(id), rni_fails, snf_fails, MAX_FAILS_C))
-    end
-
-  endfunction
-
   // ---------------------------------------------------------------------------
   // A named ceiling, for the one report that is a known defect rather than a
   // consequence of the stimulus.
@@ -354,13 +323,17 @@ class tc_chi_reset_idle_scope extends chi_base_test;
     super.rni_cfg.reset_idle_violation = 1'b0;
     super.snf_cfg.reset_idle_violation = 1'b0;
 
-    this.require_reported(VIP_CHI_CHK_RSP_IDLE_IN_RESET_E);
+    this.require_reported(VIP_CHI_CHK_RSP_IDLE_IN_RESET_E,
+                          "a credit driven through reset");
 
-    // The two rules the same credit can reach after release. Bounded above only:
-    // whether they fire at all depends on when the agent re-forks the driver, and
-    // this flow clears the credit before they see it.
-    this.require_bounded(VIP_CHI_CHK_RSP_LCRDV_REQUIRES_LINK_E);
-    this.require_bounded(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E);
+    // The two rules the same credit reaches after release. Required, not merely
+    // bounded: the clocking block carries the parked value into the first judged
+    // cycle whatever the driver does with it afterwards, so a silent rule here
+    // means the rule stopped looking.
+    this.require_reported(VIP_CHI_CHK_RSP_LCRDV_REQUIRES_LINK_E,
+                          "a credit still asserted with the link in STOP");
+    this.require_reported(VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E,
+                          "a credit banked in the pool the link carried into STOP");
     // The activation handshake must be clean through this window. It used to be
     // bounded at one instead: the completer derived its acknowledge from its own
     // link request, and want_link raises that request whenever link_drained() is

@@ -3227,10 +3227,9 @@ module vip_chi_sva #(
   // on checks_enable when the flit rules moved off it. "No credit may be
   // advertised once the link is down" has content only while the link is down,
   // which is exactly when checks_enable is low -- so the gate switched off the
-  // rule in the only state it could fail in. The pyUVM port has never had that
-  // gate, which is why it reported a credit driven through reset in
-  // tc_chi_reset_idle_scope and this port did not: a divergence both sweeps
-  // printed and no gate compared, until check_tally_parity.py.
+  // rule in the only state it could fail in. tc_chi_reset_idle_scope now
+  // requires the RSP one to report a credit parked through reset, at both ends
+  // and in both ports.
   property p_req_requires_link;
     @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
       vif.txreqflitv |-> flit_send_allowed(tx_req_is_lcrd_return());

@@ -38,19 +38,20 @@
 # arms both ends.
 #
 # It has COLLATERAL, and that is a fact about the protocol rather than a flaw in
-# the control: a credit driven through reset can still be a credit when reset
-# releases, and the link is in STOP for a cycle or two before the activation
-# handshake completes. So CHI_RSP_LCRDV_REQUIRES_LINK and
-# CHI_LCRD_QUIESCENT_IN_STOP can see it too, and they are RIGHT to. The first
-# attempt here assumed those two were gated on rst_n and invisible; they are not.
+# the control: a credit driven through reset is still a credit when reset
+# releases, and the link is in STOP until the activation handshake completes. So
+# CHI_RSP_LCRDV_REQUIRES_LINK and CHI_LCRD_QUIESCENT_IN_STOP see it too, and they
+# are RIGHT to. The first attempt here assumed those two were gated on rst_n and
+# invisible; they are not.
 #
-# WHETHER they fire is a timing detail of the flow, not a property of the
-# protocol, and the two ports differ: this flow re-spawns its driver a cycle or
-# two after release and both fire, while the SV flow does not trip them. So they
-# are suppressed and BOUNDED ABOVE rather than required -- a stuck credit shows
-# as a count that keeps climbing, which is the regression worth catching.
-# Requiring them to fire would be asserting when the agent happens to re-spawn
-# its driver, the same mistake as demanding an exact count in phase 3.
+# Both are REQUIRED to fire, at both vantages. That is what makes phase 3 the only
+# place in either sweep where CHI_LCRD_QUIESCENT_IN_STOP can fail: a credit banked
+# into the pool the link then carries into STOP is the single situation that rule
+# exists to report, and nothing else here produces one.
+#
+# The counts are asserted as a RANGE and not as a number. This port expresses the
+# rule as six per-pool checks and the SV port as two properties, so one stranded
+# credit is three reports here and one there.
 #
 # The activation handshake is required to be clean through this window, in both
 # flows and with no bound to spend. A receiver cannot acknowledge a request in
@@ -64,11 +65,10 @@
 # is no member of it that can be driven without collateral. A control for a
 # closed list has to own that instead of choosing a signal that hides it.
 #
-# Phase 3's count is bounded rather than exact: the check needs rst_n low in
-# this cycle and the previous one, so it cannot evaluate on the first low cycle,
-# and the driver's reset hook runs an implementation-defined number of cycles
-# into the window. An exact number here would be asserting when the agent's
-# reset handler happens to run.
+# The reset-window count is a range for a second reason: the check needs rst_n low
+# in this cycle and the previous one, so it cannot evaluate on the first low
+# cycle, and the driver's reset hook runs an implementation-defined number of
+# cycles into the window.
 #
 # The SNP twin of these rules lives only on the coherent snoop binds, so its
 # control needs the HN-F/RN-F drivers rather than these two. The host already
@@ -142,28 +142,16 @@ class tc_chi_reset_idle_scope(chi_base_test):
       f"rni_e {before[0]} -> {rni}, snf_e {before[1]} -> {snf}. Its silence "
       f"says nothing")
 
-  def _require_bounded(self, rule: str) -> None:
-    """Collateral: bounded ABOVE only. Zero is a legitimate answer -- it means
-    the credit did not outlive the release in this flow."""
-    rni = self.tb_env.rni_sva.fail_count.get(rule, 0)
-    snf = self.tb_env.snf_sva.fail_count.get(rule, 0)
-    assert rni <= MAX_FAILS_C and snf <= MAX_FAILS_C, (
-      f"{rule} reported rni_e={rni} snf_e={snf} time(s), above the "
-      f"{MAX_FAILS_C} the reset window can explain. The injected credit is "
-      f"outliving the release rather than being cleared when the driver "
-      f"restarts")
-
-  def _require_reported(self, rule: str) -> None:
+  def _require_reported(self, rule: str, what: str) -> None:
     rni = self.tb_env.rni_sva.fail_count.get(rule, 0)
     snf = self.tb_env.snf_sva.fail_count.get(rule, 0)
     assert 1 <= rni <= MAX_FAILS_C, (
-      f"{rule} reported {rni} time(s) at the RN-I against a credit driven "
-      f"through reset, expected 1..{MAX_FAILS_C}; zero means TX***LCRDV is no "
-      f"longer checked at all, above the bound means it is firing outside the "
-      f"reset window")
+      f"{rule} reported {rni} time(s) at the RN-I against {what}, expected "
+      f"1..{MAX_FAILS_C}; zero means the rule no longer sees it at all, above "
+      f"the bound means it is firing outside the window")
     assert 1 <= snf <= MAX_FAILS_C, (
-      f"{rule} reported {snf} time(s) at the SN-F, expected 1..{MAX_FAILS_C}; "
-      f"the completer vantage is not judging its own outputs")
+      f"{rule} reported {snf} time(s) at the SN-F against {what}, expected "
+      f"1..{MAX_FAILS_C}; the completer vantage is not judging its own outputs")
 
   async def run_phase(self):
     self.raise_objection()
@@ -226,10 +214,17 @@ class tc_chi_reset_idle_scope(chi_base_test):
     self.rni_cfg.reset_idle_violation = False
     self.snf_cfg.reset_idle_violation = False
 
-    self._require_reported(RSP_C)
+    self._require_reported(RSP_C, "a credit driven through reset")
 
-    for rule in COLLATERAL_C:
-      self._require_bounded(rule)
+    # The two rules the same credit reaches after release. Required, not merely
+    # bounded: the parked value is still on the wire at the first judged cycle
+    # whatever the driver does with it afterwards, so a silent rule here means
+    # the rule stopped looking.
+    self._require_reported(COLLATERAL_C[0],
+                           "a credit still asserted with the link in STOP")
+    self._require_reported(COLLATERAL_C[1],
+                           "a credit banked in the pool the link carried into "
+                           "STOP")
 
     for rule in (LASM_C, ACTIVATE_C):
       rni = self.tb_env.rni_sva.fail_count.get(rule, 0)

@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 import cocotb
-from cocotb.triggers import FallingEdge
+from cocotb.triggers import FallingEdge, RisingEdge
 
 from pyuvm import uvm_agent, uvm_analysis_port, ConfigDB
 
@@ -189,7 +189,15 @@ class vip_chi_agent(uvm_agent):
     bus = self.vif
     self._reset_driver_vif()
     while True:
-      while bus.in_reset():
+      if bus.in_reset():
+        # The rst_n TRANSITION, not the first non-reset clock edge. A cocotb
+        # write lands at the end of the timestep it is made in, so a write made
+        # from a clock-edge callback is first SAMPLED at the following edge --
+        # which puts every clear the release needs one cycle behind the checker.
+        # rst_n rises in the same timestep as the last reset edge, so a clear
+        # made here is in place for the first edge that is judged.
+        await RisingEdge(bus.rst_n)
+        self._release_driver_vif()
         await bus.rising()
 
       tasks = [cocotb.start_soon(self.monitor.monitor_start())]
@@ -211,6 +219,11 @@ class vip_chi_agent(uvm_agent):
     drv = self.rni_driver or self.rnf_driver or self.snf_driver
     if drv is not None:
       drv.reset_vif()
+
+  def _release_driver_vif(self):
+    drv = self.rni_driver or self.rnf_driver or self.snf_driver
+    if drv is not None:
+      drv.release_reset_outputs()
 
   def handle_reset(self):
     self.monitor.handle_reset()

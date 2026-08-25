@@ -720,15 +720,12 @@ class vip_chi_driver_snf #(
     // activation handshake completes and p_link_deactivate_when_idle requires
     // the sideband low there.
     //
-    // cfg.reset_idle_violation's credit is deliberately NOT cleared here, and
-    // that is a measured decision rather than an omission. Clearing it at this
-    // point -- a clocking-block NBA before the first edge this task waits on --
-    // shifted the activation handshake by a cycle and collapsed
-    // STOP -> ACTIVATE -> RUN into a single STOP -> RUN step, which
-    // CHI_LASM_LEGAL_TRANSITION then reported, correctly and about a bug this
-    // driver had introduced. Measured: the pulse carrying the credit failed and
-    // a knob-free pulse either side of it did not. The credit loop lowers the
-    // signal on its own first tick, so the clear bought nothing.
+    // cfg.reset_idle_violation's credit is NOT cleared here, and no clear placed
+    // anywhere in this driver could reach it: these outputs go through a clocking
+    // block, so the value sampled at the first edge after the release was decided
+    // at the last edge before it -- before this task ran at all. The parked
+    // credit is judged for one cycle with the link still in STOP, which is what
+    // tc_chi_reset_idle_scope requires both ports to report.
     if (this.cfg != null) begin
       if (this.cfg.reset_permitted_high) begin
         this.vif_snf.g_drv.snf_cb.txsactive <= 1'b0;

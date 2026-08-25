@@ -316,6 +316,30 @@ class vip_chi_driver_rni(uvm_driver):
   def reset_vif(self):
     self.reset_outputs()
 
+  def release_reset_outputs(self):
+    """Drop the reset-window TXSACTIVE, in the cycle rst_n rises.
+
+    cfg.reset_permitted_high parks it high for the reset window, which
+    E section 14.1.3 / D section 13.1.3 permits. It must not survive the release:
+    the deactivate-when-idle rule requires the sideband low while the LASM sits
+    in STOP, and the link sits in STOP from reset release until the activation
+    handshake completes.
+
+    The agent calls this on the rst_n TRANSITION and not at the first non-reset
+    clock edge. A cocotb write lands at the end of the timestep it is made in, so
+    a write made from a clock-edge callback is first SAMPLED at the following
+    edge -- and the following edge is one the checker has already judged.
+
+    FLITPEND is left alone: section 14.4 / D 13.4 permits holding it permanently
+    asserted. So is the reset-window L-Credit, and that one is a limit rather
+    than a choice -- the SystemVerilog twin drives its outputs through a clocking
+    block, whose value at the first post-release edge was decided at the last
+    reset edge, before the driver could know the release was coming. Neither port
+    can be clean there, so both leak the parked credit for exactly one judged
+    cycle and tc_chi_reset_idle_scope asserts that it is reported.
+    """
+    self.bus.drive(txsactive=0)
+
   def handle_reset(self):
     self._kill_driver_tasks()
     self.next_txn_id = 0
@@ -531,15 +555,6 @@ class vip_chi_driver_rni(uvm_driver):
 
   # ==========================================================================
   async def driver_start(self):
-    # cfg.reset_permitted_high parks txsactive high for the reset window, which
-    # E section 14.1.3 / D section 13.1.3 permits. It must not survive the
-    # release: the deactivate-when-idle rule requires the sideband low while the
-    # LASM sits in STOP, and the link sits in STOP from reset release until the
-    # activation handshake completes. FLITPEND is left alone -- section 14.4 /
-    # D 13.4 permits holding it permanently asserted.
-    if self.cfg is not None:
-      if self.cfg.reset_permitted_high:
-        self.bus.drive(txsactive=0)
     self._spawn(self.credit_loop())
     # Watches cfg.link_deactivate_request. A separate task rather than a step in
     # the sequence loop, because the loop blocks on the sequencer: a test that
