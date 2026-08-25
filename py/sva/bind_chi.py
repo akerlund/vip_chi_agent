@@ -71,9 +71,11 @@ from vip_chi_types_pkg import (
   CHECK_IDS_SV_ONLY,
   CheckSeverity,
   DatOpcode,
+  Issue,
   LasmState,
   ReqOpcode,
   ReqOrder,
+  RespErr,
   Role,
   RspOpcode,
   chi_xfer_dat_beats,
@@ -86,6 +88,7 @@ from vip_chi_types_pkg import (
   req_attr_combination_legal,
   req_likely_shared_permitted,
   req_size_fixed_64b, REQ_SIZE_64B,
+  comp_resp_legal,
   req_excl_permitted, req_endian_applicable, req_tagop_permitted_mask,
   req_return_nid_applicable, req_return_txn_id_applicable,
   dat_home_nid_applicable, dat_cbusy_applicable,
@@ -1924,6 +1927,7 @@ class bind_chi:
     for d in ("tx", "rx"):
       self._check_dat_burst(s, d)
       self._check_rsp_field_zero(s, d)
+      self._check_rsp_comp_resp(s, d)
 
     self._check_completion_timeout(s)
     self._check_atomic_dat_completion(s)
@@ -2708,6 +2712,43 @@ class bind_chi:
               f"non-zero (TxnID=0x{int(f['txnid']):x} "
               f"RespErr=0x{int(f['resperr']):x} Resp=0x{int(f['resp']):x} "
               f"DBID=0x{int(f['dbid']):x})")
+
+  # ---------------------------------------------------------------------------
+  # The Resp encodings a Comp may carry -- E Table 4-7 / D Table 4-5.
+  #
+  # Judged from both vantages under one ID, for the reason the zero-field rule
+  # above gives: which end of a link sees a given completion depends on where the
+  # bind sits, and a single-direction check would be silently one-sided.
+  #
+  # The rule is unconditional on the opcode and needs no correlation with the
+  # request, which is the whole reason it belongs here rather than in the
+  # coherency checker. The two tables are written for DATALESS completions, but
+  # both issues also require a Write, AtomicStore or DVM completion to carry
+  # Resp = 0 -- and zero is Comp_I, already in the table. The union over every use
+  # of the opcode is therefore the table itself.
+  #
+  # ERRORS ARE EXEMPT, and the exemption is built in rather than retrofitted:
+  # both issues state that in a response with an error indication "the cache
+  # state is permitted to be any value, INCLUDING RESERVED VALUES". A rule
+  # without it would report every DECERR completion in this regression, which is
+  # the false-failure this bench has the stimulus to produce today.
+  # ---------------------------------------------------------------------------
+  def _check_rsp_comp_resp(self, s: dict, d: str) -> None:
+    if not s[f"{d}rspflitv"]:
+      return
+    f = s[f"{d}rspflit"]
+    if int(f["opcode"]) != int(RspOpcode.COMP):
+      return
+    # DERR and NDERR carry the exemption; OK and EXOKAY do not. EXOKAY is not an
+    # error -- an exclusive CleanUnique completes with it and a real cache state.
+    if int(f["resperr"]) in (int(RespErr.DERR), int(RespErr.NDERR)):
+      return
+
+    self._chk("CHI_RSP_COMP_RESP_LEGAL",
+              comp_resp_legal(self._issue, int(f["resp"])),
+              f"{d}rsp Comp carried Resp 0b{int(f['resp']):03b}, which "
+              f"{'E Table 4-7' if int(self._issue) == int(Issue.E) else 'D Table 4-5'} "
+              f"does not list for a Comp response")
 
   # ---------------------------------------------------------------------------
   # DAT bursts: beat placement, TxnID stability, and the closing beat count.

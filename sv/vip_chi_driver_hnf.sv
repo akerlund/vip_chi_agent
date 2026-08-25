@@ -1271,7 +1271,8 @@ class vip_chi_driver_hnf #(
     this.drive_rn_rsp(p,
                       item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_C),
                       txn_id_t'(req.txnid), txn_id_t'(0),
-                      VIP_CHI_RESP_STATE_UC_E,
+                      this.cfg.hnf_comp_resp_negctl ? VIP_CHI_RESP_STATE_UP_PD_DIRTY_E
+                                                    : VIP_CHI_RESP_STATE_UC_E,
                       node_id_t'(req.tgtid), node_id_t'(req.srcid));
     this.await_comp_ack(p, req, line);
   endtask

@@ -887,7 +887,9 @@ class vip_chi_driver_hnf(uvm_component):
     # exactly Comp_I, Comp_UC and Comp_SC -- so the CHI-D cut of this home was
     # driving a Resp value the issue it implements has no meaning for.
     await self.drive_rn_rsp(p, int(RspOpcode.COMP), _I(req["txnid"]), 0,
-                            int(Resp.UC), _I(req["tgtid"]), _I(req["srcid"]))
+                            int(Resp.UD_PD) if self.cfg.hnf_comp_resp_negctl
+                            else int(Resp.UC),
+                            _I(req["tgtid"]), _I(req["srcid"]))
     await self.await_comp_ack(p, req, line)
 
   # ==========================================================================

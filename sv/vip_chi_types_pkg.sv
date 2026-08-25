@@ -521,6 +521,12 @@ package vip_chi_types_pkg;
     // columns of one table, not three rules -- standing this down means "stop
     // checking A-4's zero-marked RSP fields", which is a coherent thing to want.
     VIP_CHI_CHK_RSP_FIELD_ZERO_E,
+    // The Resp encodings a Comp response may carry -- E Table 4-7 / D Table 4-5.
+    // Issue-parameterized, because E adds Comp_UD_PD and D gives that encoding no
+    // meaning on a Comp at all. Separate from RSP_FIELD_ZERO because that one
+    // says a field must be ZERO for certain opcodes; this one bounds a field to a
+    // SET for one opcode, and the two would stand down together if fused.
+    VIP_CHI_CHK_RSP_COMP_RESP_LEGAL_E,
     // ExpCompAck legality, appended for the same append-only reason. The
     // converse -- a CompAck arriving for a request that never asked for one --
     // has been checked since the first cut as COMPACK_WITHOUT_EXPCOMPACK; this is
@@ -744,6 +750,7 @@ package vip_chi_types_pkg;
       VIP_CHI_CHK_LASM_ACTIVATION_TIMEOUT_E:           return "E section 14.6.2 / D section 13.6.2";
       VIP_CHI_CHK_LASM_DEACTIVATION_TIMEOUT_E:         return "E section 14.6.2 / D section 13.6.2";
       VIP_CHI_CHK_RSP_FIELD_ZERO_E:                    return "E Table A-4 / D Table A-4";
+      VIP_CHI_CHK_RSP_COMP_RESP_LEGAL_E:               return "E Table 4-7 / D Table 4-5";
       VIP_CHI_CHK_EXPCOMPACK_REQUIRED_BUT_ZERO_E:      return "E section 2.8.3 / D section 2.8.3";
       VIP_CHI_CHK_ATOMIC_SIZE_LEGAL_E:                 return "E section 2.10.5 Table 2-17";
       VIP_CHI_CHK_REQ_ORDER_LEGAL_E:                   return "E Table 13-25 / E Table 2-12 footnote a";
@@ -2403,6 +2410,46 @@ package vip_chi_types_pkg;
   endfunction
 
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // The Resp encodings a Comp response is permitted to carry.
+  //
+  // IHI 0050 E Table 4-7 / D Table 4-5, "Permitted Dataless transaction
+  // completion and Resp field encodings". E adds Comp_UD_PD (0b110) to the three
+  // D lists; D gives that encoding no meaning on a Comp at all, which is why the
+  // issue has to be a parameter rather than the union being checked everywhere.
+  //
+  // The tables are written for DATALESS completions, but the union over every
+  // use of the Comp opcode is the same set, so this needs no correlation with
+  // the request. Both issues state that "the Resp field of a Comp or
+  // CompDBIDResp response must be set to zero for a Write transaction
+  // completion", and that a DVM completion is "a Comp response, with the Resp
+  // field set to zero" -- and zero is Comp_I, already in the table. So a Comp
+  // whose Resp is outside the table is wrong whatever transaction it completes.
+  //
+  // The caller is responsible for the error exemption: both issues state that
+  // "in a response with an error indication, the cache state is permitted to be
+  // any value, INCLUDING RESERVED VALUES", so a Comp carrying DERR or NDERR is
+  // outside this rule entirely.
+  // ---------------------------------------------------------------------------
+  function automatic bit vip_chi_comp_resp_legal(
+    input vip_chi_issue_t issue,
+    input vip_chi_resp_t  resp
+  );
+    case (resp)
+      VIP_CHI_RESP_STATE_I_E,
+      VIP_CHI_RESP_STATE_SC_E,
+      VIP_CHI_RESP_STATE_UC_E: begin
+        return 1'b1;
+      end
+      VIP_CHI_RESP_STATE_UP_PD_DIRTY_E: begin
+        return (issue == VIP_CHI_ISSUE_E_E);
+      end
+      default: begin
+        return 1'b0;
+      end
+    endcase
+  endfunction
+
   function automatic bit vip_chi_snp_do_not_go_to_sd_required(
     input vip_chi_issue_t      issue,
     input vip_chi_snp_opcode_t opcode

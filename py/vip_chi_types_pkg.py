@@ -310,6 +310,12 @@ CHECK_IDS = (
   # and Resp are checked together because they are three columns of one table,
   # not three rules.
   "CHI_RSP_FIELD_ZERO",
+  # rule: the Resp encodings a Comp response may carry -- E Table 4-7 / D Table
+  # 4-5. Issue-parameterized, because E adds Comp_UD_PD and D gives that encoding
+  # no meaning on a Comp at all. Separate from RSP_FIELD_ZERO because that one
+  # says a field must be ZERO for certain opcodes; this one bounds a field to a
+  # SET for one opcode, and the two would stand down together if fused.
+  "CHI_RSP_COMP_RESP_LEGAL",
   # ExpCompAck legality, appended for the same append-only reason. The converse
   # -- a CompAck arriving for a request that never asked for one -- has been
   # checked since the first cut as COMPACK_WITHOUT_EXPCOMPACK; this is the
@@ -1819,6 +1825,35 @@ def snp_bit_is_do_not_data_pull(issue: int, opcode: int) -> bool:
   if int(issue) != int(Issue.D):
     return False
   return int(opcode) in _SNP_STASH_OPCODES_C
+
+
+def comp_resp_legal(issue: int, resp: int) -> bool:
+  """The Resp encodings a Comp response is permitted to carry.
+
+  IHI 0050 E Table 4-7 / D Table 4-5, "Permitted Dataless transaction completion
+  and Resp field encodings". E adds Comp_UD_PD (0b110) to the three D lists; D
+  gives that encoding no meaning on a Comp at all, which is why the issue has to
+  be a parameter rather than the union being checked everywhere.
+
+  The tables are written for DATALESS completions, but the union over every use
+  of the Comp opcode is the same set, so this needs no correlation with the
+  request. Both issues state that "the Resp field of a Comp or CompDBIDResp
+  response must be set to zero for a Write transaction completion", and that a
+  DVM completion is "a Comp response, with the Resp field set to zero" -- and
+  zero is Comp_I, already in the table. So a Comp whose Resp is outside the table
+  is wrong whatever transaction it completes.
+
+  The caller is responsible for the error exemption: both issues state that "in a
+  response with an error indication, the cache state is permitted to be any
+  value, INCLUDING RESERVED VALUES", so a Comp carrying DERR or NDERR is outside
+  this rule entirely.
+  """
+  r = int(resp)
+  if r in (int(Resp.I), int(Resp.SC), int(Resp.UC)):
+    return True
+  if r == int(Resp.UD_PD):
+    return int(issue) == int(Issue.E)
+  return False
 
 
 def snp_do_not_go_to_sd_required(issue: int, opcode: int) -> bool:

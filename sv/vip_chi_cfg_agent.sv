@@ -643,6 +643,15 @@ class vip_chi_cfg_agent extends uvm_object;
   // CHI_SNP_FWD_FIELDS_ZERO fires. Default 0.
   bit hnf_snp_fwd_fields_negctl = 1'b0;
 
+  // Drives Comp_UD_PD instead of Comp_UC on a MakeUnique completion -- the exact
+  // encoding this home used to send. Its value as a control is that the SAME
+  // injection is legal under one issue and not the other: E Table 4-7 lists
+  // Comp_UD_PD, D Table 4-5 does not list it at all, so the per-flit rule must
+  // report on the CHI-D cut and stay silent on the CHI-E one. A control that
+  // reported on both would pass equally well against a rule that ignored the
+  // issue and checked E's larger set everywhere. Default 0.
+  bit hnf_comp_resp_negctl = 1'b0;
+
   // The other half of the same field pair, and it needs a FORWARDING snoop to
   // land on rather than a plain one. IHI 0050 E 2.5: FwdNID "must be the Node ID
   // of the original Requester", FwdTxnID "must be the TxnID of the original

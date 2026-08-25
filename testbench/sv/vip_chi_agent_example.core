@@ -249,6 +249,9 @@ filesets:
       - tc/chi_coh_excl_negctl_base_test.sv:            {is_include_file: true}
       - tc/tc_chi_coh_d_excl_negctl.sv:                     {is_include_file: true}
       - tc/tc_chi_coh_e_excl_negctl.sv:                     {is_include_file: true}
+      - tc/chi_coh_comp_resp_negctl_base_test.sv:       {is_include_file: true}
+      - tc/tc_chi_coh_d_comp_resp_negctl.sv:                {is_include_file: true}
+      - tc/tc_chi_coh_e_comp_resp_negctl.sv:                {is_include_file: true}
       - tc/chi_coh_fwd_target_negctl_base_test.sv:      {is_include_file: true}
       - tc/tc_chi_coh_d_fwd_target_negctl.sv:               {is_include_file: true}
       - tc/tc_chi_coh_e_fwd_target_negctl.sv:               {is_include_file: true}

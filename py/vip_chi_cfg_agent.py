@@ -498,6 +498,15 @@ class VipChiCfgAgent:
     # 13.10.16: applicable in Forward type snoops, inapplicable and must be zero
     # in all others). Proves CHI_SNP_FWD_FIELDS_ZERO fires.
     self.hnf_snp_fwd_fields_negctl = False
+    # Drives Comp_UD_PD instead of Comp_UC on a MakeUnique completion -- the
+    # exact encoding this home used to send. Its value as a control is that the
+    # SAME injection is legal under one issue and not the other: E Table 4-7
+    # lists Comp_UD_PD, D Table 4-5 does not list it at all, so the per-flit rule
+    # must report on the CHI-D cut and stay silent on the CHI-E one. A control
+    # that reported on both would pass equally well against a rule that ignored
+    # the issue and checked E's larger set everywhere.
+    self.hnf_comp_resp_negctl = False
+
     # The other half of the same field pair, and it needs a FORWARDING snoop to
     # land on rather than a plain one. IHI 0050 E 2.5: FwdNID "must be the Node
     # ID of the original Requester", FwdTxnID "must be the TxnID of the original
@@ -868,6 +877,7 @@ class VipChiCfgAgent:
       "rn_drop_required_exp_comp_ack": self.rn_drop_required_exp_comp_ack,
       "hnf_snp_fwd_fields_negctl": self.hnf_snp_fwd_fields_negctl,
       "hnf_snp_fwd_target_negctl": self.hnf_snp_fwd_target_negctl,
+      "hnf_comp_resp_negctl": self.hnf_comp_resp_negctl,
       "hnf_snp_ret_to_src_negctl": self.hnf_snp_ret_to_src_negctl,
       "hnf_snp_do_not_go_to_sd_negctl": self.hnf_snp_do_not_go_to_sd_negctl,
       "hnf_force_excl_success": self.hnf_force_excl_success,

@@ -3341,6 +3341,50 @@ module vip_chi_sva #(
                                    txn_id_t'(vif.rxrspflit.dbid));
   endproperty
 
+  // The Resp encodings a Comp may carry -- E Table 4-7 / D Table 4-5. Asserted
+  // from both vantages under one ID, for the reason the zero-field rule above
+  // gives: which end of a link sees a given completion depends on where this
+  // bind sits.
+  //
+  // Unconditional on the opcode and needing no correlation with the request,
+  // which is why it belongs here rather than in the coherency checker. The two
+  // tables are written for DATALESS completions, but both issues also require a
+  // Write, AtomicStore or DVM completion to carry Resp = 0 -- and zero is
+  // Comp_I, already in the table. The union over every use of the opcode is
+  // therefore the table itself.
+  //
+  // ERRORS ARE EXEMPT, and the exemption is built in rather than retrofitted:
+  // both issues state that in a response with an error indication "the cache
+  // state is permitted to be any value, INCLUDING RESERVED VALUES". A rule
+  // without it would report every DECERR completion in this regression, which is
+  // a false failure this bench has the stimulus to produce today. EXOKAY is NOT
+  // an error and carries no exemption -- an exclusive CleanUnique completes with
+  // it and a real cache state.
+  function automatic bit rsp_comp_resp_judged(input rsp_opcode_t     opcode,
+                                              input vip_chi_resp_err_t resperr);
+    return (opcode == rsp_opcode_t'(VIP_CHI_RSP_COMP_C)) &&
+           (resperr != VIP_CHI_RESP_ERR_DATA_ERROR_E) &&
+           (resperr != VIP_CHI_RESP_ERR_NONDATA_ERROR_E);
+  endfunction
+
+  property p_tx_rsp_comp_resp_legal;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      (vif.txrspflitv &&
+       rsp_comp_resp_judged(rsp_opcode_t'(vif.txrspflit.opcode),
+                            vip_chi_resp_err_t'(vif.txrspflit.resperr)))
+      |-> vip_chi_types_pkg::vip_chi_comp_resp_legal(
+            CFG_P.ISSUE_P, vip_chi_resp_t'(vif.txrspflit.resp));
+  endproperty
+
+  property p_rx_rsp_comp_resp_legal;
+    @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
+      (vif.rxrspflitv &&
+       rsp_comp_resp_judged(rsp_opcode_t'(vif.rxrspflit.opcode),
+                            vip_chi_resp_err_t'(vif.rxrspflit.resperr)))
+      |-> vip_chi_types_pkg::vip_chi_comp_resp_legal(
+            CFG_P.ISSUE_P, vip_chi_resp_t'(vif.rxrspflit.resp));
+  endproperty
+
   // The four reset-idle rules are gated on link_ever_active, NOT on
   // checks_enable, and the sideband one below shows why in the sharpest form
   // this codebase has produced:
@@ -3890,6 +3934,20 @@ module vip_chi_sva #(
       $sampled(vif.rxrspflit.opcode), $sampled(vif.rxrspflit.txnid),
       $sampled(vif.rxrspflit.resperr), $sampled(vif.rxrspflit.resp),
       $sampled(vif.rxrspflit.dbid)));
+
+  assert property (p_tx_rsp_comp_resp_legal)
+    chk_hit(VIP_CHI_CHK_RSP_COMP_RESP_LEGAL_E);
+  else
+    chk_miss(VIP_CHI_CHK_RSP_COMP_RESP_LEGAL_E, $sformatf(
+      "txrsp Comp carried Resp 0b%03b, which this issue's dataless-completion table does not list for a Comp response",
+      $sampled(vif.txrspflit.resp)));
+
+  assert property (p_rx_rsp_comp_resp_legal)
+    chk_hit(VIP_CHI_CHK_RSP_COMP_RESP_LEGAL_E);
+  else
+    chk_miss(VIP_CHI_CHK_RSP_COMP_RESP_LEGAL_E, $sformatf(
+      "rxrsp Comp carried Resp 0b%03b, which this issue's dataless-completion table does not list for a Comp response",
+      $sampled(vif.rxrspflit.resp)));
 
   assert property (p_link_sideband_idle_during_reset)
     chk_hit(VIP_CHI_CHK_LINK_SIDEBAND_IDLE_IN_RESET_E);
