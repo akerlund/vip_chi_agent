@@ -90,7 +90,7 @@ cd "$RUNDIR" || exit 1
 # The exporter stamps whatever this supplies; "unknown" if it supplies nothing,
 # which is why this is computed once here rather than left to the simulator.
 # "-dirty" matters as much as the hash during development: two sweeps of one
-# commit can still be of different code. See F-CHK-011.
+# commit can still be of different code.
 SOURCE_REV="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then
   SOURCE_REV="${SOURCE_REV}-dirty"
@@ -174,6 +174,15 @@ python3 "$ROOT/scripts/check_classifier_coverage.py" >> "$SUMMARY" 2>&1 || true
 # emits requests its own rule then reports, or both were edited wrong together and
 # the table stops being the authority either of them claims. No simulator needed.
 python3 "$ROOT/scripts/check_tagop_groups.py" >> "$SUMMARY" 2>&1 || true
+
+# Source comments must not point at the review scaffolding. Finding IDs, trace
+# rows and box numbers live in documents that are deleted when a review closes,
+# so a comment citing one is unreadable the moment that happens -- and in the
+# meantime is unreadable to anyone without that document open. Keep the
+# specification citation, drop the ID. Also warns about a maintained testcase
+# count in a comment, and about a comment narrating a defect's history rather
+# than describing the code. No simulator needed.
+python3 "$ROOT/scripts/check_review_refs.py" >> "$SUMMARY" 2>&1 || true
 
 # The regression sizes quoted in prose, against the testcases that exist. The
 # sweep is the only place that knows both numbers at once.

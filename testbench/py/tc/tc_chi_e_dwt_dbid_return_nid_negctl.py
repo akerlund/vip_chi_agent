@@ -9,7 +9,7 @@
 #
 # pyUVM/cocotb port of tc/tc_chi_e_dwt_dbid_return_nid_negctl.sv.
 #
-# The negative control for the DWT limb of CHI_SB_RSP_TGTID_CORRECT (F-CORR-012).
+# The negative control for the DWT limb of CHI_SB_RSP_TGTID_CORRECT.
 #
 # cfg.snf_dwt_dbid_target_srcid_negctl makes the completer address the write's
 # DBIDResp at the request's SrcID under the request's own TxnID, when DoDWT = 1

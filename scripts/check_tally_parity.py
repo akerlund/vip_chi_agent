@@ -13,7 +13,7 @@ what the two ports DECIDED about the same stimulus.
 
 So a rule could fire in one port and be silent in the other, in the same
 testcase, with both numbers printed in both sweeps, and every gate would pass.
-That is not hypothetical: it is how F-CHK-013 and F-CHK-014 were found, by hand,
+That is not hypothetical: it is how and were found, by hand,
 after the fact -- and it is how this check came to be written, on a
 CHI_LCRD_QUIESCENT_IN_STOP divergence in tc_chi_reset_idle_scope that the full
 gate set had just passed clean.
@@ -49,7 +49,7 @@ import sys
 # why the two ports cannot agree, and anything not listed is a finding.
 EXPECTED_C: dict[str, str] = {
     "CHI_LCRD_QUIESCENT_IN_STOP":
-        "F-CHK-020, open: in tc_chi_reset_idle_scope the pyUVM port reports a "
+        " , open: in tc_chi_reset_idle_scope the pyUVM port reports a "
         "credit stranded in STOP and the SystemVerilog port does not. Both "
         "ports drive the violating credit from the same place with the same "
         "knob, so the leading hypothesis is a ONE-CYCLE SKEW -- SystemVerilog "

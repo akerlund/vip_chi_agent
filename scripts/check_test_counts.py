@@ -44,10 +44,14 @@ CLAIMS = (
 )
 
 # Documents that quote a single bare count of the whole regression.
-SINGLE_COUNT_CLAIMS = (
-  (ROOT / "testbench" / "py" / "tc" / "tc_chi_sva_smoke.py",
-   re.compile(r"every one of the (\d+) regression testcases")),
-)
+#
+# Empty on purpose. A count written into a source comment has to be maintained
+# by hand and rots the next time a testcase is added, so the comments say "the
+# whole regression" instead and there is nothing here to check. The tuple stays
+# because the prose documents below still quote counts, and those are the right
+# place for a number: they are about the regression, not about the code they sit
+# in.
+SINGLE_COUNT_CLAIMS = ()
 
 
 def _tc_names(directory: pathlib.Path, suffix: str) -> set[str]:

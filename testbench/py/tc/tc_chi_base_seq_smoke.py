@@ -269,7 +269,7 @@ class tc_chi_base_seq_smoke(uvm_test):
     # statement in this port's form. It used to be a try/except/else, which works
     # only because the refusal is raised in code the test awaits directly -- the
     # scope below is the general form, and it is the one a refusal raised inside a
-    # driver coroutine needs (F-CHK-003).
+    # driver coroutine needs.
     write_zero_d = vip_chi_write_zero_seq("write_zero_seq_d", cfg=CHI_D_WIDE_CFG)
     write_zero_d.set_requests(0)
     with expect_rejection("WRITE_ZERO_ISSUE", count=None):

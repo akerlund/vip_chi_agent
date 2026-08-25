@@ -656,7 +656,7 @@ class vip_chi_driver_snf(uvm_driver):
     # Here as well as in the requesters because the knob reaching only some
     # drivers meant the rule was never shown to fire on the rest -- and which
     # drivers it reached differed between the two ports, which check_cfg_parity
-    # could not see because the config SURFACE matched. See F-CHK-014.
+    # could not see because the config SURFACE matched.
     if self.cfg.flit_without_flitpend and not self.flit_without_pend_done:
       self.flit_without_pend_done = True
       return
@@ -940,7 +940,7 @@ class vip_chi_driver_snf(uvm_driver):
 
     The control corrupts it, which is the only way to tell a completer that
     reflects the group from one that happens to send a value the requester
-    accepts. See F-INTOP-010.
+    accepts.
     """
     # GroupIDExt exists only in the Issue E request flit, so it is read through
     # the issue and not with a .get() default. A presence guard would have made
@@ -1068,7 +1068,7 @@ class vip_chi_driver_snf(uvm_driver):
     by the Requester before the RetryAck response", and requires the requester
     to absorb it. This VIP's completer never reordered anything, so the
     requester's inability to absorb it could not be reached from inside the
-    regression at all. See F-INTOP-006.
+    regression at all.
     """
     pcrd = 0x1
     retry_ack = {
@@ -1105,7 +1105,7 @@ class vip_chi_driver_snf(uvm_driver):
     # does, so they are computed once, here, rather than at the drive_rsp call.
     dwt = req_dwt_grant_uses_return_path(cfg.issue, req["opcode"], req["snpattr"])
     if dwt and self.cfg.snf_dwt_dbid_target_srcid_negctl:
-      # Negative control: keep the pre-F-CORR-012 addressing under DoDWT = 1.
+      # Negative control: keep the previous addressing under DoDWT = 1.
       dwt = False
     grant_tgt = req["returnnid"] if dwt else req_src
     grant_txn = req["returntxnid"] if dwt else req_txn
@@ -1204,7 +1204,7 @@ class vip_chi_driver_snf(uvm_driver):
     # be sent after the associated request is received" -- and none at all
     # relative to the write's Comp. cfg.snf_cmo_before_write_comp takes the
     # other option, which exists so a requester that silently assumed the
-    # write-first order has something that breaks it. See F-INTOP-008.
+    # write-first order has something that breaks it.
     cmo_first = (self.cfg.snf_cmo_before_write_comp
                  and req["opcode"] in _COMBINED_WRITE_CMO)
     if cmo_first:
@@ -1240,7 +1240,7 @@ class vip_chi_driver_snf(uvm_driver):
     The group identifier rides DBID, as PGroupID does on a Persist -- Table 13-7
     shares those bits between DBID, PGroupID and StashGroupID, and 13.10.7 adds
     TagGroupID to the list. So this needed no new flit field, which is the whole
-    reason F-COV-001 was cheap to close.
+    reason it was cheap to close.
     """
     await self.drive_rsp({
       "opcode": int(RspOpcode.TAG_MATCH), "srcid": req["tgtid"],
@@ -1266,7 +1266,7 @@ class vip_chi_driver_snf(uvm_driver):
     observable events are what a test can check an order between and the
     combined encoding collapses exactly that evidence -- but a requester has to
     accept both, so the completer has to be able to produce both. See
-    F-INTOP-008, where the requester fatalled on an encoding this VIP could not
+    The requester used to fatal on an encoding this VIP could not
     then generate.
     """
     # Two responses, two field sets, and deliberately NOT one shared base.
@@ -1280,11 +1280,11 @@ class vip_chi_driver_snf(uvm_driver):
     # A shared base is what hid that: one dict, one tgtid, and a per-response
     # rule with nowhere to live. Splitting them costs four lines and makes the
     # difference a thing you have to write down rather than one you have to
-    # remember. See F-CORR-012.
+    # remember.
     is_persist = req["opcode"] in _COMBINED_CMO_PERSIST
     # Persist is not tied to a TxnID, and it is routed by ReturnNID.
     # The control aims it at SrcID, which is what this driver did before
-    # F-CORR-012 and what 2.8 forbids for a PCMO.
+    # and what 2.8 forbids for a PCMO.
     persist_tgt = (req["srcid"] if self.cfg.snf_persist_target_srcid_negctl
                    else req["returnnid"])
 
@@ -1394,7 +1394,7 @@ class vip_chi_driver_snf(uvm_driver):
   # The requester is the Home stand-in on this link (see cfg.rni_home_standin),
   # so ReadReceipt addressed at req.SrcID is Table B-3's SN-F -> ICN(HN-F) row,
   # and the DataSepResp data leg to ReturnNID is Table B-4's SN-F -> RN-I row,
-  # an EXPECTED target rather than a merely permitted one. See F-CORR-013.
+  # an EXPECTED target rather than a merely permitted one.
   async def drive_read_prelude(self, req, resp_code, resp_err):
     is_sep = req["opcode"] == int(ReqOpcode.READ_NO_SNP_SEP)
 
@@ -1402,7 +1402,7 @@ class vip_chi_driver_snf(uvm_driver):
       await self.drive_auto_read_receipt(req)
 
     if is_sep and self.cfg.snf_resp_sep_data_negctl:
-      # The pre-F-CORR-013 behaviour, kept as an injectable defect: a Slave
+      # The previous behaviour, kept as an injectable defect: a Slave
       # emitting a Home-only response. CHI_SB_ORIGINATOR_LEGAL must report it.
       await self.drive_rsp({
         "opcode": int(RspOpcode.RESP_SEP_DATA), "srcid": req["tgtid"],
@@ -1649,7 +1649,7 @@ class vip_chi_driver_snf(uvm_driver):
           # tags out of an atomic, and the read path a few lines up DOES replay
           # the stored TagOp -- which for an atomic could be Match, the one
           # value section 12.7 forbids here. Stating it keeps the two paths from
-          # being confused for each other later. See F-CORR-009.
+          # being confused for each other later.
           "tagop": int(TAGOP_INVALID), "tag": 0, "tu": 0,
         }
         await self.wait_dat_credit()

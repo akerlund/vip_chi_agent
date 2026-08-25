@@ -4,7 +4,7 @@
 Checks gated on an opcode classifier are silently switched off for any opcode
 the classifier forgets. `check_vacuity.py` cannot see that: it aggregates on
 check NAME, so a rule with hits from opcode set A reports as exercised even when
-it is structurally impossible for set B. F-CHK-007.
+it is structurally impossible for set B..
 
 Two questions, both mechanical:
 
@@ -38,7 +38,7 @@ PAIRS = [
     ("req_opcode_is_coherent_rsp_only", "req_opcode_is_coherent_rsp_only"),
     ("req_has_modeled_completion", "req_has_modeled_completion"),
     ("req_completion_uses_dat", "req_completion_uses_dat"),
-    # is_write_req_opcode / _is_write_req_opcode were removed with box 3.5. The
+    # is_write_req_opcode / _is_write_req_opcode were removed. The
     # pair existed to gate the ExpCompAck bookkeeping onto write opcodes, and
     # that gate is gone: Table 2-9 makes the bit a property of the opcode, not
     # of the direction, so every request is now recorded and the classifier had

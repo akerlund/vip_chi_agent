@@ -1,7 +1,7 @@
 ################################################################################
 # pyUVM/cocotb port of tc/tc_chi_d_atomic_compare_size_legal.sv.
 #
-# The POSITIVE control for CHI_ATOMIC_SIZE_LEGAL (F-CHK-019).
+# The POSITIVE control for CHI_ATOMIC_SIZE_LEGAL.
 #
 # The five wide-operand atomic testcases prove the rule FIRES: they drive Sizes
 # Table 2-17 does not list, arm the rule at OFF, and require it to have reported.
@@ -19,11 +19,10 @@
 # The rule is ARMED here -- not turned down to OFF -- which is the whole point:
 # the assertions below are about a live rule seeing conformant traffic.
 #
-# Nothing is opted into here, and that is now the point: since F-CORR-008 the
-# solver draws Table 2-17's Sizes by default, so this testcase asks for nothing
-# special and gets the specification. If the constraint's ceiling regressed to
-# Size 4, randomization would fail outright rather than quietly drawing
-# something else, and this testcase would say so.
+# The sequence is configured plainly: Table 2-17's Sizes are what the item's
+# constraints draw by default, so this testcase gets the specification without
+# asking for it. Should the constraint's ceiling drop back to Size 4,
+# randomization fails outright rather than quietly drawing something else.
 # Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 
@@ -58,11 +57,10 @@ class tc_chi_d_atomic_compare_size_legal(chi_base_test):
     seq.set_requests(1)
     seq.set_initial_addr(ATOMIC_ADDR_C)
     seq.set_size(size)
-    # No opt-in of any kind here, and that is now the point: Table 2-17 is
-    # what a plain sequence draws, so this testcase asks for nothing special and
-    # gets the specification. If the constraint's ceiling regressed to Size 4,
-    # randomization would fail outright rather than quietly drawing something
-    # else.
+    # Table 2-17's Sizes are what a plainly configured sequence draws, so no
+    # override is needed to reach them. Should the constraint's ceiling drop
+    # back to Size 4, randomization fails outright rather than quietly drawing
+    # something else.
     seq.set_get_response(True)
     seq.set_verbose(False)
     seq.set_data([COMPARE_OPERAND_C, COMPARE_SWAP_C])

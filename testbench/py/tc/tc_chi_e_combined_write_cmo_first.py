@@ -9,7 +9,7 @@
 #
 # pyUVM/cocotb port of tc/tc_chi_e_combined_write_cmo_first.sv.
 #
-# CompCMO driven before the write's Comp (F-INTOP-008).
+# CompCMO driven before the write's Comp.
 #
 # IHI 0050 E section 2.8 places exactly one ordering rule on CompCMO -- it "must
 # only be sent after the associated request is received" -- and none at all

@@ -23,7 +23,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 //
-// Where a PCMO's Persist is addressed (F-CORR-012).
+// Where a PCMO's Persist is addressed.
 //
 // IHI 0050 E section 2.8: "The ReturnNID value in the request must be used as
 // the target in the following responses by the Slave: in the DBIDResp, if the

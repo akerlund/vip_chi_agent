@@ -7,14 +7,11 @@ enum values and flit field order, `check_cfg_parity.py` the config fields,
 classifiers, `check_test_counts.py` the testcase lists. All five pass when the
 two ports agree about what EXISTS. None of them looks at what the two ports
 DECIDED when the same stimulus was put through them, and that is where the
-divergences have actually been:
-
-  F-CHK-013  the Python DAT hook never called check_snp_resp_state, so catalogue
+divergences have actually been: the Python DAT hook never called check_snp_resp_state, so catalogue
              rule D5 judged 14 of 19 snoop responses on Python against SV's 19,
              and the with_data axis of an illegal_bins cross was unreachable
              there -- in the very commit that added it. Both numbers were printed
-             in both sweeps. Nobody was comparing them.
-  F-CHK-014  the FLITPEND negative control reaches a different set of drivers in
+             in both sweeps. Nobody was comparing them. the FLITPEND negative control reaches a different set of drivers in
              each port, because eleven send sites announce inline. The knob
              EXISTS in both configs, spelled identically, so cfg parity passes.
 
@@ -31,7 +28,7 @@ nothing but emitting it from both ports in the same `field=value` form.
 
 Fails closed. A testcase that exists in both flows and produced coherency
 summaries in one and none in the other is a divergence, not a skip -- that is
-precisely the shape of F-CHK-013, where the Python side was silent about
+precisely the shape of a case where the Python side was silent about
 responses it never looked at.
 
 Requires both flows to have been run. With neither log tree present it reports

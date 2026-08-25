@@ -354,7 +354,7 @@ class vip_chi_base_seq(uvm_sequence):
     #
     # An explicit set_return_nid() still wins, which is what makes the routing
     # testable at all: a test can point the Persist at a node that is NOT the
-    # requester and check where it lands. See F-CORR-012.
+    # requester and check where it lands.
     # A Match-tagged write is owed a TagMatch, and section 4.7's TgtID table
     # routes that response to ReturnNID when a Slave sends it. Section 2.5 gives
     # the expected value: "In WriteNoSnp with TagOp Match [...] the ReturnNID
@@ -419,7 +419,7 @@ class vip_chi_base_seq(uvm_sequence):
     # old unconditional zero was never illegal, it just said "this write was
     # cancelled" on every write that asked for a tag operation, and the
     # completer had nothing to do. Nothing related the two fields at all before
-    # this. See F-CORR-009.
+    # this.
     #
     # A test that pins it keeps its pin: 12.5.1's Invalid case is a real
     # behaviour a negative control needs to be able to produce.

@@ -91,7 +91,7 @@ class chi_proxy_tb_env(uvm_env):
 
     self.hni_agent = vip_chi_hni_agent("hni", self)
 
-    # The HN-I proxy topology's binds, added with box 0.3. Before it, a grep for
+    # The HN-I proxy topology's binds, added. A grep for
     # bind_chi in this file returned zero: not a disabled checker, no checker at
     # all, on every testcase that runs this topology. The scoreboard ran; the link
     # and protocol layer -- LASM, L-credit accounting, reset idle, TXSACTIVE,

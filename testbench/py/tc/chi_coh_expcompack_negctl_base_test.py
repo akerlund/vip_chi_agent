@@ -51,7 +51,7 @@ class chi_coh_expcompack_negctl_base_test(chi_coherent_base_test):
     # to the HN-F, so it is judged twice under one rule name: once where it is
     # sent and once where it arrives. Waiving it only at the sender left the
     # receiving vantage reporting a violation this test asked for, the moment
-    # F-CORR-005 gave the HN-F endpoint a main-range bind.
+    # gave the HN-F endpoint a main-range bind.
     self.tb_env.rnf_sva[0].expect_failure(_CHK_C)
     for checker in self.tb_env.hnfr_sva:
       checker.expect_failure(_CHK_C)

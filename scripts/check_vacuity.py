@@ -292,7 +292,7 @@ def main() -> int:
   # The CSV now stamps the producing revision, so this is answered exactly
   # rather than guessed at. Age remains as a FALLBACK, for rows written before
   # the column existed and for an export that could not name a commit -- it is a
-  # weaker test and is labelled as one. See F-CHK-011.
+  # weaker test and is labelled as one.
   #
   # Warned rather than gated in both cases: comparing an archived sweep against a
   # fresh one is a legitimate thing to do, and the tool should say what it is

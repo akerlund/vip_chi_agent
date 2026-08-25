@@ -560,7 +560,7 @@ class RspOpcode(IntEnum):
   # TagOp is a bare 2-bit value with no enum and no constraint, so any test
   # could ask for Match and get silence back. Modelling it needs no new flit
   # field -- Table 13-7 shares the response's DBID bits with TagGroupID, exactly
-  # as it does with PGroupID. See F-COV-001.
+  # as it does with PGroupID.
   TAG_MATCH = 0x0A
 
   SNP_RESP = 0x01
@@ -616,7 +616,7 @@ class SnpOpcode(IntEnum):
 #
 # The VIP's own separated read was exactly that shape: ReadNoSnpSep from an RN-I
 # and RespSepData from an SN-F, neither of which appears anywhere in Appendix B,
-# and every test of it passed in both ports. See F-CORR-013 / TR-APPB-001.
+# and every test of it passed in both ports.
 #
 # Only the FROM column is encoded. The To column is a routing question the TgtID
 # checks already answer, and encoding it here would give one fact two owners.
@@ -633,7 +633,7 @@ class SnpOpcode(IntEnum):
 # conversion renders a merged left-hand cell as if each opcode had its own
 # From row, which turns a block's three From rows into one per opcode and
 # silently invents originators. It is the same failure mode as the flit tables
-# in F-CORR-002, and it is why ReadNoSnpSep looks RN-originated in the md.
+# in , and it is why ReadNoSnpSep looks RN-originated in the md.
 
 _ORIG_RNF_C = frozenset({Role.RNF})
 _ORIG_RN_C = frozenset({Role.RNF, Role.RNI})
@@ -895,8 +895,6 @@ class ChiCfg:
     corners. Issue D, whose Table 12-6 total is R = (121 to 141) + M + X, lands
     on both corners exactly, which is what validates the method rather than the
     conclusion.
-
-    See F-CORR-026.
     """
     return 5
 
@@ -927,9 +925,7 @@ class ChiCfg:
     mpam_field_width does), where the specification's totals take DC = P = 0 --
     so the DAT flit ran +2 from the placeholders and -2 from these, landing
     exactly on Table 13-9's total at DW = 256 and 512. Two errors summing to
-    zero at the two configurations anyone would check.
-
-    See F-CORR-026, whose width gate is what separated them.
+    zero at the two configurations anyone would check. The finding on it notes width gate is what separated them.
     """
     return DATA_ID_WIDTH
 
@@ -1549,7 +1545,7 @@ _COMBINED_WRITE_CMO_OPCODES = frozenset({
 # this tree models" is asked by the checker, to decide whether to hold the
 # request outstanding, AND by the raw-injection path in the requester driver, to
 # decide how long to hold TXSACTIVE. Two copies of that answer drift the moment
-# an opcode is classified -- which is exactly what F-CORR-021 recorded: the raw
+# an opcode is classified, as happened once: the raw
 # path's comment asserted a property of the opcode set that stopped being true
 # when WriteUniqueZero joined this classifier, and nothing connected the two.
 # One definition, in the layer both sides already import from.
@@ -2032,8 +2028,7 @@ def req_return_nid_applicable(opcode: int) -> bool:
   prose and the table alone understates it.
 
   The "from Home to Slave" half is deliberately not modelled: no bind can
-  establish that its peer is a Home, and this VIP drives ReadNoSnp from an RN-I
-  (F-CORR-013's illegal topology), so enforcing the node pair would fire for a
+  establish that its peer is a Home, and this VIP drives ReadNoSnp from an RN-I, so enforcing the node pair would fire for a
   reason belonging to a different fix.
 
   WriteNoSnpZero is treated as APPLICABLE, which is a judgement rather than a
@@ -2098,7 +2093,7 @@ def pgroup_id_from_req(group_id_ext: int, lp_id: int) -> int:
   StashGroupID and TagGroupID; on RSP it is a view of DBID. Adding a physical
   PGroupID to either layout would make this VIP's flits wider than the
   specification's -- and because both ports would have been widened together,
-  no parity check could have seen it. F-INTOP-010 asked for exactly that, on
+  no parity check could have seen it. That was once proposed, on
   App A's field lists; Table 13-6 and Table 13-7 say otherwise.
 
   LPID's low five bits, not all of it: the equation names LPID[4:0] and this VIP
@@ -2162,7 +2157,7 @@ def req_dwt_grant_uses_return_path(issue: int, opcode: int, bit17: int) -> bool:
 
   Takes the RAW bit 17 and the issue rather than a "dodwt" argument, because
   there is no dodwt field to pass: REQ bit 17 is carried as "snpattr" in the
-  flit map and is DoDWT only where req_bit17_is_dodwt says so (F-CORR-003).
+  flit map and is DoDWT only where req_bit17_is_dodwt says so.
   A caller handed a decoded bit would have to do that decode itself, and a
   caller that read a "dodwt" key off a sampled flit would get a KeyError at
   best and a silent zero at worst -- which is the whole shape of the defect

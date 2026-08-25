@@ -7,7 +7,7 @@
 # there. This port had no equivalent at all: a driver's refusal is an exception
 # raised inside a cocotb coroutine the AGENT started, so the test cannot wrap it
 # and nothing observes it as a tested outcome. Every negative control of that
-# shape could be written in SV and not here. (F-CHK-003.)
+# shape could be written in SV and not here.
 #
 # py/vip_chi_reject.py closes that, and this is the test that says it works. It
 # checks the behaviours the mechanism has to have, and the third is the one most

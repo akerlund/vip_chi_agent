@@ -1029,7 +1029,7 @@ class vip_chi_driver_rni #(
           // only, and section 2.3.1 makes ReadReceipt the response the Slave
           // owes -- so on this link, where this requester is the Home stand-in,
           // ReadReceipt is what arrives. It arrives for every separated read,
-          // ordered or not. See F-CORR-013.
+          // ordered or not.
           if (this.req_expects_read_receipt(req) ||
               (req.opcode == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C))) begin
             this.collect_read_receipt(req);
@@ -1670,7 +1670,7 @@ class vip_chi_driver_rni #(
   // cover every outstanding transaction. The flit-scoped window the raw path
   // gave it was sound only while no raw-injectable opcode had a modeled
   // completion -- which stopped being true when WriteUniqueZero was classified,
-  // and the comment saying so kept reading as settled. F-CORR-021.
+  // and the comment saying so kept reading as settled..
   //
   // The opcode is ASKED, not assumed, and it is asked of the same classifier the
   // checker uses -- vip_chi_types_pkg::vip_chi_req_has_modeled_completion -- so
@@ -2015,7 +2015,7 @@ class vip_chi_driver_rni #(
   // routes a PCMO's Persist to ReturnNID, so that is where the requester looks
   // for it, and not at its own SrcID. The two are the same node whenever a
   // requester wants its own Persist back, which is why reading SrcID here worked
-  // for as long as nothing set ReturnNID to anything else. See F-CORR-012.
+  // for as long as nothing set ReturnNID to anything else.
   protected task wait_for_standalone_persist_rsp(
     input  node_id_t  expect_tgt_id,
     input  node_id_t  req_tgt_id,
@@ -2274,7 +2274,7 @@ class vip_chi_driver_rni #(
   // dispatching on the opcode, the serial path only for the ones it consumes.
   //
   // One function for both, deliberately. Two paths each carrying their own copy
-  // of "what to do with a PCrdGrant" is exactly how F-INTOP-006 happened: the
+  // of "what to do with a PCrdGrant" is exactly how happened: the
   // pipelined one banked by type and absorbed a reordered grant, the serial one
   // did not, and nothing made them disagree visibly.
   // ---------------------------------------------------------------------------
@@ -2302,7 +2302,7 @@ class vip_chi_driver_rni #(
   // reported as a DUT failure. The pipelined path in this same class already
   // banked credits by type; the two paths are selected by cfg.max_outstanding_*,
   // which is not something a reader of section 2.11 would think to check. See
-  // F-INTOP-006.
+  //.
   // ---------------------------------------------------------------------------
   protected task collect_pcrd_grant(input vip_chi_pcrd_type_t pcrd_type);
 
@@ -2332,7 +2332,7 @@ class vip_chi_driver_rni #(
       //
       // Still a `uvm_fatal here, where the Python twin goes through reject():
       // this port's driver refusals are fatals by design and a report catcher
-      // demotes the ones a control expects (F-CHK-003). Writing a recovery path
+      // demotes the ones a control expects. Writing a recovery path
       // after it would be dead code claiming a robustness this does not have.
       if (rsp_opcode_t'(flit.opcode) != rsp_opcode_t'(VIP_CHI_RSP_PCRD_GRANT_C)) begin
 
@@ -2451,7 +2451,7 @@ class vip_chi_driver_rni #(
   // Stepped over rather than collected into a milestone, deliberately: the
   // scoreboard is what judges TagMatch, and it sees every RSP the monitor does.
   // Adding a second observer here would only give the same fact two owners.
-  // See F-COV-001.
+  //
   // ---------------------------------------------------------------------------
   protected task collect_write_completion(inout item_t req);
 
@@ -2503,7 +2503,7 @@ class vip_chi_driver_rni #(
   //
   // The scoreboard already models it this way -- need_comp_cmo / comp_cmo_seen
   // are flags, not a sequence -- so the driver was stricter than the checker
-  // behind it. See F-INTOP-008.
+  // behind it.
   //
   // An opcode that satisfies no OUTSTANDING obligation is still refused, and
   // that is the whole strictness this keeps: tolerance of order is not tolerance

@@ -39,14 +39,14 @@ module vip_chi_sva #(
   // SrcID"). Scoping the rule by SrcID, done below, removes the systematic false
   // report; what remains is that the shadow is lossy, so on a genuinely
   // multi-source link the rule stands down and says so through enabled=0 rather
-  // than reporting on state it cannot keep. See F-CHK-018 for the rework.
+  // than reporting on state it cannot keep. See for the rework.
   parameter bit            MULTI_SOURCE_LINK_P         = 1'b0,
   // This endpoint drives TXSACTIVE from link-up rather than from its outstanding
   // window, so the sideband is a constant for as long as the link is up. That is
   // legal -- section 14.7.2's obligation is a lower bound and "may have" is
   // permissive -- but it is exactly what TXSACTIVE_DEASSERT_BOUNDED exists to
   // report, so the rule would fire on every run rather than on a defect. The
-  // driver behavior is F-CORR-005 (box 1.6); until that lands, the binds on such
+  // driver behavior is; until that lands, the binds on such
   // an endpoint stand the rule down explicitly.
   parameter bit            TXSACTIVE_FROM_LINK_UP_P    = 1'b0,
   // This link is driven by a testcase directly, without the driver's credit and
@@ -57,7 +57,7 @@ module vip_chi_sva #(
   // rules report facts about the testcase rather than about the VIP. They stand
   // down here; LASM, reset-idle, known-when-valid, link gating and the sideband
   // rules stay live, and those are the ones a third geometry is worth checking
-  // for. This is the "bind or explicitly waive" choice of F-CHK-004, resolved as
+  // for. This is the "bind or explicitly waive" choice, resolved as
   // a partial bind with the waived rules named.
   parameter bit            HAND_DRIVEN_LINK_P          = 1'b0,
   // Cycles allowed after reset release for the link to begin re-activating.
@@ -248,7 +248,6 @@ module vip_chi_sva #(
   // receives, so every LCRDV this component drives belongs to the machine the
   // OTHER direction runs -- and under the reduction both were judged against
   // whichever machine happened to be up, which is exactly the aliasing
-  // F-INTOP-001 describes.
   function automatic bit tx_link_is_active();
     return (tx_lasm() != VIP_CHI_LASM_STOP_E);
   endfunction
@@ -516,7 +515,7 @@ module vip_chi_sva #(
   // vip_chi_types_pkg, where the definitions live. They moved there because the
   // raw-injection path in vip_chi_driver_rni needs the same answer this checker
   // does and cannot reach a function declared inside this module -- see
-  // F-CORR-021, where a second copy of the answer drifted. The local names stay
+  // A second copy of the answer would drift. The local names stay
   // because this file reads better with them and because
   // check_classifier_coverage.py compares the SETS, which a forward preserves
   // by construction.
@@ -581,7 +580,7 @@ module vip_chi_sva #(
     // Informative in the specification (it is a Note), so it is a rule rather
     // than a fatal -- but it constrains the normative model, and the VIP's own
     // driver cannot produce it, so a report here is always about the peer.
-    // See F-INTOP-003.
+    //
     if (grant && consume && (cur == 0)) begin
       chk_miss(VIP_CHI_CHK_LCRD_USED_IN_GRANT_CYCLE_E, $sformatf(
         "%s flit sent in the same cycle its only L-credit was granted; section 14.2.1 says a credit cannot be used in the cycle it is received",
@@ -979,14 +978,14 @@ module vip_chi_sva #(
   // stricter rule than the one written. It went unnoticed because no bind sat on
   // a fan-in link: the integrated topology is one requester to one completer, and
   // the coherent binds sit at the RN-F ends, one source each. The proxy's
-  // SN-facing links, bound for the first time by box 0.3, carry two.
+  // SN-facing links, bound, carry two.
   // A TxnID-indexed array cannot represent this: it has one slot per value, so
   // the second source to claim a TxnID overwrote the first's ownership. The
   // residual was a MISSED violation -- A takes 0, B takes 0 and becomes the
   // slot's owner, A's completion frees the slot, and A reusing 0 with its own
   // first request still outstanding passed. The rules therefore stood down on
   // multi-source links rather than reporting from a shadow that could not
-  // answer. Keyed on the pair they report there instead. See F-CHK-018.
+  // answer. Keyed on the pair they report there instead.
   //
   // Associative because the product space is not worth allocating: NODE_ID and
   // TXN_ID are 11 and 12 bits on CHI-E, so a second dimension would be 8M bits
@@ -1448,7 +1447,7 @@ module vip_chi_sva #(
           // tc_chi_e_dwt_dbid_return_nid is the first testcase able to put a one
           // on that bit at all, and until con_return_path_fields stopped pinning
           // ReturnTxnID to zero it could not randomize. One defect was hiding
-          // another. See F-CORR-003 and F-CORR-012.
+          // another.
           if (!vip_chi_types_pkg::vip_chi_req_attr_combination_legal(
                 vif.txreqflit.memattr,
                 vip_chi_snp_attr_t'(
@@ -2210,7 +2209,7 @@ module vip_chi_sva #(
               // received request and cleared by nothing but a RetryAck. It went
               // unnoticed because the one rule that reads the count was gated
               // to the requester -- see p_txsactive_covers_outstanding, and
-              // F-CORR-005.
+              //.
               if (req_inflight(req_key(node_id_t'(vif.txrspflit.tgtid), txn_id_t'(vif.txrspflit.txnid)))) begin
                 req_outstanding_delta--;
               end
@@ -2806,7 +2805,7 @@ module vip_chi_sva #(
     // sources' claims on the same value -- which section 2.5 makes legal, so
     // the rule had to be silent rather than wrong. req_inflight_by_key is keyed
     // on the pair and represents it directly, so a fan-in link is CHECKED
-    // instead of excused. See F-CHK-018.
+    // instead of excused.
     //
     // The parameter stays: it records that a link carries more than one source,
     // which is a fact about the topology rather than about this rule.
@@ -3377,7 +3376,7 @@ module vip_chi_sva #(
   // completer, because it is maintained from the direction the role receives
   // on. It was never the peer's window read off the wrong wire; it was this
   // node's own obligation, and the check that expresses it was switched off for
-  // the one role that gets it wrong. See F-CORR-005.
+  // the one role that gets it wrong.
   // Two limbs, one rule. The snoop limb is 14.7.2's second condition, counted
   // separately so the OR the clause requires is what holds the sideband up
   // rather than an accident of how the two windows happen to overlap. See the

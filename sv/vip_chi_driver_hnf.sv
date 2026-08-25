@@ -143,7 +143,7 @@ class vip_chi_driver_hnf #(
   // clocking-block output in the same time step, so the level was decided by
   // whichever landed last -- and that showed: with the HN-F endpoint bound for
   // the first time, the pyUVM port reported CHI_TXSACTIVE_DEASSERT_BOUNDED here
-  // and this port did not, from the same source. See F-CORR-005.
+  // and this port did not, from the same source.
   //
   // Now rn_credit_loop is the only writer and it reads this count. The send
   // tasks do not touch the wire at all: a transaction brackets itself with
@@ -611,7 +611,7 @@ class vip_chi_driver_hnf #(
   // Transmit arbitration here is by OWNERSHIP, not by a lock, and that is a
   // decision rather than an omission.
   //
-  // F-CORR-018 found the SN-F dropping a response it had already decided to send:
+  // The SN-F once dropped a response it had already decided to send:
   // two of its threads drove the same channel in the same cycle and the later
   // assignment silently replaced the earlier flit. The RN-I and SN-F answer that
   // with a one-deep semaphore. This driver answers it by structure -- EVERY flit
@@ -622,7 +622,7 @@ class vip_chi_driver_hnf #(
   //
   // So the invariant to preserve when adding a thread here: no channel may acquire
   // a second writer. A new thread that sends a flit outside response_engine
-  // reintroduces F-CORR-018 in this driver, and unlike the RN-I there is no lock to
+  // reintroduces in this driver, and unlike the RN-I there is no lock to
   // catch it -- audited 2026-08-24, and the audit is only as good as this rule.
   // ---------------------------------------------------------------------------
   task driver_start();
@@ -1975,7 +1975,7 @@ class vip_chi_driver_hnf #(
     // flits. Returning without driving leaves FLITPEND at the 0 the previous
     // send cleared it to.
     //
-    // The homes did not consult the knob before F-CHK-014, so the control
+    // The homes did not consult the knob previously, so the control
     // reached the requesters and nothing else -- and check_cfg_parity passed
     // throughout, because the config SURFACE matched and which drivers READ the
     // knob is behaviour no gate compared. scripts/check_flitpend_negctl.py
@@ -1999,7 +1999,7 @@ class vip_chi_driver_hnf #(
     // flits. Returning without driving leaves FLITPEND at the 0 the previous
     // send cleared it to.
     //
-    // The homes did not consult the knob before F-CHK-014, so the control
+    // The homes did not consult the knob previously, so the control
     // reached the requesters and nothing else -- and check_cfg_parity passed
     // throughout, because the config SURFACE matched and which drivers READ the
     // knob is behaviour no gate compared. scripts/check_flitpend_negctl.py

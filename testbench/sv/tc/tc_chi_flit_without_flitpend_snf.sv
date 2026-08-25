@@ -1,7 +1,7 @@
 // NEGATIVE control for CHI_RSP_VALID_REQUIRES_PEND on the COMPLETER's flits.
 //
 // tc_chi_flit_without_flitpend is the same control on the requester. This one
-// exists because, until F-CHK-014, it could not: cfg.flit_without_flitpend was
+// exists because, until then it could not: cfg.flit_without_flitpend was
 // honoured only inside the RN-I announce path, and the config layer REJECTED the
 // knob on any other role with "on any other role it would set a flag nothing
 // reads" -- which was true, and was the defect. The gap had been written down as

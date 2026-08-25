@@ -783,7 +783,7 @@ class vip_chi_coherency_checker(uvm_component):
     # and SD is not Unique, so a shared snoop answered SD passes it. D6 bounds
     # the state by what the snoopee held, and an SD holder answering SD passes
     # that too. The bit is a third bound and it needed its own arm.
-    # See F-INTOP-002 and F-INTOP-007.
+    #
     # ------------------------------------------------------------------------
     if (state == int(Resp.SD_PD) and self.pending_snp_no_sd[node]
         and op != int(SnpOpcode.ONCE_FWD)):

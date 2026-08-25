@@ -720,7 +720,7 @@ class vip_chi_base_seq #(
     //
     // An explicit set_return_nid() still wins, which is what makes the routing
     // testable at all: a test can point the Persist at a node that is NOT the
-    // requester and check where it lands. See F-CORR-012.
+    // requester and check where it lands.
     //
     // A Match-tagged write is owed a TagMatch, and section 4.7's TgtID table
     // routes that response to ReturnNID when a Slave sends it. Section 2.5 gives
@@ -794,7 +794,7 @@ class vip_chi_base_seq #(
     // apply_dat_tagop also re-derives TU per 12.5.2; the item owns that because
     // the item owns the widths. A test that pinned either keeps its pin --
     // 12.5.1's Invalid case is a real behaviour a negative control needs to be
-    // able to produce. See F-CORR-009.
+    // able to produce.
     // Derive first, then let an explicit pin overwrite -- the same order as the
     // Python port, so the two cannot end up agreeing by different routes.
     req.apply_dat_tagop(this.dat_tagop_forced ? this.dat_tagop_val

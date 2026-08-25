@@ -58,7 +58,7 @@ SETTLE_C = 40
 # this opcode when WriteUniqueZero was classified. The raw path now carries a
 # window of its own, closed by the completion rather than by the flit, so the
 # requester covers its own transaction and needs nothing from this testcase.
-# F-CORR-021.
+#.
 #
 # What remains is not a VIP defect and does not come off with it. This test
 # drives BOTH ends: the SN-F receives a raw request it does not service, so it

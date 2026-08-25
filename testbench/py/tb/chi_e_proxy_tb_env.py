@@ -75,7 +75,7 @@ class chi_e_proxy_tb_env(uvm_env):
     self._rn_buses = [hrn_vif]
     self._sn_buses = [hsn_vif]
 
-    # The HN-I proxy topology's binds, added with box 0.3. Before it, a grep for
+    # The HN-I proxy topology's binds, added. A grep for
     # bind_chi in this file returned zero: not a disabled checker, no checker at
     # all. The scoreboard ran; the link and protocol layer did not.
     #

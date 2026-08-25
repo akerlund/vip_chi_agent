@@ -45,123 +45,123 @@ module chi_tb_top;
   // Dedicated per topology so nothing is reused across topologies.
 
   // Integrated RN-I <-> SN-F.
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    rni_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
-    snf_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    rni_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
+    snf_if (.clk(clk),.rst_n(rst_n_int));
 
   // HN-I requester agents (RN-I polarity) feeding the proxy's RN-facing ports.
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    hni_rni0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    hni_rni1_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    hni_rni0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    hni_rni1_if (.clk(clk),.rst_n(rst_n_int));
 
   // HN-I proxy RN-facing ports (HN-I polarity = SN-F signal directions).
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E))
-    hni_rn0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E))
-    hni_rn1_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_HNI_E))
+    hni_rn0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_HNI_E))
+    hni_rn1_if (.clk(clk),.rst_n(rst_n_int));
 
   // HN-I proxy SN-facing ports (RN-I polarity: the proxy is the requester here).
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    hni_sn0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    hni_sn1_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    hni_sn0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    hni_sn1_if (.clk(clk),.rst_n(rst_n_int));
 
   // HN-I responder agents (SN-F polarity) behind the proxy's SN-facing ports.
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
-    hni_snf0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
-    hni_snf1_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
+    hni_snf0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
+    hni_snf1_if (.clk(clk),.rst_n(rst_n_int));
 
   // Wide CHI-D compile-coverage anchors: no executable test instantiates
   // vip_chi_if at this width, so these unconnected instances are the only thing
   // that forces the interface to elaborate at the wider flit shape. Leave in place.
-  vip_chi_if #(.CFG_P(CHI_D_WIDE_CFG_C), .FLIT_TYPES_T(chi_d_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    chi_d_wide_rni_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_D_WIDE_CFG_C), .FLIT_TYPES_T(chi_d_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
-    chi_d_wide_snf_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_WIDE_CFG_C),.FLIT_TYPES_T(chi_d_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    chi_d_wide_rni_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_WIDE_CFG_C),.FLIT_TYPES_T(chi_d_wide_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
+    chi_d_wide_snf_if (.clk(clk),.rst_n(rst_n_int));
 
   // Wide CHI-E datapath: real RN-I + SN-F agent pair (chi_e_tb_env).
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    chi_e_wide_rni_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
-    chi_e_wide_snf_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    chi_e_wide_rni_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
+    chi_e_wide_snf_if (.clk(clk),.rst_n(rst_n_int));
 
   // Compile-coverage anchor for the HN-I role at the wide CHI-E config. The live
   // CHI-E proxy ports below (e_hni_rn{0,1}_if) now also elaborate hni_cb under
   // CHI-E flit shapes; this unconnected anchor is kept for parity with the
   // CHI-D-wide anchor above and stays idle.
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E))
-    chi_e_wide_hni_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNI_E))
+    chi_e_wide_hni_if (.clk(clk),.rst_n(rst_n_int));
 
   // Wide CHI-E HN-I proxy topology (chi_e_proxy_tb_env): 2 RN-facing
   // requesters x 2 SN-facing responders, mirroring the CHI-D proxy at CHI-E
   // width. Requester agents (RN-I polarity) feed the proxy's RN-facing ports;
   // the proxy's SN-facing ports (RN-I polarity) drive the responder agents.
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    e_hni_rni0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    e_hni_rni1_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    e_hni_rni0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    e_hni_rni1_if (.clk(clk),.rst_n(rst_n_int));
 
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E))
-    e_hni_rn0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E))
-    e_hni_rn1_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNI_E))
+    e_hni_rn0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNI_E))
+    e_hni_rn1_if (.clk(clk),.rst_n(rst_n_int));
 
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    e_hni_sn0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    e_hni_sn1_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    e_hni_sn0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    e_hni_sn1_if (.clk(clk),.rst_n(rst_n_int));
 
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
-    e_hni_snf0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
-    e_hni_snf1_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
+    e_hni_snf0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
+    e_hni_snf1_if (.clk(clk),.rst_n(rst_n_int));
 
   // Isolated coherent RN-F <-> HN-F links (CHI-D): two requester links, each
   // paired with a home-facing link and joined by an adapter below.
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E))
-    coh_rnf0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E))
-    coh_rnf1_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E))
-    coh_hnf0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E))
-    coh_hnf1_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E))
+    coh_rnf0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E))
+    coh_rnf1_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E))
+    coh_hnf0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E))
+    coh_hnf1_if (.clk(clk),.rst_n(rst_n_int));
 
   // Downstream SN-F behind the coherent HN-F (CHI-D): the HN-F is the requester
   // (RN-I polarity) toward a real SN-F memory node. Idle unless hnf_downstream_en.
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    coh_hnf0_sn_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
-    coh_dsnf0_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    coh_hnf0_sn_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
+    coh_dsnf0_if (.clk(clk),.rst_n(rst_n_int));
 
   // Isolated coherent RN-F <-> HN-F links (CHI-E): the same coherent topology
   // brought up on the wide CHI-E config to prove parity (vip_chi_coherent_e_*).
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E))
-    coh_e_rnf0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E))
-    coh_e_rnf1_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E))
-    coh_e_hnf0_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E))
-    coh_e_hnf1_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E))
+    coh_e_rnf0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E))
+    coh_e_rnf1_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E))
+    coh_e_hnf0_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E))
+    coh_e_hnf1_if (.clk(clk),.rst_n(rst_n_int));
 
   // Downstream SN-F behind the coherent HN-F (CHI-E parity).
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    coh_e_hnf0_sn_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
-    coh_e_dsnf0_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    coh_e_hnf0_sn_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
+    coh_e_dsnf0_if (.clk(clk),.rst_n(rst_n_int));
 
   // Agent-free A0 link: a third width shape (7-bit node IDs, 32-byte data bus)
   // driven directly by tc_chi_a0_smoke rather than by any agent, so the
   // interface and the link adapter are exercised at a geometry no other SV link
   // here uses. Idle in every other testcase.
-  vip_chi_if #(.CFG_P(CHI_A0_CFG_C), .FLIT_TYPES_T(chi_a0_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
-    a0_rni_if (.clk(clk), .rst_n(rst_n_int));
-  vip_chi_if #(.CFG_P(CHI_A0_CFG_C), .FLIT_TYPES_T(chi_a0_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
-    a0_snf_if (.clk(clk), .rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_A0_CFG_C),.FLIT_TYPES_T(chi_a0_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
+    a0_rni_if (.clk(clk),.rst_n(rst_n_int));
+  vip_chi_if #(.CFG_P(CHI_A0_CFG_C),.FLIT_TYPES_T(chi_a0_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
+    a0_snf_if (.clk(clk),.rst_n(rst_n_int));
 
   // --- Protocol-checker (vip_chi_sva) binds -----------------------------------
   // checks_enable is an inline expression on each interface's own link-active:
@@ -192,7 +192,7 @@ module chi_tb_top;
   int chi_link_activation_timeout_cycles;
   int chi_link_deactivation_timeout_cycles;
 
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
     rni_sva (.vif(rni_if),
       .checks_enable((rni_if.txlinkactivereq === 1'b1) || (rni_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -200,7 +200,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
     snf_sva (.vif(snf_if),
       .checks_enable((snf_if.txlinkactivereq === 1'b1) || (snf_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -208,7 +208,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
     rni_e_sva (.vif(chi_e_wide_rni_if),
       .checks_enable((chi_e_wide_rni_if.txlinkactivereq === 1'b1) || (chi_e_wide_rni_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -216,7 +216,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
     snf_e_sva (.vif(chi_e_wide_snf_if),
       .checks_enable((chi_e_wide_snf_if.txlinkactivereq === 1'b1) || (chi_e_wide_snf_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -249,7 +249,7 @@ module chi_tb_top;
   // Unconditional now. If a future top does make this cost real, gate it on
   // something the vacuity report can see, not on a define whose absence is
   // indistinguishable from a pass.
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_rnf0_sva (.vif(coh_rnf0_if),
       .checks_enable((coh_rnf0_if.txlinkactivereq === 1'b1) || (coh_rnf0_if.rxlinkactivereq === 1'b1)),
@@ -258,7 +258,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_rnf1_sva (.vif(coh_rnf1_if),
       .checks_enable((coh_rnf1_if.txlinkactivereq === 1'b1) || (coh_rnf1_if.rxlinkactivereq === 1'b1)),
@@ -267,7 +267,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_e_rnf0_sva (.vif(coh_e_rnf0_if),
       .checks_enable((coh_e_rnf0_if.txlinkactivereq === 1'b1) || (coh_e_rnf0_if.rxlinkactivereq === 1'b1)),
@@ -276,7 +276,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E),
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_e_rnf1_sva (.vif(coh_e_rnf1_if),
       .checks_enable((coh_e_rnf1_if.txlinkactivereq === 1'b1) || (coh_e_rnf1_if.rxlinkactivereq === 1'b1)),
@@ -291,8 +291,8 @@ module chi_tb_top;
   // The HN-F endpoint carried only vip_chi_snp_sva, which has no TXSACTIVE
   // property, so the sideband of the one role that gets it wrong was watched
   // from neither direction: the RN-F bind opposite judges its OWN txsactive, on
-  // a different interface. F-CORR-005 named both endpoints and had evidence for
-  // neither, because neither was bound.
+  // a different interface. Neither endpoint had evidence for it, because neither
+  // was bound.
   //
   // ENABLE_COMPLETION_TIMEOUT_P is 1'b0 for the same reason the RN-F binds pass
   // it: on a coherent link the completion the timeout waits for is not paired
@@ -303,7 +303,7 @@ module chi_tb_top;
   // sideband never dropped and the rule reported a signal carrying no
   // information, correctly. The driver now drives it from a counted window with
   // a single owner, so the rule has something real to judge and judges it.
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_hnf0_sva (.vif(coh_hnf0_if),
       .checks_enable((coh_hnf0_if.txlinkactivereq === 1'b1) || (coh_hnf0_if.rxlinkactivereq === 1'b1)),
@@ -312,7 +312,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_hnf1_sva (.vif(coh_hnf1_if),
       .checks_enable((coh_hnf1_if.txlinkactivereq === 1'b1) || (coh_hnf1_if.rxlinkactivereq === 1'b1)),
@@ -321,7 +321,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_e_hnf0_sva (.vif(coh_e_hnf0_if),
       .checks_enable((coh_e_hnf0_if.txlinkactivereq === 1'b1) || (coh_e_hnf0_if.rxlinkactivereq === 1'b1)),
@@ -330,7 +330,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E),
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E),
                 .ENABLE_COMPLETION_TIMEOUT_P(1'b0))
     coh_e_hnf1_sva (.vif(coh_e_hnf1_if),
       .checks_enable((coh_e_hnf1_if.txlinkactivereq === 1'b1) || (coh_e_hnf1_if.rxlinkactivereq === 1'b1)),
@@ -343,30 +343,30 @@ module chi_tb_top;
   // SNP-channel protocol checker on the coherent RN-F / HN-F links. Role-agnostic:
   // the HN-F side exercises the txsnp send-credit shadow, the RN-F side the rxsnp
   // receive shadow. Same x-safe link-active gate as the REQ/RSP/DAT binds above.
-  vip_chi_snp_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E))
+  vip_chi_snp_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E))
     coh_hnf0_snp_sva (.vif(coh_hnf0_if),
       .checks_enable((coh_hnf0_if.txlinkactivereq === 1'b1) || (coh_hnf0_if.rxlinkactivereq === 1'b1)));
-  vip_chi_snp_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E))
+  vip_chi_snp_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E))
     coh_hnf1_snp_sva (.vif(coh_hnf1_if),
       .checks_enable((coh_hnf1_if.txlinkactivereq === 1'b1) || (coh_hnf1_if.rxlinkactivereq === 1'b1)));
-  vip_chi_snp_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E))
+  vip_chi_snp_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E))
     coh_rnf0_snp_sva (.vif(coh_rnf0_if),
       .checks_enable((coh_rnf0_if.txlinkactivereq === 1'b1) || (coh_rnf0_if.rxlinkactivereq === 1'b1)));
-  vip_chi_snp_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E))
+  vip_chi_snp_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E))
     coh_rnf1_snp_sva (.vif(coh_rnf1_if),
       .checks_enable((coh_rnf1_if.txlinkactivereq === 1'b1) || (coh_rnf1_if.rxlinkactivereq === 1'b1)));
 
   // Same SNP-channel checker on the CHI-E coherent links.
-  vip_chi_snp_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E))
+  vip_chi_snp_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E))
     coh_e_hnf0_snp_sva (.vif(coh_e_hnf0_if),
       .checks_enable((coh_e_hnf0_if.txlinkactivereq === 1'b1) || (coh_e_hnf0_if.rxlinkactivereq === 1'b1)));
-  vip_chi_snp_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNF_E))
+  vip_chi_snp_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNF_E))
     coh_e_hnf1_snp_sva (.vif(coh_e_hnf1_if),
       .checks_enable((coh_e_hnf1_if.txlinkactivereq === 1'b1) || (coh_e_hnf1_if.rxlinkactivereq === 1'b1)));
-  vip_chi_snp_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E))
+  vip_chi_snp_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E))
     coh_e_rnf0_snp_sva (.vif(coh_e_rnf0_if),
       .checks_enable((coh_e_rnf0_if.txlinkactivereq === 1'b1) || (coh_e_rnf0_if.rxlinkactivereq === 1'b1)));
-  vip_chi_snp_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNF_E))
+  vip_chi_snp_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNF_E))
     coh_e_rnf1_snp_sva (.vif(coh_e_rnf1_if),
       .checks_enable((coh_e_rnf1_if.txlinkactivereq === 1'b1) || (coh_e_rnf1_if.rxlinkactivereq === 1'b1)));
 
@@ -374,10 +374,10 @@ module chi_tb_top;
   // ---------------------------------------------------------------------------
   // HN-I proxy topology: both ends of all four links, per issue.
   //
-  // These sixteen interfaces carried no checker at all until box 0.3 -- not a
+  // These sixteen interfaces carried no checker at all until -- not a
   // disabled one, none -- across twelve testcases including hni_backpressure and
   // hni_reset, which are testcases ABOUT credit and reset behavior running on
-  // links where no credit or reset rule was checked. (F-CHK-004.)
+  // links where no credit or reset rule was checked.
   //
   // Both ends of each link, not one, and that is a decision rather than a copy of
   // the integrated pair above. A link's two interfaces are two views of the same
@@ -402,7 +402,7 @@ module chi_tb_top;
   // backpressure makes it fire, that is a measurement worth having rather than a
   // reason to switch it off in advance.
   // ---------------------------------------------------------------------------
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
     hni_rni0_sva (.vif(hni_rni0_if),
       .checks_enable((hni_rni0_if.txlinkactivereq === 1'b1) || (hni_rni0_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -410,7 +410,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E),
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_HNI_E),
                 .TXSACTIVE_FROM_LINK_UP_P(1'b1))
     hni_rn0_sva (.vif(hni_rn0_if),
       .checks_enable((hni_rn0_if.txlinkactivereq === 1'b1) || (hni_rn0_if.rxlinkactivereq === 1'b1)),
@@ -419,8 +419,8 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
-                .TXSACTIVE_FROM_LINK_UP_P(1'b1), .MULTI_SOURCE_LINK_P(1'b1))
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1),.MULTI_SOURCE_LINK_P(1'b1))
     hni_sn0_sva (.vif(hni_sn0_if),
       .checks_enable((hni_sn0_if.txlinkactivereq === 1'b1) || (hni_sn0_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -428,7 +428,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E),
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E),
                 .MULTI_SOURCE_LINK_P(1'b1))
     hni_snf0_sva (.vif(hni_snf0_if),
       .checks_enable((hni_snf0_if.txlinkactivereq === 1'b1) || (hni_snf0_if.rxlinkactivereq === 1'b1)),
@@ -437,7 +437,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
     hni_rni1_sva (.vif(hni_rni1_if),
       .checks_enable((hni_rni1_if.txlinkactivereq === 1'b1) || (hni_rni1_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -445,7 +445,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E),
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_HNI_E),
                 .TXSACTIVE_FROM_LINK_UP_P(1'b1))
     hni_rn1_sva (.vif(hni_rn1_if),
       .checks_enable((hni_rn1_if.txlinkactivereq === 1'b1) || (hni_rn1_if.rxlinkactivereq === 1'b1)),
@@ -454,8 +454,8 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
-                .TXSACTIVE_FROM_LINK_UP_P(1'b1), .MULTI_SOURCE_LINK_P(1'b1))
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1),.MULTI_SOURCE_LINK_P(1'b1))
     hni_sn1_sva (.vif(hni_sn1_if),
       .checks_enable((hni_sn1_if.txlinkactivereq === 1'b1) || (hni_sn1_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -463,7 +463,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E),
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E),
                 .MULTI_SOURCE_LINK_P(1'b1))
     hni_snf1_sva (.vif(hni_snf1_if),
       .checks_enable((hni_snf1_if.txlinkactivereq === 1'b1) || (hni_snf1_if.rxlinkactivereq === 1'b1)),
@@ -472,7 +472,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
     e_hni_rni0_sva (.vif(e_hni_rni0_if),
       .checks_enable((e_hni_rni0_if.txlinkactivereq === 1'b1) || (e_hni_rni0_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -480,7 +480,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E),
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNI_E),
                 .TXSACTIVE_FROM_LINK_UP_P(1'b1))
     e_hni_rn0_sva (.vif(e_hni_rn0_if),
       .checks_enable((e_hni_rn0_if.txlinkactivereq === 1'b1) || (e_hni_rn0_if.rxlinkactivereq === 1'b1)),
@@ -489,8 +489,8 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
-                .TXSACTIVE_FROM_LINK_UP_P(1'b1), .MULTI_SOURCE_LINK_P(1'b1))
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1),.MULTI_SOURCE_LINK_P(1'b1))
     e_hni_sn0_sva (.vif(e_hni_sn0_if),
       .checks_enable((e_hni_sn0_if.txlinkactivereq === 1'b1) || (e_hni_sn0_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -498,7 +498,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E),
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E),
                 .MULTI_SOURCE_LINK_P(1'b1))
     e_hni_snf0_sva (.vif(e_hni_snf0_if),
       .checks_enable((e_hni_snf0_if.txlinkactivereq === 1'b1) || (e_hni_snf0_if.rxlinkactivereq === 1'b1)),
@@ -507,7 +507,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E))
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
     e_hni_rni1_sva (.vif(e_hni_rni1_if),
       .checks_enable((e_hni_rni1_if.txlinkactivereq === 1'b1) || (e_hni_rni1_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -515,7 +515,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_HNI_E),
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_HNI_E),
                 .TXSACTIVE_FROM_LINK_UP_P(1'b1))
     e_hni_rn1_sva (.vif(e_hni_rn1_if),
       .checks_enable((e_hni_rn1_if.txlinkactivereq === 1'b1) || (e_hni_rn1_if.rxlinkactivereq === 1'b1)),
@@ -524,8 +524,8 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
-                .TXSACTIVE_FROM_LINK_UP_P(1'b1), .MULTI_SOURCE_LINK_P(1'b1))
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E),
+                .TXSACTIVE_FROM_LINK_UP_P(1'b1),.MULTI_SOURCE_LINK_P(1'b1))
     e_hni_sn1_sva (.vif(e_hni_sn1_if),
       .checks_enable((e_hni_sn1_if.txlinkactivereq === 1'b1) || (e_hni_sn1_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -533,7 +533,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E),
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E),
                 .MULTI_SOURCE_LINK_P(1'b1))
     e_hni_snf1_sva (.vif(e_hni_snf1_if),
       .checks_enable((e_hni_snf1_if.txlinkactivereq === 1'b1) || (e_hni_snf1_if.rxlinkactivereq === 1'b1)),
@@ -553,10 +553,10 @@ module chi_tb_top;
   //
   // The HN-F's SN-facing port drives TXSACTIVE from sn_link_up, the same shape
   // the HN-I uses on both its sides, so the same stand-down applies. Both are
-  // F-CORR-005 (box 1.6), which named HN-F and HN-I together and had no evidence
+  //, which named HN-F and HN-I together and had no evidence
   // for either because neither endpoint was bound.
   // ---------------------------------------------------------------------------
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E),
                 .TXSACTIVE_FROM_LINK_UP_P(1'b1))
     coh_hnf0_sn_sva (.vif(coh_hnf0_sn_if),
       .checks_enable((coh_hnf0_sn_if.txlinkactivereq === 1'b1) || (coh_hnf0_sn_if.rxlinkactivereq === 1'b1)),
@@ -565,7 +565,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C), .FLIT_TYPES_T(chi_d_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
     coh_dsnf0_sva (.vif(coh_dsnf0_if),
       .checks_enable((coh_dsnf0_if.txlinkactivereq === 1'b1) || (coh_dsnf0_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -573,7 +573,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E),
                 .TXSACTIVE_FROM_LINK_UP_P(1'b1))
     coh_e_hnf0_sn_sva (.vif(coh_e_hnf0_sn_if),
       .checks_enable((coh_e_hnf0_sn_if.txlinkactivereq === 1'b1) || (coh_e_hnf0_sn_if.rxlinkactivereq === 1'b1)),
@@ -582,7 +582,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C), .FLIT_TYPES_T(chi_e_wide_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E))
+  vip_chi_sva #(.CFG_P(CHI_E_WIDE_CFG_C),.FLIT_TYPES_T(chi_e_wide_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E))
     coh_e_dsnf0_sva (.vif(coh_e_dsnf0_if),
       .checks_enable((coh_e_dsnf0_if.txlinkactivereq === 1'b1) || (coh_e_dsnf0_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),
@@ -606,7 +606,7 @@ module chi_tb_top;
   // 7-bit node IDs, 32-byte data bus -- so it is the one link here where the
   // mistake is easy to make.
   // ---------------------------------------------------------------------------
-  vip_chi_sva #(.CFG_P(CHI_A0_CFG_C), .FLIT_TYPES_T(chi_a0_types_t), .ROLE_P(VIP_CHI_ROLE_RNI_E),
+  vip_chi_sva #(.CFG_P(CHI_A0_CFG_C),.FLIT_TYPES_T(chi_a0_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E),
                 .HAND_DRIVEN_LINK_P(1'b1))
     a0_rni_sva (.vif(a0_rni_if),
       .checks_enable((a0_rni_if.txlinkactivereq === 1'b1) || (a0_rni_if.rxlinkactivereq === 1'b1)),
@@ -615,7 +615,7 @@ module chi_tb_top;
       .txsactive_extend_max_cycles(chi_txsactive_extend_max_cycles),
       .link_activation_timeout_cycles(chi_link_activation_timeout_cycles),
       .link_deactivation_timeout_cycles(chi_link_deactivation_timeout_cycles));
-  vip_chi_sva #(.CFG_P(CHI_A0_CFG_C), .FLIT_TYPES_T(chi_a0_types_t), .ROLE_P(VIP_CHI_ROLE_SNF_E),
+  vip_chi_sva #(.CFG_P(CHI_A0_CFG_C),.FLIT_TYPES_T(chi_a0_types_t),.ROLE_P(VIP_CHI_ROLE_SNF_E),
                 .HAND_DRIVEN_LINK_P(1'b1))
     a0_snf_sva (.vif(a0_snf_if),
       .checks_enable((a0_snf_if.txlinkactivereq === 1'b1) || (a0_snf_if.rxlinkactivereq === 1'b1)),
@@ -685,34 +685,34 @@ module chi_tb_top;
   // traffic, so its interfaces carry idle. (The integrated link is a plain
   // adapter too -- credit starvation is exercised through the RN-I driver's
   // cfg.hold_dat_credit, not a harness wire pinch.)
-  chi_link_adapter int_link     (.rn(rni_if),      .sn(snf_if));
-  chi_link_adapter a0_link      (.rn(a0_rni_if),   .sn(a0_snf_if));
-  chi_link_adapter hni_rn0_link (.rn(hni_rni0_if), .sn(hni_rn0_if));
-  chi_link_adapter hni_rn1_link (.rn(hni_rni1_if), .sn(hni_rn1_if));
-  chi_link_adapter hni_sn0_link (.rn(hni_sn0_if),  .sn(hni_snf0_if));
-  chi_link_adapter hni_sn1_link (.rn(hni_sn1_if),  .sn(hni_snf1_if));
-  chi_link_adapter e_wide_link  (.rn(chi_e_wide_rni_if), .sn(chi_e_wide_snf_if));
+  chi_link_adapter int_link     (.rn(rni_if),.sn(snf_if));
+  chi_link_adapter a0_link      (.rn(a0_rni_if),.sn(a0_snf_if));
+  chi_link_adapter hni_rn0_link (.rn(hni_rni0_if),.sn(hni_rn0_if));
+  chi_link_adapter hni_rn1_link (.rn(hni_rni1_if),.sn(hni_rn1_if));
+  chi_link_adapter hni_sn0_link (.rn(hni_sn0_if),.sn(hni_snf0_if));
+  chi_link_adapter hni_sn1_link (.rn(hni_sn1_if),.sn(hni_snf1_if));
+  chi_link_adapter e_wide_link  (.rn(chi_e_wide_rni_if),.sn(chi_e_wide_snf_if));
 
   // Wide CHI-E HN-I proxy links (requester leaf <-> proxy RN-facing port, and
   // proxy SN-facing port <-> responder leaf). The link adapter is unparameterized
   // so the same instance serves the wide CHI-E flit shapes.
-  chi_link_adapter e_hni_rn0_link (.rn(e_hni_rni0_if), .sn(e_hni_rn0_if));
-  chi_link_adapter e_hni_rn1_link (.rn(e_hni_rni1_if), .sn(e_hni_rn1_if));
-  chi_link_adapter e_hni_sn0_link (.rn(e_hni_sn0_if),  .sn(e_hni_snf0_if));
-  chi_link_adapter e_hni_sn1_link (.rn(e_hni_sn1_if),  .sn(e_hni_snf1_if));
+  chi_link_adapter e_hni_rn0_link (.rn(e_hni_rni0_if),.sn(e_hni_rn0_if));
+  chi_link_adapter e_hni_rn1_link (.rn(e_hni_rni1_if),.sn(e_hni_rn1_if));
+  chi_link_adapter e_hni_sn0_link (.rn(e_hni_sn0_if),.sn(e_hni_snf0_if));
+  chi_link_adapter e_hni_sn1_link (.rn(e_hni_sn1_if),.sn(e_hni_snf1_if));
 
   // Isolated coherent RN-F <-> HN-F links. The RN-F is the requester (rn), the
   // HN-F the completer (sn); the adapter cross-wires the SNP channel too.
-  chi_link_adapter coh_link0 (.rn(coh_rnf0_if), .sn(coh_hnf0_if));
-  chi_link_adapter coh_link1 (.rn(coh_rnf1_if), .sn(coh_hnf1_if));
+  chi_link_adapter coh_link0 (.rn(coh_rnf0_if),.sn(coh_hnf0_if));
+  chi_link_adapter coh_link1 (.rn(coh_rnf1_if),.sn(coh_hnf1_if));
   // Downstream HN-F <-> SN-F link (HN-F is the requester side).
-  chi_link_adapter coh_dsn_link (.rn(coh_hnf0_sn_if), .sn(coh_dsnf0_if));
+  chi_link_adapter coh_dsn_link (.rn(coh_hnf0_sn_if),.sn(coh_dsnf0_if));
 
   // CHI-E coherent links.
-  chi_link_adapter coh_e_link0 (.rn(coh_e_rnf0_if), .sn(coh_e_hnf0_if));
-  chi_link_adapter coh_e_link1 (.rn(coh_e_rnf1_if), .sn(coh_e_hnf1_if));
+  chi_link_adapter coh_e_link0 (.rn(coh_e_rnf0_if),.sn(coh_e_hnf0_if));
+  chi_link_adapter coh_e_link1 (.rn(coh_e_rnf1_if),.sn(coh_e_hnf1_if));
   // Downstream HN-F <-> SN-F link (CHI-E parity).
-  chi_link_adapter coh_e_dsn_link (.rn(coh_e_hnf0_sn_if), .sn(coh_e_dsnf0_if));
+  chi_link_adapter coh_e_dsn_link (.rn(coh_e_hnf0_sn_if),.sn(coh_e_dsnf0_if));
 
   // --- Interface handoff to the agents + run_test() ---------------------------
   initial begin

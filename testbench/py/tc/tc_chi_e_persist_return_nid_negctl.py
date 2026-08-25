@@ -9,7 +9,7 @@
 #
 # pyUVM/cocotb port of tc/tc_chi_e_persist_return_nid_negctl.sv.
 #
-# The negative control for CHI_SB_RSP_TGTID_CORRECT (F-CORR-012).
+# The negative control for CHI_SB_RSP_TGTID_CORRECT.
 #
 # cfg.snf_persist_target_srcid_negctl makes the completer address a PCMO's
 # Persist at the request's SrcID instead of its ReturnNID -- which is exactly

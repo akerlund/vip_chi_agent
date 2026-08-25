@@ -181,7 +181,7 @@ class chi_e_proxy_tb_env extends uvm_env;
 
     this.scoreboard.report_checks();
 
-    // The eight SVA binds this env owns, added with box 0.3. Before it, a grep
+    // The eight SVA binds this env owns, added. A grep
     // for chi_check_export_csv in this file returned zero: not a disabled
     // checker, no checker and no rows, on twelve testcases' worth of links.
     chi_check_export_csv("e_hni_rni0_sva", CHI_CHECK_SCOPE_MAIN_E,

@@ -26,7 +26,7 @@
 // grant adds to what was held" -- the two agree on every from-Invalid row of
 // Table 4-14. That is what let the held-state half of the table go missing with
 // a fully green regression and a closed transition covergroup behind it
-// (F-INTOP-009). The rows that separate the two are the ones where the grant is
+//. The rows that separate the two are the ones where the grant is
 // WEAKER than what the Requester already had: a UD holder issuing ReadClean is
 // granted CompData_SC and must stay UD.
 //
@@ -304,7 +304,7 @@ class chi_coh_transition_sweep_base_test #(
     end
 
     // -------------------------------------------------------------------------
-    // The requester axis (F-INTOP-009). Same three-part discipline as D5/D6
+    // The requester axis. Same three-part discipline as D5/D6
     // above: the rule ran, it ran on the inputs that distinguish it, and nothing
     // it judged was illegal.
     //

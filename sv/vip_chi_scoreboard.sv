@@ -338,7 +338,7 @@ class vip_chi_scoreboard #(
   //
   // It lives on the scoreboard rather than on the config agent because it is
   // checker policy, not driver behaviour: no driver reads it, and a config knob
-  // nothing reads is the shape F-CHK-014 was about.
+  // nothing reads is a knob that does nothing.
   //
   // Default 1, because that is what the VIP does. A test clears it to take the
   // stand-in away and see the departure reported -- an exemption nothing can
@@ -597,7 +597,7 @@ class vip_chi_scoreboard #(
   // can be satisfied by a flow no node in Appendix B is allowed to emit. That is
   // how ReadNoSnpSep-from-an-RN-I and RespSepData-from-an-SN-F survived: the
   // only party judging them was the VIP's own completer, which answered what it
-  // was asked. See F-CORR-013.
+  // was asked.
   //
   // Three outcomes, and the third is why the counters are separate:
   //
@@ -750,7 +750,7 @@ class vip_chi_scoreboard #(
         // Home only after receiving ReadNoSnpSep." That is the Slave's own owed
         // response, not an ordering courtesy, and gating it on ctx.ordered is
         // why a non-ordered separated read used to complete without one. See
-        // F-CORR-013.
+        //.
         if (ctx.ordered ||
             (VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opc) ==
              VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(VIP_CHI_REQ_READ_NO_SNP_SEP_C))) begin
@@ -981,7 +981,7 @@ class vip_chi_scoreboard #(
     // PGroupID is not a field: 13.10.8 gives it as an equation over GroupIDExt
     // and LPID, and 13.10.7 sends it back in the bits Table 13-7 calls DBID.
     // Recorded here so the responses have something to be compared against --
-    // without it the reflection is unobservable, which is the state F-INTOP-010
+    // without it the reflection is unobservable.
     // found both ports in.
     if (vip_chi_types_pkg::vip_chi_req_pgroup_id_applicable(item.opcode)) begin
       ctx.has_pgroup = 1'b1;
@@ -993,7 +993,7 @@ class vip_chi_scoreboard #(
     // only for the separated read that first needed it. IHI 0050 E 2.8 routes a
     // PCMO's Persist by the same field, so a scoreboard that only remembered it
     // for reads had nothing to compare that Persist's TgtID against -- which is
-    // half of why F-CORR-012 went unnoticed.
+    // half of why it went unnoticed.
     //
     // The Python port recorded it here and this one did not, so on a Combined
     // Write + CleanSharedPersistSep with DoDWT = 0 neither branch below fired
@@ -1171,7 +1171,7 @@ class vip_chi_scoreboard #(
       // the CMO in the request is a PCMO." Nothing in either port checked the
       // TgtID of any response before this, on any channel, which is why a
       // completer addressing the Persist at SrcID went unnoticed -- in the
-      // example topology the two are the same node. See F-CORR-012.
+      // example topology the two are the same node.
       // IHI 0050 E 2.8 is titled "Slave response to a Combined Write
       // transaction" and it is that clause which names ReturnNID, so the rule
       // is applied to the Persist answering a COMBINED WRITE + PCMO and to
@@ -1179,7 +1179,7 @@ class vip_chi_scoreboard #(
       // and every such request in this tree leaves ReturnNID at zero -- reading
       // 13.10.4's general sentence as normative there would demand the Persist
       // go to node 0 and would false-fail traffic no clause plainly forbids.
-      // Recorded on F-CORR-012 rather than decided in passing.
+      // Recorded on rather than decided in passing.
       persist_tgt_expected =
         vip_chi_types_pkg::vip_chi_req_opcode_combined_cmo_is_persist(
           vip_chi_req_opcode_t'(ctx.opcode)) ? ctx.return_nid
@@ -1305,7 +1305,7 @@ class vip_chi_scoreboard #(
         // third, separate response and is NOT folded in -- ticking comp_seen
         // here would retire a write whose completion had not arrived, and leave
         // comp_cmo_seen false so the request was reported incomplete anyway.
-        // Found while giving F-INTOP-008's requester something legal to accept.
+        // Found while giving the requester something legal to accept.
         if (vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
               ctx.opcode)) begin
           ctx.comp_cmo_seen = 1'b1;
@@ -2119,7 +2119,7 @@ class vip_chi_scoreboard #(
     // code. It warned on a >1h age gap, which caught the case that had actually
     // happened twice -- but age is the wrong measurement: it misses two sweeps
     // run minutes apart across a rebuild, and it false-positives on a
-    // deliberately archived comparison. See F-CHK-011.
+    // deliberately archived comparison.
     //
     // Passed in as a plusarg because SystemVerilog has no portable getenv, and
     // shelling out from the simulator to ask git would be a worse dependency

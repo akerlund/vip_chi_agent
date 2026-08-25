@@ -481,7 +481,7 @@ takes the grant away and makes the checker report the departure, which is what
 `tc_chi_e_sep_read_negctl` phase 2 asserts. Earlier versions of this VIP had the
 completer answer with `RespSepData` — a Home-only response emitted by a Slave —
 and nothing could see it, because the only party judging the flow was the VIP's
-own completer. See F-CORR-013.
+own completer.
 
 ### 13.3 Non-snooping write — `WriteNoSnpFull` / `WriteNoSnpPtl`
 

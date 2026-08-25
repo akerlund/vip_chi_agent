@@ -54,7 +54,7 @@
 // the per-ID enable/severity array already models, so no rule in this file can
 // be switched off by elaboration.
 //
-// That is the only reason F-CHK-010 does not apply here. That finding is about
+// That is the only reason does not apply here. That finding is about
 // exactly this: `check_enabled` doubles as the ownership record -- "an ID left
 // false is either switched off or belongs to a bind this interface does not
 // carry" -- and it records the RUNTIME array, not the parameters. A property

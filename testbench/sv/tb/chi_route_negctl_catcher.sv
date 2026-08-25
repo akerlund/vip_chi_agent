@@ -1,8 +1,8 @@
 // A requester refusing a response it was not owed.
 //
 // Three negative controls provoke the same shape: the completer sends a
-// response the requester is not expecting -- at the wrong address (F-CORR-012,
-// both limbs) or satisfying no outstanding obligation (F-INTOP-008) -- and the
+// response the requester is not expecting -- at the wrong address ( ,
+// both limbs) or satisfying no outstanding obligation -- and the
 // requester, which knows what it asked for, refuses it with a `uvm_fatal. The
 // refusal is the correct behaviour and the point of the control, so it is
 // demoted here and counted, exactly as chi_scoreboard_negctl_catcher does for

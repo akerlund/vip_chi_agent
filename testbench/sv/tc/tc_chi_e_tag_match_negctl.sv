@@ -23,7 +23,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 //
-// The NEGATIVE control for CHI_SB_TAG_MATCH_OWED (F-COV-001).
+// The NEGATIVE control for CHI_SB_TAG_MATCH_OWED.
 //
 // cfg.snf_tag_match_unrequested_negctl makes the completer answer whether or not
 // the data asked, and this testcase drives a write whose data carries

@@ -23,7 +23,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 //
-// The negative control for the combined-write obligation set (F-INTOP-008).
+// The negative control for the combined-write obligation set.
 //
 // Replacing a fixed completion sequence with an obligation set buys tolerance of
 // ORDER. It must not buy tolerance of anything at all, and the difference is not

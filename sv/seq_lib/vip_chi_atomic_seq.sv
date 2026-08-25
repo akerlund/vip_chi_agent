@@ -80,7 +80,7 @@ class vip_chi_atomic_seq #(
   endtask
 
   // ---------------------------------------------------------------------------
-  // §22 L7 decision, INVERTED by F-CORR-008: atomic Size is clamped to IHI 0050
+  // §22 L7 decision, since INVERTED: atomic Size is clamped to IHI 0050
   // E Table 2-17 / D Table 2-17 by default, and the wide-operand stress profile
   // is what a sequence has to ask for.
   //
@@ -102,9 +102,8 @@ class vip_chi_atomic_seq #(
   // (Size 0..3), and 2 to 32 bytes for AtomicCompare (Size 1..5). A full bus-beat
   // operand is above the ordinary limit on every geometry in this testbench, so
   // every request this sequence issues at the default Size carries a Size the
-  // specification does not list for its opcode. That was invisible until
-  // CHI_ATOMIC_SIZE_LEGAL existed; it now reports, at both ends of every link the
-  // request crosses.
+  // specification does not list for its opcode, and CHI_ATOMIC_SIZE_LEGAL reports
+  // it at both ends of every link the request crosses.
   //
   // The five testcases holding this profile therefore turn the rule down to
   // VIP_CHI_CHK_SEV_OFF_E on the links they drive, and then REQUIRE that it fired.

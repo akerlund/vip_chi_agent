@@ -1021,7 +1021,7 @@ class vip_chi_driver_rni(uvm_driver):
           # only, and section 2.3.1 makes ReadReceipt the response the Slave
           # owes -- so on this link, where this requester is the Home stand-in,
           # ReadReceipt is what arrives. It arrives for every separated read,
-          # ordered or not. See F-CORR-013.
+          # ordered or not.
           if (self.req_expects_read_receipt(req)
               or _I(req.opcode) == int(ReqOpcode.READ_NO_SNP_SEP)):
             await self.collect_read_receipt(req)
@@ -1252,7 +1252,7 @@ class vip_chi_driver_rni(uvm_driver):
     reject_rule routes the mismatch through reject() instead of raising, so a
     negative control can record the refusal and let the run continue -- the
     same treatment wait_for_standalone_persist_rsp gets, and the behaviour of a
-    demoted `uvm_fatal in the SV twin (F-CHK-003). It is passed only by the
+    demoted `uvm_fatal in the SV twin. It is passed only by the
     callers that have a control aimed at them; everywhere else a completion on
     the wrong TxnID is still a hard stop, because nothing downstream of here
     can make sense of a flit that belongs to another transaction.
@@ -1273,12 +1273,12 @@ class vip_chi_driver_rni(uvm_driver):
     routes a PCMO's Persist to ReturnNID, so that is where the requester looks
     for it, and not at its own SrcID. The two are the same node whenever a
     requester wants its own Persist back, which is why reading SrcID here worked
-    for as long as nothing set ReturnNID to anything else. See F-CORR-012.
+    for as long as nothing set ReturnNID to anything else.
 
     A route mismatch goes through reject() rather than raise, so a negative
     control can record the refusal instead of dying on it -- the same treatment
     the completion-form mismatch in collect_persist_sep_completion gets, and the
-    behaviour of a demoted `uvm_fatal in the SV twin (F-CHK-003).
+    behaviour of a demoted `uvm_fatal in the SV twin.
     """
     flit = await self.take_rsp_flit()
     self.check_persist_route(flit, expect_tgt_id, req_tgt_id)
@@ -1376,7 +1376,6 @@ class vip_chi_driver_rni(uvm_driver):
     Stepped over rather than collected into a milestone, deliberately: the
     scoreboard is what judges TagMatch, and it sees every RSP the monitor does.
     Adding a second observer here would only give the same fact two owners.
-    See F-COV-001.
     """
     while True:
       flit = await self.wait_for_matching_rsp(_I(req.txn_id))
@@ -1434,7 +1433,7 @@ class vip_chi_driver_rni(uvm_driver):
 
     The scoreboard already models it this way -- need_comp_cmo / comp_cmo_seen
     are flags, not a sequence -- so the driver was stricter than the checker
-    behind it. See F-INTOP-008.
+    behind it.
 
     An opcode that satisfies no OUTSTANDING obligation is still refused, and
     that is the whole strictness this keeps: tolerance of order is not tolerance
@@ -1564,7 +1563,7 @@ class vip_chi_driver_rni(uvm_driver):
       # reject() rather than raise: with no expectation armed it raises exactly
       # as before, and inside an expect_rejection scope it records and returns so
       # a negative control can prove the refusal happened -- the behaviour of a
-      # demoted `uvm_fatal in the SV twin. See py/vip_chi_reject.py (F-CHK-003).
+      # demoted `uvm_fatal in the SV twin. See py/vip_chi_reject.py.
       reject("PERSIST_SEP_FIRST_COMPLETION",
              f"[{self.get_name()}] PersistSep first completion opcode "
              f"0x{flit['opcode']:x} was neither Comp nor CompPersist")
@@ -1722,7 +1721,7 @@ class vip_chi_driver_rni(uvm_driver):
     dispatching on the opcode, the serial path only for the ones it consumes.
 
     One function for both, deliberately. Two paths each carrying their own copy
-    of "what to do with a PCrdGrant" is exactly how F-INTOP-006 happened: the
+    of "what to do with a PCrdGrant" is exactly how happened: the
     pipelined one banked by type and absorbed a reordered grant, the serial one
     did not, and nothing made them disagree visibly.
     """
@@ -1746,8 +1745,7 @@ class vip_chi_driver_rni(uvm_driver):
     anything else, so a conformant reordering interconnect produced a VIP crash
     reported as a DUT failure. The pipelined path in this same class already
     banked credits by type; the two paths are selected by cfg.max_outstanding_*,
-    which is not something a reader of section 2.11 would think to check. See
-    F-INTOP-006.
+    which is not something a reader of section 2.11 would think to check.
     """
     bus = self.bus
     if self.pcrd_pool.get(pcrd_type, 0) > 0:
@@ -1876,7 +1874,7 @@ class vip_chi_driver_rni(uvm_driver):
   # every outstanding transaction. The flit-scoped window the raw path gave it
   # was sound only while no raw-injectable opcode had a modeled completion --
   # which stopped being true when WriteUniqueZero was classified, and the
-  # comment saying so kept reading as settled. F-CORR-021.
+  # comment saying so kept reading as settled..
   #
   # The opcode is ASKED, not assumed, and it is asked of the same classifier the
   # checker uses -- vip_chi_types_pkg.req_has_modeled_completion -- so

@@ -17,15 +17,12 @@
 # AtomicSwap, so every one of those requests carries a Size the specification
 # does not list for it.
 #
-# Since F-CORR-008 the table is the DEFAULT and this profile is opt-in: each of
+# The table is the item's default, so driving those Sizes is deliberate: each of
 # those testcases calls set_atomic_oversized_operands(1) on the sequence that
-# drives it. The waiver below and that opt-in are two halves of one statement --
-# "this testcase drives out-of-spec Sizes on purpose" -- and if either is removed
-# the other fails: without the opt-in randomization is unsatisfiable, without the
-# waiver the rule reports at ERROR.
-#
-# That was invisible until CHI_ATOMIC_SIZE_LEGAL existed. Now it reports, and the
-# five testcases holding the stress profile have to say so.
+# drives it. That call and the waiver below are two halves of one statement --
+# "this testcase drives out-of-spec Sizes on purpose" -- and removing either
+# breaks the other: without the call randomization is unsatisfiable, without the
+# waiver CHI_ATOMIC_SIZE_LEGAL reports at ERROR.
 #
 # Two halves, and the second is the point:
 #

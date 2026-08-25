@@ -216,7 +216,7 @@ class vip_chi_item #(
   // atomic a plain randomize() produced was unconstrained and the VIP's default
   // stimulus was out of spec. A verification component whose default traffic
   // violates the protocol it checks is the wrong way for the switch to point --
-  // see F-CORR-008.
+  //
   //
   // The deviation is kept because it is load-bearing: the atomic testcases drive
   // a full bus-beat operand to exercise the operand DAT / RMW / return datapath
@@ -528,7 +528,7 @@ class vip_chi_item #(
   // zero otherwise, on every opcode and every TagOp alike. A write asking the
   // completer to Update tags while telling it, bit by bit, that none of them
   // should be updated is not a value a conformant Requester can send. See
-  // F-CORR-009.
+  //.
   //
   // A test that pinned TU through set_tu() keeps its pin -- custom_tu is what
   // post_randomize honours, and this leaves it alone.
@@ -1716,7 +1716,7 @@ class vip_chi_item #(
   // sent to. Forcing it to zero on a Combined Write therefore made the one
   // response 2.8 routes by ReturnNID -- the Persist answering a PCMO --
   // impossible to address correctly: no test could set the field, so no test
-  // could show the driver targeting it at SrcID instead. See F-CORR-012, whose
+  // could show the driver targeting it at SrcID instead. The finding on it notes
   // own tasks assume a stimulus this constraint did not permit.
   //
   // Zeroing is the only thing dropped. The VALUE still comes from the sequence,
@@ -1862,7 +1862,7 @@ class vip_chi_item #(
   // generator that produces requests a conformant completer has no defined
   // behaviour for, and the VIP's own SN-F would store the tag and the scoreboard
   // would predict it, so the regression confirmed the wrong model. See
-  // F-CORR-009.
+  //.
   //
   // Written as opcode groups rather than as a call to
   // vip_chi_req_tagop_permitted_mask(), because a function call in a constraint

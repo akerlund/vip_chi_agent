@@ -2,10 +2,10 @@
 """Every live link carries a checker, every checker reports, and the rules it
 cannot possibly evaluate are told apart from the ones nothing drove.
 
-This is the generalization of the defect F-CHK-002 and F-CHK-004 are two
-instances of, one level apart. F-CHK-002 was a bind that existed and was
+This is the generalization of the defect and are two
+instances of, one level apart. One is a bind that existed and was
 disabled: it still exported rows saying `enabled=0`, so the information was
-present and merely unread. F-CHK-004 was worse in the one way that matters --
+present and merely unread. That one is worse in the one way that matters --
 sixteen live interfaces with no bind at all, exporting nothing, across twelve
 testcases. `check_vacuity.py` aggregates over exported rows, and **an aggregation
 over rows cannot report the absence of rows**. A report covering the binds that
@@ -73,7 +73,7 @@ DEFAULT_CSV = ROOT / "build" / "sv_regression" / "check_tallies.csv"
 # Live interfaces that deliberately carry no bind. Each entry is a sentence
 # someone chose to write, not a flag someone flipped.
 WAIVED_INTERFACES = {
-  # (none today: box 0.3 bound every live link, including the A0 pair, which
+  # (none today: a later change bound every live link, including the A0 pair, which
   # takes a partial bind via HAND_DRIVEN_LINK_P rather than a waiver.)
 }
 
@@ -109,7 +109,7 @@ REQUESTER_VANTAGE_C = frozenset({
   # gives the completer one under TXSACTIVE signaling from an ICN interface to
   # an RN: hold the sideband "until after the final completing flit is sent or
   # received". So the rule is live at BOTH ends and belongs in neither vantage
-  # set. See F-CORR-005.
+  # set.
   #
   # This entry is why the gate fired when the checker's own gate came off -- the
   # table recorded the same wrong belief the checker did, in a second place.

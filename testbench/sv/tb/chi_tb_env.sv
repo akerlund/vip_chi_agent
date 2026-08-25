@@ -198,7 +198,7 @@ class chi_tb_env extends uvm_env;
       this.snf_agent.vif.check_enabled, this.snf_agent.vif.check_severity,
       this.snf_agent.vif.check_pass_count, this.snf_agent.vif.check_fail_count);
 
-    // The HN-I proxy topology's eight binds, added with box 0.3. Until then this
+    // The HN-I proxy topology's eight binds, added. Until then this
     // env exported two rows and owned ten interfaces, and an aggregation over
     // rows cannot report the absence of rows -- so the proxy links read as
     // covered by the two that were there. chi_check_report.svh's own header

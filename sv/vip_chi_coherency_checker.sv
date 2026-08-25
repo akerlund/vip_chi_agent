@@ -324,7 +324,7 @@ class vip_chi_coherency_checker #(
   // merely uncovered but structurally unreachable.
   //
   // The forbidden pairings are illegal_bins rather than uncovered bins, and that
-  // distinction is the whole point: F-CORR-014 was a snoopee answering
+  // distinction is the whole point: the defect it guards is a snoopee answering
   // SnpMakeInvalid with data, driven twice per run by a green test, recorded as
   // covered because the to-state beside it was correct. An uncovered bin is not
   // noticed; an illegal bin fails.
@@ -1528,7 +1528,7 @@ class vip_chi_coherency_checker #(
     // and SD is not Unique, so a shared snoop answered SD passes it. D6 bounds
     // the state by what the snoopee held, and an SD holder answering SD passes
     // that too. The bit is a third bound and it needed its own arm.
-    // See F-INTOP-002 and F-INTOP-007.
+    //
     // -------------------------------------------------------------------------
     if ((state == VIP_CHI_RESP_STATE_SD_PD_DIRTY_E) &&
         this.pending_snp_no_sd[node] &&

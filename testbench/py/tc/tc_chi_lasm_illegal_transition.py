@@ -163,7 +163,7 @@ class tc_chi_lasm_illegal_transition(chi_base_test):
     # inputs step out of the order the four orderings require -- and the
     # completer does NOT wait: its acknowledge, one cycle behind its own
     # request, rises in the middle of the race. That is a real gap in this VIP
-    # (F-CORR-025) and the count is pinned at 1 rather than waived, so the fix
+    # and the count is pinned at 1 rather than waived, so the fix
     # will show up here as this dropping to 0 and nowhere else.
     #
     # The requester reports NONE: its own inputs are the completer's two

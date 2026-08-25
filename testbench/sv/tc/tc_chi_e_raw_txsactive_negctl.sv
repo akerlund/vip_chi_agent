@@ -23,7 +23,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 //
-// The negative control for the raw path's TXSACTIVE window (F-CORR-021).
+// The negative control for the raw path's TXSACTIVE window.
 //
 // cfg.raw_req_txsactive_flit_scoped_negctl reverts the raw-injection path to the
 // window it used to have -- scoped to the injected flit, with nothing holding

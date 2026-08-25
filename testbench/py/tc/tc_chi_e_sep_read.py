@@ -7,7 +7,7 @@
 # The RSP leg used to be RespSepData, which Appendix B Table B-3 permits from a
 # Home only ("RespSepData is permitted from the Home only", section 2.3.1) --
 # this test asserts the whole RSP leg so a Home-only response reappearing on a
-# Slave's link fails here and not only in the scoreboard. See F-CORR-013.
+# Slave's link fails here and not only in the scoreboard.
 # Runs under: testbench/py/tb/chi_tb_top.py
 ################################################################################
 

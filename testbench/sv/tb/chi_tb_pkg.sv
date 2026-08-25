@@ -169,7 +169,7 @@ package chi_tb_pkg;
   // afterwards, and one address for all six would let a later form's data hide
   // an earlier form's dropped write. PACKAGE scope for the vcs1fe reason above.
   localparam item_e_t::addr_t    E_WRITE_CMO_ADDR_C   = item_e_t::addr_t'(52'h0012_3456_a000);
-  // Two addresses for the Persist-routing pair (F-CORR-012), clear of the
+  // Two addresses for the Persist-routing pair, clear of the
   // write-CMO block above so a readback there cannot see this traffic.
   localparam item_e_t::addr_t    E_PERSIST_RETURN_NID_ADDR_C = item_e_t::addr_t'(52'h0012_3456_b000);
   localparam item_e_t::addr_t    E_PERSIST_RETURN_NID_NEGCTL_ADDR_C = item_e_t::addr_t'(52'h0012_3456_b100);

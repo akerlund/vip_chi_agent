@@ -22,7 +22,7 @@
 # MPAM is checked at both settings of mpam_en. It is the one field whose width is
 # configuration-dependent, and no regression topology enables it, so a layout
 # test at mpam_en=False would leave the wide flit as unbuilt as it was when the
-# field was missing from the SNP flit altogether (F-CORR-011).
+# field was missing from the SNP flit altogether.
 #
 # Field order under test, LSB first, from IHI 0050 D Table 12-8 / E Table 13-8:
 #   QoS, SrcID, TxnID, FwdNID, FwdTxnID, Opcode, Addr, NS, DoNotGoToSD,

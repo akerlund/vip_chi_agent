@@ -2,7 +2,7 @@
 # pyUVM/cocotb port of tc/tc_chi_d_retry_grant_first.sv.
 #
 # The same retry flow as tc_chi_d_retry, with the two responses REORDERED: the
-# SN-F sends the PCrdGrant before the RetryAck it answers (F-INTOP-006).
+# SN-F sends the PCrdGrant before the RetryAck it answers.
 #
 # IHI 0050 E section 2.11 names this case and makes absorbing it mandatory:
 # "It is possible that a reordering interconnect can reorder the responses such

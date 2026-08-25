@@ -114,7 +114,7 @@ class tc_chi_e_sep_read extends chi_e_base_test;
     // only". What the Slave owes instead is the ReadReceipt, for every
     // ReadNoSnpSep and not only for ordered ones. Asserted here as well as in
     // the scoreboard so a Home-only response reappearing on a Slave's link fails
-    // at the point it is emitted. See F-CORR-013.
+    // at the point it is emitted.
     saw_read_receipt  = 1'b0;
     saw_resp_sep_data = 1'b0;
     while (super.tb_env.rni_rsp_fifo.try_get(obs)) begin

@@ -954,7 +954,7 @@ class vip_chi_driver_snf #(
     // Here as well as in the requesters because the knob reaching only some
     // drivers meant the rule was never shown to fire on the rest -- and which
     // drivers it reached differed between the two ports, which check_cfg_parity
-    // could not see because the config SURFACE matched. See F-CHK-014.
+    // could not see because the config SURFACE matched.
     if (this.cfg.flit_without_flitpend && !this.flit_without_pend_done) begin
       this.flit_without_pend_done = 1'b1;
       return;
@@ -1625,7 +1625,7 @@ class vip_chi_driver_snf #(
     // check_cfg_parity compares the config SURFACE, and a knob present in both
     // ports satisfies it whether or not either port acts on it. tc_chi_d_retry_-
     // grant_first is what found it, on the first sweep that ever ran it. See
-    // F-INTOP-006 and F-CHK-014.
+    // and.
     if (this.cfg.snf_pcrd_grant_before_ack) begin
       this.drive_rsp(pcrd_grant);
       this.drive_rsp(retry_ack);
@@ -1863,11 +1863,11 @@ class vip_chi_driver_snf #(
     //
     // req.snpattr IS the DoDWT bit where the classifier says so: REQ bit 17
     // carries one field or the other and the flit layout names it for the more
-    // common of the two (F-CORR-003).
+    // common of the two.
     dwt = vip_chi_types_pkg::vip_chi_req_dwt_grant_uses_return_path(
             CFG_P.ISSUE_P, vip_chi_req_opcode_t'(req.opcode), bit'(req.snpattr));
     if (dwt && this.cfg.snf_dwt_dbid_target_srcid_negctl) begin
-      // Negative control: keep the pre-F-CORR-012 addressing under DoDWT = 1.
+      // Negative control: keep the previous addressing under DoDWT = 1.
       dwt = 1'b0;
     end
     grant_tgt_id = dwt ? node_id_t'(req.returnnid)  : req_src_id;
@@ -2014,7 +2014,7 @@ class vip_chi_driver_snf #(
     // be sent after the associated request is received" -- and none at all
     // relative to the write's Comp. cfg.snf_cmo_before_write_comp takes the
     // other option, which exists so a requester that silently assumed the
-    // write-first order has something that breaks it. See F-INTOP-008.
+    // write-first order has something that breaks it.
     cmo_first = this.cfg.snf_cmo_before_write_comp &&
                 this.req_opcode_is_combined_write_cmo(req_opcode_t'(req.opcode));
     if (cmo_first) begin
@@ -2064,7 +2064,7 @@ class vip_chi_driver_snf #(
   // observable events are what a test can check an order between and the
   // combined encoding collapses exactly that evidence -- but a requester has to
   // accept both, so the completer has to be able to produce both. See
-  // F-INTOP-008, where the requester fatalled on an encoding this VIP could not
+  // The requester used to fatal on an encoding this VIP could not
   // then generate.
   // ---------------------------------------------------------------------------
   // Answer a Match-tagged write with TagMatch.
@@ -2078,7 +2078,7 @@ class vip_chi_driver_snf #(
   // The group identifier rides DBID, as PGroupID does on a Persist -- Table 13-7
   // shares those bits between DBID, PGroupID and StashGroupID, and 13.10.7 adds
   // TagGroupID to the list. So this needed no new flit field, which is the whole
-  // reason F-COV-001 was cheap to close.
+  // reason it was cheap to close.
   // ---------------------------------------------------------------------------
   protected task drive_tag_match_rsp(
     input req_flit_t         req,
@@ -2113,7 +2113,7 @@ class vip_chi_driver_snf #(
 
     is_persist = this.req_opcode_combined_cmo_is_persist(req_opcode_t'(req.opcode));
     // The control aims it at SrcID, which is what this driver did before
-    // F-CORR-012 and what 2.8 forbids for a PCMO.
+    // and what 2.8 forbids for a PCMO.
     persist_tgt_id = this.cfg.snf_persist_target_srcid_negctl
                    ? node_id_t'(req.srcid)
                    : node_id_t'(req.returnnid);
@@ -2183,7 +2183,7 @@ class vip_chi_driver_snf #(
     //
     // The two items are built separately for exactly this reason -- a shared
     // field set is what let the Python port carry the same defect with one
-    // shared tgtid and no place to write a per-response rule. See F-CORR-012.
+    // shared tgtid and no place to write a per-response rule.
     persist_rsp              = new("combined_persist_rsp");
     persist_rsp.role         = VIP_CHI_ROLE_SNF_E;
     persist_rsp.src_id       = node_id_t'(req.tgtid);
@@ -2342,7 +2342,7 @@ class vip_chi_driver_snf #(
   // The requester is the Home stand-in on this link (see cfg.rni_home_standin),
   // so ReadReceipt addressed at req.SrcID is Table B-3's SN-F -> ICN(HN-F) row,
   // and the DataSepResp data leg to ReturnNID is Table B-4's SN-F -> RN-I row,
-  // an EXPECTED target rather than a merely permitted one. See F-CORR-013.
+  // an EXPECTED target rather than a merely permitted one.
   protected task drive_read_prelude(
     input req_flit_t         req,
     input vip_chi_resp_t     resp_code,
@@ -2357,7 +2357,7 @@ class vip_chi_driver_snf #(
       this.drive_auto_read_receipt(req);
     end
 
-    // The pre-F-CORR-013 behaviour, kept as an injectable defect: a Slave
+    // The previous behaviour, kept as an injectable defect: a Slave
     // emitting a Home-only response. CHI_SB_ORIGINATOR_LEGAL must report it.
     if (is_sep && this.cfg.snf_resp_sep_data_negctl) begin
       resp_sep_rsp              = new("auto_read_resp_sep");
@@ -2775,7 +2775,7 @@ class vip_chi_driver_snf #(
       // out of an atomic, and the read path DOES replay the stored TagOp --
       // which for an atomic could be Match, the one value section 12.7 forbids
       // here. Stating it keeps the two paths from being confused for each other
-      // later. See F-CORR-009.
+      // later.
       compdata_rsp.dat_tagop    = item_t::tagop_t'(VIP_CHI_TAGOP_INVALID_C);
       compdata_rsp.rsp_resp     = resp_code;
       compdata_rsp.rsp_resp_err = resp_err_code;
@@ -2835,7 +2835,7 @@ class vip_chi_driver_snf #(
   //
   // The control corrupts it, which is the only way to tell a completer that
   // reflects the group from one that happens to send a value the requester
-  // accepts. See F-INTOP-010.
+  // accepts.
   // ---------------------------------------------------------------------------
   protected function logic [7 : 0] req_pgroup_id(input req_flit_t req);
 

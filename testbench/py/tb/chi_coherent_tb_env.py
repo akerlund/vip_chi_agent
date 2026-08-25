@@ -117,7 +117,7 @@ class chi_coherent_tb_env(uvm_env):
     self.rnf_sva = [
       bind_chi(hrnf0_vif, f"{pfx}hrnf0_sva", enable_completion_timeout=False),
       bind_chi(hrnf1_vif, f"{pfx}hrnf1_sva", enable_completion_timeout=False),
-      # The downstream SN-F link, added with box 0.3: the HN-F's SN-facing port
+      # The downstream SN-F link, added: the HN-F's SN-facing port
       # and the SN-F endpoint behind it. It carries the memory traffic of every
       # coherent read miss and was checked by nothing, in either port.
       #
@@ -131,14 +131,13 @@ class chi_coherent_tb_env(uvm_env):
       # a completion is not visible end to end on one interface. Downstream it is:
       # the HN-F's ReadNoSnp and the SN-F's CompData are both on this link.
       # The HN-F's SN-facing port drives TXSACTIVE from sn_link_up, the same
-      # shape the HN-I uses, so the same stand-down applies -- F-CORR-005
-      # (box 1.6), which named HN-F and HN-I together and had no evidence for
+      # shape the HN-I uses, so the same stand-down applies -- #, which named HN-F and HN-I together and had no evidence for
       # either because neither endpoint was bound.
       bind_chi(hnfs0_vif, f"{pfx}hnf0_sn_sva", txsactive_from_link_up=True),
       bind_chi(dsnf0_vif, f"{pfx}dsnf0_sva"),
       # The MAIN range on the HN-F's RN-facing ports. Those endpoints carried
       # only the SNP bind below, which has no TXSACTIVE property, so the
-      # sideband of the role F-CORR-005 accuses was watched from neither
+      # sideband of the role accuses was watched from neither
       # direction -- the RN-F bind opposite judges its OWN txsactive, on a
       # different interface.
       #

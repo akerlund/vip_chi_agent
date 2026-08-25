@@ -296,7 +296,7 @@ def _compare(vip: list[str], positions: list[dict]):
   Also returns WHICH VIP fields landed on each position, because splitting a
   brace group is only legal if the parts still add up to the position's width.
   That is not a refinement of the order check, it is the other half of it: this
-  function passed a CHI-E request flit three bits too wide (F-CORR-026) while
+  function passed a CHI-E request flit three bits too wide while
   reporting every field in its right place, and it was right to -- every field
   WAS in its right place. Nobody was adding them up.
   """
@@ -377,7 +377,7 @@ def _check_widths(vip_widths: dict[str, int], positions: list[dict],
   prints as one set of bits, which is allowed, and what is not allowed is for
   the parts to add up to something else. That is how a CHI-E request flit ran
   three bits wide with every field in the right place -- GroupIDExt (3) and LPID
-  (8) sharing an 8-bit position between them. See F-CORR-026.
+  (8) sharing an 8-bit position between them.
   """
   problems: list[str] = []
   for index, fields in sorted(absorbed.items()):

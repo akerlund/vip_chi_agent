@@ -226,7 +226,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
   # ==========================================================================
   # Resulting state after a snoop, and where DoNotGoToSD is honoured.
   #
-  # Two decisions meet here and they have to be read together (F-INTOP-002).
+  # Two decisions meet here and they have to be read together.
   #
   # The first is this VIP's never-SD reduction: a snoopee in this model adopts
   # only I, SC or its current state, so SD is not in the range of this function

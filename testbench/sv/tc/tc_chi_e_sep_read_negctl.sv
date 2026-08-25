@@ -23,12 +23,12 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 //
-// The NEGATIVE control for CHI_SB_ORIGINATOR_LEGAL (F-CORR-013), in two phases,
+// The NEGATIVE control for CHI_SB_ORIGINATOR_LEGAL, in two phases,
 // because the rule has two ways of being reached and only one of them is a
 // defect.
 //
 // PHASE 1 -- a Slave emits a Home-only response. cfg.snf_resp_sep_data_negctl
-// restores what both ports did before F-CORR-013: the completer answers a
+// restores what both ports did previously: the completer answers a
 // ReadNoSnpSep with RespSepData. Appendix B Table B-3 gives RespSepData one From
 // row, ICN(HN-F, HN-I), and section 2.3.1 says it in prose -- "RespSepData is
 // permitted from the Home only." Every field on that flit is legal, it arrives

@@ -332,7 +332,7 @@ class vip_chi_scoreboard(uvm_component):
     #
     # It lives on the scoreboard rather than on the config agent because it is
     # checker policy, not driver behaviour: no driver reads it, and a config knob
-    # nothing reads is the shape F-CHK-014 was about.
+    # nothing reads is a knob that does nothing.
     #
     # Default on, because that is what the VIP does. A test sets it False to take
     # the stand-in away and see the departure reported -- an exemption nothing
@@ -491,7 +491,7 @@ class vip_chi_scoreboard(uvm_component):
     can be satisfied by a flow no node in Appendix B is allowed to emit. That is
     how ReadNoSnpSep-from-an-RN-I and RespSepData-from-an-SN-F survived: the
     only party judging them was the VIP's own completer, which answered what it
-    was asked. See F-CORR-013.
+    was asked.
 
     Three outcomes, and the third is why the counters are separate:
 
@@ -611,7 +611,7 @@ class vip_chi_scoreboard(uvm_component):
       # only after receiving ReadNoSnpSep." That is the Slave's own owed
       # response, not an ordering courtesy, and gating it on ctx.ordered is why
       # a non-ordered separated read used to complete without one. See
-      # F-CORR-013.
+      #.
       if ctx.ordered or opc == int(ReqOpcode.READ_NO_SNP_SEP):
         ctx.need_receipt = True
     elif opc in _COMBINED_WRITE_CMO_C:
@@ -794,7 +794,7 @@ class vip_chi_scoreboard(uvm_component):
     # only for the separated read that first needed it. IHI 0050 E 2.8 routes a
     # PCMO's Persist by the same field, so a scoreboard that only remembered it
     # for reads had nothing to compare that Persist's TgtID against -- which is
-    # half of why F-CORR-012 went unnoticed.
+    # half of why it went unnoticed.
     if req_return_nid_applicable(int(item.opcode)):
       ctx.return_nid = int(item.return_nid)
 
@@ -810,7 +810,7 @@ class vip_chi_scoreboard(uvm_component):
     # PGroupID is not a field: 13.10.8 gives it as an equation over GroupIDExt
     # and LPID, and 13.10.7 sends it back in the bits Table 13-7 calls DBID.
     # Recorded here so the responses have something to be compared against --
-    # without it the reflection is unobservable, which is the state F-INTOP-010
+    # without it the reflection is unobservable.
     # found both ports in.
     if req_pgroup_id_applicable(int(item.opcode)):
       ctx.has_pgroup = True
@@ -932,7 +932,7 @@ class vip_chi_scoreboard(uvm_component):
       # the CMO in the request is a PCMO." Nothing in either port checked the
       # TgtID of any response before this, on any channel, which is why a
       # completer addressing the Persist at SrcID went unnoticed -- in the
-      # example topology the two are the same node. See F-CORR-012.
+      # example topology the two are the same node.
       want_tgt = self._persist_target_node(ctx)
       if int(item.tgt_id) != want_tgt:
         self._fail(SB_RSP_TGTID_CORRECT,
@@ -1031,7 +1031,7 @@ class vip_chi_scoreboard(uvm_component):
       # separate response and is NOT folded in -- ticking comp_seen here would
       # retire a write whose completion had not arrived, and leave comp_cmo_seen
       # false so the request was reported incomplete anyway. Found while giving
-      # F-INTOP-008's requester something legal to accept.
+      # the requester something legal to accept.
       if int(ctx.opcode) in _COMBINED_WRITE_CMO_C:
         ctx.comp_cmo_seen = True
       else:

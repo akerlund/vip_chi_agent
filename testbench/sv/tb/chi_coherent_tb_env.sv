@@ -214,7 +214,7 @@ class chi_coherent_tb_env #(
       this.hrnf1_agent.vif.check_enabled, this.hrnf1_agent.vif.check_severity,
       this.hrnf1_agent.vif.check_pass_count, this.hrnf1_agent.vif.check_fail_count);
 
-    // The downstream SN-F link, added with box 0.3: the HN-F's SN-facing port and
+    // The downstream SN-F link, added: the HN-F's SN-facing port and
     // the SN-F endpoint behind it. It carries the memory traffic of every
     // coherent read miss and was checked by nothing, in either port. Both ends,
     // because the direction-split rules each run at only one of them.
@@ -274,7 +274,7 @@ class chi_coherent_tb_env #(
         this.hnf_agent.rn_vif[i].check_pass_count,
         this.hnf_agent.rn_vif[i].check_fail_count);
 
-      // The MAIN range on the same ports, added with F-CORR-005. The HN-F
+      // The MAIN range on the same ports, added with. The HN-F
       // endpoint carried only the SNP bind, which has no TXSACTIVE property, so
       // the sideband of the role that gets it wrong was watched from neither
       // direction -- the RN-F bind opposite judges its own txsactive, on a

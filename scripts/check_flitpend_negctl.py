@@ -13,7 +13,7 @@
 # INLINE -- eleven send sites assigning FLITPEND directly rather than calling a
 # helper -- and neither SN-F consulted it. check_cfg_parity.py passed throughout,
 # because the field exists in both ports spelled the same way; which drivers READ
-# it is behaviour, and no gate compared that. See F-CHK-014.
+# it is behaviour, and no gate compared that.
 #
 # What this checks, per driver file that announces a flit at all:
 #

@@ -9,7 +9,7 @@
 #
 # pyUVM/cocotb port of tc/tc_chi_e_dwt_dbid_return_nid.sv.
 #
-# Where a Direct Write Transfer's DBIDResp is addressed (F-CORR-012).
+# Where a Direct Write Transfer's DBIDResp is addressed.
 #
 # This is the OTHER limb of the rule tc_chi_e_persist_return_nid covers. IHI
 # 0050 E Table 2-8 gives both in three rows:
@@ -25,7 +25,7 @@
 # VIP that changes BOTH addressing fields on a single request bit.
 #
 # The limb was unreachable rather than merely unchecked. DoDWT is REQ bit 17,
-# shared with SnpAttr, and until F-CORR-003 was fixed the item modelled that bit
+# shared with SnpAttr, and until then was fixed the item modelled that bit
 # as DoDWT alone and every sequence pinned it to zero -- so no request could ask
 # for DWT, and the routing rule had nothing to be wrong about. Fixing the field
 # identity is what made this testable, which is the whole argument for fixing

@@ -74,7 +74,7 @@ class tc_chi_e_dbid_resp_ord(chi_e_base_test):
     # grant has to be visible rather than assumed.
     #
     # CHI_SB_ORIGINATOR_LEGAL found this on its first sweep, in the SystemVerilog
-    # port, before anyone had read Table B-3 for DBIDRespOrd. See F-CORR-013.
+    # port, before anyone had read Table B-3 for DBIDRespOrd.
     sb = self.tb_env.scoreboard
     assert sb.n_originator_illegal == 0, (
       f"Appendix B reported {sb.n_originator_illegal} violation(s) on ordered "

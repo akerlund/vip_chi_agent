@@ -181,7 +181,7 @@ _FLIT_FIELDS_C = {
   # down, so every reader of a channel has to be represented here.
   #
   # srcid and tgtid are the in-flight shadow's key, section 2.5's scope. They
-  # were ABSENT until F-CHK-018's re-key, and their absence is why the SrcID
+  # were ABSENT before that re-key, and their absence is why the SrcID
   # scoping that finding recorded as done had no effect: the reader guarded
   # itself with `"srcid" in f`, got None on every flit, and compared None to
   # None -- so the rule went on enforcing "unique per link", which is stricter
@@ -203,7 +203,7 @@ _FLIT_FIELDS_C = {
 # The four completion classifiers that used to sit here now live in
 # vip_chi_types_pkg, imported above. They moved because the raw-injection path
 # in the requester driver needs the same answer this checker does, and a second
-# copy of it drifts the moment an opcode is classified -- see F-CORR-021, where
+# copy of it drifts the moment an opcode is classified -- where
 # exactly that happened. The sets below are the ones only this checker reads.
 _NON_COHERENT_WRITE_OPCODES_C = frozenset({
   int(ReqOpcode.WRITE_NO_SNP_PTL), int(ReqOpcode.WRITE_NO_SNP_FULL),
@@ -385,7 +385,7 @@ def claim_export_tag(run_name: str, tag: str) -> bool:
 # warned on a >1h age gap, which caught the case that had actually happened
 # twice -- but age is the wrong measurement: it misses two sweeps run minutes
 # apart across a rebuild, and it false-positives on a deliberately archived
-# comparison. The revision answers the real question. See F-CHK-011.
+# comparison. The revision answers the real question.
 #
 # "dirty" is appended when the tree has uncommitted changes, because during
 # development that is the normal state and two sweeps of the same commit can
@@ -482,7 +482,7 @@ class bind_chi:
     # sources' claims on the same value at once -- which section 2.5 makes a
     # legal situation, so the rule had to be silent rather than wrong. The
     # shadow is now keyed by (SrcID, TxnID) and represents it directly, so a
-    # fan-in link is CHECKED instead of excused. See F-CHK-018.
+    # fan-in link is CHECKED instead of excused.
     #
     # The parameter is kept: it still records that a link carries more than one
     # source, which is a fact about the topology rather than about this rule,
@@ -492,7 +492,7 @@ class bind_chi:
     # outstanding window, so the sideband is a constant while the link is up.
     # Legal -- section 14.7.2's obligation is a lower bound -- but exactly what
     # TXSACTIVE_DEASSERT_BOUNDED exists to report, so it would fire on every run
-    # rather than on a defect. The driver behavior is F-CORR-005 (box 1.6).
+    # rather than on a defect. The driver behavior is.
     if txsactive_from_link_up:
       self.check_enable["CHI_TXSACTIVE_DEASSERT_BOUNDED"] = False
 
@@ -853,7 +853,7 @@ class bind_chi:
     # shadow cannot represent it. It used to be one slot per value with a
     # parallel map of the LAST claimant, which made the second source overwrite
     # the first: A takes 0, B takes 0, A's completion frees the slot, and A
-    # reusing 0 with its own request still outstanding passed. See F-CHK-018.
+    # reusing 0 with its own request still outstanding passed.
     #
     # The key is read from a different field at each end of a transaction. A
     # request carries the requester in SrcID; every response and data flit that
@@ -910,7 +910,7 @@ class bind_chi:
     #
     # Without this the reuse rules read the spec as "unique per link", a stricter
     # rule than the one written. It went unnoticed because no bind sat on a fan-in
-    # link until box 0.3 bound the HN-I proxy's SN-facing ports.
+    # link until a later change bound the HN-I proxy's SN-facing ports.
     self._req_exp_comp_ack = {}
     self._completion_seen = {}
     self._write_grant_seen_by_dbid = {}
@@ -1504,7 +1504,7 @@ class bind_chi:
     # An endpoint grants credit for the channels it RECEIVES, so every lcrdv this
     # component drives belongs to the machine the other direction runs. Under the
     # reduction both halves were judged against whichever machine happened to be
-    # up, which is the aliasing F-INTOP-001 describes: a credit granted while only
+    # up, which is the aliasing that matters: a credit granted while only
     # our transmit link was alive read as legal.
     tx_state = self._tx_lasm_of(s)
     rx_state = self._rx_lasm_of(s)
@@ -1607,7 +1607,7 @@ class bind_chi:
       # Informative in the specification (it is a Note), so it is a rule rather
       # than a fatal -- but it constrains the normative model, and the VIP's own
       # driver cannot produce it, so a report here is always about the peer.
-      # See F-INTOP-003.
+      #
       if grant and consume and count == 0:
         self._chk(
           "CHI_LCRD_USED_IN_GRANT_CYCLE", False,
@@ -1933,7 +1933,7 @@ class bind_chi:
     #
     # So a completer's window is the requests it has RECEIVED and not yet
     # completed -- exactly what _req_inflight holds at a completer, because it
-    # is filled from the direction the role receives on. See F-CORR-005.
+    # is filled from the direction the role receives on.
     # Two limbs, one rule, and the message says which one is unmet: a snoop
     # window broken while the causing request is still outstanding is invisible
     # in a count that adds them together, and it is the failure 14.7.2's second
@@ -2412,7 +2412,7 @@ class bind_chi:
     # the requester. The stated reason was that a completer has no window of its
     # own -- which is not what section 14.7.2 says -- but the gate was load
     # bearing for a different reason, and dropping it without this made the
-    # count run away on every completer bind. See F-CORR-005.
+    # count run away on every completer bind.
     if opcode in PLAIN_COMPLETION_RSP_OPCODES_C or opcode == int(
         RspOpcode.COMP_PERSIST):
       self._post(self._req_inflight,

@@ -23,7 +23,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 //
-// The POSITIVE control for CHI_ATOMIC_SIZE_LEGAL (F-CHK-019).
+// The POSITIVE control for CHI_ATOMIC_SIZE_LEGAL.
 //
 // The five wide-operand atomic testcases prove the rule FIRES: they drive Sizes
 // Table 2-17 does not list, arm the rule at VIP_CHI_CHK_SEV_OFF_E, and require
@@ -42,11 +42,10 @@
 // The rule is ARMED here -- not turned down to OFF -- which is the whole point:
 // the checks below are about a live rule seeing conformant traffic.
 //
-// Nothing is opted into here, and that is now the point: since F-CORR-008 the
-// solver draws Table 2-17's Sizes by default, so this testcase asks for nothing
-// special and gets the specification. If the constraint's ceiling regressed to
-// Size 4, randomization would fail outright rather than quietly drawing
-// something else, and this testcase would say so.
+// The sequence is configured plainly: Table 2-17's Sizes are what the item's
+// constraints draw by default, so this testcase gets the specification without
+// asking for it. Should the constraint's ceiling drop back to Size 4,
+// randomization fails outright rather than quietly drawing something else.
 //
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -116,11 +115,10 @@ class tc_chi_d_atomic_compare_size_legal extends chi_base_test;
     this.atomic_seq.set_requests(1);
     this.atomic_seq.set_initial_addr(ATOMIC_ADDR_C);
     this.atomic_seq.set_size(item_t::size_t'(size));
-    // No opt-in of any kind here, and that is now the point: Table 2-17 is what
-    // a plain sequence draws, so this testcase asks for nothing special and gets
-    // the specification. If the constraint's ceiling regressed to Size 4,
-    // randomization would fail outright rather than quietly drawing something
-    // else.
+    // Table 2-17's Sizes are what a plainly configured sequence draws, so no
+    // override is needed to reach them. Should the constraint's ceiling drop
+    // back to Size 4, randomization fails outright rather than quietly drawing
+    // something else.
     this.atomic_seq.set_get_response(1'b1);
     this.atomic_seq.set_verbose(1'b0);
     this.atomic_seq.set_data(data_beats);

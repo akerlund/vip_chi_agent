@@ -23,7 +23,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 //
-// The completer answers a Match-tagged write with TagMatch (F-COV-001).
+// The completer answers a Match-tagged write with TagMatch.
 //
 // IHI 0050 E Table 13-34 gives TagOp = 0b11 as "Match Fetch" -- Match on a write:
 // "the Physical Tags in the write must be checked against the Allocation Tag
@@ -41,7 +41,7 @@
 //
 // Modelling it needed no new flit field. Table 13-7 shares the response's DBID
 // bits between DBID, PGroupID and StashGroupID, and 13.10.7 adds TagGroupID to
-// that list -- the same overload PGroupID rides in F-INTOP-010.
+// that list -- the same overload PGroupID rides in.
 //
 // The response is routed to ReturnNID, not SrcID: the TgtID table in section 4.7
 // gives TagMatch as "Request.SrcID" from a Home and "Request.ReturnNID" from a

@@ -9,7 +9,7 @@
 #
 # pyUVM/cocotb port of tc/tc_chi_e_persist_pgroup_negctl.sv.
 #
-# PGroupID reflected in the persist responses (F-INTOP-010).
+# PGroupID reflected in the persist responses.
 #
 # IHI 0050 E section 2.5: "A CleanSharedPersistSep and Combined Write with PCMO
 # request includes a PGroupID to identify the Persistence Group that the request
@@ -25,7 +25,7 @@
 # (CHI_SB_PERSIST_PGROUP_MATCHES) rather than an extra clause on an existing one.
 #
 # **PGroupID is not a field, and the finding was wrong to ask for one.**
-# F-INTOP-010's first task was to add it to the item and to both exact-E flit
+# The first step was to add it to the item and to both exact-E flit
 # layouts. Table 13-6 gives the REQ side as ONE 8-bit position shared four ways
 # -- "{GroupIDExt[2:0], LPID[4:0]} / PGroupID[7:0] / StashGroupID[7:0] /
 # TagGroupID[7:0]" -- and Table 13-7 gives the RSP side as "DBID[11:0] /

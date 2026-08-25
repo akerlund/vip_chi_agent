@@ -9,7 +9,7 @@
 #
 # pyUVM/cocotb port of tc/tc_chi_e_combined_write_comp_persist.sv.
 #
-# A combined Write + PCMO answered with CompPersist (F-INTOP-008).
+# A combined Write + PCMO answered with CompPersist.
 #
 # IHI 0050 E section 2.8, in the SN response summary: the Slave "is permitted to
 # combine CompCMO with Persist as a CompPersist response if the two are sent to

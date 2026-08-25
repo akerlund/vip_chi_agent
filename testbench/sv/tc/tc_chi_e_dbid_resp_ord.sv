@@ -149,7 +149,7 @@ class tc_chi_e_dbid_resp_ord extends chi_e_base_test;
     // grant has to be visible rather than assumed.
     //
     // CHI_SB_ORIGINATOR_LEGAL found this HERE, on its first sweep, before anyone
-    // had read Table B-3 for DBIDRespOrd. See F-CORR-013.
+    // had read Table B-3 for DBIDRespOrd.
     // -------------------------------------------------------------------------
     if (super.tb_env.scoreboard.get_check_fail_count(
           VIP_CHI_SB_CHK_ORIGINATOR_LEGAL_E) != 0) begin

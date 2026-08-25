@@ -726,7 +726,7 @@ class vip_chi_cfg_agent extends uvm_object;
   // injected flit, with nothing holding the sideband up while the transaction it
   // started is still outstanding.
   //
-  // This is the defect F-CORR-021 recorded rather than an invented one. It was
+  // This reproduces a real defect rather than an invented one. It was
   // sound while no raw-injectable opcode had a modeled completion and stopped
   // being sound the moment WriteUniqueZero was classified, which is why the
   // control exists at all: the fix is a behaviour that has to keep working as
@@ -738,7 +738,7 @@ class vip_chi_cfg_agent extends uvm_object;
   // Negative control for CHI_SB_RSP_TGTID_CORRECT. The completer targets a
   // PCMO's Persist at the request's SrcID instead of its ReturnNID.
   //
-  // This is the DEFECT F-CORR-012 recorded, not an invented one: it is what both
+  // This reproduces a real DEFECT, not an invented one: it is what both
   // ports did until that finding was fixed, and it was invisible because the
   // example topology gives a requester the same node for both fields. A control
   // that reproduces it keeps the rule honest on every run rather than only on the
@@ -749,9 +749,9 @@ class vip_chi_cfg_agent extends uvm_object;
   // Negative control for the OTHER limb of the same Table 2-8 row: with DoDWT
   // set, the write's DBIDResp must be addressed to ReturnNID and carry
   // ReturnTxnID. Setting this keeps it at SrcID/TxnID, which is what both ports
-  // did before F-CORR-012 -- and, unlike the Persist limb, that defect was not
+  // did previously -- and, unlike the Persist limb, that defect was not
   // merely invisible but unreachable, because DoDWT was pinned to zero by
-  // F-CORR-003 until that finding was fixed. The control exists so the rule is
+  // until that finding was fixed. The control exists so the rule is
   // shown to fail on the wrong route rather than assumed to.
   // Default 0.
   bit snf_dwt_dbid_target_srcid_negctl = 1'b0;
@@ -762,7 +762,7 @@ class vip_chi_cfg_agent extends uvm_object;
   // Comp. Default 0 keeps the write-first order every existing test sees;
   // setting it emits the CMO half first, which is equally legal and is what a
   // requester written against this VIP's habits rather than against the
-  // protocol will fall over on. See F-INTOP-008.
+  // protocol will fall over on.
   // Default 0.
   bit snf_cmo_before_write_comp = 1'b0;
 
@@ -794,7 +794,7 @@ class vip_chi_cfg_agent extends uvm_object;
 
   // Negative control for CHI_SB_ORIGINATOR_LEGAL: the completer answers a
   // separated read with RespSepData, the response Appendix B Table B-3 permits
-  // from a Home only. This is what both ports did before F-CORR-013, kept as an
+  // from a Home only. This is what both ports did previously, kept as an
   // injectable defect so the checker that would now have caught it has something
   // to catch. Default 0.
   bit snf_resp_sep_data_negctl = 1'b0;
@@ -1301,7 +1301,7 @@ class vip_chi_cfg_agent extends uvm_object;
     // gap as a rule instead of closing it. scripts/check_flitpend_negctl.py now
     // holds every announcing driver to reading the knob, so this guard would go
     // stale in the one direction that matters -- forbidding something that
-    // works. See F-CHK-014.
+    // works.
 
     if (this.flitpend_without_valid &&
         (this.role != VIP_CHI_ROLE_RNI_E) && (this.role != VIP_CHI_ROLE_RNF_E) &&

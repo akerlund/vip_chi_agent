@@ -36,7 +36,7 @@
 # central discipline, which is that the two ports check each other: SV gets a test
 # proving a violation is caught, Python gets silence, and check_test_counts.py
 # records the difference as a deliberate asymmetry. That is how a one-port
-# capability becomes permanent. (F-CHK-003.)
+# capability becomes permanent.
 #
 # The mechanism, and why it has the semantics it does:
 #

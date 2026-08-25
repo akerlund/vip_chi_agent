@@ -198,7 +198,7 @@ package vip_chi_types_pkg;
   // TagOp is a bare 2-bit value with no enum and no constraint, so any test
   // could ask for Match and get silence back. Modelling it needs no new flit
   // field -- Table 13-7 shares the response's DBID bits with TagGroupID, exactly
-  // as it does with PGroupID. See F-COV-001.
+  // as it does with PGroupID.
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_TAG_MATCH_C      = 5'h0A;
 
   // Snoop-response RSP opcodes (Tier C). IHI0050 RSP encodings: SnpResp = 0x01,
@@ -841,8 +841,7 @@ package vip_chi_types_pkg;
   //
   // The VIP's own separated read was exactly that shape: ReadNoSnpSep from an
   // RN-I and RespSepData from an SN-F, neither of which appears anywhere in
-  // Appendix B, and every test of it passed in both ports. See F-CORR-013 /
-  // TR-APPB-001.
+  // Appendix B, and every test of it passed in both ports. See /
   //
   // Only the FROM column is encoded. The To column is a routing question the
   // TgtID checks already answer, and encoding it here would give one fact two
@@ -859,7 +858,7 @@ package vip_chi_types_pkg;
   // conversion renders a merged left-hand cell as if each opcode had its own
   // From row, which turns a block's three From rows into one per opcode and
   // silently invents originators. It is the same failure mode as the flit tables
-  // in F-CORR-002, and it is why ReadNoSnpSep looks RN-originated in the md.
+  // in , and it is why ReadNoSnpSep looks RN-originated in the md.
   //
   // A mask rather than a set because SystemVerilog has no set literal that a
   // package constant can hold: one bit per vip_chi_role_t, indexed by the enum's
@@ -2037,7 +2036,7 @@ package vip_chi_types_pkg;
   // vip_chi_driver_rni, to decide how long to hold TXSACTIVE. A module-local
   // copy is not reachable from a driver class at all, and a second copy of the
   // answer drifts the moment an opcode is classified -- which is exactly what
-  // F-CORR-021 recorded: the raw path's comment asserted a property of the
+  // The raw path's comment once asserted a property of the
   // opcode set that stopped being true when WriteUniqueZero joined this
   // classifier, and nothing connected the two.
   // ---------------------------------------------------------------------------
@@ -2474,7 +2473,7 @@ package vip_chi_types_pkg;
   //
   // The "from Home to Slave" half is deliberately NOT modelled. No bind can
   // establish that its peer is a Home, and this VIP drives ReadNoSnp from an RN-I
-  // (F-CORR-013's illegal topology), so a rule enforcing the node pair would fire
+  //, so a rule enforcing the node pair would fire
   // on the VIP's own traffic for a reason that belongs to a different fix.
   //
   // WriteNoSnpZero is treated as APPLICABLE, and that is a judgement rather than
@@ -2641,7 +2640,7 @@ package vip_chi_types_pkg;
   // StashGroupID and TagGroupID; on RSP it is a view of DBID. Adding a physical
   // PGroupID to either layout would make this VIP's flits wider than the
   // specification's -- and because both ports would have been widened together,
-  // no parity check could have seen it. F-INTOP-010 asked for exactly that, on
+  // no parity check could have seen it. That was once proposed, on
   // App A's field lists; Table 13-6 and Table 13-7 say otherwise.
   //
   // LPID's low five bits, not all of it: the equation names LPID[4:0] and this
@@ -2714,7 +2713,7 @@ package vip_chi_types_pkg;
   // Takes the RAW bit 17 and the issue rather than a "dodwt" argument, because
   // there is no dodwt field to pass: REQ bit 17 is carried as SnpAttr in the
   // flit layout and is DoDWT only where vip_chi_req_bit17_is_dodwt says so
-  // (F-CORR-003). A caller handed a decoded bit would have to do that decode
+  //. A caller handed a decoded bit would have to do that decode
   // itself, and a caller reading a DoDWT field off a sampled flit would get
   // whatever SnpAttr happened to be -- which is the whole shape of the defect
   // this VIP already carries once.
@@ -3369,7 +3368,7 @@ package vip_chi_types_pkg;
   // X, lands on both corners exactly, which is what validates the method rather
   // than the conclusion.
   //
-  // See F-CORR-026.
+  //
   // ---------------------------------------------------------------------------
   function automatic int chi_lpid_width(input vip_chi_issue_t issue);
     case (issue)
@@ -3442,7 +3441,7 @@ package vip_chi_types_pkg;
   // same shape, and so the day a table does parameterize this there is a place
   // to put it.
   //
-  // See F-CORR-026, whose width gate is what separated them.
+  // The finding on it notes width gate is what separated them.
   // ---------------------------------------------------------------------------
   function automatic int chi_data_id_width(input int data_bytes);
     return VIP_CHI_DATA_ID_WIDTH_C;
