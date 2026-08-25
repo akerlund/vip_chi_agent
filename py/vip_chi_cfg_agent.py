@@ -554,6 +554,13 @@ class VipChiCfgAgent:
     # service is early enough to be visible and is a shape a real
     # implementation gets wrong.
     self.hnf_txsactive_early_drop_negctl = False
+    # Negative control for the RECEIVING limb of
+    # CHI_TXSACTIVE_COVERS_OUTSTANDING. The snoopee answers a snoop without
+    # opening a TXSACTIVE window, so the sideband stays low while a Snoop
+    # transaction is in progress -- the under-assertion E section 14.7.2 /
+    # D section 13.7.2 forbids of an RN-F. The window and not the level, so the
+    # credit loop stays the only writer of the signal.
+    self.rnf_txsactive_snoop_drop_negctl = False
 
     # Negative control for CHI_TXSACTIVE_COVERS_OUTSTANDING at a RAW-INJECTING
     # requester. The raw path reverts to the window it used to have: scoped to the
@@ -885,6 +892,7 @@ class VipChiCfgAgent:
       "hnf_downstream_corrupt_data": self.hnf_downstream_corrupt_data,
       "hnf_downstream_force_decerr": self.hnf_downstream_force_decerr,
       "hnf_txsactive_early_drop_negctl": self.hnf_txsactive_early_drop_negctl,
+      "rnf_txsactive_snoop_drop_negctl": self.rnf_txsactive_snoop_drop_negctl,
       "raw_req_txsactive_flit_scoped_negctl":
         self.raw_req_txsactive_flit_scoped_negctl,
       "snf_persist_target_srcid_negctl": self.snf_persist_target_srcid_negctl,

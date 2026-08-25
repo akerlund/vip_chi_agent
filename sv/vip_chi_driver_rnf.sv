@@ -317,9 +317,14 @@ class vip_chi_driver_rnf #(
       // opens a TXSACTIVE window of its own: the request-side count knows
       // nothing about it, and a SnpRespData burst can span many cycles during
       // which the sideband must not drop.
-      this.tx_activity_begin();
-      this.process_snoop(snp);
-      this.tx_activity_end();
+      if (this.cfg.rnf_txsactive_snoop_drop_negctl) begin
+        this.process_snoop(snp);
+      end
+      else begin
+        this.tx_activity_begin();
+        this.process_snoop(snp);
+        this.tx_activity_end();
+      end
     end
   endtask
 

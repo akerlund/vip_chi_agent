@@ -1235,6 +1235,28 @@ module vip_chi_sva #(
   // the window mid-burst, which is the exact thing 14.7.2 forbids.
   int unsigned snp_dat_beats_by_txn[TXN_ID_COUNT_C];
 
+  // The RECEIVING half of the same clause, at the snoopee: "An RN-F or RN-D
+  // component must also assert TXSACTIVE while a Snoop transaction is in
+  // progress". Kept apart from the sending shadow above because it is a
+  // different obligation on a different node, and because it needs something
+  // the sending one does not -- an ASSERTION ALLOWANCE. A snoopee cannot raise a
+  // level before it has been given a reason to, so the window can only be
+  // required from a cycle later than the one the SNP flit lands in.
+  //
+  // The allowance is one registered cycle here on top of the one the count's own
+  // NBA already costs, which makes the window required from two cycles after the
+  // landing edge. That number is measured, not chosen: across every coherent
+  // testcase in both ports the interval from the accepted SNP beat to the
+  // sideband rising is exactly 2, in 127 SystemVerilog and 72 pyUVM occurrences
+  // with no spread. The responder steps off the accepted beat before it opens
+  // its window, and the credit loop is the only writer of the level.
+  bit          snp_rx_landed_q;
+  txn_id_t     snp_rx_landed_txn_q;
+  bit          snp_rx_inflight_by_txn[TXN_ID_COUNT_C];
+  int unsigned snp_rx_dat_beats_by_txn[TXN_ID_COUNT_C];
+  int unsigned snp_rx_outstanding_count;
+  int          snp_rx_outstanding_delta;
+
   // P-Credits this link has seen granted and not yet seen spent, per PCrdType,
   // with the same blocking-accumulator shape as req_outstanding_delta above and
   // for the same reason: a grant can land in the cycle a credit is spent, and
@@ -1285,6 +1307,7 @@ module vip_chi_sva #(
   function automatic bit link_quiet();
     return ((req_outstanding_count == 0) &&
             (snp_outstanding_count == 0) &&
+            (snp_rx_outstanding_count == 0) &&
             !vif.txreqflitv && !vif.txrspflitv && !vif.txdatflitv &&
             !vif.rxreqflitv && !vif.rxrspflitv && !vif.rxdatflitv &&
             !vif.txsnpflitv && !vif.rxsnpflitv);
@@ -1340,6 +1363,12 @@ module vip_chi_sva #(
     comp_dbid_state_t comp_dbid_v;
     // The snoop window's TxnID index, shared by its three sites below.
     int unsigned      snp_win_idx;
+    // The received-snoop window's index, and which index (if any) that window
+    // opened on this cycle. One SNP flit lands per cycle at most, so a single
+    // scratch is enough to tell the close sites that the entry they are looking
+    // at is being opened in the same cycle they would retire it.
+    int unsigned      snp_rx_win_idx;
+    int              snp_rx_opened_idx;
 
     if (!checks_enable || !vif.rst_n) begin
       for (int txn_i = 0; txn_i < TXN_ID_COUNT_C; txn_i++) begin
@@ -1360,6 +1389,8 @@ module vip_chi_sva #(
         dat_completion_req_txn_by_txn[txn_i] <= '0;
         snp_inflight_by_txn[txn_i] <= 1'b0;
         snp_dat_beats_by_txn[txn_i] <= 0;
+        snp_rx_inflight_by_txn[txn_i] <= 1'b0;
+        snp_rx_dat_beats_by_txn[txn_i] <= 0;
       end
 
       for (int unsigned pcrd_i = 0;
@@ -1373,6 +1404,9 @@ module vip_chi_sva #(
       comp_dbid_by_key.delete();
       req_outstanding_count <= 0;
       snp_outstanding_count <= 0;
+      snp_rx_outstanding_count <= 0;
+      snp_rx_landed_q          <= 1'b0;
+      snp_rx_landed_txn_q      <= '0;
       txsactive_idle_cycles <= 0;
       txsactive_bound_reported <= 1'b0;
 
@@ -1390,6 +1424,8 @@ module vip_chi_sva #(
     else begin
       req_outstanding_delta = 0;
       snp_outstanding_delta = 0;
+      snp_rx_outstanding_delta = 0;
+      snp_rx_opened_idx        = -1;
       for (int unsigned pcrd_i = 0;
            pcrd_i < (2 ** VIP_CHI_PCRD_TYPE_WIDTH_C); pcrd_i++) begin
         pcrd_delta_by_type[pcrd_i] = 0;
@@ -2819,9 +2855,66 @@ module vip_chi_sva #(
         end
       end
 
+      // ----------------------------------------------------------------------
+      // The received-snoop window, at the snoopee. Same three sites as the
+      // sending window above with the directions swapped, plus the allowance:
+      // the open reads a REGISTERED landing rather than the wire, so the count
+      // this arm judges is first non-zero two cycles after the SNP beat.
+      //
+      // The open is written BEFORE the two closes on purpose. A snoop answered
+      // in the very cycle its window would open nets to zero either way, but the
+      // per-TxnID flag must end at zero rather than at one, and the last
+      // non-blocking write to it in source order is the one that lands.
+      // snp_rx_opened_idx is what lets the closes see that entry at all, since
+      // its flag is still low when they test it.
+      // ----------------------------------------------------------------------
+      if (snp_rx_landed_q) begin
+        snp_rx_win_idx = txn_id_to_index(snp_rx_landed_txn_q);
+        if (!snp_rx_inflight_by_txn[snp_rx_win_idx]) begin
+          snp_rx_inflight_by_txn[snp_rx_win_idx]  <= 1'b1;
+          snp_rx_dat_beats_by_txn[snp_rx_win_idx] <= 0;
+          snp_rx_outstanding_delta = snp_rx_outstanding_delta + 1;
+          snp_rx_opened_idx        = int'(snp_rx_win_idx);
+        end
+      end
+
+      if (vif.txrspflitv &&
+          is_snp_resp_rsp_opcode(rsp_opcode_t'(vif.txrspflit.opcode))) begin
+        snp_rx_win_idx = txn_id_to_index(txn_id_t'(vif.txrspflit.txnid));
+        if (snp_rx_inflight_by_txn[snp_rx_win_idx] ||
+            (snp_rx_opened_idx == int'(snp_rx_win_idx))) begin
+          snp_rx_inflight_by_txn[snp_rx_win_idx] <= 1'b0;
+          snp_rx_outstanding_delta = snp_rx_outstanding_delta - 1;
+        end
+      end
+
+      if (vif.txdatflitv &&
+          is_snp_resp_dat_opcode(dat_opcode_t'(vif.txdatflit.opcode))) begin
+        snp_rx_win_idx = txn_id_to_index(txn_id_t'(vif.txdatflit.txnid));
+        if (snp_rx_inflight_by_txn[snp_rx_win_idx] ||
+            (snp_rx_opened_idx == int'(snp_rx_win_idx))) begin
+          if ((snp_rx_dat_beats_by_txn[snp_rx_win_idx] + 1) <
+              unsigned'(vip_chi_types_pkg::chi_xfer_dat_beats(
+                          VIP_CHI_REQ_SIZE_64B_C, CFG_P.DATA_BYTES_P))) begin
+            snp_rx_dat_beats_by_txn[snp_rx_win_idx] <=
+              snp_rx_dat_beats_by_txn[snp_rx_win_idx] + 1;
+          end
+          else begin
+            snp_rx_dat_beats_by_txn[snp_rx_win_idx] <= 0;
+            snp_rx_inflight_by_txn[snp_rx_win_idx]  <= 1'b0;
+            snp_rx_outstanding_delta = snp_rx_outstanding_delta - 1;
+          end
+        end
+      end
+
+      snp_rx_landed_q     <= vif.rxsnpflitv;
+      snp_rx_landed_txn_q <= txn_id_t'(vif.rxsnpflit.txnid);
+
       // One NBA update carrying the net change every site above contributed.
       req_outstanding_count <= req_outstanding_count + req_outstanding_delta;
       snp_outstanding_count <= snp_outstanding_count + snp_outstanding_delta;
+      snp_rx_outstanding_count <=
+        snp_rx_outstanding_count + snp_rx_outstanding_delta;
       for (int unsigned pcrd_i = 0;
            pcrd_i < (2 ** VIP_CHI_PCRD_TYPE_WIDTH_C); pcrd_i++) begin
         pcrd_held_by_type[pcrd_i] <=
@@ -3571,13 +3664,21 @@ module vip_chi_sva #(
   // on. It was never the peer's window read off the wrong wire; it was this
   // node's own obligation, and the check that expresses it was switched off for
   // the one role that gets it wrong.
-  // Two limbs, one rule. The snoop limb is 14.7.2's second condition, counted
-  // separately so the OR the clause requires is what holds the sideband up
-  // rather than an accident of how the two windows happen to overlap. See the
-  // snoop window in the always_ff above.
+  // Three limbs, one rule. The first two are 14.7.2's two conditions at the
+  // ICN-facing vantage, counted separately so the OR the clause requires is what
+  // holds the sideband up rather than an accident of how the two windows happen
+  // to overlap. The third is the snoopee's own sentence -- "An RN-F or RN-D
+  // component must also assert TXSACTIVE while a Snoop transaction is in
+  // progress" -- and it is a claim about a level this node raises in answer to
+  // something it received, so it carries the measured assertion allowance the
+  // other two do not need. One check ID for all three: it is one obligation, the
+  // section states it as a logical OR, and a user standing it down wants the
+  // sideband quiet whichever limb was holding it up. See the two snoop windows
+  // in the always_ff above.
   property p_txsactive_covers_outstanding;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      ((req_outstanding_count > 0) || (snp_outstanding_count > 0))
+      ((req_outstanding_count > 0) || (snp_outstanding_count > 0) ||
+       (snp_rx_outstanding_count > 0))
         |-> vif.txsactive;
   endproperty
 
@@ -4016,7 +4117,7 @@ module vip_chi_sva #(
   assert property (p_txsactive_covers_outstanding)
     chk_hit(VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E);
   else
-    chk_miss(VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E, $sformatf("TXSACTIVE was low with %0d transaction(s) and %0d snoop(s) still outstanding", req_outstanding_count, snp_outstanding_count));
+    chk_miss(VIP_CHI_CHK_TXSACTIVE_COVERS_OUTSTANDING_E, $sformatf("TXSACTIVE was low with %0d transaction(s), %0d snoop(s) sent and %0d snoop(s) received still outstanding", req_outstanding_count, snp_outstanding_count, snp_rx_outstanding_count));
 
   assert property (p_txsactive_deassert_bounded)
     chk_hit(VIP_CHI_CHK_TXSACTIVE_DEASSERT_BOUNDED_E);

@@ -552,6 +552,13 @@ async def tc_chi_coh_d_txsactive_negctl(dut) -> None:
   await _run_d_coherent(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_coh_d_snp_txsactive_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_snp_txsactive_negctl(dut) -> None:
+  """Run this public testcase through the CHI-D coherent topology."""
+  test_name = "tc_chi_coh_d_snp_txsactive_negctl"
+  await _run_d_coherent(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_coh_d_txsactive_window", timeout_time=20, timeout_unit="ms")
 async def tc_chi_coh_d_txsactive_window(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
@@ -906,6 +913,13 @@ async def tc_chi_coh_e_transition_sweep(dut) -> None:
 async def tc_chi_coh_e_txsactive_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_txsactive_negctl"
+  await _run_e_coherent(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_coh_e_snp_txsactive_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_snp_txsactive_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E coherent topology."""
+  test_name = "tc_chi_coh_e_snp_txsactive_negctl"
   await _run_e_coherent(dut, test_name)
 
 

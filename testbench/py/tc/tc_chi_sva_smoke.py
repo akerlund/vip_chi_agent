@@ -55,12 +55,11 @@ _CHANNELS = ("req", "rsp", "dat")
 def _sample(base: dict, **over) -> dict:
   """One cycle of checker input: link state plus all-quiet channels.
 
-  The snoop VALIDS are here, and so is the outbound snoop FLIT -- which is as
-  much of the snoop channel as bind_chi samples. The valids serve link_quiet;
-  the tx flit serves the snoop limb of TXSACTIVE_COVERS_OUTSTANDING, which pairs
-  a snoop with its response by TxnID. The inbound snoop flit is not sampled by
-  the checker and so is not built here, and the snoop channel's own rules still
-  belong to bind_chi_snp.
+  The snoop VALIDS are here, and so are BOTH snoop flits -- which is as much of
+  the snoop channel as bind_chi samples. The valids serve link_quiet; the tx flit
+  serves the sending limb of TXSACTIVE_COVERS_OUTSTANDING and the rx flit its
+  receiving limb, each pairing a snoop with its response by TxnID from one end.
+  The snoop channel's own rules still belong to bind_chi_snp.
 
   A key the real sampler supplies and this one does not is a KeyError the moment
   a rule reads it, not a rule quietly standing down -- which is how the snoop
@@ -76,6 +75,7 @@ def _sample(base: dict, **over) -> dict:
   for d in ("tx", "rx"):
     s[f"{d}snpflitv"] = 0
   s["txsnpflit"] = None
+  s["rxsnpflit"] = None
   s.update(over)
   return s
 
@@ -381,6 +381,58 @@ class tc_chi_sva_smoke(uvm_test):
     assert self._fired(c, "CHI_TXSACTIVE_COVERS_OUTSTANDING") == 1, (
       "the sideband was dropped three beats into a four-beat SnpRespData and "
       "the snoop limb treated the snoop as already answered")
+
+    # ---- The SNOOPEE's own window, and its assertion allowance -----------
+    # The other half of the same clause: "An RN-F or RN-D component must also
+    # assert TXSACTIVE while a Snoop transaction is in progress". A snoopee
+    # cannot raise a level before it has been given a reason to, so the window
+    # is required from the SECOND cycle after the flit lands and not the first.
+    # Two cycles is the measured interval in both ports; these two cases pin it,
+    # because an arm that required it a cycle earlier would false-fail every
+    # legal coherent run and an arm that required it later would miss the drop.
+    c = _checker(Role.RNF)
+    _feed_txn(c, [
+      _snp("rx", txnid=7),
+      _sample(_RUN, txsactive=0),
+    ])
+    assert self._fired(c, "CHI_TXSACTIVE_COVERS_OUTSTANDING") == 0, (
+      "the cycle after a snoop landed was judged, which is inside the "
+      "allowance the snoopee needs to see the flit at all")
+
+    c = _checker(Role.RNF)
+    _feed_txn(c, [
+      _snp("rx", txnid=7),
+      _sample(_RUN, txsactive=0),
+      _sample(_RUN, txsactive=0),
+    ])
+    assert self._fired(c, "CHI_TXSACTIVE_COVERS_OUTSTANDING") == 1, (
+      "TXSACTIVE was still low two cycles after a snoop landed, with nothing "
+      "else outstanding, and the receiving limb did not report it")
+
+    # ---- ...and the SnpResp this node SENDS ends it -----------------------
+    c = _checker(Role.RNF)
+    _feed_txn(c, [
+      _snp("rx", txnid=7),
+      _sample(_RUN),
+      _rsp("tx", opcode=int(RspOpcode.SNP_RESP), txnid=7),
+      _sample(_RUN, txsactive=0),
+    ])
+    assert self._fired(c, "CHI_TXSACTIVE_COVERS_OUTSTANDING") == 0, (
+      "the sideband was dropped after this node had answered the snoop, which "
+      "is where its window ends")
+
+    # ---- A SnpRespData burst it SENDS ends it on the LAST beat ------------
+    c = _checker(Role.RNF)
+    _feed_txn(c, [
+      _snp("rx", txnid=7),
+      _sample(_RUN),
+      *[_dat("tx", opcode=int(DatOpcode.SNP_RESP_DATA), txnid=7, dataid=i)
+        for i in range(3)],
+      _sample(_RUN, txsactive=0),
+    ])
+    assert self._fired(c, "CHI_TXSACTIVE_COVERS_OUTSTANDING") == 1, (
+      "the sideband was dropped three beats into a four-beat SnpRespData this "
+      "node was sending and the receiving limb treated the snoop as answered")
 
     # ---- Write data sent with no DBID grant behind it ---------------------
     c = _checker()

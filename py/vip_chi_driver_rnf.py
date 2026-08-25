@@ -211,11 +211,14 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
       # opens a TXSACTIVE window of its own: the request-side count knows
       # nothing about it, and a SnpRespData burst can span many cycles during
       # which the sideband must not drop.
-      self.tx_activity_begin()
-      try:
+      if self.cfg.rnf_txsactive_snoop_drop_negctl:
         await self.process_snoop(snp)
-      finally:
-        self.tx_activity_end()
+      else:
+        self.tx_activity_begin()
+        try:
+          await self.process_snoop(snp)
+        finally:
+          self.tx_activity_end()
 
   # ==========================================================================
   # Resulting state after a snoop for the clean/no-data cases:

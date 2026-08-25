@@ -54,6 +54,7 @@ class chi_coherent_tb_env(uvm_env):
     self.coh_checker = None
     self.cov = None
     self.rnf_sva = []
+    self.hrnf_sva = []
     self.hnfr_sva = []
     self.snp_sva = []
     self.hrnf0_req_fifo = None
@@ -126,9 +127,15 @@ class chi_coherent_tb_env(uvm_env):
     # traffic" would be unanswerable from the artifact that exists to answer it.
     # Derive the prefix from the bus's own config instead.
     pfx = "e_" if hrnf0_vif.cfg.is_e else ""
-    self.rnf_sva = [
+    # The two RN-F endpoints, in a named list as well as in rnf_sva, for the same
+    # reason hnfr_sva has one: a test that has to waive or read a rule at THESE
+    # endpoints should say so by name rather than by position.
+    self.hrnf_sva = [
       bind_chi(hrnf0_vif, f"{pfx}hrnf0_sva", enable_completion_timeout=False),
       bind_chi(hrnf1_vif, f"{pfx}hrnf1_sva", enable_completion_timeout=False),
+    ]
+    self.rnf_sva = [
+      *self.hrnf_sva,
       # The downstream SN-F link, added: the HN-F's SN-facing port
       # and the SN-F endpoint behind it. It carries the memory traffic of every
       # coherent read miss and was checked by nothing, in either port.

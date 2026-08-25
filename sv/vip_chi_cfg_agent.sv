@@ -853,6 +853,24 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0.
   bit rnf_snp_resp_data_negctl = 1'b0;
 
+  // Negative control for the RECEIVING limb of CHI_TXSACTIVE_COVERS_OUTSTANDING.
+  // The snoopee answers a snoop without opening a TXSACTIVE window at all, so
+  // the sideband stays low for as long as it takes to look up the line and drive
+  // the response -- which is the under-assertion IHI 0050 E section 14.7.2 /
+  // D section 13.7.2 forbids of a snoopee: "An RN-F or RN-D component must also
+  // assert TXSACTIVE while a Snoop transaction is in progress".
+  //
+  // The window and not the level: dropping the level directly would make the
+  // credit loop and the control two writers of the same clocking-block output,
+  // and which one landed would depend on thread order. Skipping the count leaves
+  // one writer and no race.
+  //
+  // The violation is only visible while the snoopee has nothing of its OWN
+  // outstanding -- the request limb would hold the sideband up otherwise -- so
+  // the test that uses this has to snoop a node that is idle.
+  // Default 0.
+  bit rnf_txsactive_snoop_drop_negctl = 1'b0;
+
   // Negative control for the separated-persist completion form. The completer
   // sends a standalone Persist FIRST, carrying the request's TxnID, and then
   // CompPersist.
@@ -1315,6 +1333,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.snf_tag_match_unrequested_negctl ||
         this.rnf_snp_resp_sd_negctl ||
         this.rnf_snp_resp_data_negctl ||
+        this.rnf_txsactive_snoop_drop_negctl ||
         this.snf_persist_before_comp_negctl ||
         this.snf_write_zero_bare_comp_negctl ||
         this.snf_duplicate_dat_beat || this.snf_reorder_ordered_service ||

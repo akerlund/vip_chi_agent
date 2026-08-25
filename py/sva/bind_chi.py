@@ -997,6 +997,11 @@ class bind_chi:
     # answered by one SnpResp -- opens one window and not two.
     self._snp_inflight = {}
     self._snp_dat_beats = {}
+    # The receiving window's shadow, and the extra registered stage that carries
+    # its assertion allowance. See _observe_snoop_rx_window.
+    self._snp_rx_inflight = {}
+    self._snp_rx_dat_beats = {}
+    self._snp_rx_landed = None
 
     # TXSACTIVE over-assertion tracking: consecutive fully-idle cycles with the
     # sideband still up, and a latch so one stuck episode reports once rather
@@ -1128,6 +1133,10 @@ class bind_chi:
     # that owes the window without needing a role predicate. `get_or` yields 0
     # for txsnpflitv on a role with no snoop channel, so this never fires there.
     s["txsnpflit"] = self._flit_fields("tx", "snp") if s["txsnpflitv"] else None
+    # The inbound snoop's fields, for the receiving window below. Same argument
+    # in the other direction: only a snoopee receives snoops, so the direction
+    # scopes that arm to the vantage that owes the level.
+    s["rxsnpflit"] = self._flit_fields("rx", "snp") if s["rxsnpflitv"] else None
     # Flit contents only where a flit is actually being presented. Every check
     # that reads them is already guarded by the same flitv, so a None here is
     # never dereferenced -- and skipping the slice on idle cycles keeps this
@@ -1933,6 +1942,7 @@ class bind_chi:
     self._check_atomic_dat_completion(s)
     self._check_ordered_read_receipt(s)
     self._observe_snoop_window(s)
+    self._observe_snoop_rx_window(s)
     self._check_txsactive(s)
 
     self._settle_credits()
@@ -2000,6 +2010,64 @@ class bind_chi:
     self._post(self._snp_inflight, txn, False)
 
   # ---------------------------------------------------------------------------
+  # The snoop window, at the vantage that RECEIVES snoops.
+  #
+  # The other half of the same clause, and the sentence is the snoopee's own:
+  # "An RN-F or RN-D component must also assert TXSACTIVE while a Snoop
+  # transaction is in progress".
+  #
+  # It needs something the sending window does not: an ASSERTION ALLOWANCE. A
+  # snoopee cannot raise a level before it has been given a reason to, so the
+  # window can only be required from later than the cycle the SNP flit lands in.
+  # The open therefore reads the PREVIOUS cycle's landing, which with the posted
+  # write this class already uses puts the count non-zero two cycles after the
+  # landing edge.
+  #
+  # Two is measured, not chosen. Across every coherent testcase in both ports the
+  # interval from the accepted SNP beat to the sideband rising is exactly 2, in
+  # 72 pyUVM and 127 SystemVerilog occurrences with no spread: the responder
+  # steps off the accepted beat before it opens its window, and the credit loop
+  # is the only writer of the level. An allowance assumed to be one cycle would
+  # false-fail every coherent run.
+  #
+  # `opened` exists for the case where a snoop is answered in the very cycle its
+  # window opens. The posted write means the flag is still False when the close
+  # sites test it, so without this they would decline to retire and the entry
+  # would stay open for good.
+  # ---------------------------------------------------------------------------
+  def _observe_snoop_rx_window(self, s: dict) -> None:
+    landed = self._snp_rx_landed
+    rx = s["rxsnpflit"]
+    self._snp_rx_landed = int(rx["txnid"]) if rx is not None else None
+
+    opened = None
+    if landed is not None and not self._snp_rx_inflight.get(landed, False):
+      self._post(self._snp_rx_inflight, landed, True)
+      self._post(self._snp_rx_dat_beats, landed, 0)
+      opened = landed
+
+    rf = s["txrspflit"]
+    if (rf is not None
+        and int(rf["opcode"]) in _SNP_RESP_RSP_OPCODES_C
+        and (self._snp_rx_inflight.get(int(rf["txnid"]), False)
+             or int(rf["txnid"]) == opened)):
+      self._post(self._snp_rx_inflight, int(rf["txnid"]), False)
+
+    df = s["txdatflit"]
+    if df is None or int(df["opcode"]) not in _SNP_RESP_DAT_OPCODES_C:
+      return
+    txn = int(df["txnid"])
+    if not self._snp_rx_inflight.get(txn, False) and txn != opened:
+      return
+
+    beats = self._snp_rx_dat_beats.get(txn, 0) + 1
+    if beats < chi_xfer_dat_beats(REQ_SIZE_64B, self._data_bytes):
+      self._post(self._snp_rx_dat_beats, txn, beats)
+      return
+    self._post(self._snp_rx_dat_beats, txn, 0)
+    self._post(self._snp_rx_inflight, txn, False)
+
+  # ---------------------------------------------------------------------------
   # TXSACTIVE against the outstanding window.
   #
   # TXSACTIVE tells the receiver this node may have snoopable transactions
@@ -2017,6 +2085,7 @@ class bind_chi:
   def _check_txsactive(self, s: dict) -> None:
     outstanding = sum(1 for v in self._req_inflight.values() if v)
     snoops = sum(1 for v in self._snp_inflight.values() if v)
+    snoops_rx = sum(1 for v in self._snp_rx_inflight.values() if v)
 
     # BOTH vantages. This was requester-only, on the ground that "a completer
     # has none of its own outstanding transactions". That does not survive
@@ -2033,12 +2102,13 @@ class bind_chi:
     # window broken while the causing request is still outstanding is invisible
     # in a count that adds them together, and it is the failure 14.7.2's second
     # condition exists to name. See _observe_snoop_window.
-    if outstanding or snoops:
+    if outstanding or snoops or snoops_rx:
       self._chk(
         "CHI_TXSACTIVE_COVERS_OUTSTANDING", bool(s["txsactive"]),
-        f"TXSACTIVE was low with {outstanding} transaction(s) and {snoops} "
-        f"snoop(s) still outstanding: the window it reports must cover every "
-        f"one of them, not just the cycles carrying flits")
+        f"TXSACTIVE was low with {outstanding} transaction(s), {snoops} "
+        f"snoop(s) sent and {snoops_rx} snoop(s) received still outstanding: "
+        f"the window it reports must cover every one of them, not just the "
+        f"cycles carrying flits")
 
     # An episode ends the moment anything happens on the link. That is what
     # keeps the bound clear of a sender's own retire tail: the completion, and
@@ -2055,7 +2125,7 @@ class bind_chi:
     # adding it there would arm all of them twice. What is needed here is only
     # "is anything moving". ChiBus.get_or returns 0 for a signal a role does not
     # have, so this costs nothing on the roles with no snoop channel.
-    link_quiet = not outstanding and not snoops and not any(
+    link_quiet = not outstanding and not snoops and not snoops_rx and not any(
       s[f"{d}{ch}flitv"] for d in ("tx", "rx")
       for ch in (*_CHANNELS_C, "snp"))
 
