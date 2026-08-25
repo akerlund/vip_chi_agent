@@ -86,6 +86,7 @@ from vip_chi_types_pkg import (
   atomic_size_legal,
   req_order_legal,
   req_attr_combination_legal,
+  req_allocate_permitted,
   req_likely_shared_permitted,
   req_size_fixed_64b, REQ_SIZE_64B,
   comp_resp_legal,
@@ -2369,6 +2370,14 @@ class bind_chi:
               f"lists it as "
               f"{'Snoopable' if snp_req is SnpAttrReq.ONE else 'Non-snoopable'} "
               f"only")
+
+    # Table A-3's Allocate column, which no other rule reaches: Table 2-12's
+    # Snoopable rows leave the bit free, so an Evict carrying it is a legal tuple
+    # with an inapplicable field set.
+    self._chk("CHI_REQ_ALLOCATE_LEGAL",
+              not (((ma >> 3) & 1) and not req_allocate_permitted(opcode)),
+              f"opcode 0x{int(opcode):x} carried Allocate asserted, and "
+              f"Table A-3 marks the field inapplicable for it")
 
     # Section 2.9.5's LikelyShared whitelist. Narrower than the tuple rule above,
     # which only knows the table's "LikelyShared implies Snoopable": this also

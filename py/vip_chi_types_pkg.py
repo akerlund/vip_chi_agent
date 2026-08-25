@@ -393,6 +393,22 @@ CHECK_IDS = (
   # The mirror of the TxnID-uniqueness rule with the roles swapped, and it was
   # the one identifier rule in the section that nothing checked.
   "CHI_COMPLETER_DBID_UNIQUE",
+
+  # Allocate where Table A-3 marks it inapplicable, appended for the same
+  # append-only reason.
+  #
+  # Its own id, and the reason is what makes the rest of Table A-3's MemAttr
+  # columns absent rather than forgotten. Cacheable, Device and EWA are fixed by
+  # the table on the fourteen Snoopable-only opcodes -- and on those opcodes
+  # SnpAttr must be 1, which CHI_REQ_SNP_ATTR_LEGAL requires, while Table 2-12
+  # admits no Snoopable row without Cacheable and EWA and none with Device, which
+  # CHI_REQ_ATTR_COMBINATION_LEGAL requires. A rule for those three columns could
+  # not fail without one of those two failing first.
+  #
+  # Allocate is the one column neither reaches: Table 2-12's Snoopable rows leave
+  # it free, so an Evict carrying it passes every existing rule while section
+  # 2.9.3 puts Evict on its inapplicable-and-must-be-zero list.
+  "CHI_REQ_ALLOCATE_LEGAL",
 )
 
 # Rules the Python port deliberately does not implement, with the reason. Kept
@@ -1913,6 +1929,31 @@ def snp_attr_requirement(opcode: int) -> SnpAttrReq:
   # table marks not applicable and free to take any value, plus the credit returns
   # the table does not list at all.
   return SnpAttrReq.ANY
+
+
+def req_allocate_permitted(opcode: int) -> bool:
+  """FALSE where Table A-3 marks Allocate inapplicable for this opcode.
+
+  IHI 0050 E section 2.9.3 / D section 2.9.3, under Allocate: the field "is
+  inapplicable and must be set to zero in DVMOp, PCrdReturn and Evict
+  transactions". Table A-3 says the same in its Allocate column -- a literal zero
+  on Evict and a footnoted zero on PCrdReturn -- so two authorities agree before
+  this is enforced, which is the standard the Size column was held to.
+
+  DVMOp is not modeled by this VIP. PCrdReturn's whole MemAttr is already
+  required to be zero by the PCrdReturn field rule, so the opcode that makes this
+  rule non-vacuous is Evict, and on Evict nothing else can catch it: Table 2-12's
+  Snoopable rows leave Allocate free, so an Evict with Allocate asserted is a
+  legal tuple carrying an inapplicable field.
+
+  Section 2.9.3's other Allocate statement -- "Must not be asserted for Normal
+  Non-cacheable memory transactions" -- is NOT here. That is a property of the
+  MemAttr tuple rather than of the opcode, and Table 2-12's Non-cacheable rows
+  already carry it, so req_attr_combination_legal owns it.
+
+  The twin of vip_chi_req_allocate_permitted in the SystemVerilog types package.
+  """
+  return int(opcode) not in (int(ReqOpcode.EVICT), int(ReqOpcode.PCRD_RETURN))
 
 
 def req_mem_attr_default(opcode: int) -> int:

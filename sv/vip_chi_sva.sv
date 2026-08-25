@@ -1689,6 +1689,20 @@ module vip_chi_sva #(
             chk_hit(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E);
           end
 
+          // Table A-3's Allocate column, which no other rule reaches: Table
+          // 2-12's Snoopable rows leave the bit free, so an Evict carrying it is
+          // a legal tuple with an inapplicable field set.
+          if (vif.txreqflit.memattr[3] &&
+              !vip_chi_types_pkg::vip_chi_req_allocate_permitted(
+                 vip_chi_req_opcode_t'(vif.txreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_ALLOCATE_LEGAL_E, $sformatf(
+              "opcode 0x%0h carried Allocate asserted, and Table A-3 marks the field inapplicable for it",
+              vif.txreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_ALLOCATE_LEGAL_E);
+          end
+
           // Section 2.9.5's LikelyShared whitelist. Narrower than the tuple rule
           // above, which only knows the table's "LikelyShared implies Snoopable":
           // this also faults the six Snoopable-only opcodes the section excludes.
@@ -2158,6 +2172,20 @@ module vip_chi_sva #(
           end
           else begin
             chk_hit(VIP_CHI_CHK_REQ_SNP_ATTR_LEGAL_E);
+          end
+
+          // Table A-3's Allocate column, which no other rule reaches: Table
+          // 2-12's Snoopable rows leave the bit free, so an Evict carrying it is
+          // a legal tuple with an inapplicable field set.
+          if (vif.rxreqflit.memattr[3] &&
+              !vip_chi_types_pkg::vip_chi_req_allocate_permitted(
+                 vip_chi_req_opcode_t'(vif.rxreqflit.opcode))) begin
+            chk_miss(VIP_CHI_CHK_REQ_ALLOCATE_LEGAL_E, $sformatf(
+              "opcode 0x%0h carried Allocate asserted, and Table A-3 marks the field inapplicable for it",
+              vif.rxreqflit.opcode));
+          end
+          else begin
+            chk_hit(VIP_CHI_CHK_REQ_ALLOCATE_LEGAL_E);
           end
 
           // Section 2.9.5's LikelyShared whitelist. Narrower than the tuple rule

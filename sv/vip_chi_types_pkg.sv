@@ -637,6 +637,22 @@ package vip_chi_types_pkg;
     // false-fail a conformant completer.
     VIP_CHI_CHK_COMP_DBID_MATCHES_GRANT_E,
     VIP_CHI_CHK_COMPLETER_DBID_UNIQUE_E,
+    // Allocate where Table A-3 marks it inapplicable, appended for the same
+    // append-only reason.
+    //
+    // Its own id, and the reason is what makes the rest of Table A-3's MemAttr
+    // columns absent here rather than forgotten. Cacheable, Device and EWA are
+    // fixed by the table on the fourteen Snoopable-only opcodes -- and on those
+    // opcodes SnpAttr must be 1, which REQ_SNP_ATTR_LEGAL requires, and Table
+    // 2-12 admits no Snoopable row without Cacheable and EWA and none with
+    // Device, which REQ_ATTR_COMBINATION_LEGAL requires. So a rule for those
+    // three columns could not fail without one of those two failing first,
+    // which is coverage it does not have.
+    //
+    // Allocate is the one column neither reaches: Table 2-12's Snoopable rows
+    // leave it free, so an Evict carrying it passes every existing rule while
+    // section 2.9.3 puts Evict on its inapplicable-and-must-be-zero list.
+    VIP_CHI_CHK_REQ_ALLOCATE_LEGAL_E,
     // Must stay last: the array bound and the loop terminator.
     VIP_CHI_CHK_NUM_E
   } vip_chi_check_id_t;
@@ -760,6 +776,7 @@ package vip_chi_types_pkg;
       VIP_CHI_CHK_REQ_SIZE_LEGAL_E:                    return "E Table A-3 / D Table A-3";
       VIP_CHI_CHK_REQ_EXCL_LEGAL_E:                    return "E section 6.3 / D section 6.3";
       VIP_CHI_CHK_REQ_ENDIAN_LEGAL_E:                  return "E Table A-3 / D Table A-3";
+      VIP_CHI_CHK_REQ_ALLOCATE_LEGAL_E:                return "E Table A-3 / D Table A-3, with E section 2.9.3 / D section 2.9.3";
       VIP_CHI_CHK_REQ_TAGOP_LEGAL_E:                   return "E Table 12-2";
       VIP_CHI_CHK_REQ_RETURN_PATH_LEGAL_E:             return "E section 13.10.4 / E section 13.10.15";
       VIP_CHI_CHK_DAT_HOME_NID_LEGAL_E:                return "E section 13.10.3";
@@ -2960,6 +2977,38 @@ package vip_chi_types_pkg;
   //
   // Cacheable implies EWA here rather than merely permitting it, because Table
   // 2-12 lists no row with Cacheable = 1 and EWA = 0.
+  // TRUE unless Table A-3 marks Allocate inapplicable for this opcode.
+  //
+  // IHI 0050 E section 2.9.3 / D section 2.9.3, under Allocate: the field "is
+  // inapplicable and must be set to zero in DVMOp, PCrdReturn and Evict
+  // transactions". Table A-3 says the same in its Allocate column -- a literal
+  // zero on Evict and a footnoted zero on PCrdReturn -- so two authorities agree
+  // before this is enforced, which is the standard the Size column was held to.
+  //
+  // DVMOp is not modeled by this VIP. PCrdReturn's whole MemAttr is already
+  // required to be zero by vip_chi_req_pcrd_return_fields_zero, so the opcode
+  // that makes this rule non-vacuous is Evict, and on Evict nothing else can
+  // catch it: Table 2-12's Snoopable rows leave Allocate free, so an Evict with
+  // Allocate asserted is a legal tuple carrying an inapplicable field.
+  //
+  // Section 2.9.3's other Allocate statement -- "Must not be asserted for Normal
+  // Non-cacheable memory transactions" -- is NOT here. That is a property of the
+  // MemAttr tuple rather than of the opcode, and Table 2-12's Non-cacheable rows
+  // already carry it, so vip_chi_req_attr_combination_legal owns it.
+  function automatic bit vip_chi_req_allocate_permitted(
+    input vip_chi_req_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_REQ_EVICT_E,
+      VIP_CHI_REQ_PCRD_RETURN_E: begin
+        return 1'b0;
+      end
+      default: begin
+        return 1'b1;
+      end
+    endcase
+  endfunction
+
   function automatic logic [3 : 0] vip_chi_req_mem_attr_default(
     input vip_chi_req_opcode_t opcode
   );

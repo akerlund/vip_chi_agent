@@ -189,6 +189,7 @@ CHECK_SPEC_C = {
   "CHI_REQ_ENDIAN_LEGAL":              "E Table A-3 / D Table A-3",
   "CHI_RSP_FIELD_ZERO":                "E Table A-4 / D Table A-4",
   "CHI_RSP_COMP_RESP_LEGAL":           "E Table 4-7 / D Table 4-5",
+  "CHI_REQ_ALLOCATE_LEGAL":            "E Table A-3 / D Table A-3, with E section 2.9.3 / D section 2.9.3",
   "CHI_DAT_CBUSY_LEGAL":               "E Table A-5",
 }
 
