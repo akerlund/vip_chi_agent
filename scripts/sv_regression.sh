@@ -261,10 +261,18 @@ python3 "$ROOT/scripts/check_gate_timing.py" >> "$SUMMARY" 2>&1 || gate_timing_b
 # 19 snoop responses against SV's 19, and the SV reset clearing 13 of 16 counters.
 # Both numbers were printed by both flows and nobody was comparing them.
 #
-# Needs the PYTHON logs as well, so it reports and exits 1 when only this flow has
-# run. Advisory here, like the checks above: a missing Python sweep is not a
-# failure of this one.
-python3 "$ROOT/scripts/check_counter_parity.py" >> "$SUMMARY" 2>&1 || true
+# A GATE on disagreement, and only on disagreement. It needs the PYTHON logs as
+# well, and a missing pyUVM sweep is not a failure of this one -- so the check
+# reports that case with its own exit code 2 and this gates on exit 1 alone.
+# That distinction is what lets it be a gate at all, and a gate is what it has
+# to be: an advisory parity check prints its divergences into a summary file
+# that passes anyway, which is indistinguishable from not running it.
+#
+# Counters only one port can produce are named in the check's own PORT_ONLY_C
+# table with the reason, so the expected residue is zero and any output here is
+# a new divergence.
+python3 "$ROOT/scripts/check_counter_parity.py" >> "$SUMMARY" 2>&1
+[ $? -eq 1 ] && counter_parity_bad=1
 
 # Every live link carries a checker, and every checker reports somewhere. This is
 # the one check above that reads the HARNESS first and the rows second, and that
@@ -299,4 +307,4 @@ python3 "$ROOT/scripts/check_bind_coverage.py" --csv "$OUT_DIR/check_tallies.csv
 python3 "$ROOT/scripts/check_opcode_evidence.py" "$OPCODE_CSV" \
   "$ROOT/build/py_regression/opcode_evidence.csv" >> "$SUMMARY" 2>&1 || opcode_gap=1
 
-exit $(( fail > 0 || ${bind_gap:-0} > 0 || ${illegal_bins_bad:-0} > 0 || ${opcode_gap:-0} > 0 || ${import_path_bad:-0} > 0 || ${gate_timing_bad:-0} > 0 ))
+exit $(( fail > 0 || ${bind_gap:-0} > 0 || ${illegal_bins_bad:-0} > 0 || ${opcode_gap:-0} > 0 || ${import_path_bad:-0} > 0 || ${gate_timing_bad:-0} > 0 || ${counter_parity_bad:-0} > 0 ))

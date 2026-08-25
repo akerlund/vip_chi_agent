@@ -334,6 +334,13 @@ class vip_chi_coherency_checker #(
   protected item_t::req_opcode_t rs_cause_req_sample;
   protected item_t::snp_opcode_t rs_snp_opcode_sample;
 
+  // The same cross as a set of reached pairs, keyed on the two opcodes packed
+  // into one int. The covergroup's percentage is computed by the simulator and
+  // pyUVM has no covergroup to compute one from, so that number is the one thing
+  // about this cross the two ports cannot compare. The count of distinct pairs
+  // they can, and check_counter_parity.py does.
+  protected bit rs_pair_hit [int];
+
   // cg_req_cache_transition samples, set where a request completes. The requester
   // axis had no coverage target of any kind before 3.2 -- cg_cache_transition
   // covers the snoop axis only -- which is a large part of why the held-state
@@ -1228,6 +1235,7 @@ class vip_chi_coherency_checker #(
     this.rs_cause_req_sample = item_t::req_opcode_t'(cause_op);
     this.rs_snp_opcode_sample = item_t::snp_opcode_t'(snp_op);
     this.cg_req_snp_pairing.sample();
+    this.rs_pair_hit[(int'(cause_op) << 8) | int'(snp_op)] = 1'b1;
 
     this.check_snoop_fwd_names_requester(node, line, snp_op, fwd_nid, fwd_txn_id,
                                          cause_node, cause_src, cause_txn);
@@ -2102,6 +2110,7 @@ class vip_chi_coherency_checker #(
   function int get_comp_ack_window_unclosed_count(); return this.n_eca_windows_unclosed; endfunction
   function real get_snp_resp_legality_coverage(); return this.cg_snp_resp_legality.get_coverage(); endfunction
   function real get_req_snp_pairing_coverage(); return this.cg_req_snp_pairing.get_coverage(); endfunction
+  function int get_req_snp_pairs_count(); return this.rs_pair_hit.size(); endfunction
   function int get_line_hazard_count(); return this.n_line_hazard; endfunction
   // Clean claim/release pairs. A test asserts on this to show the hazard rule
   // actually evaluated, rather than reading a zero violation count from a run
@@ -2162,8 +2171,8 @@ class vip_chi_coherency_checker #(
     // Its own line: the report server wraps a long one, and a wrapped
     // `field=value` is invisible to the sweeps that grep for these.
     `uvm_info("VIP_CHI_COH", $sformatf(
-      "COHERENCY REQ SNP PAIRING SUMMARY: req_snp_pairing_coverage=%0.1f",
-      this.cg_req_snp_pairing.get_coverage()), UVM_LOW)
+      "COHERENCY REQ SNP PAIRING SUMMARY: req_snp_pairs=%0d req_snp_pairing_coverage=%0.1f",
+      this.rs_pair_hit.size(), this.cg_req_snp_pairing.get_coverage()), UVM_LOW)
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY HAZARD SUMMARY: line_hazards=%0d line_claims_cleared=%0d",
       this.n_line_hazard, this.n_line_clear), UVM_LOW)

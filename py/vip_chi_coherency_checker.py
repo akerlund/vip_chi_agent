@@ -165,6 +165,7 @@ class vip_chi_coherency_checker(uvm_component):
               "rnf1_req_cc", "rnf1_rsp_cc", "rnf1_dat_cc", "rnf1_snp_cc"):
       setattr(self, m, None)
     self._init_shadow()
+    self._init_coverage()
 
   def _init_shadow(self):
     # Per-node open coherent reads + correlation maps (keyed by TxnID -> line).
@@ -325,11 +326,21 @@ class vip_chi_coherency_checker(uvm_component):
     # keeping the dirty. The dual of n_bad_snp_resp_form, which reads the other
     # direction.
     self.n_snp_dirty_lost = 0
+  def _init_coverage(self):
+    """The covergroup hit sets: this port's whole coverage model.
+
+    Separate from _init_shadow because a DUT reset must NOT reach these. The
+    shadow is a model of the DUT and a reset invalidates it; coverage is a record
+    of what the simulation exercised, and nothing about a reset unexercises it.
+    A SystemVerilog covergroup accumulates for the whole simulation whatever the
+    DUT does, so clearing these here would also make the two ports disagree about
+    every reset testcase -- which is what check_counter_parity.py reports.
+    """
     # cg_snp_resp_legality hit set: (snp_opcode, resp_state, with_data).
     self._srl_hit = set()
     # cg_req_snp_pairing hit set: (cause_req_opcode, snp_opcode). The SV port
-    # carries this as a covergroup cross; this port has no covergroup object, so
-    # the surface is the set of pairs actually reached.
+    # keeps the same set beside its covergroup, so the count of distinct pairs
+    # is comparable between the ports; the covergroup percentage is not.
     self._rsp_hit = set()
     # cg_cache_transition hit sets (one per covergroup item; see accessor).
     self._ct_from_hit = set()
