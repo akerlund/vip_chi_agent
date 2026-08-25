@@ -475,6 +475,31 @@ class tc_chi_sva_smoke(uvm_test):
       "the sideband was dropped three beats into a four-beat SnpRespData this "
       "node was sending and the receiving limb treated the snoop as answered")
 
+    # ---- A credit spent in the cycle it arrives ---------------------------
+    # E section 14.2.1, Note: "An L-Credit cannot be used in the cycle it is
+    # received." Only at zero: above zero a same-cycle grant and consume is an
+    # ordinary pipelined link spending an EARLIER credit while a new one arrives,
+    # which the Note does not forbid. The VIP's own driver refuses to send at
+    # zero, and that refusal is what makes the underflow rule trustworthy -- so a
+    # wire control would need a send path that bypasses the credit manager, which
+    # neither port has. This is the only thing that reaches the rule.
+    c = _checker()
+    _feed(c, [_sample(_RUN, rxreqlcrdv=1, txreqflitv=1)])
+    assert self._fired(c, "CHI_LCRD_USED_IN_GRANT_CYCLE") == 1, (
+      "a flit sent in the cycle its only L-credit was granted was not reported")
+
+    # ...and the same pair above zero is an ordinary pipelined link, which the
+    # Note permits. The bound is the whole of the rule's correctness: without it
+    # this fires on every busy cycle of every run.
+    c = _checker()
+    _feed(c, [
+      _sample(_RUN, rxreqlcrdv=1),
+      _sample(_RUN, rxreqlcrdv=1, txreqflitv=1),
+    ])
+    assert self._fired(c, "CHI_LCRD_USED_IN_GRANT_CYCLE") == 0, (
+      "a grant and a send in one cycle with a credit already banked was "
+      "reported, and that is what an ordinary pipelined link looks like")
+
     # ---- The snoop channel's link gating, per machine ---------------------
     # _RUN is already a DIVERGENT state -- txlinkactivereq/rxlinkactiveack up,
     # rxlinkactivereq/txlinkactiveack down -- so the transmit machine is RUN and
