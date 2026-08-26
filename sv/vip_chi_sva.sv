@@ -111,6 +111,7 @@ module vip_chi_sva #(
   typedef vip_chi_types #(CFG_P)::req_opcode_t req_opcode_t;
   typedef vip_chi_types #(CFG_P)::rsp_opcode_t rsp_opcode_t;
   typedef vip_chi_types #(CFG_P)::dat_opcode_t dat_opcode_t;
+  typedef vip_chi_types #(CFG_P)::snp_opcode_t snp_opcode_t;
   typedef vip_chi_types #(CFG_P)::size_t       size_t;
   typedef vip_chi_types #(CFG_P)::node_id_t    node_id_t;
   // Through FLIT_TYPES_T, not through vip_chi_types #(CFG_P): the interface
@@ -837,6 +838,20 @@ module vip_chi_sva #(
     return ((opcode == dat_opcode_t'(VIP_CHI_DAT_SNP_RESP_DATA_C)) ||
             (opcode == dat_opcode_t'(VIP_CHI_DAT_SNP_RESP_DATA_PTL_C)) ||
             (opcode == dat_opcode_t'(VIP_CHI_DAT_SNP_RESP_DATA_FWDED_C)));
+  endfunction
+
+  // SNP opcode 0x00 is SnpLCrdReturn: a link-layer flit that carries no
+  // transaction and will never be answered. Opening a snoop window for one
+  // leaves it outstanding forever, so TXSACTIVE's obligation is dropped on the
+  // floor at both ends and CHI_TXSACTIVE_COVERS_OUTSTANDING then reports on every
+  // cycle after the first returned credit.
+  //
+  // The exclusion has existed on REQ, RSP and DAT since the monitor was written
+  // and nowhere for SNP, because nothing had ever sent a credit return on this
+  // channel: the coherent link is the only one that carries it, and that link
+  // could not be taken down without a reset.
+  function automatic bit is_snp_lcrd_return(input snp_opcode_t opcode);
+    return (opcode == snp_opcode_t'(VIP_CHI_SNP_LCRD_RETURN_C));
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -2847,7 +2862,8 @@ module vip_chi_sva #(
       // or SnpRespData beat is still inside the window: "until AFTER the final
       // completing flit".
       // ----------------------------------------------------------------------
-      if (vif.txsnpflitv) begin
+      if (vif.txsnpflitv &&
+          !is_snp_lcrd_return(snp_opcode_t'(vif.txsnpflit.opcode))) begin
         snp_win_idx = txn_id_to_index(txn_id_t'(vif.txsnpflit.txnid));
         if (!snp_inflight_by_txn[snp_win_idx]) begin
           snp_inflight_by_txn[snp_win_idx]  <= 1'b1;
@@ -2935,7 +2951,8 @@ module vip_chi_sva #(
         end
       end
 
-      snp_rx_landed_q     <= vif.rxsnpflitv;
+      snp_rx_landed_q     <= vif.rxsnpflitv &&
+                             !is_snp_lcrd_return(snp_opcode_t'(vif.rxsnpflit.opcode));
       snp_rx_landed_txn_q <= txn_id_t'(vif.rxsnpflit.txnid);
 
       // One NBA update carrying the net change every site above contributed.

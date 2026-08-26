@@ -100,10 +100,11 @@ together, not one endpoint answering reads. In short:
   - The `{LINKACTIVEREQ, LINKACTIVEACK}` state machine — `STOP` / `ACTIVATE` /
     `RUN` / `DEACTIVATE` — one per link rather than per direction, with flits
     gated on `RUN` and credits on "not `STOP`".
-  - Graceful deactivation on the requester↔completer link, reaching a state
+  - Graceful deactivation on every link, coherent one included, reaching a state
     reset alone cannot: retire traffic, stop advertising receive credits, drop
     the request, return every held L-credit as an `LCrdReturn`, and only then
-    reach `STOP` genuinely empty. Not yet supported on the coherent link.
+    reach `STOP` genuinely empty. On the coherent link that is four channels, and
+    the home tears one RN port down without touching the others.
   - Activation delays chosen by the link state the peer is *already* in, which
     is what makes bring-up races reachable at all.
   - `TXSACTIVE` driven off the outstanding window, with a configurable legal
@@ -148,9 +149,9 @@ together, not one endpoint answering reads. In short:
     retry count, and per-channel back-pressure cycles.
   - Per-channel verbosity.
 - **Checking and coverage**
-  - 102 named rules — 84 bindable link/protocol/SNP assertions and 18
+  - 103 named rules — 85 bindable link/protocol/SNP assertions and 18
     scoreboard rules — each carrying a stable identity, a severity, pass and
-    fail counters, and the specification clause it enforces. 98 of them are
+    fail counters, and the specification clause it enforces. 99 of them are
     mirrored in the Python port; the four that are not are X/Z rules Verilator's
     two-state model cannot hold.
   - A self-derived per-line ownership shadow (never the HN-F directory) whose
@@ -194,7 +195,7 @@ together, not one endpoint answering reads. In short:
   - A single include entry point and one umbrella package.
   - UVM `uvm_config_db` wiring for the HN-I System Address Map and QoS window.
 - **Parity and regression evidence**
-  - **232 SystemVerilog** testcases and **233 pyUVM** testcases, mirrored
+  - **234 SystemVerilog** testcases and **235 pyUVM** testcases, mirrored
     between the two flows and gated by name so a test added on one side and not
     the other fails rather than quietly halving the coverage.
   - Cross-port gates on the surfaces that can drift while both ports pass their
@@ -806,14 +807,23 @@ The `_e` monitor republishes the CHI-E-only fields on the same ports.
   "down and drained" flag — poll that rather than the sideband, which falls as
   soon as the handshake completes and says nothing about the drain.
 
-  Scoped to the RN-I↔SN-F link. On the coherent topology the drain's
-  `LCrdReturn` reaches an HN-F whose REQ dispatch has no arm for opcode 0, so a
-  deactivation request there ends the run rather than tearing the link down; a
-  coherent link is returned to `STOP` by reset instead. See
-  [docs/FUTURE_WORK.md](docs/FUTURE_WORK.md).
+  On the coherent link there are four channels rather than three, and the fourth
+  is the one that makes it different: SNP runs home to requester, so the home
+  holds the send credits and the requester grants them. The home drains RSP, DAT
+  and SNP; the requester drains REQ, RSP and DAT and waits for the home's snoop
+  credits as well as its own. The home tears **one** RN port down and leaves the
+  others running, and re-advertises that port's initial budget on the way back
+  up, so the link carries snoops again afterwards.
 
   `DEACTIVATE` is the one state in which a sender may still transmit, and only
-  L-credit returns: the flit-gating rules admit opcode 0 there and nothing else.
+  L-credit returns: the flit-gating rules admit opcode 0 there and nothing else,
+  on the snoop channel too.
+
+  `CHI_LCRD_QUIESCENT_IN_STOP` judges REQ, RSP and DAT;
+  `CHI_SNP_LCRD_QUIESCENT_IN_STOP` is its snoop-channel twin and exists because
+  the first cannot reach that channel — the SNP rules live in their own bind so
+  a non-coherent link elaborates none of them, and that bind owns the only SNP
+  credit shadow there is.
 - **Peer-state-relative activation delay** — `cfg.lasm_req_delay_by_state[]`
   holds the requester's `LINKACTIVEREQ` off by a number of cycles chosen by the
   link state it observes at that moment (`STOP` / `DEACTIVATE` / `ACTIVATE` /
@@ -860,7 +870,7 @@ check is vacuous (e.g.
 ### Per-check identity, enable and statistics
 
 Every protocol rule has a stable identity (`vip_chi_check_id_t` in SV,
-`CHECK_IDS` in Python — the same 84 names, in the same order), a severity, and
+`CHECK_IDS` in Python — the same 85 names, in the same order), a severity, and
 pass/fail counters. The scoreboard's rules carry the same identity in a second
 registry of 18 (`vip_chi_sb_check_id_t` / `CHECK_IDS_SB`, all named `CHI_SB_*`);
 they are a separate enum because the SVA IDs size four arrays inside *every*

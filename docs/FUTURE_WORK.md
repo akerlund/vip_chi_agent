@@ -5,7 +5,7 @@ Checker D, coherent coverage, HN-I proxy, scoreboard, perf counters, exclusives,
 CMO, DCT forwarding, SN-F-behind-HN-F, MakeUnique, bounded-cache eviction) is
 **complete and tested** — every charter item has a named testcase in
 [../testbench/TEST_CASES.md](../testbench/TEST_CASES.md). The regression is
-**232 SV + 233 PY** — the same list on both flows apart from three documented
+**234 SV + 235 PY** — the same list on both flows apart from three documented
 exceptions: `tc_chi_sva_smoke` and `tc_chi_reject_scope`, both Python-only, and
 `tc_chi_e_hni_port1`, SV-only because the SV CHI-E proxy is 2x2 and the Python
 one 1x1, so its port-1 links do not exist to drive (see
@@ -98,17 +98,6 @@ Extends the RN-F / HN-F subsystem with more of the CHI coherency surface.
 - **Stash** — `WriteUniqueFullStash`, `StashOnce*`, `StashOnceSep*`: writes/reads
   that also push a copy toward a target cache. Needs a stash-target model on the
   RN-F side. *Effort L.*
-- **Graceful link deactivation on the COHERENT link** — the drain-to-`STOP`
-  handshake works on the RN-I <-> SN-F link and not on the RN-F <-> HN-F one, so
-  a coherent link reaches `STOP` only through a reset. Three things sit behind
-  it, measured rather than inferred: the HN-F fatals with *"unsupported REQ
-  opcode 0x0"* because the drain sends `ReqLCrdReturn` and the home's REQ dispatch
-  has no arm for it (the SN-F has had one all along); the HN-F has no per-port
-  `link_deactivating`, so the drain could never converge; and the RN-F's
-  `snp_credit_loop` has no stand-down, so it would keep putting credits on the
-  wire straight through a tear-down. Needs a testcase that reaches `STOP` on a
-  coherent link without a reset. `README.md` scopes the feature to the
-  RN-I <-> SN-F link, which is accurate today. *Effort M.*
 - **Multi-SN address striping / SAM behind the HN-F** — the two-level hierarchy
   ships `N_SN_PORTS=1` (a single downstream SN-F). A SAM-routed multi-SN fan-out
   behind the home (the HN-I SAM is the template) would let the HN-F stripe misses

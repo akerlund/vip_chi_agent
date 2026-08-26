@@ -890,16 +890,11 @@ class vip_chi_driver_rni(uvm_driver):
 
       # 5. And wait for the peer to hand back what it holds. The completer drops
       # its acknowledge on the same condition, so this loop ends at STOP.
-      while self.rsp_lcrd_granted or self.dat_lcrd_granted:
+      while self.peer_holds_credits():
         await bus.rising()
         self.drive_idle_sideband()
 
-      # Queued-but-unsent grants are dropped rather than carried across the gap:
-      # they were promises about a link that no longer exists, and re-activation
-      # advertises a fresh budget from schedule_initial_credit_grants().
-      self.rsp_lcrdv_pending = 0
-      self.dat_lcrdv_pending = 0
-      self.seen_rx_dat_flit = False
+      self.on_link_deactivated()
 
       self.cfg.link_deactivate_done = True
       self.logger.info(
@@ -917,6 +912,29 @@ class vip_chi_driver_rni(uvm_driver):
       self.post_activate_hook()
       self.logger.info(
         f"[{self.get_name()}] link reactivated after a graceful deactivation")
+
+  # --------------------------------------------------------------------------
+  def peer_holds_credits(self):
+    """Credits this node advertised that the peer has not yet handed back.
+
+    A hook because the answer is role-dependent: RSP and DAT are the channels
+    every requester receives, and an RN-F also grants SNP. Step 5 above is the
+    one place the difference matters, and reading a fixed pair of counters there
+    made the tear-down declare a coherent link drained while the home still held
+    snoop credits.
+    """
+    return bool(self.rsp_lcrd_granted or self.dat_lcrd_granted)
+
+  def on_link_deactivated(self):
+    """Drop what the link's own state was, now that the link is in STOP.
+
+    Queued-but-unsent grants go rather than being carried across the gap: they
+    were promises about a link that no longer exists, and re-activation
+    advertises a fresh budget from schedule_initial_credit_grants().
+    """
+    self.rsp_lcrdv_pending = 0
+    self.dat_lcrdv_pending = 0
+    self.seen_rx_dat_flit = False
 
   # --------------------------------------------------------------------------
   async def drain_tx_credits(self):

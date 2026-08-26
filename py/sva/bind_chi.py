@@ -195,11 +195,13 @@ _FLIT_FIELDS_C = {
           "pcrdtype"),
   "dat": ("opcode", "txnid", "srcid", "tgtid", "dbid", "dataid", "homenid",
           "cbusy"),
-  # One field, for one rule: the snoop limb of TXSACTIVE_COVERS_OUTSTANDING
+  # Two fields, for one rule: the snoop limb of TXSACTIVE_COVERS_OUTSTANDING
   # needs to pair a snoop with its response, and the TxnID is what pairs them.
-  # The SNP channel's own rules stay in bind_chi_snp with its own slice map --
-  # this is not the beginning of a second snoop checker here.
-  "snp": ("txnid",),
+  # The opcode is here to tell a snoop from an L-credit return, which carries no
+  # transaction and opens no window -- see _snp_flit_or_none. The SNP channel's
+  # own rules stay in bind_chi_snp with its own slice map; this is not the
+  # beginning of a second snoop checker here.
+  "snp": ("opcode", "txnid"),
 }
 
 # Opcode classes, mirroring the SV req_opcode_is_* / is_write_* functions.
@@ -1133,11 +1135,11 @@ class bind_chi:
     # endpoint transmits snoops, so the direction scopes the arm to the vantage
     # that owes the window without needing a role predicate. `get_or` yields 0
     # for txsnpflitv on a role with no snoop channel, so this never fires there.
-    s["txsnpflit"] = self._flit_fields("tx", "snp") if s["txsnpflitv"] else None
+    s["txsnpflit"] = self._snp_flit_or_none("tx", s["txsnpflitv"])
     # The inbound snoop's fields, for the receiving window below. Same argument
     # in the other direction: only a snoopee receives snoops, so the direction
     # scopes that arm to the vantage that owes the level.
-    s["rxsnpflit"] = self._flit_fields("rx", "snp") if s["rxsnpflitv"] else None
+    s["rxsnpflit"] = self._snp_flit_or_none("rx", s["rxsnpflitv"])
     # Flit contents only where a flit is actually being presented. Every check
     # that reads them is already guarded by the same flitv, so a None here is
     # never dereferenced -- and skipping the slice on idle cycles keeps this
@@ -1146,6 +1148,25 @@ class bind_chi:
       for d in ("tx", "rx"):
         s[f"{d}{ch}flit"] = self._flit_fields(d, ch) if s[f"{d}{ch}flitv"] else None
     return s
+
+  def _snp_flit_or_none(self, direction: str, valid) -> dict | None:
+    """The snoop on `direction` this cycle, or None -- and a credit return is None.
+
+    SNP opcode 0x00 is SnpLCrdReturn: a link-layer flit that carries no
+    transaction and will never be answered. Opening a snoop window for one leaves
+    it outstanding forever, which drops TXSACTIVE's obligation on the floor at
+    both ends -- CHI_TXSACTIVE_COVERS_OUTSTANDING then reports every cycle after
+    the first returned credit.
+
+    The exclusion has existed on REQ, RSP and DAT since the monitor was written
+    and nowhere for SNP, because nothing had ever sent a credit return on this
+    channel: the coherent link is the only one that carries it and that link could
+    not be taken down without a reset.
+    """
+    if not valid:
+      return None
+    f = self._flit_fields(direction, "snp")
+    return None if int(f["opcode"]) == 0 else f
 
   def _flit_fields(self, direction: str, channel: str) -> dict:
     raw = self.bus.get_or(f"{direction}{channel}flit")

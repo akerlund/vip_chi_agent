@@ -90,6 +90,13 @@ class vip_chi_driver_rnf #(
   // cycle onto txsnplcrdv by snp_credit_loop, mirroring the RSP/DAT credit path).
   protected int unsigned snp_lcrdv_pulses_pending;
 
+  // SNP credits this node has advertised and the home has not yet spent -- the
+  // snoop-channel twin of the base's rsp/dat_lcrd_granted, and the half of
+  // quiescence a requester cannot see from its own send pools. Without it the
+  // tear-down declared the link drained while the home still held snoop credits,
+  // on the one channel only a coherent link has.
+  protected int unsigned snp_lcrd_granted;
+
   `uvm_component_param_utils(vip_chi_driver_rnf #(CFG_P, FLIT_TYPES_T))
 
   // ---------------------------------------------------------------------------
@@ -167,6 +174,7 @@ class vip_chi_driver_rnf #(
     this.cache_data.delete();
     this.cache_dirty_be.delete();
     this.snp_lcrdv_pulses_pending = 0;
+    this.snp_lcrd_granted         = 0;
     super.handle_reset();
     this.reset_snp_outputs();
   endfunction
@@ -396,12 +404,26 @@ class vip_chi_driver_rnf #(
 
       // cfg.hold_snp_credit lets a test starve the HN-F's SNP send pool by pausing
       // credit advertisement; the pending grants accumulate and drain once cleared.
-      snp_hold = this.cfg.hold_snp_credit;
+      //
+      // link_deactivating holds the channel for a different reason: a receiver
+      // may not issue L-credits once the link is coming down, and this loop was
+      // the one that kept putting them on the wire straight through a tear-down.
+      // The base's credit loop has stood RSP and DAT down since deactivation
+      // existed; this channel is only on the coherent link, which could not
+      // deactivate at all, so nothing had ever asked it to stop.
+      snp_hold = this.cfg.hold_snp_credit || this.link_deactivating;
 
       this.vif_rni.g_drv.rni_cb.txsnplcrdv <= (this.snp_lcrdv_pulses_pending != 0) && !snp_hold;
 
       if ((this.snp_lcrdv_pulses_pending != 0) && !snp_hold) begin
         this.snp_lcrdv_pulses_pending--;
+        this.snp_lcrd_granted++;
+      end
+      // Every inbound snoop-channel flit spends one of the credits advertised
+      // above, INCLUDING an L-credit return: the return is itself a flit and
+      // consumes the credit it hands back.
+      if (this.vif_rni.g_drv.rni_cb.rxsnpflitv && (this.snp_lcrd_granted != 0)) begin
+        this.snp_lcrd_granted--;
       end
     end
   endtask
@@ -411,6 +433,29 @@ class vip_chi_driver_rnf #(
   // ---------------------------------------------------------------------------
   protected function void schedule_snp_credit_return();
     this.snp_lcrdv_pulses_pending++;
+  endfunction
+
+  protected function bit snp_is_lcrd_return(input snp_flit_t snp);
+    return (snp_opcode_t'(snp.opcode) == snp_opcode_t'(VIP_CHI_SNP_LCRD_RETURN_C));
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // The coherent half of the tear-down, hooked into the base's LASM cycle.
+  // ---------------------------------------------------------------------------
+  // The home also holds SNP send credits, which the base knows nothing about:
+  // its two channels are the ones every requester has. A tear-down that stopped
+  // waiting here would reach STOP with the snoop pool still banked.
+  virtual protected function bit peer_holds_credits();
+    return super.peer_holds_credits() || (this.snp_lcrd_granted != 0);
+  endfunction
+
+  // Queued-but-unsent SNP grants are dropped rather than carried across the gap,
+  // exactly as the base drops its RSP and DAT ones: they were promises about a
+  // link that no longer exists, and post_activate_hook advertises a fresh budget
+  // on the way back up.
+  virtual protected function void on_link_deactivated();
+    super.on_link_deactivated();
+    this.snp_lcrdv_pulses_pending = 0;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -429,6 +474,19 @@ class vip_chi_driver_rnf #(
       end
 
       snp = this.vif_rni.g_drv.rni_cb.rxsnpflit;
+
+      if (this.snp_is_lcrd_return(snp)) begin
+        // A link-layer flit, not a snoop: it consumes the credit it hands back
+        // and nothing else. Answering one would put a SnpResp on the wire for a
+        // snoop nobody sent, and re-granting the credit would refill the pool the
+        // tear-down is emptying -- the credit loop's shadow has already retired
+        // it. Unreachable until the home could drain this channel, which is why
+        // the guard is arriving with the drain rather than before it.
+        @(this.vif_rni.g_drv.rni_cb);
+        this.drive_idle_sideband();
+        continue;
+      end
+
       this.schedule_snp_credit_return();
 
       // Step off the accepted snoop beat before responding.
@@ -971,6 +1029,14 @@ class vip_chi_driver_rnf #(
     line  = this.line_addr(addr);
     beats = this.cache_data.exists(line)     ? this.cache_data[line]     : '{};
     dirty = this.cache_dirty_be.exists(line) ? this.cache_dirty_be[line] : '{};
+  endfunction
+
+  // Test-facing: SNP credits this node has advertised and the home has not yet
+  // spent. The requester's half of snoop-channel quiescence, and the reading a
+  // tear-down test needs before it starts -- a clean SNP drain proves nothing if
+  // there was never a snoop credit outstanding to strand.
+  function int unsigned snp_credits_granted();
+    return this.snp_lcrd_granted;
   endfunction
 
   function vip_chi_resp_t get_cache_state(input addr_t addr);

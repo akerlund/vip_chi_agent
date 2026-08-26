@@ -292,6 +292,10 @@ CHECK_IDS = (
   "CHI_SNP_IDLE_IN_RESET",
   "CHI_SNP_LCRD_OVERFLOW",
   "CHI_SNP_LCRD_UNDERFLOW",
+  # The SNP twin of CHI_LCRD_QUIESCENT_IN_STOP, which cannot reach this channel:
+  # the SNP rules live in their own bind so a non-coherent link elaborates none
+  # of them, and that bind owns the only SNP credit shadow there is.
+  "CHI_SNP_LCRD_QUIESCENT_IN_STOP",
   # Per-opcode SNP field applicability. Named CHI_SNP_* so CHECK_IDS_SNP -- a
   # name-prefix filter here, a range test in SV -- puts them in the SNP bind's
   # set, and placed inside the SNP block so the SV range test agrees.

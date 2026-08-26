@@ -1383,17 +1383,12 @@ class vip_chi_driver_rni #(
 
       // 5. And wait for the peer to hand back what it holds. The completer drops
       // its acknowledge on the same condition, so this loop ends at STOP.
-      while ((this.rsp_lcrd_granted != 0) || (this.dat_lcrd_granted != 0)) begin
+      while (this.peer_holds_credits()) begin
         @(this.vif_rni.g_drv.rni_cb);
         this.drive_idle_sideband();
       end
 
-      // Queued-but-unsent grants are dropped rather than carried across the gap:
-      // they were promises about a link that no longer exists, and re-activation
-      // advertises a fresh budget from schedule_initial_credit_grants().
-      this.rsp_lcrdv_pulses_pending = 0;
-      this.dat_lcrdv_pulses_pending = 0;
-      this.seen_rx_dat_flit         = 1'b0;
+      this.on_link_deactivated();
 
       this.cfg.link_deactivate_done = 1'b1;
 
@@ -1417,6 +1412,32 @@ class vip_chi_driver_rni #(
         get_name()), UVM_LOW)
     end
   endtask
+
+  // ---------------------------------------------------------------------------
+  // Credits this node advertised that the peer has not yet handed back.
+  //
+  // Virtual because the answer is role-dependent: RSP and DAT are the channels
+  // every requester receives, and an RN-F also grants SNP. Step 5 above is the
+  // one place the difference matters, and reading a fixed pair of counters there
+  // made the tear-down declare a coherent link drained while the home still held
+  // snoop credits.
+  // ---------------------------------------------------------------------------
+  virtual protected function bit peer_holds_credits();
+    return (this.rsp_lcrd_granted != 0) || (this.dat_lcrd_granted != 0);
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Drop what the link's own state was, now that the link is in STOP.
+  //
+  // Queued-but-unsent grants go rather than being carried across the gap: they
+  // were promises about a link that no longer exists, and re-activation
+  // advertises a fresh budget from schedule_initial_credit_grants().
+  // ---------------------------------------------------------------------------
+  virtual protected function void on_link_deactivated();
+    this.rsp_lcrdv_pulses_pending = 0;
+    this.dat_lcrdv_pulses_pending = 0;
+    this.seen_rx_dat_flit         = 1'b0;
+  endfunction
 
   // ---------------------------------------------------------------------------
   // Return every send-side L-credit this node still holds, one flit per credit.

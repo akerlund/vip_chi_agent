@@ -100,6 +100,12 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     self.cache_dirty_be = {}
     # Outbound SNP receive-credit pulses queued for the HN-F.
     self.snp_lcrdv_pulses_pending = 0
+    # SNP credits this node has advertised and the home has not yet spent -- the
+    # snoop-channel twin of the base's rsp/dat_lcrd_granted, and the half of
+    # quiescence a requester cannot see from its own send pools. Without it the
+    # tear-down declared the link drained while the home still held snoop
+    # credits, on the one channel only a coherent link has.
+    self.snp_lcrd_granted = 0
 
   # ==========================================================================
   # Line-align to the 64 B coherence granule (NOT the bus width): a mid-line
@@ -138,6 +144,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     self.cache_data = {}
     self.cache_dirty_be = {}
     self.snp_lcrdv_pulses_pending = 0
+    self.snp_lcrd_granted = 0
     super().handle_reset()
     self.reset_snp_outputs()
 
@@ -304,6 +311,26 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
   def schedule_snp_credit_return(self):
     self.snp_lcrdv_pulses_pending += 1
 
+  def snp_is_lcrd_return(self, snp):
+    return _I(snp.get("opcode", -1)) == int(SnpOpcode.LCRD_RETURN)
+
+  # ==========================================================================
+  # The coherent half of the tear-down, hooked into the base's LASM cycle.
+  # ==========================================================================
+  def peer_holds_credits(self):
+    # The home also holds SNP send credits, which the base knows nothing about:
+    # its two channels are the ones every requester has. A tear-down that stopped
+    # waiting here would reach STOP with the snoop pool still banked.
+    return super().peer_holds_credits() or bool(self.snp_lcrd_granted)
+
+  def on_link_deactivated(self):
+    # Queued-but-unsent SNP grants are dropped rather than carried across the
+    # gap, exactly as the base drops its RSP and DAT ones: they were promises
+    # about a link that no longer exists, and post_activate_hook advertises a
+    # fresh budget on the way back up.
+    super().on_link_deactivated()
+    self.snp_lcrdv_pulses_pending = 0
+
   # ==========================================================================
   # Emit one-cycle txsnplcrdv pulses for the queued SNP receive credits. Drives
   # only txsnplcrdv (disjoint from the base credit_loop), so they coexist.
@@ -321,11 +348,24 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
       await bus.rising()
       # cfg.hold_snp_credit lets a test starve the HN-F's SNP send pool; the
       # pending grants accumulate and drain once cleared.
-      snp_hold = self.cfg.hold_snp_credit
+      #
+      # link_deactivating holds the channel for a different reason: a receiver
+      # may not issue L-credits once the link is coming down, and this loop was
+      # the one that kept putting them on the wire straight through a tear-down.
+      # The base's credit loop has stood RSP and DAT down since deactivation
+      # existed; this channel is only on the coherent link, which could not
+      # deactivate at all, so nothing had ever asked it to stop.
+      snp_hold = self.cfg.hold_snp_credit or self.link_deactivating
       emit = (self.snp_lcrdv_pulses_pending != 0) and not snp_hold
       bus.drive(txsnplcrdv=1 if emit else 0)
       if emit:
         self.snp_lcrdv_pulses_pending -= 1
+        self.snp_lcrd_granted += 1
+      # Every inbound snoop-channel flit spends one of the credits advertised
+      # above, INCLUDING an L-credit return: the return is itself a flit and
+      # consumes the credit it hands back.
+      if bus.get("rxsnpflitv") and self.snp_lcrd_granted:
+        self.snp_lcrd_granted -= 1
 
   # ==========================================================================
   # Autonomous snoop responder: capture each inbound snoop, return its credit,
@@ -339,6 +379,16 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
         self.drive_idle_sideband()
 
       snp = bus.sample_flit("snp", "rx")
+      if self.snp_is_lcrd_return(snp):
+        # A link-layer flit, not a snoop: it consumes the credit it hands back
+        # and nothing else. Answering one would put a SnpResp on the wire for a
+        # snoop nobody sent, and re-granting the credit would refill the pool the
+        # tear-down is emptying -- the credit loop's shadow has already retired
+        # it. Unreachable until the home could drain this channel, which is why
+        # the guard is arriving with the drain rather than before it.
+        await bus.rising()
+        self.drive_idle_sideband()
+        continue
       self.schedule_snp_credit_return()
 
       # Step off the accepted snoop beat before responding.

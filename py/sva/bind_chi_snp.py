@@ -312,7 +312,7 @@ class bind_chi_snp:
         tx_state = self._tx_lasm_of(cur)
         self._chk(
           "CHI_SNP_FLITV_REQUIRES_LINK",
-          tx_state is LasmState.RUN,
+          self._snp_send_allowed(tx_state, cur),
           f"txsnpflitv asserted with the TRANSMIT link in {tx_state.name}, "
           f"not RUN")
       if cur["txsnplcrdv"]:
@@ -321,21 +321,63 @@ class bind_chi_snp:
           self._rx_lasm_of(cur) is not LasmState.STOP,
           "txsnplcrdv asserted with the RECEIVE link in STOP")
 
+  def _snp_send_allowed(self, state: LasmState, s: dict) -> bool:
+    """May the snoop-channel flit now on the wire go out in this link state?
+
+    RUN is the ordinary answer. DEACTIVATE admits exactly one kind of flit, and
+    the REQ/RSP/DAT twin in bind_chi._flit_send_allowed carries the same exception
+    for the same reason: a sender asked to take the link down must first hand back
+    every L-credit it holds, and the only way to hand one back is to send a flit
+    under it. Refusing all traffic here would make a clean tear-down impossible on
+    this channel -- the SNP credits would be stranded and
+    CHI_SNP_LCRD_QUIESCENT_IN_STOP would fire on a home that did everything right.
+
+    Anything other than a credit return is still a violation in DEACTIVATE, which
+    is what keeps the exception narrow.
+    """
+    if state is LasmState.RUN:
+      return True
+    if state is not LasmState.DEACTIVATE:
+      return False
+    return self._snp_is_lcrd_return(s["txsnpflit"])
+
   def _sample(self) -> dict:
     g = self.bus.get_or
-    return {n: g(n) for n in (
+    s = {n: g(n) for n in (
       "txlinkactivereq", "txlinkactiveack",
       "rxlinkactivereq", "rxlinkactiveack",
       "txsnpflitv", "txsnpflitpend", "txsnplcrdv",
       "rxsnpflitv", "rxsnpflitpend", "rxsnplcrdv",
     )}
+    # The flit's fields, in the same snapshot as the signals that gate them.
+    # They used to be read from the bus at each rule, which is a second read of
+    # the wire in the same cycle -- and it put the two structural link rules out
+    # of reach of the unit driver in tc_chi_sva_smoke, the only thing that can
+    # reach them at all. None on an idle cycle; every reader is guarded by the
+    # same flitv, so a None is never dereferenced.
+    for d in ("tx", "rx"):
+      s[f"{d}snpflit"] = (self._snp_flit_fields(d) if s[f"{d}snpflitv"]
+                          else None)
+    return s
 
   def _snp_flit_fields(self, direction: str) -> dict:
     raw = self.bus.get_or(f"{direction}snpflit")
     return {name: (raw >> shift) & bits
             for name, (shift, bits) in self._slices.items()}
 
-  def _check_snp_fields(self, direction: str) -> None:
+  @staticmethod
+  def _snp_is_lcrd_return(flit) -> bool:
+    """True for an L-credit return on the snoop channel.
+
+    SNP opcode 0x00 is SnpLCrdReturn and every other field of it is zero. The
+    field rules below decline it rather than passing it, because they all pass
+    trivially on an all-zero flit and a pass recorded there would count a credit
+    return among the snoops this checker has judged -- which is the evidence a
+    zero fail count is read against.
+    """
+    return flit is not None and int(flit["opcode"]) == 0
+
+  def _check_snp_fields(self, f: dict, direction: str) -> None:
     """Per-opcode SNP field applicability, at whichever end saw the flit.
 
     Three total rules -- every snoop flit records a pass or a fail -- so a zero
@@ -348,7 +390,6 @@ class bind_chi_snp:
     on. Each bind sits on one end of a link, and the checker is bound to both
     ends of every coherent link, so one method covers both.
     """
-    f = self._snp_flit_fields(direction)
     op = f["opcode"]
     seen = "sent" if direction == "tx" else "received"
 
@@ -420,6 +461,21 @@ class bind_chi_snp:
       # link down, so a unit case is the only thing that reaches them.
       self._check_snp_link_gating(cur)
 
+      # The credit shadow and the rule that reads it are gated on
+      # _link_ever_active rather than on the enable gate, for the reason
+      # bind_chi's REQ/RSP/DAT twins are: the gate IS this interface's activation
+      # request, so it is low in both DEACTIVATE and STOP -- the two states a
+      # tear-down passes through. Under the gate the shadow stopped counting the
+      # moment the link left RUN, so the returns a drain sends were never seen
+      # and the quiescence rule below judged a stale count. Only the SV port had
+      # this right, and no gate compares which gate a rule uses.
+      #
+      # Quiescence is read BEFORE the shadow updates this cycle, so the counts
+      # judged are the ones carried INTO STOP rather than any same-cycle return.
+      if self._link_ever_active:
+        self._check_snp_lcrd_quiescent_in_stop(cur)
+        self._check_lcrd(cur)
+
       if enabled:
         # FLITPEND announces a flit one cycle ahead; the obligation runs from
         # the flit backwards. See bind_chi._check_valid_requires_pend for why
@@ -428,13 +484,41 @@ class bind_chi_snp:
           self._chk(
             "CHI_SNP_VALID_REQUIRES_PEND", bool(prev["txsnpflitpend"]),
             "txsnpflitv sent without txsnpflitpend in the preceding cycle")
-        if cur["txsnpflitv"]:
-          self._check_snp_fields("tx")
-        if cur["rxsnpflitv"]:
-          self._check_snp_fields("rx")
-        self._check_lcrd(cur)
+        for d in ("tx", "rx"):
+          flit = cur[f"{d}snpflit"]
+          if flit is not None and not self._snp_is_lcrd_return(flit):
+            self._check_snp_fields(flit, d)
 
       prev, prev_rst = cur, rst
+
+  # ---------------------------------------------------------------------------
+  def _check_snp_lcrd_quiescent_in_stop(self, s: dict) -> None:
+    """No SNP L-credit may still be outstanding while its own machine is in STOP.
+
+    The SNP half of "no credit may be left stranded by a tear-down".
+    CHI_LCRD_QUIESCENT_IN_STOP cannot reach this channel: the SNP rules live in
+    this bind precisely so a non-coherent link runs none of them, and this bind
+    owns the only SNP credit shadow there is. So on a coherent link the tear-down
+    was judged on three channels of four, and the missing one is the channel only
+    that link has.
+
+    Per pool, for the reason the REQ/RSP/DAT twin is: each pool belongs to one
+    machine. `txsnp` is what this component may still SEND, so it is stranded when
+    the TRANSMIT link stops; `rxsnp` is what it has GRANTED and the peer may still
+    spend, so it is stranded when the RECEIVE link stops.
+
+    One check id for both halves -- it is one obligation, and a user standing it
+    down wants both quiet. The message names the direction.
+    """
+    states = {"txsnp": self._tx_lasm_of(s), "rxsnp": self._rx_lasm_of(s)}
+    for pool, held in self._lcrd.items():
+      if states[pool] is not LasmState.STOP:
+        continue
+      which = "TRANSMIT" if pool == "txsnp" else "RECEIVE"
+      self._chk(
+        "CHI_SNP_LCRD_QUIESCENT_IN_STOP", held == 0,
+        f"{pool} still holds {held} SNP L-credit(s) with the {which} link in "
+        f"STOP")
 
   # ---------------------------------------------------------------------------
   def _check_lcrd(self, s: dict) -> None:

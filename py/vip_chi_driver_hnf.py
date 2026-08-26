@@ -150,6 +150,18 @@ class vip_chi_driver_hnf(uvm_component):
     self.rn_rsp_lcrdv_pending = [0] * n_rn
     self.rn_dat_lcrdv_pending = [0] * n_rn
     self.rn_link_up = [False] * n_rn
+    # Graceful deactivation, per RN-facing port. The home has no tear-down
+    # request of its own to make -- it reacts to the requester withdrawing one --
+    # so everything here is a consequence of that: stop granting, hand back what
+    # this port holds, and only then let the acknowledge fall.
+    self.rn_link_deactivating = [False] * n_rn
+    # The credits this home has ADVERTISED on each RN port and the RN-F has not
+    # yet spent: the mirror image of the send-side managers, and the half of
+    # quiescence a sender cannot see from its own pools. Without it the home
+    # could only know when IT was finished, not when the link was.
+    self.rn_req_lcrd_granted = [0] * n_rn
+    self.rn_rsp_lcrd_granted = [0] * n_rn
+    self.rn_dat_lcrd_granted = [0] * n_rn
     # One-shot latch per RN port for cfg.flitpend_without_valid: the control
     # fires once per link so the count a test asserts on is unambiguous.
     self.rn_flitpend_negctl_done = [False] * n_rn
@@ -269,7 +281,23 @@ class vip_chi_driver_hnf(uvm_component):
     if rn.input_race_hold():
       return
 
-    want_link = bool(rn.get("rxlinkactivereq"))
+    if rn.get("rxlinkactivereq"):
+      want_link = True
+    else:
+      # A DRAIN term, not an activation one: it keeps a link that is already up
+      # from going down while credits are still outstanding at this end. Gated on
+      # this home's own sideband being up for exactly that reason -- with the link
+      # in STOP and the peer asking for nothing, an outstanding credit is not a
+      # reason to raise the request, and raising it there is what puts the
+      # acknowledge up before the peer has asked.
+      #
+      # Without it the acknowledge fell two cycles after the peer's request did,
+      # whatever this home still held: the link reached STOP with the home's RSP,
+      # DAT and SNP pools full, and the requester's own drain waited for returns
+      # that were never coming.
+      want_link = ((bool(rn.get("txlinkactivereq"))
+                    or bool(rn.get("txlinkactiveack")))
+                   and not self.rn_link_drained(p))
 
     # 14.6.3's fourth ordering binds US, not the peer: "the deassertion of TXREQ
     # must not occur before the assertion of RXACK". The acknowledge lags the
@@ -533,30 +561,112 @@ class vip_chi_driver_hnf(uvm_component):
     rn = self.rn_buses[p]
     while True:
       await rn.rising()
+      self.rn_track_deactivation(p)
       self.drive_rn_idle_sideband(p)
       # The only write to this wire. Asserted while anything is outstanding,
       # then held for cfg.txsactive_extend_max_cycles past the close, modelling
       # a node that speculates on more traffic -- the RN-I's shape exactly.
       active = (self.rn_tx_active_count[p] != 0
                 or self.rn_tx_active_extend[p] != 0)
+      # A receiver may not issue L-credits once the link is coming down, and a
+      # drain racing a credit loop that keeps refilling the pool would never
+      # converge: every credit the requester handed back would be advertised
+      # straight again.
+      grant = not self.rn_link_deactivating[p]
+      req_grant = bool(self.rn_req_lcrdv_pending[p]) and grant
+      rsp_grant = bool(self.rn_rsp_lcrdv_pending[p]) and grant
+      dat_grant = bool(self.rn_dat_lcrdv_pending[p]) and grant
       rn.drive(txsactive=1 if active else 0,
-               txreqlcrdv=1 if self.rn_req_lcrdv_pending[p] else 0,
-               txrsplcrdv=1 if self.rn_rsp_lcrdv_pending[p] else 0,
-               txdatlcrdv=1 if self.rn_dat_lcrdv_pending[p] else 0)
+               txreqlcrdv=1 if req_grant else 0,
+               txrsplcrdv=1 if rsp_grant else 0,
+               txdatlcrdv=1 if dat_grant else 0)
       if self.rn_tx_active_count[p] == 0 and self.rn_tx_active_extend[p]:
         self.rn_tx_active_extend[p] -= 1
-      if self.rn_req_lcrdv_pending[p]:
+      if req_grant:
         self.rn_req_lcrdv_pending[p] -= 1
-      if self.rn_rsp_lcrdv_pending[p]:
+        self.rn_req_lcrd_granted[p] += 1
+      if rsp_grant:
         self.rn_rsp_lcrdv_pending[p] -= 1
-      if self.rn_dat_lcrdv_pending[p]:
+        self.rn_rsp_lcrd_granted[p] += 1
+      if dat_grant:
         self.rn_dat_lcrdv_pending[p] -= 1
+        self.rn_dat_lcrd_granted[p] += 1
+
+      # Every inbound flit spends one of the credits advertised above, INCLUDING
+      # an L-credit return: the return is itself a flit and consumes the credit
+      # it hands back. That is what lets the drain converge with no separate
+      # accounting for the two kinds.
+      if rn.get("rxreqflitv") and self.rn_req_lcrd_granted[p]:
+        self.rn_req_lcrd_granted[p] -= 1
+      if rn.get("rxrspflitv") and self.rn_rsp_lcrd_granted[p]:
+        self.rn_rsp_lcrd_granted[p] -= 1
+      if rn.get("rxdatflitv") and self.rn_dat_lcrd_granted[p]:
+        self.rn_dat_lcrd_granted[p] -= 1
+
       if rn.get("rxrsplcrdv"):
         self.rn_rsp_send[p].return_credit()
       if rn.get("rxdatlcrdv"):
         self.rn_dat_send[p].return_credit()
       if rn.get("rxsnplcrdv"):
         self.rn_snp_send[p].return_credit()
+
+  # --------------------------------------------------------------------------
+  def rn_track_deactivation(self, p):
+    """Follow the requester's activation request into and back out of tear-down.
+
+    The completer half of the LASM cycle, and the RN-facing twin of the SN-F's
+    track_deactivation. This home has no tear-down request of its own to make --
+    it reacts.
+
+    Re-granting the initial budget on the way back up is not a refinement: the
+    per-port activation task is a one-shot that has already returned by then, so
+    without this a reactivated link would carry no credits in either direction
+    and the first request after bring-up would wait forever.
+    """
+    rn = self.rn_buses[p]
+    req = bool(rn.get("rxlinkactivereq"))
+    if not req and self.rn_link_up[p]:
+      if not self.rn_link_deactivating[p]:
+        self.rn_link_deactivating[p] = True
+        # Queued-but-unsent grants are dropped rather than carried across the
+        # gap: they were promises about a link that no longer exists, and
+        # re-activation advertises a fresh budget below.
+        self.rn_req_lcrdv_pending[p] = 0
+        self.rn_rsp_lcrdv_pending[p] = 0
+        self.rn_dat_lcrdv_pending[p] = 0
+    elif req and self.rn_link_deactivating[p]:
+      self.rn_link_deactivating[p] = False
+      # Re-advertise what brings the port back to its initial budget, not a
+      # fresh full budget. After a real tear-down the granted counts are zero
+      # and the two are the same thing; after a request that dropped for a cycle
+      # with no drain behind it they are not, and a full budget on top of the
+      # credits the requester never returned is an over-grant this home would be
+      # reported for. Subtracting what is still outstanding is right in both
+      # cases and needs no way to tell them apart.
+      for pending, granted, initial in (
+          (self.rn_req_lcrdv_pending, self.rn_req_lcrd_granted,
+           self.cfg.initial_req_credits),
+          (self.rn_rsp_lcrdv_pending, self.rn_rsp_lcrd_granted,
+           self.cfg.initial_rsp_credits),
+          (self.rn_dat_lcrdv_pending, self.rn_dat_lcrd_granted,
+           self.cfg.initial_dat_credits)):
+        pending[p] += max(0, int(initial) - granted[p])
+
+  # --------------------------------------------------------------------------
+  def rn_link_drained(self, p):
+    """Both halves of quiescence on one RN-facing port.
+
+    Nothing this home still holds -- the RSP, DAT and SNP credits the requester
+    granted it -- and nothing it advertised that the requester still holds.
+    Either half left non-zero when the link reaches STOP is a stranded credit,
+    which is what CHI_LCRD_QUIESCENT_IN_STOP and its SNP twin report.
+    """
+    return not (self.rn_req_lcrd_granted[p]
+                or self.rn_rsp_lcrd_granted[p]
+                or self.rn_dat_lcrd_granted[p]
+                or self.rn_rsp_send[p].available
+                or self.rn_dat_send[p].available
+                or self.rn_snp_send[p].available)
 
   async def rn_activate(self, p):
     """Bring one RN-facing port up, in the two steps 14.6.1 keeps separate.
@@ -609,12 +719,32 @@ class vip_chi_driver_hnf(uvm_component):
     await rn.rising()
     rn.drive(txsnpflitpend=0)
 
+  def rx_req_is_lcrd_return(self, req):
+    """An inbound L-credit return is a link-layer flit, not a request.
+
+    It consumes the credit it hands back and nothing else, so the ingress path
+    must not queue it, open a TXSACTIVE window for it, or try to answer it. The
+    home used to do all three: the drain's first ReqLCrdReturn reached
+    service_req's opcode dispatch and fatalled with "unsupported REQ opcode 0x0",
+    which is why the coherent link could only ever be taken down by reset. The
+    SN-F has had this arm since graceful deactivation existed.
+
+    Nor is the credit re-granted: the requester is handing it back, so advertising
+    it again would refill the pool the tear-down is emptying. The credit loop's
+    granted shadow already retires it.
+    """
+    return int(req.get("opcode", -1)) == int(ReqOpcode.LCRD_RETURN)
+
   async def capture_req(self, p):
     rn = self.rn_buses[p]
     while True:
       while not rn.get("rxreqflitv"):
         await rn.rising()
-      self.work_q.append((p, rn.sample_flit("req", "rx")))
+      req = rn.sample_flit("req", "rx")
+      if self.rx_req_is_lcrd_return(req):
+        await rn.rising()
+        continue
+      self.work_q.append((p, req))
       self.rn_req_lcrdv_pending[p] += 1
       # Opened at capture, not at dispatch: a buffered request is already
       # outstanding while it waits its turn in work_q, and 14.7.2 wants the
@@ -920,7 +1050,81 @@ class vip_chi_driver_hnf(uvm_component):
         # dispatch path retires exactly one window and none can forget to.
         self.rn_tx_activity_end(p)
       else:
-        await bus.rising()
+        drain_port = self.rn_drain_port()
+        if drain_port is not None:
+          await self.rn_drain_credits(drain_port)
+        else:
+          await bus.rising()
+
+  # --------------------------------------------------------------------------
+  # The tear-down drain, HERE rather than in a task of its own.
+  #
+  # An L-credit return is a flit, and the invariant this driver is built on is
+  # that every flit it sends leaves through this one serial engine -- there is no
+  # channel lock to catch a second writer, only the structure. So the drain runs
+  # in the engine's idle branch, which is also the only place it could run
+  # anyway: the requester withdraws its request only once every one of its
+  # transactions has retired, so a port with credits to hand back has no work
+  # left in the queue.
+  #
+  # The SN-F puts its drain in a separate task and says why in the same terms
+  # from the other side: it drives flits from exactly one place too, and there
+  # that place is not the response loop.
+  # --------------------------------------------------------------------------
+  def rn_drain_port(self):
+    """The first RN port with credits to hand back, or None.
+
+    tx_active_count must be zero, which closes the one-cycle tail where the
+    requester has seen its last completion but this home is still driving the
+    final flit of it.
+    """
+    for p in range(len(self.rn_buses)):
+      if not self.rn_link_deactivating[p] or self.rn_tx_active_count[p]:
+        continue
+      if (self.rn_rsp_send[p].available or self.rn_dat_send[p].available
+          or self.rn_snp_send[p].available):
+        return p
+    return None
+
+  async def rn_drain_credits(self, p):
+    """Return every send-side L-credit this home holds on one RN port.
+
+    All three channels, and the SNP one is the reason this exists on the home
+    rather than only on the SN-F: it is the channel the coherent link adds, the
+    home is the only end that sends on it, and a snoop credit left banked is a
+    credit the requester is still counting as outstanding.
+    """
+    # One clock unconditionally, before any channel is looked at. The engine's
+    # idle branch is a tight loop and this is the only await in it: a drain that
+    # returned without advancing time on a port its own predicate had selected
+    # would spin the simulation instead of failing, and the two disagreeing about
+    # which channels count is exactly the kind of edit that happens later.
+    await self.rn_buses[p].rising()
+    self.drive_rn_idle_sideband(p)
+    for channel, mgr in (("rsp", self.rn_rsp_send[p]),
+                         ("dat", self.rn_dat_send[p]),
+                         ("snp", self.rn_snp_send[p])):
+      while mgr.try_acquire_credit():
+        await self.drive_rn_lcrd_return(p, channel)
+
+  async def drive_rn_lcrd_return(self, p, channel):
+    """One L-credit return flit on an RN-facing channel.
+
+    All fields zero: the opcode is the whole message, and a return names no
+    address, no TxnID and no data. Sent UNDER one of the credits it returns --
+    acquiring is what makes the send legal -- so the pool empties itself and the
+    credit shadows in the checkers need no special case for it.
+    """
+    rn = self.rn_buses[p]
+    await self.announce_rn_flit(p, channel)
+    await rn.rising()
+    self.drive_rn_idle_sideband(p)
+    rn.drive(**{f"tx{channel}flitpend": 0, f"tx{channel}flitv": 1})
+    rn.drive_flit(channel, {"opcode": 0})
+    await rn.rising()
+    self.drive_rn_idle_sideband(p)
+    rn.drive(**{f"tx{channel}flitv": 0})
+    rn.drive_flit(channel, {})
 
   # ==========================================================================
   # Ask every port the directory believes holds the line what it actually holds,

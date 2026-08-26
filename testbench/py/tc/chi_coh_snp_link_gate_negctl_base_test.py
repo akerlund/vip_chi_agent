@@ -72,6 +72,7 @@ from chi_tb_pkg import WRITE_READ_ADDR_C
 _SNP_C = "CHI_SNP_FLITV_REQUIRES_LINK"
 _DAT_C = "CHI_DAT_FLITV_REQUIRES_LINK"
 _LCRDV_C = "CHI_SNP_LCRDV_REQUIRES_LINK"
+_QUIESCENT_C = "CHI_SNP_LCRD_QUIESCENT_IN_STOP"
 _LINE_C = WRITE_READ_ADDR_C
 _SETTLE_C = 40
 # Long enough that the home has a snoop to send while its transmit link is still
@@ -112,6 +113,19 @@ class chi_coh_snp_link_gate_negctl_base_test(chi_coherent_base_test):
       sva.expect_failure(_DAT_C)
     for sva in self.tb_env.snp_sva:
       sva.expect_failure(_LCRDV_C)
+    # COLLATERAL, declared rather than waived, and it is the OTHER rule that
+    # reads this pool. A credit advertised with the receive link in STOP is
+    # outstanding with the receive link in STOP, so both rules of the pair see
+    # the same event from their two ends: _LCRDV_C names the grant, _QUIESCENT_C
+    # names the state the grant leaves the link in, and the second reports on
+    # every cycle until the link comes up rather than once per credit.
+    #
+    # Asserted below rather than merely silenced. It is the one place in the
+    # regression where that rule fires from a bring-up instead of a tear-down,
+    # which is worth having on the record: the obligation is stated about
+    # credits STRANDED, and this is what it does about credits ADVANCED.
+    for sva in self.tb_env.snp_sva:
+      sva.expect_failure(_QUIESCENT_C)
 
   async def run_phase(self):
     self.raise_objection()
@@ -188,6 +202,19 @@ class chi_coh_snp_link_gate_negctl_base_test(chi_coherent_base_test):
       f"snoopee this control is set on advertises SNP credits, so a report "
       f"anywhere else is a different defect")
 
+    # The other rule that reads the same pool, at both ends of the link the
+    # credits crossed. Not pinned to a count: it reports on every cycle the link
+    # spends in STOP holding them, so an exact number would pin
+    # lasm_req_delay_by_state rather than the rule.
+    snoopee_q = self.tb_env.snp_sva[2].fail_count.get(_QUIESCENT_C, 0)
+    home_q = self.tb_env.snp_sva[0].fail_count.get(_QUIESCENT_C, 0)
+    assert snoopee_q > 0 and home_q > 0, (
+      f"{_QUIESCENT_C} reported {snoopee_q} time(s) at the snoopee and "
+      f"{home_q} at the home, expected both non-zero: the credits the control "
+      f"advanced are outstanding at BOTH ends while the link sits in STOP, and "
+      f"a report at one end only would mean one of the two shadows is not "
+      f"tracking them")
+
     self.logger.info(
       f"Test (coh_snp_link_gate_negctl) PASS: with the snoopees acknowledging "
       f"{ACK_DELAY_C} cycle(s) late, the home snooped into a transmit link "
@@ -195,5 +222,6 @@ class chi_coh_snp_link_gate_negctl_base_test(chi_coherent_base_test):
       f"{dat_fails[0]}/{dat_fails[1]} data beats reported on the same gate and "
       f"both reads still completing; a reset then returned the link to STOP and "
       f"{_LCRDV_C} reported the {EXPECTED_LCRDV_FAILS_C} credit(s) advertised "
-      f"ahead of it")
+      f"ahead of it, with {_QUIESCENT_C} reporting the same credits outstanding "
+      f"at both ends ({snoopee_q}/{home_q})")
     self.drop_objection()

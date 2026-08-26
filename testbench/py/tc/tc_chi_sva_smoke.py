@@ -31,7 +31,9 @@ from pyuvm import uvm_test
 from sva.bind_chi import (bind_chi, _flit_slices, _FLIT_FIELDS_C,
                           _LINK_ACT_WINDOW_C)
 from sva.bind_chi_snp import bind_chi_snp
-from vip_chi_types_pkg import ChiCfg, DatOpcode, ReqOpcode, ReqOrder, Role, RspOpcode
+from vip_chi_types_pkg import (
+  ChiCfg, DatOpcode, ReqOpcode, ReqOrder, Role, RspOpcode, SnpOpcode,
+)
 
 # The standalone topology's CHI-D datapath: 16 bytes, so a size-6 (64-byte)
 # transfer is a 4-beat burst and a size-4 (16-byte) one is a single beat.
@@ -148,6 +150,12 @@ def _snp_sample(base: dict, **over) -> dict:
     s[f"{d}snpflitv"] = 0
     s[f"{d}snpflitpend"] = 0
     s[f"{d}snplcrdv"] = 0
+    # A real snoop, not an all-zero flit. SNP opcode 0 is SnpLCrdReturn, which
+    # the send rule ADMITS in DEACTIVATE -- so a builder defaulting the flit to
+    # zero would make the tear-down case below pass and read as the rule being
+    # broken.
+    s[f"{d}snpflit"] = {"opcode": int(SnpOpcode.SHARED), "fwdnid": 0,
+                        "fwdtxnid": 0, "rettosrc": 0, "donotgotosd": 0}
   s.update(over)
   return s
 
@@ -532,6 +540,23 @@ class tc_chi_sva_smoke(uvm_test):
       _snp_sample(_RUN, txlinkactivereq=0, txsnpflitv=1))
     assert self._fired(c, "CHI_SNP_FLITV_REQUIRES_LINK") == 1, (
       "a snoop sent with the transmit machine in DEACTIVATE was not reported")
+
+    # ---- ...and the one flit DEACTIVATE admits ---------------------------
+    # An L-credit return, which is the only way to hand a credit back and so the
+    # only way a tear-down can drain this channel at all. Refusing it would make
+    # CHI_SNP_LCRD_QUIESCENT_IN_STOP fire on a home that did everything right.
+    #
+    # Paired with the case above deliberately: the two differ in the flit's
+    # opcode and nothing else, so together they say the exception is about the
+    # flit rather than about the state.
+    c = _snp_checker()
+    c._check_snp_link_gating(
+      _snp_sample(_RUN, txlinkactivereq=0, txsnpflitv=1,
+                  txsnpflit={"opcode": 0, "fwdnid": 0, "fwdtxnid": 0,
+                             "rettosrc": 0, "donotgotosd": 0}))
+    assert self._fired(c, "CHI_SNP_FLITV_REQUIRES_LINK") == 0, (
+      "an L-credit return sent in DEACTIVATE was reported, which makes a clean "
+      "tear-down impossible on the snoop channel")
 
     # ---- ...but an interface that never came up judges nothing ------------
     c = _snp_checker()

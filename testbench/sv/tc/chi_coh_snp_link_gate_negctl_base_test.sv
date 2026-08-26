@@ -130,6 +130,8 @@ class chi_coh_snp_link_gate_negctl_base_test #(
     int unsigned lcrdv_fails;
     int unsigned snoopee_lcrdv;
     int unsigned snoopee_fails;
+    int unsigned snoopee_quiescent;
+    int unsigned home_quiescent;
 
     phase.raise_objection(this);
 
@@ -145,6 +147,27 @@ class chi_coh_snp_link_gate_negctl_base_test #(
       VIP_CHI_CHK_SEV_OFF_E;
     super.tb_env.hrnf1_agent.vif.check_severity[VIP_CHI_CHK_SNP_LCRDV_REQUIRES_LINK_E] =
       VIP_CHI_CHK_SEV_OFF_E;
+
+    // COLLATERAL, declared rather than waived, and it is the OTHER rule that
+    // reads this pool. A credit advertised with the receive link in STOP is
+    // outstanding with the receive link in STOP, so both rules of the pair see
+    // the same event from their two ends: the LCRDV rule names the grant, the
+    // quiescence rule names the state the grant leaves the link in, and the
+    // second reports on every cycle until the link comes up rather than once per
+    // credit. Both ends, because the credits cross the link.
+    //
+    // Asserted below rather than merely silenced. It is the one place in the
+    // regression where that rule fires from a bring-up instead of a tear-down,
+    // which is worth having on the record: the obligation is stated about
+    // credits STRANDED, and this is what it does about credits ADVANCED.
+    super.tb_env.hrnf0_agent.vif.check_severity[VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    super.tb_env.hrnf1_agent.vif.check_severity[VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E] =
+      VIP_CHI_CHK_SEV_OFF_E;
+    foreach (super.tb_env.hnf_agent.rn_vif[i]) begin
+      super.tb_env.hnf_agent.rn_vif[i].check_severity[VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E] =
+        VIP_CHI_CHK_SEV_OFF_E;
+    end
 
     super.wait_reset_settle();
 
@@ -240,13 +263,32 @@ class chi_coh_snp_link_gate_negctl_base_test #(
         lcrdv_fails, snoopee_lcrdv))
     end
 
+    // The other rule that reads the same pool, at both ends of the link the
+    // credits crossed. Not pinned to a count: it reports on every cycle the link
+    // spends in STOP holding them, so an exact number would pin
+    // lasm_req_delay_by_state rather than the rule.
+    snoopee_quiescent =
+      super.tb_env.hrnf0_agent.vif.check_fail_count[VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E];
+    home_quiescent =
+      super.tb_env.hnf_agent.rn_vif[0].check_fail_count[VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E];
+
+    if ((snoopee_quiescent == 0) || (home_quiescent == 0)) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] %s reported %0d time(s) at the snoopee and %0d at the home, expected both non-zero: the credits the control advanced are outstanding at BOTH ends while the link sits in STOP, and a report at one end only would mean one of the two shadows is not tracking them",
+        super.tc_name,
+        vip_chi_check_name(VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E),
+        snoopee_quiescent, home_quiescent))
+    end
+
     `uvm_info(get_name(), $sformatf(
-      "Test (%s) PASS: with the snoopees acknowledging %0d cycle(s) late, the home snooped into a transmit link still in ACTIVATE and %s reported it once, with %0d/%0d data beats reported on the same gate and both reads still completing; a reset then returned the link to STOP and %s reported the %0d credit(s) advertised ahead of it",
+      "Test (%s) PASS: with the snoopees acknowledging %0d cycle(s) late, the home snooped into a transmit link still in ACTIVATE and %s reported it once, with %0d/%0d data beats reported on the same gate and both reads still completing; a reset then returned the link to STOP and %s reported the %0d credit(s) advertised ahead of it, with %s reporting the same credits outstanding at both ends (%0d/%0d)",
       super.tc_name, ACK_DELAY_C,
       vip_chi_check_name(VIP_CHI_CHK_SNP_FLITV_REQUIRES_LINK_E),
       dat_fails[0], dat_fails[1],
       vip_chi_check_name(VIP_CHI_CHK_SNP_LCRDV_REQUIRES_LINK_E),
-      EXPECTED_LCRDV_FAILS_C), UVM_LOW)
+      EXPECTED_LCRDV_FAILS_C,
+      vip_chi_check_name(VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E),
+      snoopee_quiescent, home_quiescent), UVM_LOW)
 
     phase.drop_objection(this);
 

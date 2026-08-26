@@ -534,6 +534,11 @@ package vip_chi_types_pkg;
     VIP_CHI_CHK_SNP_IDLE_IN_RESET_E,
     VIP_CHI_CHK_SNP_LCRD_OVERFLOW_E,
     VIP_CHI_CHK_SNP_LCRD_UNDERFLOW_E,
+    // The SNP twin of the quiescent-in-STOP rule above, which cannot reach this
+    // channel: the SNP rules live in their own module so a non-coherent link
+    // elaborates none of them, and that module owns the only SNP credit shadow
+    // there is.
+    VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E,
     // Per-opcode SNP field applicability. Inside the SNP block on purpose: this
     // range is what vip_chi_snp_sva owns, and a field rule judged by the main
     // checker would clear the other's plusarg settings on every coherent run.
@@ -793,6 +798,7 @@ package vip_chi_types_pkg;
       VIP_CHI_CHK_SNP_IDLE_IN_RESET_E:                 return "E section 14.1.3 / D section 13.1.3";
       VIP_CHI_CHK_SNP_LCRD_OVERFLOW_E:                 return "E section 14.2.1 / D section 13.2.1";
       VIP_CHI_CHK_SNP_LCRD_UNDERFLOW_E:                return "E section 14.2.1 / D section 13.2.1";
+      VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E:        return "E section 14.6.1 / D section 13.6.1";
       VIP_CHI_CHK_SNP_FWD_FIELDS_ZERO_E:               return "E section 13.10.5 / E section 13.10.16";
       VIP_CHI_CHK_SNP_RET_TO_SRC_LEGAL_E:              return "E section 4.9 / D section 4.9";
       VIP_CHI_CHK_SNP_DO_NOT_GO_TO_SD_LEGAL_E:         return "E section 13.10.35";

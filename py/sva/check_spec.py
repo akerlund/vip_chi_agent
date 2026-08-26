@@ -81,6 +81,7 @@ CHECK_SPEC_C = {
   "CHI_LCRD_USED_IN_GRANT_CYCLE":      "E section 14.2.1 Note / D section 13.2.1 Note",
   "CHI_SNP_LCRD_OVERFLOW":             "E section 14.2.1 / D section 13.2.1",
   "CHI_SNP_LCRD_UNDERFLOW":            "E section 14.2.1 / D section 13.2.1",
+  "CHI_SNP_LCRD_QUIESCENT_IN_STOP":    "E section 14.6.1 / D section 13.6.1",
 
   # The Link Activation State Machine: the legal transition set, and the two
   # handshakes that must not stall forever.

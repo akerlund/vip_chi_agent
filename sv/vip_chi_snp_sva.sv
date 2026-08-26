@@ -50,9 +50,10 @@
 //
 // It is passed at every instantiation with a real role -- HN-F on the home side,
 // RN-F on the requester side -- and NOTHING IN THIS MODULE READS IT. Every
-// property here is gated on `checks_enable` and `rst_n`, which are runtime state
-// the per-ID enable/severity array already models, so no rule in this file can
-// be switched off by elaboration.
+// property here is gated on `rst_n` and on one of `checks_enable` or
+// `link_ever_active`, all three of them runtime state the per-ID enable/severity
+// array already models, so no rule in this file can be switched off by
+// elaboration.
 //
 // That is the only reason does not apply here. That finding is about
 // exactly this: `check_enabled` doubles as the ownership record -- "an ID left
@@ -301,6 +302,17 @@ module vip_chi_snp_sva #(
     return snp_flit_view_t'(vif.rxsnpflit);
   endfunction
 
+  // An L-credit return is a link-layer flit, not a snoop: SNP opcode 0x00 is
+  // SnpLCrdReturn and every other field of it is zero. The three field rules
+  // below decline it rather than passing it, because they all pass trivially on
+  // an all-zero flit and a pass recorded there would count a credit return among
+  // the snoops this checker has judged -- which is the evidence a zero fail count
+  // is read against.
+  function automatic bit snp_is_lcrd_return(input snp_flit_view_t flit);
+    return (vip_chi_snp_opcode_t'(flit.opcode) ==
+            vip_chi_snp_opcode_t'(VIP_CHI_SNP_LCRD_RETURN_C));
+  endfunction
+
   // The six report messages below run in the REACTIVE region, where the wire may
   // already carry the next snoop, so reading the views live names the wrong flit.
   // The views cannot be $sampled() as a whole -- they read the interface inside a
@@ -340,32 +352,38 @@ module vip_chi_snp_sva #(
 
   property p_tx_snp_fwd_fields_zero;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txsnpflitv |-> snp_fwd_fields_legal(tx_snp_view());
+      (vif.txsnpflitv && !snp_is_lcrd_return(tx_snp_view())) |->
+        snp_fwd_fields_legal(tx_snp_view());
   endproperty
 
   property p_rx_snp_fwd_fields_zero;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.rxsnpflitv |-> snp_fwd_fields_legal(rx_snp_view());
+      (vif.rxsnpflitv && !snp_is_lcrd_return(rx_snp_view())) |->
+        snp_fwd_fields_legal(rx_snp_view());
   endproperty
 
   property p_tx_snp_ret_to_src_legal;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txsnpflitv |-> snp_ret_to_src_legal(tx_snp_view());
+      (vif.txsnpflitv && !snp_is_lcrd_return(tx_snp_view())) |->
+        snp_ret_to_src_legal(tx_snp_view());
   endproperty
 
   property p_rx_snp_ret_to_src_legal;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.rxsnpflitv |-> snp_ret_to_src_legal(rx_snp_view());
+      (vif.rxsnpflitv && !snp_is_lcrd_return(rx_snp_view())) |->
+        snp_ret_to_src_legal(rx_snp_view());
   endproperty
 
   property p_tx_snp_do_not_go_to_sd_legal;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.txsnpflitv |-> snp_do_not_go_to_sd_legal(tx_snp_view());
+      (vif.txsnpflitv && !snp_is_lcrd_return(tx_snp_view())) |->
+        snp_do_not_go_to_sd_legal(tx_snp_view());
   endproperty
 
   property p_rx_snp_do_not_go_to_sd_legal;
     @(posedge vif.clk) disable iff (!checks_enable || !vif.rst_n)
-      vif.rxsnpflitv |-> snp_do_not_go_to_sd_legal(rx_snp_view());
+      (vif.rxsnpflitv && !snp_is_lcrd_return(rx_snp_view())) |->
+        snp_do_not_go_to_sd_legal(rx_snp_view());
   endproperty
 
   // Structural properties (tx side: the SNP source drives txsnp*/receives credit
@@ -378,14 +396,56 @@ module vip_chi_snp_sva #(
   // and "no credit may be advertised once the link is down" have any content. The
   // gate switched each rule off in the only state it could fail in, and left the
   // tear-down completely unwatched on this channel.
+  // DEACTIVATE admits exactly one kind of flit, and the REQ/RSP/DAT twin in
+  // vip_chi_sva carries the same exception for the same reason: a sender asked to
+  // take the link down must first hand back every L-credit it holds, and the only
+  // way to hand one back is to send a flit under it. Refusing all traffic here
+  // would make a clean tear-down impossible on this channel -- the SNP credits
+  // would be stranded and the quiescence rule below would fire on a home that
+  // did everything right.
+  //
+  // Anything other than a credit return is still a violation in DEACTIVATE, which
+  // is what keeps the exception narrow: it admits the one flit the tear-down needs
+  // and nothing else.
+  function automatic bit snp_send_allowed();
+    if (tx_lasm() == VIP_CHI_LASM_RUN_E) begin
+      return 1'b1;
+    end
+    if (tx_lasm() != VIP_CHI_LASM_DEACTIVATE_E) begin
+      return 1'b0;
+    end
+    return snp_is_lcrd_return(tx_snp_view());
+  endfunction
+
   property p_snp_flit_requires_link;
     @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
-      vif.txsnpflitv |-> (tx_lasm() == VIP_CHI_LASM_RUN_E);
+      vif.txsnpflitv |-> snp_send_allowed();
   endproperty
 
   property p_snp_lcrdv_requires_link;
     @(posedge vif.clk) disable iff (!link_ever_active || !vif.rst_n)
       vif.txsnplcrdv |-> rx_link_is_active();
+  endproperty
+
+  // The SNP half of "no credit may be left stranded by a tear-down". The
+  // REQ/RSP/DAT rule in vip_chi_sva cannot reach this channel -- the SNP rules
+  // live in this module precisely so a non-coherent link elaborates none of them,
+  // and this module owns the only SNP credit shadow there is. So on a coherent
+  // link the tear-down was judged on three channels of four, and the missing one
+  // is the channel only that link has.
+  //
+  // Split by pool for the reason the REQ/RSP/DAT twin is: each pool belongs to
+  // one machine. txsnp is what this component may still SEND, so it is stranded
+  // when the TRANSMIT link stops; rxsnp is what it has GRANTED and the peer may
+  // still spend, so it is stranded when the RECEIVE link stops.
+  property p_tx_snp_lcrd_quiescent_in_stop;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      (tx_lasm() == VIP_CHI_LASM_STOP_E) |-> (txsnp_lcrd_count == 0);
+  endproperty
+
+  property p_rx_snp_lcrd_quiescent_in_stop;
+    @(posedge vif.clk) disable iff (!vif.rst_n)
+      (rx_lasm() == VIP_CHI_LASM_STOP_E) |-> (rxsnp_lcrd_count == 0);
   endproperty
 
   // FLITPEND announces a flit one cycle ahead; the obligation runs from the flit
@@ -432,6 +492,23 @@ module vip_chi_snp_sva #(
     chk_hit(VIP_CHI_CHK_SNP_LCRDV_REQUIRES_LINK_E);
   else
     chk_miss(VIP_CHI_CHK_SNP_LCRDV_REQUIRES_LINK_E, $sformatf("txsnplcrdv asserted before link activation"));
+
+  // One check id for both pools: it is one obligation -- no SNP credit may be
+  // left stranded by a tear-down -- and a user standing it down wants both quiet.
+  // The report names which direction, which is the distinction that matters.
+  assert property (p_tx_snp_lcrd_quiescent_in_stop)
+    chk_hit(VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E, $sformatf(
+      "SNP L-credits we may still SEND are outstanding with the TRANSMIT link in STOP (txsnp=%0d)",
+      $sampled(txsnp_lcrd_count)));
+
+  assert property (p_rx_snp_lcrd_quiescent_in_stop)
+    chk_hit(VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E);
+  else
+    chk_miss(VIP_CHI_CHK_SNP_LCRD_QUIESCENT_IN_STOP_E, $sformatf(
+      "SNP L-credits we have GRANTED are outstanding with the RECEIVE link in STOP (rxsnp=%0d)",
+      $sampled(rxsnp_lcrd_count)));
 
   assert property (p_snp_valid_requires_pend)
     chk_hit(VIP_CHI_CHK_SNP_VALID_REQUIRES_PEND_E);

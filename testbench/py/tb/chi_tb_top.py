@@ -510,6 +510,13 @@ async def tc_chi_coh_d_snf_read_miss(dut) -> None:
   await _run_d_coherent(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_coh_d_lasm_deactivate", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_d_lasm_deactivate(dut) -> None:
+  """Run this public testcase through the CHI-D coherent topology."""
+  test_name = "tc_chi_coh_d_lasm_deactivate"
+  await _run_d_coherent(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_coh_d_hnf_sn_txsactive", timeout_time=20, timeout_unit="ms")
 async def tc_chi_coh_d_hnf_sn_txsactive(dut) -> None:
   """Run this public testcase through the CHI-D coherent topology."""
@@ -906,6 +913,13 @@ async def tc_chi_coh_e_snf_read_miss(dut) -> None:
 async def tc_chi_coh_e_combined_write_cmo(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""
   test_name = "tc_chi_coh_e_combined_write_cmo"
+  await _run_e_coherent(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_coh_e_lasm_deactivate", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_lasm_deactivate(dut) -> None:
+  """Run this public testcase through the CHI-E coherent topology."""
+  test_name = "tc_chi_coh_e_lasm_deactivate"
   await _run_e_coherent(dut, test_name)
 
 

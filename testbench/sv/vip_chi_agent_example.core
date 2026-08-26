@@ -287,6 +287,9 @@ filesets:
       - tc/tc_chi_coh_d_fwd_data_negctl.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_fwd_data_negctl.sv:                 {is_include_file: true}
       - tc/chi_coh_snf_read_miss_base_test.sv:          {is_include_file: true}
+      - tc/chi_coh_lasm_deactivate_base_test.sv:        {is_include_file: true}
+      - tc/tc_chi_coh_d_lasm_deactivate.sv:                 {is_include_file: true}
+      - tc/tc_chi_coh_e_lasm_deactivate.sv:                 {is_include_file: true}
       - tc/chi_coh_hnf_sn_txsactive_base_test.sv:       {is_include_file: true}
       - tc/tc_chi_coh_d_snf_read_miss.sv:                   {is_include_file: true}
       - tc/tc_chi_coh_d_hnf_sn_txsactive.sv:                {is_include_file: true}

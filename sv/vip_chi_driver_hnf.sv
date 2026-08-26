@@ -177,6 +177,20 @@ class vip_chi_driver_hnf #(
 
   protected bit rn_link_up [N_RNF_PORTS];
 
+  // Graceful deactivation, per RN-facing port. The home has no tear-down request
+  // of its own to make -- it reacts to the requester withdrawing one -- so
+  // everything here is a consequence of that: stop granting, hand back what this
+  // port holds, and only then let the acknowledge fall.
+  protected bit rn_link_deactivating [N_RNF_PORTS];
+
+  // The credits this home has ADVERTISED on each RN port and the RN-F has not yet
+  // spent: the mirror image of the send managers above, and the half of quiescence
+  // a sender cannot see from its own pools. Without it the home could only know
+  // when IT was finished, not when the link was.
+  protected int unsigned rn_req_lcrd_granted [N_RNF_PORTS];
+  protected int unsigned rn_rsp_lcrd_granted [N_RNF_PORTS];
+  protected int unsigned rn_dat_lcrd_granted [N_RNF_PORTS];
+
   // Last cycle's value of this home's OWN transmit-link request on each
   // RN-facing port, so the acknowledge can be held one cycle past it on the way
   // down. See drive_rn_idle_sideband.
@@ -308,6 +322,10 @@ class vip_chi_driver_hnf #(
       this.rn_rsp_lcrdv_pending[i] = 0;
       this.rn_dat_lcrdv_pending[i] = 0;
       this.rn_link_up[i]           = 1'b0;
+      this.rn_link_deactivating[i] = 1'b0;
+      this.rn_req_lcrd_granted[i]  = 0;
+      this.rn_rsp_lcrd_granted[i]  = 0;
+      this.rn_dat_lcrd_granted[i]  = 0;
       this.rn_flitpend_negctl_done[i] = 1'b0;
     end
 
@@ -369,7 +387,25 @@ class vip_chi_driver_hnf #(
 
     bit want_link;
 
-    want_link = this.vif_rn[p].g_drv.hnf_cb.rxlinkactivereq;
+    if (this.vif_rn[p].g_drv.hnf_cb.rxlinkactivereq) begin
+      want_link = 1'b1;
+    end
+    else begin
+      // A DRAIN term, not an activation one: it keeps a link that is already up
+      // from going down while credits are still outstanding at this end. Gated on
+      // this home's own sideband being up for exactly that reason -- with the
+      // link in STOP and the peer asking for nothing, an outstanding credit is
+      // not a reason to raise the request, and raising it there is what puts the
+      // acknowledge up before the peer has asked.
+      //
+      // Without it the acknowledge fell two cycles after the peer's request did,
+      // whatever this home still held: the link reached STOP with the home's RSP,
+      // DAT and SNP pools full, and the requester's own drain waited for returns
+      // that were never coming.
+      want_link = (this.vif_rn[p].txlinkactivereq ||
+                   this.vif_rn[p].txlinkactiveack) &&
+                  !this.rn_link_drained(p);
+    end
 
     // 14.6.3's fourth ordering binds US, not the peer: "the deassertion of TXREQ
     // must not occur before the assertion of RXACK". The acknowledge lags the
@@ -749,9 +785,16 @@ class vip_chi_driver_hnf #(
   endfunction
 
   protected task rn_credit_loop(input int p);
+
+    bit grant;
+    bit req_grant;
+    bit rsp_grant;
+    bit dat_grant;
+
     forever begin
       @(this.vif_rn[p].g_drv.hnf_cb);
 
+      this.rn_track_deactivation(p);
       this.drive_rn_idle_sideband(p);
 
       // The only write to this wire. Asserted while anything is outstanding,
@@ -764,18 +807,48 @@ class vip_chi_driver_hnf #(
           this.rn_tx_active_extend[p]--;
         end
       end
-      this.vif_rn[p].g_drv.hnf_cb.txreqlcrdv <= (this.rn_req_lcrdv_pending[p] != 0);
-      this.vif_rn[p].g_drv.hnf_cb.txrsplcrdv <= (this.rn_rsp_lcrdv_pending[p] != 0);
-      this.vif_rn[p].g_drv.hnf_cb.txdatlcrdv <= (this.rn_dat_lcrdv_pending[p] != 0);
 
-      if (this.rn_req_lcrdv_pending[p] != 0) begin
+      // A receiver may not issue L-credits once the link is coming down, and a
+      // drain racing a credit loop that keeps refilling the pool would never
+      // converge: every credit the requester handed back would be advertised
+      // straight again.
+      grant     = !this.rn_link_deactivating[p];
+      req_grant = (this.rn_req_lcrdv_pending[p] != 0) && grant;
+      rsp_grant = (this.rn_rsp_lcrdv_pending[p] != 0) && grant;
+      dat_grant = (this.rn_dat_lcrdv_pending[p] != 0) && grant;
+
+      this.vif_rn[p].g_drv.hnf_cb.txreqlcrdv <= req_grant;
+      this.vif_rn[p].g_drv.hnf_cb.txrsplcrdv <= rsp_grant;
+      this.vif_rn[p].g_drv.hnf_cb.txdatlcrdv <= dat_grant;
+
+      if (req_grant) begin
         this.rn_req_lcrdv_pending[p]--;
+        this.rn_req_lcrd_granted[p]++;
       end
-      if (this.rn_rsp_lcrdv_pending[p] != 0) begin
+      if (rsp_grant) begin
         this.rn_rsp_lcrdv_pending[p]--;
+        this.rn_rsp_lcrd_granted[p]++;
       end
-      if (this.rn_dat_lcrdv_pending[p] != 0) begin
+      if (dat_grant) begin
         this.rn_dat_lcrdv_pending[p]--;
+        this.rn_dat_lcrd_granted[p]++;
+      end
+
+      // Every inbound flit spends one of the credits advertised above, INCLUDING
+      // an L-credit return: the return is itself a flit and consumes the credit
+      // it hands back. That is what lets the drain converge with no separate
+      // accounting for the two kinds.
+      if (this.vif_rn[p].g_drv.hnf_cb.rxreqflitv &&
+          (this.rn_req_lcrd_granted[p] != 0)) begin
+        this.rn_req_lcrd_granted[p]--;
+      end
+      if (this.vif_rn[p].g_drv.hnf_cb.rxrspflitv &&
+          (this.rn_rsp_lcrd_granted[p] != 0)) begin
+        this.rn_rsp_lcrd_granted[p]--;
+      end
+      if (this.vif_rn[p].g_drv.hnf_cb.rxdatflitv &&
+          (this.rn_dat_lcrd_granted[p] != 0)) begin
+        this.rn_dat_lcrd_granted[p]--;
       end
 
       if (this.vif_rn[p].g_drv.hnf_cb.rxrsplcrdv) begin
@@ -784,12 +857,82 @@ class vip_chi_driver_hnf #(
       if (this.vif_rn[p].g_drv.hnf_cb.rxdatlcrdv) begin
         this.rn_dat_send_mgr[p].return_credit();
       end
-      // SNP send credit from the RN-F (consumed once M3 originates snoops).
       if (this.vif_rn[p].g_drv.hnf_cb.rxsnplcrdv) begin
         this.rn_snp_send_mgr[p].return_credit();
       end
     end
   endtask
+
+  // ---------------------------------------------------------------------------
+  // Follow the requester's activation request into and back out of tear-down.
+  //
+  // The completer half of the LASM cycle, and the RN-facing twin of the SN-F's
+  // track_deactivation. This home has no tear-down request of its own to make --
+  // it reacts.
+  //
+  // Re-granting the initial budget on the way back up is not a refinement: the
+  // per-port activation task is a one-shot that has already returned by then, so
+  // without this a reactivated link would carry no credits in either direction
+  // and the first request after bring-up would wait forever.
+  // ---------------------------------------------------------------------------
+  protected function void rn_track_deactivation(input int p);
+
+    bit req;
+
+    req = this.vif_rn[p].g_drv.hnf_cb.rxlinkactivereq;
+
+    if (!req && this.rn_link_up[p]) begin
+      if (!this.rn_link_deactivating[p]) begin
+        this.rn_link_deactivating[p] = 1'b1;
+        // Queued-but-unsent grants are dropped rather than carried across the
+        // gap: they were promises about a link that no longer exists, and
+        // re-activation advertises a fresh budget below.
+        this.rn_req_lcrdv_pending[p] = 0;
+        this.rn_rsp_lcrdv_pending[p] = 0;
+        this.rn_dat_lcrdv_pending[p] = 0;
+      end
+    end
+    else if (req && this.rn_link_deactivating[p]) begin
+      this.rn_link_deactivating[p] = 1'b0;
+      // Re-advertise what brings the port back to its initial budget, not a
+      // fresh full budget. After a real tear-down the granted counts are zero
+      // and the two are the same thing; after a request that dropped for a cycle
+      // with no drain behind it they are not, and a full budget on top of the
+      // credits the requester never returned is an over-grant this home would be
+      // reported for. Subtracting what is still outstanding is right in both
+      // cases and needs no way to tell them apart.
+      if (this.cfg.initial_req_credits > this.rn_req_lcrd_granted[p]) begin
+        this.rn_req_lcrdv_pending[p] +=
+          (this.cfg.initial_req_credits - this.rn_req_lcrd_granted[p]);
+      end
+      if (this.cfg.initial_rsp_credits > this.rn_rsp_lcrd_granted[p]) begin
+        this.rn_rsp_lcrdv_pending[p] +=
+          (this.cfg.initial_rsp_credits - this.rn_rsp_lcrd_granted[p]);
+      end
+      if (this.cfg.initial_dat_credits > this.rn_dat_lcrd_granted[p]) begin
+        this.rn_dat_lcrdv_pending[p] +=
+          (this.cfg.initial_dat_credits - this.rn_dat_lcrd_granted[p]);
+      end
+    end
+
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Both halves of quiescence on one RN-facing port.
+  //
+  // Nothing this home still holds -- the RSP, DAT and SNP credits the requester
+  // granted it -- and nothing it advertised that the requester still holds.
+  // Either half left non-zero when the link reaches STOP is a stranded credit,
+  // which is what VIP_CHI_CHK_LCRD_QUIESCENT_IN_STOP_E and its SNP twin report.
+  // ---------------------------------------------------------------------------
+  protected function bit rn_link_drained(input int p);
+    return (this.rn_req_lcrd_granted[p] == 0) &&
+           (this.rn_rsp_lcrd_granted[p] == 0) &&
+           (this.rn_dat_lcrd_granted[p] == 0) &&
+           (this.rn_rsp_send_mgr[p].available() == 0) &&
+           (this.rn_dat_send_mgr[p].available() == 0) &&
+           (this.rn_snp_send_mgr[p].available() == 0);
+  endfunction
 
   // ---------------------------------------------------------------------------
   // Bring one RN-facing port up, in the two steps E section 14.6.1 / D section
@@ -858,10 +1001,32 @@ class vip_chi_driver_hnf #(
   // Per-RN REQ ingress capture. Latches the REQ, returns its credit at once
   // (so the RN-F is free to issue again), and enqueues it for the engine.
   // ---------------------------------------------------------------------------
+  // An inbound L-credit return is a link-layer flit, not a request.
+  //
+  // It consumes the credit it hands back and nothing else, so the ingress path
+  // must not queue it, open a TXSACTIVE window for it, or try to answer it. The
+  // home used to do all three: the drain's first ReqLCrdReturn reached
+  // service_req's opcode dispatch and stopped the simulation with "unsupported
+  // REQ opcode 0x0", which is why the coherent link could only ever be taken
+  // down by reset. The SN-F has had this arm since graceful deactivation existed.
+  //
+  // Nor is the credit re-granted: the requester is handing it back, so
+  // advertising it again would refill the pool the tear-down is emptying. The
+  // credit loop's granted shadow already retires it.
+  protected function bit rx_req_is_lcrd_return(input req_flit_t req);
+    return (req_opcode_t'(req.opcode) ==
+            req_opcode_t'(VIP_CHI_REQ_LCRD_RETURN_C));
+  endfunction
+
   protected task capture_req(input int p);
     forever begin
       while (!this.vif_rn[p].g_drv.hnf_cb.rxreqflitv) begin
         @(this.vif_rn[p].g_drv.hnf_cb);
+      end
+
+      if (this.rx_req_is_lcrd_return(this.vif_rn[p].g_drv.hnf_cb.rxreqflit)) begin
+        @(this.vif_rn[p].g_drv.hnf_cb);
+        continue;
       end
 
       this.work_q.push_back('{port: p, flit: this.vif_rn[p].g_drv.hnf_cb.rxreqflit});
@@ -1221,6 +1386,7 @@ class vip_chi_driver_hnf #(
   // ---------------------------------------------------------------------------
   protected task response_engine();
     hnf_work_t w;
+    int        drain_port;
 
     forever begin
       if (this.work_q.size() != 0) begin
@@ -1232,9 +1398,124 @@ class vip_chi_driver_hnf #(
         this.rn_tx_activity_end(w.port);
       end
       else begin
-        @(this.vif_rn[0].g_drv.hnf_cb);
+        drain_port = this.rn_drain_port();
+        if (drain_port >= 0) begin
+          this.rn_drain_credits(drain_port);
+        end
+        else begin
+          @(this.vif_rn[0].g_drv.hnf_cb);
+        end
       end
     end
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // The tear-down drain, HERE rather than in a task of its own.
+  //
+  // An L-credit return is a flit, and the invariant this driver is built on is
+  // that every flit it sends leaves through this one serial engine -- there is no
+  // channel lock to catch a second writer, only the structure. So the drain runs
+  // in the engine's idle branch, which is also the only place it could run
+  // anyway: the requester withdraws its request only once every one of its
+  // transactions has retired, so a port with credits to hand back has no work
+  // left in the queue.
+  //
+  // The SN-F puts its drain in a separate task and says why in the same terms
+  // from the other side: it drives flits from exactly one place too, and there
+  // that place is not the response loop.
+  // ---------------------------------------------------------------------------
+  // The first RN port with credits to hand back, or -1.
+  //
+  // rn_tx_active_count must be zero, which closes the one-cycle tail where the
+  // requester has seen its last completion but this home is still driving the
+  // final flit of it.
+  protected function int rn_drain_port();
+    for (int p = 0; p < N_RNF_PORTS; p++) begin
+      if (this.rn_link_deactivating[p] && (this.rn_tx_active_count[p] == 0) &&
+          ((this.rn_rsp_send_mgr[p].available() != 0) ||
+           (this.rn_dat_send_mgr[p].available() != 0) ||
+           (this.rn_snp_send_mgr[p].available() != 0))) begin
+        return p;
+      end
+    end
+    return -1;
+  endfunction
+
+  // Return every send-side L-credit this home holds on one RN port.
+  //
+  // All three channels, and the SNP one is the reason this exists on the home
+  // rather than only on the SN-F: it is the channel the coherent link adds, the
+  // home is the only end that sends on it, and a snoop credit left banked is a
+  // credit the requester is still counting as outstanding.
+  protected task rn_drain_credits(input int p);
+
+    // One clock unconditionally, before any channel is looked at. The engine's
+    // idle branch is a tight loop and this is the only wait in it: a drain that
+    // returned without advancing time on a port its own predicate had selected
+    // would spin the simulation instead of failing, and the two disagreeing about
+    // which channels count is exactly the kind of edit that happens later.
+    @(this.vif_rn[p].g_drv.hnf_cb);
+    this.drive_rn_idle_sideband(p);
+
+    while (this.rn_rsp_send_mgr[p].try_acquire_credit()) begin
+      this.drive_rn_lcrd_return(p, ANNOUNCE_RSP_E);
+    end
+    while (this.rn_dat_send_mgr[p].try_acquire_credit()) begin
+      this.drive_rn_lcrd_return(p, ANNOUNCE_DAT_E);
+    end
+    while (this.rn_snp_send_mgr[p].try_acquire_credit()) begin
+      this.drive_rn_lcrd_return(p, ANNOUNCE_SNP_E);
+    end
+
+  endtask
+
+  // One L-credit return flit on an RN-facing channel.
+  //
+  // All fields zero: the opcode is the whole message, and a return names no
+  // address, no TxnID and no data. Sent UNDER one of the credits it returns --
+  // acquiring is what makes the send legal -- so the pool empties itself and the
+  // credit shadows in the checkers need no special case for it.
+  protected task drive_rn_lcrd_return(input int p, input announce_ch_t ch);
+
+    this.announce_rn_flit(p, ch);
+
+    @(this.vif_rn[p].g_drv.hnf_cb);
+    this.drive_rn_idle_sideband(p);
+    case (ch)
+      ANNOUNCE_RSP_E: begin
+        this.vif_rn[p].g_drv.hnf_cb.txrspflitpend <= 1'b0;
+        this.vif_rn[p].g_drv.hnf_cb.txrspflitv    <= 1'b1;
+        this.vif_rn[p].g_drv.hnf_cb.txrspflit     <= '0;
+      end
+      ANNOUNCE_SNP_E: begin
+        this.vif_rn[p].g_drv.hnf_cb.txsnpflitpend <= 1'b0;
+        this.vif_rn[p].g_drv.hnf_cb.txsnpflitv    <= 1'b1;
+        this.vif_rn[p].g_drv.hnf_cb.txsnpflit     <= '0;
+      end
+      default: begin
+        this.vif_rn[p].g_drv.hnf_cb.txdatflitpend <= 1'b0;
+        this.vif_rn[p].g_drv.hnf_cb.txdatflitv    <= 1'b1;
+        this.vif_rn[p].g_drv.hnf_cb.txdatflit     <= '0;
+      end
+    endcase
+
+    @(this.vif_rn[p].g_drv.hnf_cb);
+    this.drive_rn_idle_sideband(p);
+    case (ch)
+      ANNOUNCE_RSP_E: begin
+        this.vif_rn[p].g_drv.hnf_cb.txrspflitv <= 1'b0;
+        this.vif_rn[p].g_drv.hnf_cb.txrspflit  <= '0;
+      end
+      ANNOUNCE_SNP_E: begin
+        this.vif_rn[p].g_drv.hnf_cb.txsnpflitv <= 1'b0;
+        this.vif_rn[p].g_drv.hnf_cb.txsnpflit  <= '0;
+      end
+      default: begin
+        this.vif_rn[p].g_drv.hnf_cb.txdatflitv <= 1'b0;
+        this.vif_rn[p].g_drv.hnf_cb.txdatflit  <= '0;
+      end
+    endcase
+
   endtask
 
   // ---------------------------------------------------------------------------
@@ -3113,6 +3394,23 @@ class vip_chi_driver_hnf #(
   // Test/scoreboard accessor: aggregate directory state for a line (a unique
   // holder dominates, else shared if any port holds it, else Invalid).
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Test-facing tear-down accounting.
+  //
+  // The drain's own view, which is the half the wire cannot show: a pool emptied
+  // by dropping credits on the floor and one emptied by returning them look
+  // identical from STOP. The per-port deactivation flag is here for the same
+  // reason -- a home that tore down every port at once would satisfy every
+  // assertion a single-port test can make from the sideband alone.
+  // ---------------------------------------------------------------------------
+  function int unsigned snp_credits_held(input int p);
+    return this.rn_snp_send_mgr[p].available();
+  endfunction
+
+  function bit link_deactivating_on(input int p);
+    return this.rn_link_deactivating[p];
+  endfunction
+
   function vip_chi_resp_t get_directory_state(input addr_t addr);
     addr_t                       line;
     logic [N_RNF_PORTS-1:0][2:0] entry;
