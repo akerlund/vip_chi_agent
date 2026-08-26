@@ -227,6 +227,9 @@ higher-level features. The heavy reference material lives under `docs/`:
 - [docs/CHI_PRIMER.md](docs/CHI_PRIMER.md) — background on the CHI channels and
   flows the VIP models.
 - [docs/FUTURE_WORK.md](docs/FUTURE_WORK.md) — the backlog (optional breadth/depth; charter complete).
+- [AGENT.md](AGENT.md) — how to work in this repository: the two-port discipline,
+  what a new rule has to prove before it earns a check ID, the gates and which
+  ones the regression does not run for you.
 - [testbench/README.md](testbench/README.md) — shared SV/Python testbench
   overview and run commands.
 - [testbench/TEST_CASES.md](testbench/TEST_CASES.md) — shared testcase catalog.
