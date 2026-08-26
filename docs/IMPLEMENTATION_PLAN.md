@@ -409,12 +409,15 @@ shipped and tested; the list is retained as the scope record.
    (non-store) collects the original-value `CompData`. See §11.3.
 3. **Ordered reads/writes:** `Order = REQ_ACCEPTED/REQ_ORDER` with `ReadReceipt`
    correlation; `DBIDRespOrd` (CHI-E ordered-write DBID).
-4. **CHI-E Memory Tagging:** `TagOp`/`Tag`/`TU` on REQ/DAT and SN-F tag storage
-   are implemented. The `TagMatch` RSP opcode (0x0A) is **not**: neither port
-   defines it, so nothing drives it and nothing judges it. The two were listed
-   together as "handled" here, which read as a claim that the whole feature was
-   done; they are separate pieces of work and only the first is finished. See
-   `FUTURE_WORK.md` §1b.
+4. **CHI-E Memory Tagging:** `TagOp`/`Tag`/`TU` on REQ/DAT, SN-F tag storage and
+   replay, and the `TagMatch` RSP opcode (0x0A) are all implemented. They are
+   listed as three pieces rather than one because they were finished at three
+   different times and the first two shipped while the third did not — and then
+   the third shipped while the comparison behind it did not. Under
+   `TagOp = Match` the completer checks the write's Physical Tags against the
+   stored Allocation Tags (Table 13-34) and answers in `Resp[0]` alone
+   (Table 13-25); a Match write does not update the stored tags, which is what
+   separates it from `Update`.
 5. **Persistence CMOs:** `CleanSharedPersist`, `CleanSharedPersistSep` (E) as
    completion-only operations to the SN-F.
 6. **HN-I role** (§11.4): **Done** — dual-link pass-through ordering proxy. The

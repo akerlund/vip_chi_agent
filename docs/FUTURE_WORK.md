@@ -169,10 +169,14 @@ every run without needing a conversion.
   `SnpPreferUnique`/`SnpPreferUniqueFwd` (SNP 0x15/0x16). **backlog.**
 - **SnpQuery (CHI-E)** — SNP 0x10. **backlog**; a query snoop changes no state,
   so it is the smallest coherent addition on this list.
-- **Memory Tagging `TagMatch`** — RSP 0x0A. **backlog**, and it is the one item
-  here that a plan already claimed: see `IMPLEMENTATION_PLAN.md` §4, which now
-  separates the implemented tag storage and replay from the unimplemented
-  `TagMatch` response.
+- **Memory Tagging `TagMatch`** — RSP 0x0A. **Implemented.** The completer
+  performs the comparison Table 13-34 requires and answers in `Resp[0]` per
+  Table 13-25; `CHI_SB_TAG_MATCH_OWED` judges that the response was owed and
+  `CHI_SB_TAG_MATCH_RESULT` judges what it said, each with its own negative
+  control. Kept in this list because the entry records how it went wrong: the
+  opcode, the response and the OWED rule all shipped while the completer
+  answered a constant `Fail` and compared nothing, because `Resp[0] = 0` is also
+  the encoding of cache state `I`. A presence rule cannot see a constant answer.
 - **`WriteBackPtl` / `WriteEvictFull`** — REQ 0x1A / 0x15. **backlog**, tied to
   the dirty-writeback-on-eviction item in §1: both are eviction paths the bounded
   RN-F cache would need before it could evict rather than fatal.
