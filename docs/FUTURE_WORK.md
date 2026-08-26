@@ -17,6 +17,19 @@ once carried a count that had gone stale by twenty-odd testcases.
 
 ## 1. Coherency depth
 
+- [ ] **The HN-I drives `TXSACTIVE` from link-up, on both its RN- and SN-facing
+      ports.** `sv/vip_chi_driver_hni.sv:528` and `:566` assign
+      `txsactive <= rn_link_up[p]` / `sn_link_up[s]`, and
+      `py/vip_chi_driver_hni.py:306` / `:326` do the same — so the sideband is high
+      from bring-up to tear-down whatever the proxy has outstanding. Legal by the
+      letter, since over-assertion always is, and carrying no information at all.
+      This is the same defect that was removed from the HN-F's SN-facing port,
+      still in place on the other home: replace it with a counted window opened
+      before the initiating flit and closed when the transaction's final flit is
+      done, and take the `txsactive_from_link_up` stand-down off the HN-I binds
+      with it. `CHI_TXSACTIVE_DEASSERT_BOUNDED` and
+      `CHI_TXSACTIVE_COVERS_OUTSTANDING` are stood down at those binds for exactly
+      this drive, so they should go from stood-down to exercised. *Effort S/M.*
 - [ ] **Scoreboard completion contract for combined requests.** A combined
       Write + CMO must not retire without its CMO half. Nothing currently refuses
       to, so a completer that answered only the write would pass. *Effort S/M.*
@@ -68,7 +81,39 @@ is not in this repository and must not be.
       paths the bounded RN-F cache would need before it could evict rather than
       fatal, so this lands with the dirty-writeback item in §1. *Effort M.*
 
-## 3. Interface and system breadth
+## 3. Field-legality rules not yet built
+
+Two candidates derived from the specification's field-applicability tables have
+no checker. Every other lettered candidate in that sweep is implemented; these
+are what is left of it.
+
+- [ ] **`CopyBackWrData` with `Resp = I` must carry no data.** After a snoop
+      takeaway the write-back is a formality: IHI 0050E_a requires every byte
+      enable deasserted and the data zero, because the line was already taken.
+      Nothing checks either half, and a completer that wrote the payload into
+      memory would corrupt a line the snoop had just moved. *Effort S.*
+- [ ] **`TagOp = 0` in the non-data message of a separated read.** `RespSepData`
+      carries no tags, so the field is inapplicable and must be zero. The VIP
+      models the separated read (`ReadNoSnpSep`, `RespSepData`, `DataSepResp`) and
+      judges the tag fields nowhere on that flow. *Effort S.*
+
+## 4. TagMatch conformance depth
+
+The opcode, the completer-side comparator and both scoreboard rules ship. These
+are the conformance details of the same feature that were scoped for it and never
+built. One item rather than six, because they are one responder's behaviour and a
+test that reaches any of them reaches most.
+
+- [ ] **Finish the `TagMatch` responder against Tables 9-8, 9-11 and 13-25.**
+      `RespErr` restricted to `OK` / `DERR` / `NDERR` with `EXOK` rejected; the
+      responder opcode set taken from Table 9-8 rather than "any write";
+      `Resp = Pass` for the supported-but-not-performed case; the early-`TagMatch`
+      case, sent before the write data with `Comp` not delayed behind it; the
+      atomic case per Table 9-11 and its `ReturnNID` requirement; and a negative
+      control driving a `TagMatch` for a request that required no match.
+      *Effort M.*
+
+## 5. Interface and system breadth
 
 - [ ] **System Coherency Interface (`SYSCOREQ` / `SYSCOACK`).** The system-level
       handshake by which a controller enables and disables an interface's
@@ -90,8 +135,22 @@ is not in this repository and must not be.
       field's meaning is by definition outside the specification. *Effort S; value
       low.*
 
-## 4. Polish
+## 6. Polish
 
+- [ ] **No timeout on credit starvation.** A DUT that activates the link and then
+      never grants an L-credit hangs the driver with no diagnostic: the send path
+      waits on a pool that never fills, and the only timeouts that exist bound
+      link *activation* and *deactivation*, neither of which this reaches. The
+      driver is the wrong place to fail — a bounded wait with a named report at
+      the checker gives the user the same information without changing when a
+      legitimate slow grant succeeds. *Effort S.*
+- [ ] **`RXSACTIVE` is sampled for coverage and read by no driver.** No receiver
+      in either port consults it, so nothing this VIP does depends on the peer
+      claiming it may have snoopable transactions outstanding — which is the
+      signal's entire purpose. Either have a receiver act on it (the snoopee's
+      stand-down is the natural consumer) or record that the VIP models the
+      transmit half only. Grep confirms no driver in either port reads it.
+      *Effort S.*
 - [ ] **Agent reset-watcher level check.** The `vip_chi_agent` reset watcher
       requires a posedge of `rst_n`, so a bench with `rst_n` tied high from t0
       never starts the drivers. Guard with a level check. *Effort S; risk med — it
