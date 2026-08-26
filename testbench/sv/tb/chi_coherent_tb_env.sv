@@ -9,10 +9,19 @@
 //
 // Parameterized by config + flit types so the same topology stands up on both
 // the narrow CHI-D config (CHI_D_CFG_C / chi_d_types_t, the default) and the wide
-// CHI-E config (CHI_E_WIDE_CFG_C / chi_e_wide_types_t). It uses the base
-// vip_chi_agent (not vip_chi_agent_e) even at CHI-E width: the base monitor is
-// the one that publishes the SNP channel, and coherent reads do not depend on
-// the E-only REQ fields that the _e drivers add.
+// CHI-E config (CHI_E_WIDE_CFG_C / chi_e_wide_types_t).
+//
+// This class builds the BASE agents on either width. chi_coherent_e_tb_env is
+// the subclass that swaps in the Issue-E-exact pair, and a CHI-E test that wants
+// E-only REQ fields on the wire has to name it -- see the factory hooks below.
+//
+// It used to build the base agents at CHI-E width too, on two stated grounds,
+// and both have expired. "The base monitor is the one that publishes the SNP
+// channel" was never true of vip_chi_monitor_e, which overrides two capture
+// hooks and inherits SNP publication untouched. "Coherent reads do not depend on
+// the E-only REQ fields" was true when reads were all this topology carried, and
+// stopped being true when Combined Write + CMO landed on it: GroupIDExt is the
+// field 13.10.8 builds PGroupID from.
 //
 // Standalone, like chi_e_tb_env: no virtual sequencer. Tests start
 // sequences directly on hrnf{0,1}_agent.sequencer.
@@ -67,14 +76,33 @@ class chi_coherent_tb_env #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Which agents this topology builds. Factory hooks rather than inline creates
+  // so chi_coherent_e_tb_env can substitute the Issue-E-exact pair, and hooks
+  // rather than a test on CFG_P.ISSUE_P because the E classes name REQ fields
+  // the CHI-D flit does not have: a CHI-D specialization of one fails to
+  // ELABORATE, so it must never be named, not merely never constructed.
+  // ---------------------------------------------------------------------------
+  protected virtual function vip_chi_agent #(CFG_P, TYPES_P, VIP_CHI_ROLE_RNF_E) create_rnf_agent(
+    input string name
+  );
+    return vip_chi_agent #(CFG_P, TYPES_P, VIP_CHI_ROLE_RNF_E)::type_id::create(name, this);
+  endfunction
+
+  protected virtual function vip_chi_hnf_agent #(CFG_P, TYPES_P, HNF_N_RNF_PORTS_C, HNF_N_SN_PORTS_C) create_hnf_agent(
+    input string name
+  );
+    return vip_chi_hnf_agent #(CFG_P, TYPES_P, HNF_N_RNF_PORTS_C, HNF_N_SN_PORTS_C)::type_id::create(name, this);
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Build the coherent topology components and observation FIFOs.
   // ---------------------------------------------------------------------------
   function void build_phase(input uvm_phase phase);
     super.build_phase(phase);
 
-    this.hrnf0_agent = vip_chi_agent #(CFG_P, TYPES_P, VIP_CHI_ROLE_RNF_E)::type_id::create("hrnf0_agent", this);
-    this.hrnf1_agent = vip_chi_agent #(CFG_P, TYPES_P, VIP_CHI_ROLE_RNF_E)::type_id::create("hrnf1_agent", this);
-    this.hnf_agent   = vip_chi_hnf_agent #(CFG_P, TYPES_P, HNF_N_RNF_PORTS_C, HNF_N_SN_PORTS_C)::type_id::create("hnf_agent", this);
+    this.hrnf0_agent = this.create_rnf_agent("hrnf0_agent");
+    this.hrnf1_agent = this.create_rnf_agent("hrnf1_agent");
+    this.hnf_agent   = this.create_hnf_agent("hnf_agent");
     this.dsnf0_agent = vip_chi_agent #(CFG_P, TYPES_P, VIP_CHI_ROLE_SNF_E)::type_id::create("dsnf0_agent", this);
     this.perf        = vip_chi_perf_counters #(CFG_P, TYPES_P, VIP_CHI_ROLE_RNF_E)::type_id::create("perf", this);
     this.coh_checker = vip_chi_coherency_checker #(CFG_P)::type_id::create("coh_checker", this);

@@ -23,27 +23,40 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-`ifndef VIP_CHI_DRIVER_RNI_E
-`define VIP_CHI_DRIVER_RNI_E
+`ifndef VIP_CHI_DRIVER_RNF_E
+`define VIP_CHI_DRIVER_RNF_E
 
 import uvm_pkg::*;
 `include "uvm_macros.svh"
 import vip_chi_types_pkg::*;
 
-class vip_chi_driver_rni_e #(
+// The coherent requester, Issue-E-exact: the same RN-F, with the REQ and DAT
+// fields the Issue E flit has and the Issue D flit does not.
+//
+// It exists for one field and is worth its own class for the reason that field
+// shows up: 13.10.8 builds PGroupID out of {GroupIDExt[2:0], LPID[4:0]}, so a
+// coherent requester that never drives GroupIDExt makes every persistent CMO on
+// this link report group zero -- and report it consistently, at both ends, with
+// every check agreeing. A completer cannot tell that from a requester whose
+// group really is zero.
+//
+// vip_chi_driver_rnf extends vip_chi_driver_rni rather than vip_chi_driver_rni_e
+// because the coherent link stands up on both issues. This is where the E half
+// rejoins: same hooks, same bodies, one owner in vip_chi_issue_e_fields.
+class vip_chi_driver_rnf_e #(
   vip_chi_cfg_t  CFG_P        = VIP_CHI_DEFAULT_CFG_C,
   type           FLIT_TYPES_T = vip_chi_types_e #(CFG_P)
-  ) extends vip_chi_driver_rni #(CFG_P, FLIT_TYPES_T);
+  ) extends vip_chi_driver_rnf #(CFG_P, FLIT_TYPES_T);
 
   typedef vip_chi_item #(CFG_P)            item_t;
   typedef item_t::raw_req_t                raw_req_t;
   typedef item_t::raw_rsp_t                raw_rsp_t;
   typedef item_t::raw_dat_t                raw_dat_t;
   typedef FLIT_TYPES_T::vip_chi_req_flit_t req_flit_t;
-  typedef FLIT_TYPES_T::vip_chi_dat_flit_t dat_flit_t;
   typedef FLIT_TYPES_T::vip_chi_rsp_flit_t rsp_flit_t;
+  typedef FLIT_TYPES_T::vip_chi_dat_flit_t dat_flit_t;
 
-  `uvm_component_param_utils(vip_chi_driver_rni_e #(CFG_P, FLIT_TYPES_T))
+  `uvm_component_param_utils(vip_chi_driver_rnf_e #(CFG_P, FLIT_TYPES_T))
 
   // ---------------------------------------------------------------------------
   // Constructor.
@@ -86,7 +99,8 @@ class vip_chi_driver_rni_e #(
 
   // ---------------------------------------------------------------------------
   // Apply the exact CHI-E DAT-only tagging fields absent from the exact CHI-D
-  // shape.
+  // shape. Reached by a coherent write's data and by SnpRespData alike -- both
+  // go out of this driver's DAT path.
   // ---------------------------------------------------------------------------
   virtual protected function void apply_dat_issue_specific_fields(
     ref   dat_flit_t   flit,

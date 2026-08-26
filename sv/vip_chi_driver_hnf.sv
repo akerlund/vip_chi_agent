@@ -1978,17 +1978,19 @@ class vip_chi_driver_hnf #(
     //
     // DBID carries PGroupID for this response (13.10.7 puts the group in the bits
     // Table 13-7 otherwise calls DBID, and a persist response has no data buffer
-    // for a real DBID to displace). It is zero here because on this link the
-    // group never arrives: 13.10.8 builds PGroupID out of GroupIDExt, a field
-    // only the Issue-E-exact requester driver puts on the wire, and the coherent
-    // topology stands up the base RN-F. Sourcing it needs the E-exact drivers on
-    // both ends of the coherent link; the Python port, which has no elaboration
-    // constraint to work around, reflects the real group.
+    // for a real DBID to displace). 13.10.8 builds it out of the request:
+    // PGroupID[7:0] = {GroupIDExt[2:0], LPID[4:0]}.
+    //
+    // GroupIDExt comes through req_group_id_ext rather than off the flit,
+    // because the field exists only in the Issue E request and naming it in this
+    // parameterized base would fail a CHI-D specialization at ELABORATION.
     if (vip_chi_req_opcode_combined_cmo_is_persist(op)) begin
       persist_tgt_id = node_id_t'(req.returnnid);
       this.drive_rn_rsp(p,
                         item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C),
-                        txn_id_t'(0), txn_id_t'(0),
+                        txn_id_t'(0),
+                        txn_id_t'(vip_chi_pgroup_id_from_req(
+                          this.req_group_id_ext(req), 8'(req.lpid))),
                         VIP_CHI_RESP_STATE_I_E,
                         node_id_t'(req.tgtid), persist_tgt_id);
     end
@@ -2262,6 +2264,23 @@ class vip_chi_driver_hnf #(
 
     this.collect_comp_ack(p, txn_id_t'(req.txnid));
   endtask
+
+  // ---------------------------------------------------------------------------
+  // Optional issue-specific hook for the REQ flit's GroupIDExt.
+  //
+  // The field exists only in the Issue E request flit, so it cannot be named in
+  // this parameterized base at all -- a CHI-D instantiation would fail to
+  // ELABORATE on the member reference, not at runtime, so no `if (ISSUE_P)`
+  // guard can reach it. The twin of the same hook on vip_chi_driver_snf, and
+  // overridden by vip_chi_driver_hnf_e for the same reason.
+  //
+  // Zero here is not a placeholder: Issue D has no GroupIDExt and no Combined
+  // Write + CMO, so no CHI-D transaction reaching this home carries a PGroupID
+  // for it to be wrong about.
+  // ---------------------------------------------------------------------------
+  virtual protected function logic [2 : 0] req_group_id_ext(input req_flit_t req);
+    return 3'b0;
+  endfunction
 
   protected task service_evict(input int p, input req_flit_t req);
     addr_t line;

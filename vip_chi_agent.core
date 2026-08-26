@@ -27,12 +27,15 @@ filesets:
       - sv/vip_chi_scoreboard.sv:                 {is_include_file: true}
       - sv/vip_chi_coherency_checker.sv:          {is_include_file: true}
       - sv/vip_chi_driver_rni.sv:                 {is_include_file: true}
+      - sv/vip_chi_issue_e_fields.sv:             {is_include_file: true}
       - sv/vip_chi_driver_rni_e.sv:               {is_include_file: true}
       - sv/vip_chi_driver_rnf.sv:                 {is_include_file: true}
+      - sv/vip_chi_driver_rnf_e.sv:               {is_include_file: true}
       - sv/vip_chi_driver_snf.sv:                 {is_include_file: true}
       - sv/vip_chi_driver_snf_e.sv:               {is_include_file: true}
       - sv/vip_chi_driver_hni.sv:                 {is_include_file: true}
       - sv/vip_chi_driver_hnf.sv:                 {is_include_file: true}
+      - sv/vip_chi_driver_hnf_e.sv:               {is_include_file: true}
       - sv/seq_lib/vip_chi_seq_config.sv:         {is_include_file: true}
       - sv/seq_lib/vip_chi_addr_iterator.sv:      {is_include_file: true}
       - sv/seq_lib/vip_chi_seq_payload_buffer.sv: {is_include_file: true}
@@ -66,6 +69,7 @@ filesets:
       - sv/vip_chi_agent_e.sv:                    {is_include_file: true}
       - sv/vip_chi_hni_agent.sv:                  {is_include_file: true}
       - sv/vip_chi_hnf_agent.sv:                  {is_include_file: true}
+      - sv/vip_chi_hnf_agent_e.sv:                {is_include_file: true}
       - sv/vip_chi_agent_pkg.sv:                  {is_include_file: true}
     file_type: systemVerilogSource
     depend:

@@ -61,6 +61,16 @@ class vip_chi_agent_e #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // Use the exact-CHI-E RN-F driver so REQ-only E fields reach the wire from a
+  // COHERENT requester too. Without it the coherent link is E in every respect
+  // but the one that matters to a persistent CMO: GroupIDExt stays zero, so
+  // 13.10.8's PGroupID reports group zero whatever the requester asked for.
+  // ---------------------------------------------------------------------------
+  protected virtual function vip_chi_driver_rnf #(CFG_P, FLIT_TYPES_T) create_rnf_driver();
+    return vip_chi_driver_rnf_e #(CFG_P, FLIT_TYPES_T)::type_id::create("rnf_driver", this);
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Use the exact-CHI-E SN-F driver so DAT-side E tagging reaches the wire on
   // responder-driven completions.
   // ---------------------------------------------------------------------------

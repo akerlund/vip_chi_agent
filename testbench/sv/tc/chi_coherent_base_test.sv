@@ -112,7 +112,18 @@ class chi_coherent_base_test #(
     uvm_config_db #(vip_chi_cfg_agent)::set(this, "env.hrnf1_agent", "cfg", this.hrnf1_cfg);
     uvm_config_db #(vip_chi_cfg_agent)::set(this, "env.hnf_agent",   "cfg", this.hnf_cfg);
 
-    this.tb_env = chi_coherent_tb_env #(CFG_P, TYPES_T)::type_id::create("env", this);
+    this.tb_env = this.create_tb_env();
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Which coherent env this test stands up. A factory hook so
+  // chi_coherent_e_base_test can substitute the Issue-E-exact one, and a hook
+  // rather than a test on CFG_P.ISSUE_P because the E env names driver classes
+  // that reference REQ fields the CHI-D flit does not have -- a CHI-D
+  // specialization of one fails to ELABORATE, so it must never be named.
+  // ---------------------------------------------------------------------------
+  protected virtual function chi_coherent_tb_env #(CFG_P, TYPES_T) create_tb_env();
+    return chi_coherent_tb_env #(CFG_P, TYPES_T)::type_id::create("env", this);
   endfunction
 
   // ---------------------------------------------------------------------------

@@ -97,7 +97,7 @@ class vip_chi_hnf_agent #(
     end
     this.cfg.role = VIP_CHI_ROLE_HNF_E;
 
-    this.hnf_driver = vip_chi_driver_hnf #(CFG_P, FLIT_TYPES_T, N_RNF_PORTS, N_SN_PORTS)::type_id::create("hnf_driver", this);
+    this.hnf_driver     = this.create_hnf_driver();
     this.hnf_driver.cfg = this.cfg;
 
     foreach (this.rn_vif[i]) begin
@@ -108,6 +108,18 @@ class vip_chi_hnf_agent #(
       uvm_config_db #(virtual vip_chi_if #(CFG_P, FLIT_TYPES_T, VIP_CHI_ROLE_RNI_E))::set(
         this, "hnf_driver", $sformatf("sn_vif_%0d", s), this.sn_vif[s]);
     end
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Which HN-F driver this agent builds. A factory hook rather than an inline
+  // create so vip_chi_hnf_agent_e can substitute the Issue-E-exact driver -- and
+  // a hook rather than a runtime issue test, because the E driver names a REQ
+  // field the CHI-D flit does not have and a D specialization of it would fail
+  // to ELABORATE. Subclassing the agent is what keeps that specialization from
+  // ever being named.
+  // ---------------------------------------------------------------------------
+  protected virtual function vip_chi_driver_hnf #(CFG_P, FLIT_TYPES_T, N_RNF_PORTS, N_SN_PORTS) create_hnf_driver();
+    return vip_chi_driver_hnf #(CFG_P, FLIT_TYPES_T, N_RNF_PORTS, N_SN_PORTS)::type_id::create("hnf_driver", this);
   endfunction
 
   // ---------------------------------------------------------------------------

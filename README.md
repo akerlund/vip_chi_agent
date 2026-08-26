@@ -357,7 +357,19 @@ monitor to the exact-CHI-E `*_e` variants; no other factory overrides are
 required. The HN-I proxy is hosted by its own
 [vip_chi_hni_agent](sv/vip_chi_hni_agent.sv) (it needs both an RN-facing and an
 SN-facing interface), and the coherent home node by
-[vip_chi_hnf_agent](sv/vip_chi_hnf_agent.sv).
+[vip_chi_hnf_agent](sv/vip_chi_hnf_agent.sv) — with
+[vip_chi_hnf_agent_e](sv/vip_chi_hnf_agent_e.sv) as its exact-CHI-E form, which a
+coherent link needs whenever an E-only REQ field has to be *read back* rather than
+only driven.
+
+The selection has to happen at a class boundary rather than under a runtime test
+on the issue, and that is a language constraint: the `*_e` drivers name flit
+members the CHI-D struct does not have, so a CHI-D specialization of one fails at
+**elaboration** — before any `if` could decide not to use it. The Issue-E flit
+assignments themselves live in one place,
+[vip_chi_issue_e_fields](sv/vip_chi_issue_e_fields.sv), which is the mixin
+SystemVerilog does not have: each `*_e` driver keeps its own override and the
+override is one call.
 
 ### Files
 
@@ -375,7 +387,7 @@ SN-facing interface), and the coherent home node by
 | [vip_chi_agent.sv](sv/vip_chi_agent.sv) | Role-parameterized agent; monitor + `ROLE_P`-matched driver + sequencer; owns the `rst_n` watcher |
 | [vip_chi_agent_e.sv](sv/vip_chi_agent_e.sv) | CHI-E agent subclass (factory-overrides to the `*_e` driver/monitor) |
 | [vip_chi_hni_agent.sv](sv/vip_chi_hni_agent.sv) | Multi-port HN-I proxy agent (`N_RN_PORTS x N_SN_PORTS`) |
-| [vip_chi_hnf_agent.sv](sv/vip_chi_hnf_agent.sv) | Coherent home-node agent hosting the HN-F driver + directory |
+| [vip_chi_hnf_agent.sv](sv/vip_chi_hnf_agent.sv) / [vip_chi_hnf_agent_e.sv](sv/vip_chi_hnf_agent_e.sv) | Coherent home-node agent hosting the HN-F driver + directory; the `_e` form names the exact-CHI-E driver |
 | [vip_chi_hni_sam.sv](sv/vip_chi_hni_sam.sv) | HN-I System Address Map: `[base:limit] -> SN-port` range table |
 | [vip_chi_sequencer.sv](sv/vip_chi_sequencer.sv) | `uvm_sequencer #(vip_chi_item)` with reset handling |
 | [seq_lib/](sv/seq_lib/) | Sequence library — base seq setter API + read/write/atomic/persist/pipelined/coherent/raw sequences |
@@ -395,7 +407,8 @@ SN-facing interface), and the coherent home node by
 | [vip_chi_driver_hni.sv](sv/vip_chi_driver_hni.sv) | HN-I multi-port pass-through proxy driver |
 | [vip_chi_driver_rnf.sv](sv/vip_chi_driver_rnf.sv) | RN-F coherent requester (extends RN-I; adds cache-state model + snoop responder) |
 | [vip_chi_driver_hnf.sv](sv/vip_chi_driver_hnf.sv) | HN-F home-node driver (directory, snoop origination, terminates to its own `vip_mem`) |
-| [vip_chi_driver_rni_e.sv](sv/vip_chi_driver_rni_e.sv) / [vip_chi_driver_snf_e.sv](sv/vip_chi_driver_snf_e.sv) | Exact-CHI-E drivers (memory tagging, E-shaped REQ/DAT) |
+| [vip_chi_driver_rni_e.sv](sv/vip_chi_driver_rni_e.sv) / [vip_chi_driver_rnf_e.sv](sv/vip_chi_driver_rnf_e.sv) / [vip_chi_driver_snf_e.sv](sv/vip_chi_driver_snf_e.sv) / [vip_chi_driver_hnf_e.sv](sv/vip_chi_driver_hnf_e.sv) | Exact-CHI-E drivers (memory tagging, E-shaped REQ/DAT, `GroupIDExt` driven and read back) |
+| [vip_chi_issue_e_fields.sv](sv/vip_chi_issue_e_fields.sv) | The Issue-E-only flit-field assignments, in one place for every `*_e` driver |
 | [vip_chi_monitor.sv](sv/vip_chi_monitor.sv) / [vip_chi_monitor_e.sv](sv/vip_chi_monitor_e.sv) | Passive monitors; publish REQ/RSP/DAT/SNP items (the `_e` variant adds CHI-E fields) |
 | [vip_chi_scoreboard.sv](sv/vip_chi_scoreboard.sv) | Checker-C predictable write→read + atomic-RMW predictor |
 | [vip_chi_coherency_checker.sv](sv/vip_chi_coherency_checker.sv) | Checker-D self-derived per-line ownership shadow |

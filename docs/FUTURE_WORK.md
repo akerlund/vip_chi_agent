@@ -224,24 +224,31 @@ not model, and an empty category is cheaper than inventing one later.
 - **Interface parity (`PARITY_EN_P`)** — parity signals across the whole CHI
   interface (flit + sideband), with a parity checker and error-injection. Out of
   scope for v1. *Effort M.*
-- **Issue-E-exact drivers on the coherent topology** — `chi_coherent_tb_env`
-  stands up the base `vip_chi_agent` at CHI-E width on the stated premise that
-  "coherent reads do not depend on the E-only REQ fields that the `_e` drivers
-  add". A Combined Write with a persistent CMO is the first thing that does, and
-  it will not be the last: only `vip_chi_driver_rni_e` puts `GroupIDExt` on the
-  wire, so the SystemVerilog home has no group to reflect and sends `Persist`
-  with PGroupID zero where the Python port sends the real one.
+- **Issue-E-exact drivers on the coherent topology** — **Implemented.**
+  `vip_chi_driver_rnf_e` puts `GroupIDExt` on the wire from a coherent
+  requester and `vip_chi_driver_hnf_e` reads it back, through the same
+  `req_group_id_ext` hook the SN-F already used; `vip_chi_hnf_agent_e` and
+  `chi_coherent_e_tb_env` exist to name them, because a CHI-D specialization of
+  either driver fails at **elaboration** on a `req_flit_t` member that struct
+  does not have — so the selection has to happen at a class boundary, not under
+  a runtime test on the issue. A test opts in by overriding `create_tb_env`.
 
-  The home cannot read the field either, and the reason is elaboration rather
-  than logic: its `req_flit_t` comes from `vip_chi_types_d` for a CHI-D
-  instantiation and that struct has no `groupidext` member, so naming it fails to
-  elaborate instead of failing at runtime. The SN-F already solves exactly this
-  with a `req_group_id_ext` virtual hook overridden in `vip_chi_driver_snf_e`.
-  Closing it means that hook on the HN-F base plus `vip_chi_driver_hnf_e`,
-  `vip_chi_hnf_agent_e` — the agent has to be subclassed too, or the CHI-D
-  specialization of the `_e` driver still gets elaborated — and an E coherent env
-  to select them. Worth doing for the plumbing rather than for the one field:
-  every later E-only REQ field on this topology needs the same. *Effort M.*
+  Kept in this list for what it says about the shape of the defect. Neither end
+  of the link was wrong on its own: the requester sent no group, the home read
+  no group, and `Persist` carried PGroupID zero at both vantages with every
+  parity check, counter and scoreboard rule agreeing — the two ends were
+  consistent, and consistently wrong. `tc_chi_coh_e_combined_write_cmo` now pins
+  `{GroupIDExt, LPID}` to a value with bits set in both halves of 13.10.8's
+  equation and asserts the round trip, because a zero group is exactly what a
+  link that never carried the field reports.
+
+  The premise that let it happen is also recorded: `chi_coherent_tb_env` stood
+  up the base agents at CHI-E width because "coherent reads do not depend on the
+  E-only REQ fields", which was true when reads were all the topology carried,
+  and expired the day Combined Write + CMO landed on it. The second stated
+  reason — that the base monitor is the one publishing the SNP channel — was
+  never true of `vip_chi_monitor_e`, which overrides two capture hooks and
+  inherits SNP publication untouched.
 - **CHI-A / CHI-B** — earlier CHI issues. Out of scope by design; the VIP targets
   CHI-D and CHI-E.
 - **System Coherency Interface (`SYSCOREQ` / `SYSCOACK`)** — the system-level

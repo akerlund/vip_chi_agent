@@ -210,5 +210,6 @@ package chi_tb_pkg;
   `include "chi_e_tb_env.sv"
   `include "chi_e_proxy_tb_env.sv"
   `include "chi_coherent_tb_env.sv"
+  `include "chi_coherent_e_tb_env.sv"
 
 endpackage

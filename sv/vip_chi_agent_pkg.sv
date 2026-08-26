@@ -47,13 +47,16 @@ package vip_chi_agent_pkg;
   `include "vip_chi_hni_sam.sv"
   `include "vip_chi_scoreboard.sv"
   `include "vip_chi_coherency_checker.sv"
+  `include "vip_chi_issue_e_fields.sv"
   `include "vip_chi_driver_rni.sv"
   `include "vip_chi_driver_rni_e.sv"
   `include "vip_chi_driver_rnf.sv"
+  `include "vip_chi_driver_rnf_e.sv"
   `include "vip_chi_driver_snf.sv"
   `include "vip_chi_driver_snf_e.sv"
   `include "vip_chi_driver_hni.sv"
   `include "vip_chi_driver_hnf.sv"
+  `include "vip_chi_driver_hnf_e.sv"
   `include "seq_lib/vip_chi_seq_config.sv"
   `include "seq_lib/vip_chi_addr_iterator.sv"
   `include "seq_lib/vip_chi_seq_payload_buffer.sv"
@@ -87,6 +90,7 @@ package vip_chi_agent_pkg;
   `include "vip_chi_agent_e.sv"
   `include "vip_chi_hni_agent.sv"
   `include "vip_chi_hnf_agent.sv"
+  `include "vip_chi_hnf_agent_e.sv"
 endpackage
 
 `endif

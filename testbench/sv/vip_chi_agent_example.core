@@ -15,6 +15,7 @@ filesets:
       - tb/chi_e_tb_env.sv:                             {is_include_file: true}
       - tb/chi_e_proxy_tb_env.sv:                       {is_include_file: true}
       - tb/chi_coherent_tb_env.sv:                      {is_include_file: true}
+      - tb/chi_coherent_e_tb_env.sv:                    {is_include_file: true}
       - tb/chi_tb_pkg.sv:                               {is_include_file: true}
       - tb/chi_write_zero_fatal_catcher.sv:             {is_include_file: true}
       - tb/chi_scoreboard_negctl_catcher.sv:            {is_include_file: true}

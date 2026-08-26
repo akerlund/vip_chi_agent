@@ -45,6 +45,12 @@ class chi_coh_combined_write_cmo_base_test #(
 
   localparam int SETTLE_C = 12;
 
+  // The group the requester asks for, and the answer 13.10.8 obliges the home to
+  // put on the Persist. Both halves non-zero and different, so a completer that
+  // built the field out of one half alone fails.
+  localparam logic [2 : 0] PGROUP_EXT_C  = 3'b101;
+  localparam logic [7 : 0] PGROUP_LPID_C = 8'h13;
+
   vip_chi_write_cmo_seq #(CFG_P) cmo_seq;
 
   function new(input string name, input uvm_component parent = null);
@@ -57,18 +63,44 @@ class chi_coh_combined_write_cmo_base_test #(
   endfunction
 
   // -------------------------------------------------------------------------
+  // The Issue-E-exact coherent topology, and this is the scenario that needs it.
+  //
+  // The base env builds the base agents on both widths, which is legal CHI-E
+  // traffic -- GroupIDExt is zero on a request that has no group, and zero is a
+  // legal TagOp -- so the other coherent tests are right to stay on it. A
+  // persistent CMO is the case where zero stops being a value and becomes an
+  // absence: 13.10.8 makes PGroupID out of GroupIDExt, so a link that never
+  // carries the field cannot report a group at all, and reports zero instead
+  // with both ends agreeing.
+  // -------------------------------------------------------------------------
+  protected virtual function chi_coherent_tb_env #(CFG_P, TYPES_T) create_tb_env();
+    return chi_coherent_e_tb_env #(CFG_P, TYPES_T)::type_id::create("env", this);
+  endfunction
+
+  // -------------------------------------------------------------------------
   // One combined write from RN-F0. The requester's accepted-completion log is
   // cleared first so what comes back belongs to this request alone.
   // -------------------------------------------------------------------------
   protected task combined_write(input vip_chi_combined_write_e write_class,
                                 input vip_chi_combined_cmo_e   cmo,
                                 input bit                      partial = 1'b0);
+    item_t drained;
+
     super.tb_env.hrnf0_agent.rnf_driver.combined_completion_log.delete();
+    while (super.tb_env.hrnf0_rsp_fifo.try_get(drained)) begin end
 
     this.cfg_read_seq(this.cmo_seq);
     this.cmo_seq.set_write_class(write_class);
     this.cmo_seq.set_cmo(cmo);
     this.cmo_seq.set_partial(partial);
+    // Pinned, not randomized, and pinned to values with bits set in BOTH halves
+    // of 13.10.8's equation -- PGroupID[7:0] = {GroupIDExt[2:0], LPID[4:0]}. A
+    // group of zero is what a home that never read the field reports, so it is
+    // the one value that cannot tell a working link from a silent one; and a
+    // value in one half only would pass against a completer that dropped the
+    // other.
+    this.cmo_seq.set_group_id_ext(PGROUP_EXT_C);
+    this.cmo_seq.set_lp_id(PGROUP_LPID_C);
     this.cmo_seq.start(super.tb_env.hrnf0_agent.sequencer);
     void'(this.cmo_seq.get_responses());
 
@@ -120,6 +152,56 @@ class chi_coh_combined_write_cmo_base_test #(
       `uvm_fatal(get_name(), $sformatf(
         "FATAL [%s] %s: a non-persistent CMO drew a Persist; the two must be distinguishable",
         super.tc_name, what))
+    end
+
+    if (cmo == VIP_CHI_CMO_CLEAN_SH_PER_SEP_E) begin
+      this.check_persist_pgroup(what);
+    end
+  endfunction
+
+  // -------------------------------------------------------------------------
+  // The Persist's PGroupID, read off the wire rather than out of the driver.
+  //
+  // 13.10.7 puts the group in the bits Table 13-7 otherwise calls DBID -- a
+  // persist response has no data buffer for a real DBID to displace -- and
+  // 13.10.8 builds it as {GroupIDExt[2:0], LPID[4:0]}. So this asserts a value
+  // that had to survive a round trip: out of the sequence, onto the REQ flit
+  // through vip_chi_driver_rnf_e, back off it through vip_chi_driver_hnf_e, and
+  // onto the RSP flit.
+  //
+  // Worth asserting BECAUSE the failure is quiet. Every end of a link that never
+  // carried GroupIDExt agrees on group zero, and no parity check, no counter and
+  // no scoreboard rule can see the difference -- both ends are consistent, and
+  // consistently wrong. That is what this link did until the _e drivers reached
+  // the coherent topology.
+  // -------------------------------------------------------------------------
+  protected function void check_persist_pgroup(input string what);
+    item_t                rsp_item;
+    bit                   saw;
+    logic [7 : 0]         got;
+    logic [7 : 0]         expected;
+
+    saw      = 1'b0;
+    got      = '0;
+    expected = vip_chi_pgroup_id_from_req(PGROUP_EXT_C, PGROUP_LPID_C);
+
+    while (super.tb_env.hrnf0_rsp_fifo.try_get(rsp_item)) begin
+      if (rsp_item.rsp_opcode == item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C)) begin
+        saw = 1'b1;
+        got = 8'(rsp_item.dbid);
+      end
+    end
+
+    if (!saw) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] %s: no Persist reached the monitor, so its PGroupID was judged against nothing",
+        super.tc_name, what))
+    end
+
+    if (got != expected) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] %s: Persist carried PGroupID 0x%0h, expected 0x%0h from GroupIDExt 0x%0h and LPID 0x%0h (13.10.8)",
+        super.tc_name, what, got, expected, PGROUP_EXT_C, PGROUP_LPID_C))
     end
   endfunction
 

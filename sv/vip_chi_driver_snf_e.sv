@@ -86,9 +86,7 @@ class vip_chi_driver_snf_e #(
     input item_t       rsp,
     input int unsigned beat_index
   );
-    flit.tagop = rsp.dat_tagop;
-    flit.tag   = (beat_index < rsp.tag.size()) ? rsp.tag[beat_index] : tag_t'('0);
-    flit.tu    = (beat_index < rsp.tu.size()) ? rsp.tu[beat_index] : tu_t'('0);
+    vip_chi_issue_e_fields #(CFG_P, FLIT_TYPES_T)::apply_dat(flit, rsp, beat_index);
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -99,7 +97,7 @@ class vip_chi_driver_snf_e #(
     ref rsp_flit_t flit,
     input raw_rsp_t raw
   );
-    flit.tagop = raw.tagop;
+    vip_chi_issue_e_fields #(CFG_P, FLIT_TYPES_T)::apply_raw_rsp(flit, raw);
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -110,9 +108,7 @@ class vip_chi_driver_snf_e #(
     ref dat_flit_t flit,
     input raw_dat_t raw
   );
-    flit.tagop = raw.tagop;
-    flit.tag   = raw.tag;
-    flit.tu    = raw.tu;
+    vip_chi_issue_e_fields #(CFG_P, FLIT_TYPES_T)::apply_raw_dat(flit, raw);
   endfunction
 
   // ---------------------------------------------------------------------------

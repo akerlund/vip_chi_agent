@@ -39,7 +39,7 @@
 
 from __future__ import annotations
 
-from vip_chi_types_pkg import Resp, RspOpcode
+from vip_chi_types_pkg import Resp, RspOpcode, pgroup_id_from_req
 from chi_coherent_base_test import chi_coherent_base_test
 from chi_tb_pkg import WRITE_READ_ADDR_C
 from vip_chi_write_cmo_seq import (
@@ -48,6 +48,15 @@ from vip_chi_write_cmo_seq import (
 )
 
 _SETTLE_C = 12
+
+# The group the requester asks for, and the answer 13.10.8 obliges the home to
+# put on the Persist: PGroupID[7:0] = {GroupIDExt[2:0], LPID[4:0]}. Both halves
+# non-zero and different, so a completer that built the field out of one half
+# alone fails -- and neither is zero, which is what a home that never read the
+# field reports and therefore the one value that cannot tell a working link from
+# a silent one.
+_PGROUP_EXT_C = 0b101
+_PGROUP_LPID_C = 0x13
 
 
 class chi_coh_combined_write_cmo_base_test(chi_coherent_base_test):
@@ -62,6 +71,12 @@ class chi_coh_combined_write_cmo_base_test(chi_coherent_base_test):
     seq.set_write_class(write_class)
     seq.set_cmo(cmo)
     seq.set_partial(partial)
+    seq.set_group_id_ext(_PGROUP_EXT_C)
+    seq.set_lp_id(_PGROUP_LPID_C)
+
+    while self.tb_env.hrnf0_rsp_fifo.try_get()[0]:
+      pass
+
     await seq.start(self.tb_env.hrnf0_agent.sequencer)
     seq.get_responses()
 
@@ -88,6 +103,41 @@ class chi_coh_combined_write_cmo_base_test(chi_coherent_base_test):
       assert not saw_persist, (
         f"{what}: a non-persistent CMO drew a Persist "
         f"({[hex(o) for o in log]}); the two must be distinguishable")
+
+    if cmo == CMO_CLEAN_SH_PER_SEP:
+      self._check_persist_pgroup(what)
+
+  def _check_persist_pgroup(self, what):
+    """The Persist's PGroupID, read off the wire rather than out of the driver.
+
+    13.10.7 puts the group in the bits Table 13-7 otherwise calls DBID -- a
+    persist response has no data buffer for a real DBID to displace -- and
+    13.10.8 builds it as {GroupIDExt[2:0], LPID[4:0]}. So this asserts a value
+    that had to survive a round trip: out of the sequence, onto the REQ flit,
+    back off it at the home, and onto the RSP flit.
+
+    Worth asserting BECAUSE the failure is quiet. Both ends of a link that never
+    carried GroupIDExt agree on group zero, and no parity check, no counter and
+    no scoreboard rule can see the difference -- they are consistent, and
+    consistently wrong. That is what the SystemVerilog coherent link did until
+    its `_e` drivers landed.
+    """
+    expected = pgroup_id_from_req(_PGROUP_EXT_C, _PGROUP_LPID_C)
+    got = None
+    while True:
+      ok, item = self.tb_env.hrnf0_rsp_fifo.try_get()
+      if not ok:
+        break
+      if int(item.rsp_opcode) == int(RspOpcode.PERSIST):
+        got = int(item.dbid)
+
+    assert got is not None, (
+      f"{what}: no Persist reached the monitor, so its PGroupID was judged "
+      f"against nothing")
+    assert got == expected, (
+      f"{what}: Persist carried PGroupID 0x{got:x}, expected 0x{expected:x} "
+      f"from GroupIDExt 0x{_PGROUP_EXT_C:x} and LPID 0x{_PGROUP_LPID_C:x} "
+      f"(13.10.8)")
 
   async def run_phase(self):
     self.raise_objection()
