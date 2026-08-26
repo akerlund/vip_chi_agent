@@ -53,6 +53,14 @@ package vip_chi_types_pkg;
   localparam logic [VIP_CHI_TAGOP_WIDTH_C - 1 : 0] VIP_CHI_TAGOP_UPDATE_C   = 2'b10;
   localparam int VIP_CHI_GROUP_ID_EXT_WIDTH_C = 3;
   localparam int VIP_CHI_RESP_WIDTH_C         = 3;
+
+  // The RESULT carried by a TagMatch response, Table 13-25: Resp[0] alone says
+  // whether the tags matched, and Resp[2:1] are zero. It is not a cache state,
+  // and it must not be spelled with one -- VIP_CHI_RESP_STATE_I_E happens to be
+  // the same three bits as Fail, so a completer that reached for the cache-state
+  // enum here would answer Fail on every Match and look plausible doing it.
+  localparam logic [VIP_CHI_RESP_WIDTH_C - 1 : 0] VIP_CHI_TAG_MATCH_FAIL_C = 3'b000;
+  localparam logic [VIP_CHI_RESP_WIDTH_C - 1 : 0] VIP_CHI_TAG_MATCH_PASS_C = 3'b001;
   localparam int VIP_CHI_RESP_ERR_WIDTH_C     = 2;
 
   // ---------------------------------------------------------------------------
@@ -824,6 +832,7 @@ package vip_chi_types_pkg;
     VIP_CHI_SB_CHK_RSP_TGTID_CORRECT_E,
     VIP_CHI_SB_CHK_PERSIST_PGROUP_MATCHES_E,
     VIP_CHI_SB_CHK_TAG_MATCH_OWED_E,
+    VIP_CHI_SB_CHK_TAG_MATCH_RESULT_E,
     VIP_CHI_SB_CHK_DAT_HAS_OPEN_TXN_E,
     VIP_CHI_SB_CHK_TXNID_NOT_REUSED_E,
     VIP_CHI_SB_CHK_COMPLETION_OPCODE_MODELLED_E,

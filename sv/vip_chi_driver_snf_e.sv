@@ -126,6 +126,32 @@ class vip_chi_driver_snf_e #(
   endfunction
 
   // ---------------------------------------------------------------------------
+  // The Tag Match operation: the beat's Physical Tag against the Allocation Tag
+  // this completer holds for that address.
+  //
+  // A slot nothing has tagged answers FAIL rather than PASS. There is no
+  // Allocation Tag at such an address to have matched, and the alternative --
+  // treating "never written" as agreement -- would make the very first Match
+  // against untouched memory pass whatever tag it carried.
+  // ---------------------------------------------------------------------------
+  virtual protected function bit dat_flit_tag_matches_store(
+    input addr_t       req_addr,
+    input int unsigned beat_index,
+    input dat_flit_t   flit
+  );
+    addr_t  beat_addr;
+    longint beat_slot;
+
+    beat_addr = req_addr + addr_t'(beat_index * CFG_P.DATA_BYTES_P);
+    beat_slot = this.auto_tag_slot_from_addr(beat_addr);
+
+    if (!this.auto_tag_store_by_beat.exists(beat_slot)) begin
+      return 1'b0;
+    end
+    return (this.auto_tag_store_by_beat[beat_slot].tag == tag_t'(flit.tag));
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // GroupIDExt, which exists only in the Issue E request flit.
   //
   // The base class cannot name the member: it is parameterized over the issue,

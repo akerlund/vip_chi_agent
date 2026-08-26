@@ -127,6 +127,16 @@ def _compare_non_opcode_enums(sv: str, py_types) -> list[str]:
   }.items():
     checks.append(("Resp", py_name, int(py_types.Resp[py_name]), _sv_bit_value(sv, sv_name)))
 
+  # TagMatch's result, which is a Resp encoding but not a cache state. Compared
+  # here because the two ports name it separately and a silent divergence would
+  # make one of them report the opposite answer.
+  for py_name, sv_name in {
+    "TAG_MATCH_FAIL": "VIP_CHI_TAG_MATCH_FAIL_C",
+    "TAG_MATCH_PASS": "VIP_CHI_TAG_MATCH_PASS_C",
+  }.items():
+    checks.append(("TagMatchResult", py_name, int(getattr(py_types, py_name)),
+                   _sv_bit_value(sv, sv_name)))
+
   for py_name, sv_name in {
     "OKAY": "VIP_CHI_RESP_ERR_NORMAL_OKAY_E",
     "EXOKAY": "VIP_CHI_RESP_ERR_EXCLUSIVE_OKAY_E",
@@ -285,6 +295,17 @@ def _compare_readme_registry_sizes(py_types) -> list[str]:
   elif int(total.group(1)) != sum(expected.values()):
     errors.append(f"README says {total.group(1)} named rules in total; the two "
                   f"registries hold {sum(expected.values())}")
+
+  # And how many of them the Python port implements. Derived rather than
+  # written down twice: the SV-only set is the registry's own record of which
+  # rules have no pyUVM twin.
+  mirrored = sum(expected.values()) - len(py_types.CHECK_IDS_SV_ONLY)
+  claim = re.search(r"(\d+) of them are\s+\n?\s*mirrored in the Python port", text)
+  if not claim:
+    errors.append("README no longer states how many rules the Python port mirrors")
+  elif int(claim.group(1)) != mirrored:
+    errors.append(f"README says {claim.group(1)} rules are mirrored in Python; "
+                  f"the registries minus CHECK_IDS_SV_ONLY give {mirrored}")
 
   if errors:
     return errors

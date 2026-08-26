@@ -37,7 +37,7 @@ from pyuvm import uvm_driver, ConfigDB
 
 from vip_chi_types_pkg import (
   req_opcode_combined_cmo_is_persist, req_dwt_grant_uses_return_path,
-  TAGOP_MATCH, TAGOP_INVALID,
+  TAGOP_MATCH, TAGOP_INVALID, TAG_MATCH_PASS, TAG_MATCH_FAIL,
   pgroup_id_from_req,
   Role, ReqOpcode, RspOpcode, DatOpcode, Resp, RespErr, RawChannel,
   DatInterleavePolicy,
@@ -1246,11 +1246,37 @@ class vip_chi_driver_snf(uvm_driver):
       await bus.rising()
       self.drive_idle_sideband()
 
+    # The Tag Match operation, before anything is committed. Table 13-34 puts the
+    # obligation on the completer under Match -- "the Physical Tags in the write
+    # must be checked against the Allocation Tag values obtained from memory" --
+    # so it is a comparison against the store, and it has to happen while the
+    # store still holds what is being compared against.
+    #
+    # Every Match beat has to agree: the response carries ONE result for the
+    # whole write, so a single beat whose tag differs is a failed match however
+    # many beats agreed. A slot nothing has tagged answers Fail -- there is no
+    # Allocation Tag there to have matched, and treating "never written" as
+    # agreement would pass the first Match against untouched memory whatever tag
+    # it carried.
+    tag_match_pass = True
+    if cfg.is_e:
+      for i, (tagop, tag, _tu) in enumerate(write_tags):
+        if tagop != TAGOP_MATCH:
+          continue
+        row = self._row_index(req_addr + i * cfg.data_bytes)
+        if row not in self.tag_mem or self.tag_mem[row][1] != tag:
+          tag_match_pass = False
+
     if not is_decerr:
       self.mem.wr_be(req_addr, write_data, write_be)
       for i in range(len(write_data)):
         self._mark_row(req_addr + i * cfg.data_bytes)
-        if cfg.is_e and i < len(write_tags):
+        # Data is written either way; the TAGS are not. Table 13-34 gives Update
+        # as the encoding that writes them and Match as the one that checks them,
+        # so committing on a Match would overwrite the value just compared
+        # against and make every later check trivially agree with itself.
+        if (cfg.is_e and i < len(write_tags)
+            and write_tags[i][0] != TAGOP_MATCH):
           self.tag_mem[self._row_index(req_addr + i * cfg.data_bytes)] = write_tags[i]
 
     # The Tag Match answer, when the write asked for one.
@@ -1274,7 +1300,7 @@ class vip_chi_driver_snf(uvm_driver):
       # driving it uses a write that did not.
       tag_match_owed = True
     if tag_match_owed:
-      await self.drive_tag_match_rsp(req, err)
+      await self.drive_tag_match_rsp(req, err, tag_match_pass)
 
     # The write's own completion, and the CMO's, in either order.
     #
@@ -1306,7 +1332,7 @@ class vip_chi_driver_snf(uvm_driver):
     if req["expcompack"]:
       await self.wait_for_comp_ack(req_txn, req_src, req_tgt)
 
-  async def drive_tag_match_rsp(self, req, err):
+  async def drive_tag_match_rsp(self, req, err, matched):
     """Answer a Match-tagged write with TagMatch.
 
     Routed to ReturnNID, not SrcID. The table at IHI 0050 E section 4.7 gives
@@ -1320,11 +1346,19 @@ class vip_chi_driver_snf(uvm_driver):
     TagGroupID to the list. So this needed no new flit field, which is the whole
     reason it was cheap to close.
     """
+    # The control reports the opposite of what the comparison found. It is the
+    # only way to reach the result rule's failing branch: a correct completer
+    # agrees with the scoreboard's shadow on every write, so the rule would
+    # otherwise pass without ever having been asked to fail.
+    reported = (not matched) if self.cfg.snf_tag_match_invert_result_negctl \
+               else matched
     await self.drive_rsp({
       "opcode": int(RspOpcode.TAG_MATCH), "srcid": req["tgtid"],
       "tgtid": req["returnnid"], "txnid": req["txnid"],
       "dbid": self.req_pgroup_id(req), "qos": req["qos"],
-      "resp": int(Resp.I), "resperr": err,
+      # Table 13-25, not the cache-state enum: Resp[0] alone is the result.
+      "resp": TAG_MATCH_PASS if reported else TAG_MATCH_FAIL,
+      "resperr": err,
     })
 
   async def drive_combined_cmo_rsp(self, req, err):

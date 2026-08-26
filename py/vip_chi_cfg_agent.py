@@ -656,6 +656,14 @@ class VipChiCfgAgent:
     # would go permanently out of step.
     self.snf_tag_match_unrequested_negctl = False
 
+    # Negative control for CHI_SB_TAG_MATCH_RESULT: the completer reports the
+    # OPPOSITE of what its own tag comparison found. A correct completer agrees
+    # with the scoreboard's tag shadow on every write, so the rule's failing
+    # branch is unreachable without this -- and a result rule that has never been
+    # asked to fail is indistinguishable from one that reports a constant, which
+    # is precisely the defect it was written for.
+    self.snf_tag_match_invert_result_negctl = False
+
     # Negative control for the DoNotGoToSD obedience rule. The snoopee reports SD
     # in its SnpResp even when the snoop carried DoNotGoToSD = 1.
     #
@@ -979,6 +987,7 @@ class VipChiCfgAgent:
       "snf_pcrd_grant_before_ack": self.snf_pcrd_grant_before_ack,
       "snf_resp_sep_data_negctl": self.snf_resp_sep_data_negctl,
       "snf_tag_match_unrequested_negctl": self.snf_tag_match_unrequested_negctl,
+      "snf_tag_match_invert_result_negctl": self.snf_tag_match_invert_result_negctl,
       "rnf_snp_resp_sd_negctl": self.rnf_snp_resp_sd_negctl,
       "rnf_snp_resp_data_negctl": self.rnf_snp_resp_data_negctl,
       "snf_persist_before_comp_negctl": self.snf_persist_before_comp_negctl,

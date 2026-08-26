@@ -147,9 +147,9 @@ together, not one endpoint answering reads. In short:
     retry count, and per-channel back-pressure cycles.
   - Per-channel verbosity.
 - **Checking and coverage**
-  - 101 named rules — 84 bindable link/protocol/SNP assertions and 17
+  - 102 named rules — 84 bindable link/protocol/SNP assertions and 18
     scoreboard rules — each carrying a stable identity, a severity, pass and
-    fail counters, and the specification clause it enforces. 97 of them are
+    fail counters, and the specification clause it enforces. 98 of them are
     mirrored in the Python port; the four that are not are X/Z rules Verilator's
     two-state model cannot hold.
   - A self-derived per-line ownership shadow (never the HN-F directory) whose
@@ -193,7 +193,7 @@ together, not one endpoint answering reads. In short:
   - A single include entry point and one umbrella package.
   - UVM `uvm_config_db` wiring for the HN-I System Address Map and QoS window.
 - **Parity and regression evidence**
-  - **226 SystemVerilog** testcases and **227 pyUVM** testcases, mirrored
+  - **227 SystemVerilog** testcases and **228 pyUVM** testcases, mirrored
     between the two flows and gated by name so a test added on one side and not
     the other fails rather than quietly halving the coverage.
   - Cross-port gates on the surfaces that can drift while both ports pass their
@@ -848,7 +848,7 @@ check is vacuous (e.g.
 Every protocol rule has a stable identity (`vip_chi_check_id_t` in SV,
 `CHECK_IDS` in Python — the same 84 names, in the same order), a severity, and
 pass/fail counters. The scoreboard's rules carry the same identity in a second
-registry of 17 (`vip_chi_sb_check_id_t` / `CHECK_IDS_SB`, all named `CHI_SB_*`);
+registry of 18 (`vip_chi_sb_check_id_t` / `CHECK_IDS_SB`, all named `CHI_SB_*`);
 they are a separate enum because the SVA IDs size four arrays inside *every*
 `vip_chi_if` instance while a scoreboard rule is judged once per component, but
 they share the export schema, so one aggregation reads both. Two things follow

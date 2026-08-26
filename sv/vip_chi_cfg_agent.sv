@@ -845,6 +845,15 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0.
   bit snf_tag_match_unrequested_negctl = 1'b0;
 
+  // Negative control for CHI_SB_TAG_MATCH_RESULT: the completer reports the
+  // OPPOSITE of what its own tag comparison found. A correct completer agrees
+  // with the scoreboard's tag shadow on every write, so the rule's failing
+  // branch is unreachable without this -- and a result rule that has never been
+  // asked to fail is indistinguishable from one that reports a constant, which
+  // is precisely the defect it was written for.
+  // Default 0.
+  bit snf_tag_match_invert_result_negctl = 1'b0;
+
   // Negative control for the DoNotGoToSD obedience rule. The snoopee reports SD
   // in its SnpResp even when the snoop carried DoNotGoToSD = 1.
   //
@@ -1411,6 +1420,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.snf_persist_pgroup_corrupt_negctl ||
         this.snf_resp_sep_data_negctl ||
         this.snf_tag_match_unrequested_negctl ||
+        this.snf_tag_match_invert_result_negctl ||
         this.rnf_snp_resp_sd_negctl ||
         this.rnf_snp_resp_data_negctl ||
         this.rnf_txsactive_snoop_drop_negctl ||

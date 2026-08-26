@@ -129,6 +129,14 @@ class vip_chi_sb_ctx #(
   bit                 tag_match_required;
   bit                 tag_match_seen;
 
+  // What the tags said, computed from the predicted image as it stood BEFORE
+  // this write committed. tag_match_known is clear when the answer is not
+  // knowable here -- no Match beat arrived, or the response came before the
+  // data, which section 2.3.1 permits for a completer that did not perform the
+  // check and which therefore cannot be judged against a comparison.
+  bit                 tag_match_known;
+  bit                 tag_match_expected;
+
   // Completion contract: which milestones are REQUIRED to retire.
   bit  need_grant, need_write_data, need_read_data, need_comp;
   bit  need_receipt, need_persist, need_compack;
@@ -436,6 +444,10 @@ class vip_chi_scoreboard #(
       VIP_CHI_SB_CHK_ATOMIC_RETURN_MATCHES_E,
       VIP_CHI_SB_CHK_READ_TAG_MATCHES_E,
       VIP_CHI_SB_CHK_READ_TAGOP_REPLAYED_E,
+      // The result rule reads the same predicted image the read compares read
+      // back, so it stands down with them. TAG_MATCH_OWED does not: it judges
+      // the presence of a response, which needs no image at all.
+      VIP_CHI_SB_CHK_TAG_MATCH_RESULT_E,
       VIP_CHI_SB_CHK_TAGOP_STABLE_ACROSS_BEATS_E: return this.check_data;
       VIP_CHI_SB_CHK_ORDERED_ACK_IN_ORDER_E:      return this.check_order;
       VIP_CHI_SB_CHK_REQ_ROUTED_E:                return this.route_check;
@@ -1282,6 +1294,7 @@ class vip_chi_scoreboard #(
         // rule that judged the order would false-fail one of them.
         if (ctx.tag_match_required) begin
           this.chk_ok(VIP_CHI_SB_CHK_TAG_MATCH_OWED_E);
+          this.judge_tag_match_result(ctx, item, stream);
         end
         else begin
           this.chk_bad(VIP_CHI_SB_CHK_TAG_MATCH_OWED_E, $sformatf(
@@ -1385,6 +1398,7 @@ class vip_chi_scoreboard #(
         // Table 13-34 gives TagOp = 0b11 as Match on a write.
         if (item.dat_tagop == VIP_CHI_TAGOP_MATCH_C) begin
           ctx.tag_match_required = 1'b1;
+          this.expected_tag_match(ctx, item);
         end
         this.maybe_commit_write(ctx);
         this.capture_atomic_old(ctx);
@@ -1816,13 +1830,95 @@ class vip_chi_scoreboard #(
     end
 
     foreach (item.tag[i]) begin
+      // Table 13-34 gives Update as the encoding that writes the tags and Match
+      // as the one that checks them, so a Match beat leaves the image alone.
+      // Committing it would overwrite the value just compared against and make
+      // every later check trivially agree with itself.
+      if (this.beat_tagop(item, i) == VIP_CHI_TAGOP_MATCH_C) begin
+        continue;
+      end
       slot = ctx.addr + addr_t'(i * DATA_BYTES_C);
       this.pred_tag[slot]    = item.tag[i];
       this.pred_tu[slot]     = (item.tu.size() > i) ? item.tu[i] : tu_t'(0);
-      this.pred_tagop[slot]  = (i < item.dat_tagop_beats.size())
-                                 ? item.dat_tagop_beats[i] : item.dat_tagop;
+      this.pred_tagop[slot]  = this.beat_tagop(item, i);
       this.tag_written[slot] = 1'b1;
     end
+  endfunction
+
+  // The TagOp on one write beat, per-beat where the monitor recorded it.
+  protected function tagop_t beat_tagop(input item_t item, input int index);
+    if (index < item.dat_tagop_beats.size()) begin
+      return item.dat_tagop_beats[index];
+    end
+    return item.dat_tagop;
+  endfunction
+
+  // What a completer performing the Tag Match should report for this write.
+  //
+  // Table 13-34 under Match: "the Physical Tags in the write must be checked
+  // against the Allocation Tag values obtained from memory". So the answer is a
+  // comparison against the predicted image AS IT STANDS -- which is why this
+  // runs before maybe_commit_write, not after.
+  //
+  // Every Match beat has to agree, because the response carries one result for
+  // the whole write. A slot nothing has tagged answers Fail: there is no
+  // Allocation Tag there to have matched.
+  protected function void expected_tag_match(input ctx_t ctx, input item_t item);
+    addr_t slot;
+    bit    seen_match;
+    bit    passed;
+
+    if (!this.check_data) begin
+      return;
+    end
+
+    seen_match = 1'b0;
+    passed     = 1'b1;
+
+    foreach (item.tag[i]) begin
+      if (this.beat_tagop(item, i) != VIP_CHI_TAGOP_MATCH_C) begin
+        continue;
+      end
+      seen_match = 1'b1;
+      slot       = ctx.addr + addr_t'(i * DATA_BYTES_C);
+      if (!this.pred_tag.exists(slot) || (this.pred_tag[slot] != item.tag[i])) begin
+        passed = 1'b0;
+      end
+    end
+
+    ctx.tag_match_known    = seen_match;
+    ctx.tag_match_expected = passed;
+  endfunction
+
+  // The result the response carried, against the tags this scoreboard holds.
+  //
+  // Separate from TAG_MATCH_OWED because they fail differently and one hides the
+  // other: a completer that answers every Match with a constant satisfies OWED
+  // on every write. Table 13-25 puts the result in Resp[0] alone, so only that
+  // bit is read -- and reading only that bit is the point, since Resp[0] = 0 is
+  // also the encoding of cache state I, which is what a completer reaching for
+  // the wrong enum produces.
+  protected function void judge_tag_match_result(
+    input ctx_t  ctx,
+    input item_t item,
+    input int    stream
+  );
+    bit reported;
+
+    if (!ctx.tag_match_known) begin
+      return;
+    end
+
+    reported = item.rsp_resp[0];
+    if (reported == ctx.tag_match_expected) begin
+      this.chk_ok(VIP_CHI_SB_CHK_TAG_MATCH_RESULT_E);
+      return;
+    end
+    this.chk_bad(VIP_CHI_SB_CHK_TAG_MATCH_RESULT_E, $sformatf(
+      "TagMatch reported %s for a write whose tags %s the stored Allocation Tags (stream=%0d txn=0x%0h addr=0x%0h): Table 13-34 requires the physical tags in the write to be checked against memory, and Table 13-25 carries the answer in Resp[0]",
+      reported ? "Pass" : "Fail",
+      ctx.tag_match_expected ? "match" : "do not match",
+      stream, item.txn_id, ctx.addr));
   endfunction
 
   // Checker C - predictable-only read compare (skip bytes never observed

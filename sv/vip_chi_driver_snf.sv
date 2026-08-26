@@ -1925,6 +1925,7 @@ class vip_chi_driver_snf #(
     bit        split;
     bit        cmo_first;
     bit        tag_match_owed;
+    bit        tag_match_pass;
     node_id_t  grant_tgt_id;
     txn_id_t   grant_txn_id;
     vip_chi_resp_err_t completion_resp_err;
@@ -1933,6 +1934,10 @@ class vip_chi_driver_snf #(
     req_txn_id = txn_id_t'(req.txnid);
     req_src_id = node_id_t'(req.srcid);
     req_tgt_id = node_id_t'(req.tgtid);
+    // Seeded true and cleared by any beat that disagrees, so a write with no
+    // Match beat at all cannot report a failed match it never performed.
+    tag_match_owed = 1'b0;
+    tag_match_pass = 1'b1;
     beat_count = vip_chi_types_pkg::chi_xfer_dat_beats(size_t'(req.size), CFG_P.DATA_BYTES_P);
     is_decerr  = this.decerr_check(req_addr);
     completion_resp_err = is_decerr
@@ -2045,9 +2050,19 @@ class vip_chi_driver_snf #(
 
       if (this.dat_flit_is_tag_match(flit)) begin
         tag_match_owed = 1'b1;
+        // Every Match beat has to agree for the transfer to pass: the response
+        // carries ONE result for the whole write, so a single beat whose tag
+        // differs is a failed match however many beats agreed.
+        if (!this.dat_flit_tag_matches_store(req_addr, beat_index, flit)) begin
+          tag_match_pass = 1'b0;
+        end
       end
 
-      if (!is_decerr) begin
+      // Data is written either way; the TAGS are not. Table 13-34 gives Update
+      // as the encoding that writes them and Match as the one that checks them,
+      // so capturing on a Match would overwrite the value being compared against
+      // and make every later check trivially agree with itself.
+      if (!is_decerr && !this.dat_flit_is_tag_match(flit)) begin
         this.capture_auto_write_issue_specific_fields(req_addr, beat_index, flit);
       end
 
@@ -2089,7 +2104,7 @@ class vip_chi_driver_snf #(
       tag_match_owed = 1'b1;
     end
     if (tag_match_owed) begin
-      this.drive_tag_match_rsp(req, completion_resp_err);
+      this.drive_tag_match_rsp(req, completion_resp_err, tag_match_pass);
     end
 
     // The write's own completion, and the CMO's, in either order.
@@ -2166,9 +2181,17 @@ class vip_chi_driver_snf #(
   // ---------------------------------------------------------------------------
   protected task drive_tag_match_rsp(
     input req_flit_t         req,
-    input vip_chi_resp_err_t resp_err
+    input vip_chi_resp_err_t resp_err,
+    input bit                matched
   );
     item_t tag_match_rsp;
+    bit    reported;
+
+    // The control reports the opposite of what the comparison found. It is the
+    // only way to reach the result rule's failing branch: a correct completer
+    // agrees with the scoreboard's shadow on every write, so the rule would
+    // otherwise pass without ever having been asked to fail.
+    reported = this.cfg.snf_tag_match_invert_result_negctl ? !matched : matched;
 
     tag_match_rsp              = new("auto_tag_match_rsp");
     tag_match_rsp.role         = VIP_CHI_ROLE_SNF_E;
@@ -2177,7 +2200,9 @@ class vip_chi_driver_snf #(
     tag_match_rsp.txn_id       = txn_id_t'(req.txnid);
     tag_match_rsp.dbid         = txn_id_t'(this.req_pgroup_id(req));
     tag_match_rsp.qos          = req.qos;
-    tag_match_rsp.rsp_resp     = VIP_CHI_RESP_STATE_I_E;
+    // Table 13-25, not the cache-state enum: Resp[0] alone is the result.
+    tag_match_rsp.rsp_resp     = vip_chi_resp_t'(reported ? VIP_CHI_TAG_MATCH_PASS_C
+                                                          : VIP_CHI_TAG_MATCH_FAIL_C);
     tag_match_rsp.rsp_resp_err = resp_err;
     tag_match_rsp.rsp_opcode   = item_t::rsp_opcode_t'(VIP_CHI_RSP_TAG_MATCH_C);
     this.drive_rsp(tag_match_rsp);
@@ -2953,6 +2978,26 @@ class vip_chi_driver_snf #(
   // there is no D write that can ask for a check.
   // ---------------------------------------------------------------------------
   virtual protected function bit dat_flit_is_tag_match(input dat_flit_t flit);
+    return 1'b0;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Optional issue-specific hook: the Tag Match operation itself.
+  //
+  // Table 13-34 states the obligation on the completer -- under Match "the
+  // Physical Tags in the write must be checked against the Allocation Tag values
+  // obtained from memory" -- so the answer is a comparison against the tag
+  // store, not a constant. It lives beside dat_flit_is_tag_match for the same
+  // reason: the store and the flit field both exist only under Issue E.
+  //
+  // Unreachable for D rather than wrong: dat_flit_is_tag_match is false there,
+  // so nothing asks.
+  // ---------------------------------------------------------------------------
+  virtual protected function bit dat_flit_tag_matches_store(
+    input addr_t       req_addr,
+    input int unsigned beat_index,
+    input dat_flit_t   flit
+  );
     return 1'b0;
   endfunction
 

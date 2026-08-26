@@ -453,6 +453,11 @@ CHECK_IDS_SB = (
   "CHI_SB_RSP_TGTID_CORRECT",
   "CHI_SB_PERSIST_PGROUP_MATCHES",
   "CHI_SB_TAG_MATCH_OWED",
+  # The RESULT the response carried, against the tags the scoreboard holds. The
+  # OWED rule above judges that a response came; this one judges what it said.
+  # They are separate because a completer that answers every Match with a
+  # constant satisfies OWED on every write.
+  "CHI_SB_TAG_MATCH_RESULT",
   "CHI_SB_DAT_HAS_OPEN_TXN",
   "CHI_SB_TXNID_NOT_REUSED",
   "CHI_SB_COMPLETION_OPCODE_MODELLED",
@@ -852,6 +857,14 @@ TAGOP_MATCH = 0b11
 TAGOP_INVALID = 0b00
 TAGOP_TRANSFER = 0b01
 TAGOP_UPDATE = 0b10
+
+# The RESULT carried by a TagMatch response, Table 13-25: Resp[0] alone says
+# whether the tags matched, and Resp[2:1] are zero. It is not a cache state, and
+# it must not be spelled with one -- Resp.I happens to be the same three bits as
+# Fail, so a completer that reached for the cache-state enum here would answer
+# Fail on every Match and look plausible doing it.
+TAG_MATCH_FAIL = 0b000
+TAG_MATCH_PASS = 0b001
 GROUP_ID_EXT_WIDTH = 3
 SIZE_WIDTH = 3
 RESP_WIDTH = 3

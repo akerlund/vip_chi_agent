@@ -57,6 +57,7 @@ SB_RSP_HAS_OPEN_TXN = "CHI_SB_RSP_HAS_OPEN_TXN"
 SB_RSP_TGTID_CORRECT = "CHI_SB_RSP_TGTID_CORRECT"
 SB_PERSIST_PGROUP_MATCHES = "CHI_SB_PERSIST_PGROUP_MATCHES"
 SB_TAG_MATCH_OWED = "CHI_SB_TAG_MATCH_OWED"
+SB_TAG_MATCH_RESULT = "CHI_SB_TAG_MATCH_RESULT"
 SB_DAT_HAS_OPEN_TXN = "CHI_SB_DAT_HAS_OPEN_TXN"
 SB_TXNID_NOT_REUSED = "CHI_SB_TXNID_NOT_REUSED"
 SB_COMPLETION_OPCODE_MODELLED = "CHI_SB_COMPLETION_OPCODE_MODELLED"
@@ -95,6 +96,10 @@ _COMBINED_CMO_PERSIST_C = frozenset(
 _SB_DATA_RULES_C = (
   SB_READ_DATA_MATCHES, SB_ATOMIC_RETURN_MATCHES, SB_READ_TAG_MATCHES,
   SB_READ_TAGOP_REPLAYED, SB_TAGOP_STABLE_ACROSS_BEATS,
+  # The result rule reads the same tag shadow the read compares read back, so it
+  # stands down with them. TAG_MATCH_OWED does not: it judges the presence of a
+  # response, which needs no shadow at all.
+  SB_TAG_MATCH_RESULT,
 )
 
 # Which requester stream an observation arrived on (TxnID alone is not unique
@@ -152,6 +157,12 @@ class vip_chi_sb_ctx:
     # whether the TagMatch response that owes came back.
     self.tag_match_required = False
     self.tag_match_seen = False
+    # What the tags said, computed from the shadow as it stood BEFORE this write
+    # committed. None means the answer is not knowable here -- either no Match
+    # beat arrived, or the response came before the data, which section 2.3.1
+    # permits for a completer that did not perform the check and which therefore
+    # cannot be judged against a comparison.
+    self.tag_match_expected = None
     # Required milestones.
     self.need_grant = False
     self.need_write_data = False
@@ -1023,6 +1034,7 @@ class vip_chi_scoreboard(uvm_component):
       # rule that judged the order would false-fail one of them.
       if ctx.tag_match_required:
         self._pass(SB_TAG_MATCH_OWED)
+        self._judge_tag_match_result(ctx, item, stream)
       else:
         self._fail(SB_TAG_MATCH_OWED,
           "TagMatch returned for a write whose data carried no TagOp = Match "
@@ -1111,6 +1123,7 @@ class vip_chi_scoreboard(uvm_component):
         # Table 13-34 gives TagOp = 0b11 as Match on a write.
         if int(getattr(item, "dat_tagop", 0)) == TAGOP_MATCH:
           ctx.tag_match_required = True
+          ctx.tag_match_expected = self._expected_tag_match(ctx, item)
         self._maybe_commit_write(ctx)
         self._capture_atomic_old(ctx)
         self._resolve_atomic(ctx, None)
@@ -1434,17 +1447,78 @@ class vip_chi_scoreboard(uvm_component):
         else:
           self._pass(SB_READ_TAGOP_REPLAYED)
 
+  def _judge_tag_match_result(self, ctx, item, stream):
+    """The result the response carried, against the tags this scoreboard holds.
+
+    Separate from TAG_MATCH_OWED because they fail differently and one hides the
+    other: a completer that answers every Match with a constant satisfies OWED on
+    every write. Table 13-25 puts the result in Resp[0] alone, so only that bit
+    is read -- and reading only that bit is the point, since Resp[0] = 0 is also
+    the encoding of cache state I, which is what a completer reaching for the
+    wrong enum produces.
+    """
+    if ctx.tag_match_expected is None:
+      return
+    reported = bool(int(item.rsp_resp) & 1)
+    if reported == ctx.tag_match_expected:
+      self._pass(SB_TAG_MATCH_RESULT)
+      return
+    self._fail(SB_TAG_MATCH_RESULT,
+      "TagMatch reported %s for a write whose tags %s the stored Allocation "
+      "Tags (stream=%d txn=0x%x addr=0x%x): Table 13-34 requires the physical "
+      "tags in the write to be checked against memory, and Table 13-25 carries "
+      "the answer in Resp[0]" % (
+        "Pass" if reported else "Fail",
+        "match" if ctx.tag_match_expected else "do not match",
+        stream, int(item.txn_id), ctx.addr))
+
+  def _beat_tagop(self, item, index):
+    """The TagOp on one write beat, per-beat where the monitor recorded it."""
+    tagops = getattr(item, "dat_tagop_beats", []) or []
+    if index < len(tagops):
+      return int(tagops[index])
+    return int(getattr(item, "dat_tagop", 0))
+
+  def _expected_tag_match(self, ctx, item):
+    """What a completer performing the Tag Match should report for this write.
+
+    Table 13-34 under Match: "the Physical Tags in the write must be checked
+    against the Allocation Tag values obtained from memory". So the answer is a
+    comparison against the shadow AS IT STANDS -- which is why this runs before
+    _maybe_commit_write, not after.
+
+    Every Match beat has to agree, because the response carries one result for
+    the whole write. A slot nothing has tagged answers Fail: there is no
+    Allocation Tag there to have matched.
+    """
+    if not self.check_data:
+      return None
+    seen_match = False
+    passed = True
+    for i in range(len(item.tag)):
+      if self._beat_tagop(item, i) != TAGOP_MATCH:
+        continue
+      seen_match = True
+      slot = ctx.addr + (i * self.DATA_BYTES_C)
+      if slot not in self.pred_tag or self.pred_tag[slot] != int(item.tag[i]):
+        passed = False
+    return passed if seen_match else None
+
   def _commit_write_tags(self, ctx, item):
     """Commit an observed write's tagging, under the same rule as the data."""
     if not self.check_data or item is None:
       return
-    tagops = getattr(item, "dat_tagop_beats", []) or []
     for i in range(len(item.tag)):
+      # Table 13-34 gives Update as the encoding that writes the tags and Match
+      # as the one that checks them, so a Match beat leaves the shadow alone.
+      # Committing it would overwrite the value just compared against and make
+      # every later check trivially agree with itself.
+      if self._beat_tagop(item, i) == TAGOP_MATCH:
+        continue
       slot = ctx.addr + (i * self.DATA_BYTES_C)
       self.pred_tag[slot] = int(item.tag[i])
       self.pred_tu[slot] = int(item.tu[i]) if i < len(item.tu) else 0
-      self.pred_tagop[slot] = (int(tagops[i]) if i < len(tagops)
-                               else int(getattr(item, "dat_tagop", 0)))
+      self.pred_tagop[slot] = self._beat_tagop(item, i)
       self.tag_written.add(slot)
 
   # ==========================================================================

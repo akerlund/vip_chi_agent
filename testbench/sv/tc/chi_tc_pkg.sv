@@ -94,6 +94,7 @@ package chi_tc_pkg;
   `include "tc_chi_e_combined_write_pgroup.sv"
   `include "tc_chi_e_tag_match.sv"
   `include "tc_chi_e_tag_match_negctl.sv"
+  `include "tc_chi_e_tag_match_result_negctl.sv"
   `include "tc_chi_d_split_write_rsp.sv"
   `include "tc_chi_d_write_read_smoke.sv"
   `include "tc_chi_d_multi_outstanding.sv"
