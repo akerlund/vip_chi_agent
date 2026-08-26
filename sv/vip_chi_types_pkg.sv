@@ -176,6 +176,23 @@ package vip_chi_types_pkg;
   localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C         = 7'h61;
   localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C  = 7'h62;
 
+  // The COHERENT half of the same family: the write is to a Home rather than to
+  // a memory node, so these need the coherent completer path. Table 13-14 row
+  // and column, read the same way as the six above -- e.g. WriteBackFullCleanSh
+  // is row 0x18 in the Opcode[6] = 1 column, so 0x40 + 0x18 = 0x58. The row
+  // values are those of unrelated Opcode[6] = 0 opcodes; the two columns are
+  // independent lists sharing an index, which is the trap a one-dimensional
+  // reading of this table falls into.
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_C          = 7'h54;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_C  = 7'h56;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_C            = 7'h58;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_C           = 7'h59;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_C    = 7'h5A;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_C           = 7'h5C;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_C   = 7'h5E;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_C           = 7'h64;
+  localparam logic [VIP_CHI_MAX_REQ_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_C   = 7'h66;
+
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_COMP_ACK_C       = 5'h02;
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_RETRY_ACK_C      = 5'h03;
   localparam logic [VIP_CHI_MAX_RSP_OPCODE_WIDTH_C - 1 : 0] VIP_CHI_RSP_COMP_C           = 5'h04;
@@ -977,14 +994,27 @@ package vip_chi_types_pkg;
       VIP_CHI_REQ_EVICT_C,
       VIP_CHI_REQ_WRITE_BACK_FULL_C,
       VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C,
-      VIP_CHI_REQ_WRITE_CLEAN_FULL_C:
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_C,
+      // The coherent Combined Writes inherit under the same preamble, and their
+      // base writes do NOT share one row: WriteBackFull and WriteCleanFull are
+      // CopyBacks only an RN-F can originate. Giving all nine the WriteNoSnp row
+      // above would have let an RN-I originate a CopyBack and called it legal.
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_C,
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_C,
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_C,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_C,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_C:
         return VIP_CHI_ORIG_RNF_C;
 
       // The ReadOnce / WriteUnique block: any Request Node, no Home row.
       VIP_CHI_REQ_READ_ONCE_C,
       VIP_CHI_REQ_WRITE_UNIQUE_FULL_C,
       VIP_CHI_REQ_WRITE_UNIQUE_PTL_C,
-      VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C:
+      VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_C,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_C,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_C,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_C:
         return VIP_CHI_ORIG_RN_C;
 
       default: return VIP_CHI_ORIG_NONE_C;
@@ -1184,7 +1214,17 @@ package vip_chi_types_pkg;
     VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E = VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C,
     VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_E          = VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C,
     VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_E         = VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C,
-    VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E  = VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C
+    VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E  = VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C,
+    // The coherent half of the family.
+    VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_E         = VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_C,
+    VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_E = VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_C,
+    VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_E           = VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_C,
+    VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_E          = VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_C,
+    VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_E   = VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_C,
+    VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_E          = VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_C,
+    VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_E  = VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_C,
+    VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_E          = VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_C,
+    VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_E  = VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_C
   } vip_chi_req_opcode_t;
 
   // TRUE for the combined Write + CMO request opcodes (Issue E only).
@@ -1202,7 +1242,16 @@ package vip_chi_types_pkg;
       VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E,
       VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_E,
       VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_E,
-      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E: return 1'b1;
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_E: return 1'b1;
       default:                                         return 1'b0;
     endcase
   endfunction
@@ -1212,8 +1261,12 @@ package vip_chi_types_pkg;
   function automatic bit vip_chi_req_opcode_combined_cmo_is_persist(
     input vip_chi_req_opcode_t opcode
   );
-    return (opcode == VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E) ||
-           (opcode == VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E);
+    return (opcode == VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E)  ||
+           (opcode == VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E)   ||
+           (opcode == VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_E)  ||
+           (opcode == VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_E)    ||
+           (opcode == VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_E)   ||
+           (opcode == VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_E);
   endfunction
 
   // TRUE for the request opcodes in which DoDWT is a field at all.
@@ -2892,8 +2945,27 @@ package vip_chi_types_pkg;
       VIP_CHI_REQ_WRITE_CLEAN_FULL_E,
       VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_E,
       VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_E,
-      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E: begin
+      VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_E,
+      // WriteBackFull+(P)CMO and WriteCleanFull+(P)CMO keep their base row --
+      // the combined form drops nothing here.
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_E: begin
         return 4'b0111;
+      end
+      // Invalid ONLY. WriteUniqueFull and WriteUniquePtl permit Update and Match
+      // on their own, and their combined forms permit neither -- Table 12-2
+      // gives WriteUniqueFull+(P)CMO and WriteUniquePtl+(P)CMO a single Yes.
+      // Read from the table rather than derived from the base row, because the
+      // WriteNoSnp forms above drop only Match and deriving from them would have
+      // put Update here.
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_E: begin
+        return 4'b0001;
       end
       default: begin
         // Atomics: Invalid, Match. Section 12.4.1 says the same in prose --

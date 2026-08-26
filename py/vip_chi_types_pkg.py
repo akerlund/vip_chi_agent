@@ -562,6 +562,21 @@ class ReqOpcode(IntEnum):
   WRITE_NO_SNP_PTL_CLEAN_SH = 0x60
   WRITE_NO_SNP_PTL_CLEAN_INV = 0x61
   WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP = 0x62
+  # The COHERENT half of the same family: the write is to a Home rather than to a
+  # memory node, so these need the coherent completer path. Same table read the
+  # same way -- e.g. WriteBackFullCleanSh is row 0x18 in the Opcode[6] = 1
+  # column, so 0x40 + 0x18 = 0x58. The row values are those of unrelated
+  # Opcode[6] = 0 opcodes; the two columns are independent lists sharing an
+  # index, which is the trap a one-dimensional reading of this table falls into.
+  WRITE_UNIQUE_FULL_CLEAN_SH = 0x54
+  WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP = 0x56
+  WRITE_BACK_FULL_CLEAN_SH = 0x58
+  WRITE_BACK_FULL_CLEAN_INV = 0x59
+  WRITE_BACK_FULL_CLEAN_SH_PER_SEP = 0x5A
+  WRITE_CLEAN_FULL_CLEAN_SH = 0x5C
+  WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP = 0x5E
+  WRITE_UNIQUE_PTL_CLEAN_SH = 0x64
+  WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP = 0x66
 
 
 class RspOpcode(IntEnum):
@@ -741,6 +756,23 @@ for _op in (ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH,
             ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV,
             ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP):
   ORIGINATOR_REQ_C[_op] = _ORIG_RN_HOME_C
+
+# The coherent forms inherit under the same preamble, and their base writes do
+# NOT share one row: WriteBackFull and WriteCleanFull are CopyBacks only an RN-F
+# can originate, while WriteUnique* may come from either requester class. Giving
+# all nine the WriteNoSnp row above would have let an RN-I originate a CopyBack
+# and called it legal.
+for _op in (ReqOpcode.WRITE_BACK_FULL_CLEAN_SH,
+            ReqOpcode.WRITE_BACK_FULL_CLEAN_INV,
+            ReqOpcode.WRITE_BACK_FULL_CLEAN_SH_PER_SEP,
+            ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH,
+            ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP):
+  ORIGINATOR_REQ_C[_op] = _ORIG_RNF_C
+for _op in (ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH,
+            ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP,
+            ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH,
+            ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP):
+  ORIGINATOR_REQ_C[_op] = _ORIG_RN_C
 
 
 # Table B-2 is deliberately absent. It has two rows: every snoop but SnpDVMOp is
@@ -1598,6 +1630,15 @@ _COMBINED_WRITE_CMO_OPCODES = frozenset({
   int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
   int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
   int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_BACK_FULL_CLEAN_INV),
+  int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH),
+  int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP),
 })
 
 
@@ -1716,7 +1757,11 @@ def req_opcode_combined_cmo_is_persist(opcode: int) -> bool:
   """
   op = int(opcode)
   return op in (int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
-                int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP))
+                int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
+                int(ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP),
+                int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH_PER_SEP),
+                int(ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP),
+                int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP))
 
 
 def req_opcode_is_combined_write_cmo(opcode: int) -> bool:
@@ -2340,10 +2385,27 @@ def req_tagop_permitted_mask(issue: int, opcode: int) -> int:
   if op in (int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
             int(ReqOpcode.WRITE_UNIQUE_PTL)):
     return 0b1101
+  # Invalid ONLY. WriteUniqueFull and WriteUniquePtl permit Update and Match on
+  # their own, and their combined forms permit neither -- Table 12-2 gives
+  # WriteUniqueFull+(P)CMO and WriteUniquePtl+(P)CMO a single Yes. Read from the
+  # table rather than derived from the base row, because the WriteNoSnp forms
+  # drop only Match and deriving from them would have put Update here.
+  if op in (int(ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH),
+            int(ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP),
+            int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH),
+            int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP)):
+    return 0b0001
   if op in (int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL),
             int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
             int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
-            int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP)):
+            int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
+            # WriteBackFull+(P)CMO and WriteCleanFull+(P)CMO keep their base row
+            # -- the combined form drops nothing here.
+            int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH),
+            int(ReqOpcode.WRITE_BACK_FULL_CLEAN_INV),
+            int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH_PER_SEP),
+            int(ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH),
+            int(ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP)):
     return 0b0111
   # Atomics: Invalid, Match. Section 12.4.1 says the same in prose.
   if req_opcode_is_atomic(op):

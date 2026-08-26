@@ -1896,7 +1896,15 @@ class vip_chi_item #(
                          VIP_CHI_REQ_CLEAN_SHARED_PERSIST_SEP_C,
                          VIP_CHI_REQ_CLEAN_SHARED_PERSIST_C,
                          VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C,
-                         VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C}) {
+                         VIP_CHI_REQ_WRITE_NO_SNP_ZERO_C,
+                         // WriteUniqueFull and WriteUniquePtl permit Update and
+                         // Match on their own; their combined forms permit
+                         // neither. Table 12-2 gives WriteUniqueFull+(P)CMO and
+                         // WriteUniquePtl+(P)CMO a single Yes.
+                         VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_C,
+                         VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_C,
+                         VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_C,
+                         VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_C}) {
         tagop inside {2'b00};
       }
 
@@ -1923,7 +1931,14 @@ class vip_chi_item #(
                          VIP_CHI_REQ_WRITE_BACK_FULL_C,
                          VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C,
                          VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C,
-                         VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C}) {
+                         VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C,
+                         // These two keep their base row: the combined form
+                         // drops nothing.
+                         VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_C,
+                         VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_C,
+                         VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_C,
+                         VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_C,
+                         VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_C}) {
         tagop inside {2'b00, 2'b01, 2'b10};
       }
 
