@@ -193,7 +193,7 @@ together, not one endpoint answering reads. In short:
   - A single include entry point and one umbrella package.
   - UVM `uvm_config_db` wiring for the HN-I System Address Map and QoS window.
 - **Parity and regression evidence**
-  - **227 SystemVerilog** testcases and **228 pyUVM** testcases, mirrored
+  - **229 SystemVerilog** testcases and **230 pyUVM** testcases, mirrored
     between the two flows and gated by name so a test added on one side and not
     the other fails rather than quietly halving the coverage.
   - Cross-port gates on the surfaces that can drift while both ports pass their

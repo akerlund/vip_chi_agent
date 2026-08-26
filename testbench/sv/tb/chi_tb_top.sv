@@ -552,13 +552,14 @@ module chi_tb_top;
   // timeout is enabled: unlike the RN-F links, a downstream ReadNoSnp and its
   // CompData are both visible here.
   //
-  // The HN-F's SN-facing port drives TXSACTIVE from sn_link_up, the same shape
-  // the HN-I uses on both its sides, so the same stand-down applies. Both are
-  //, which named HN-F and HN-I together and had no evidence
-  // for either because neither endpoint was bound.
+  // No TXSACTIVE stand-down. The home's SN-facing port used to drive the
+  // sideband from sn_link_up, which made it high from bring-up to tear-down
+  // whatever the home had downstream; it now carries a counted window opened at
+  // each downstream request and closed when that request's final flit is done,
+  // which is the shape 14.7.2 states for an ICN-to-SN interface. The stand-down
+  // came off with the drive it excused, exactly as it did on the RN-facing side.
   // ---------------------------------------------------------------------------
-  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E),
-                .TXSACTIVE_FROM_LINK_UP_P(1'b1))
+  vip_chi_sva #(.CFG_P(CHI_D_CFG_C),.FLIT_TYPES_T(chi_d_types_t),.ROLE_P(VIP_CHI_ROLE_RNI_E))
     coh_hnf0_sn_sva (.vif(coh_hnf0_sn_if),
       .checks_enable((coh_hnf0_sn_if.txlinkactivereq === 1'b1) || (coh_hnf0_sn_if.rxlinkactivereq === 1'b1)),
       .dat_reorder_allowed(chi_dat_reorder_allowed),

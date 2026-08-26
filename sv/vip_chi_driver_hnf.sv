@@ -158,6 +158,13 @@ class vip_chi_driver_hnf #(
   // is inside the window rather than after it.
   protected int unsigned rn_tx_active_count  [N_RNF_PORTS];
   protected int unsigned rn_tx_active_extend [N_RNF_PORTS];
+
+  // The same pair for the SN-facing side. Section 14.7.2 states the ICN-to-SN
+  // window separately from the ICN-to-RN one and gives it the other shape: it is
+  // opened by a request the home SENDS, and must be asserted before or in the
+  // cycle of that request's flit and held until after the final completing flit.
+  protected int unsigned sn_tx_active_count  [N_SN_PORTS];
+  protected int unsigned sn_tx_active_extend [N_SN_PORTS];
   protected bit          rn_tx_dispatch_open;
   protected int unsigned rn_rsp_lcrdv_pending [N_RNF_PORTS];
   protected int unsigned rn_dat_lcrdv_pending [N_RNF_PORTS];
@@ -315,6 +322,8 @@ class vip_chi_driver_hnf #(
       this.sn_rsp_lcrdv_pending[s] = 0;
       this.sn_dat_lcrdv_pending[s] = 0;
       this.sn_link_up[s]           = 1'b0;
+      this.sn_tx_active_count[s]   = 0;
+      this.sn_tx_active_extend[s]  = 0;
     end
 
     this.work_q.delete();
@@ -712,6 +721,27 @@ class vip_chi_driver_hnf #(
     this.rn_window_close(p);
   endfunction
 
+  // The SN-facing twins. Opened at the top of a downstream request, before its
+  // REQ flit is driven, which is what 14.7.2's "before, or in the same cycle in
+  // which its initiating Request flit is sent" asks for; closed when the task
+  // that owns the transaction has collected its completion. A count rather than
+  // a flag so two downstream requests in flight cannot have the first one's
+  // close drop the sideband under the second.
+  protected function void sn_window_open(input int s);
+    this.sn_tx_active_count[s]++;
+    this.sn_tx_active_extend[s] = 0;
+    this.vif_sn[s].g_drv.rni_cb.txsactive <= 1'b1;
+  endfunction
+
+  protected function void sn_window_close(input int s);
+    if (this.sn_tx_active_count[s] != 0) begin
+      this.sn_tx_active_count[s]--;
+    end
+    if (this.sn_tx_active_count[s] == 0) begin
+      this.sn_tx_active_extend[s] = this.cfg.txsactive_extend_max_cycles;
+    end
+  endfunction
+
   protected task rn_credit_loop(input int p);
     forever begin
       @(this.vif_rn[p].g_drv.hnf_cb);
@@ -880,7 +910,17 @@ class vip_chi_driver_hnf #(
     forever begin
       @(this.vif_sn[s].g_drv.rni_cb);
       this.drive_sn_idle_sideband(s);
-      this.vif_sn[s].g_drv.rni_cb.txsactive  <= this.sn_link_up[s];
+      // The only write to this wire's level. Was driven from sn_link_up, which
+      // made it high from bring-up to tear-down whatever the home had
+      // downstream -- legal by the letter, since over-assertion always is, and
+      // carrying nothing.
+      this.vif_sn[s].g_drv.rni_cb.txsactive  <=
+        ((this.sn_tx_active_count[s] != 0) || (this.sn_tx_active_extend[s] != 0));
+      if (this.sn_tx_active_count[s] == 0) begin
+        if (this.sn_tx_active_extend[s] != 0) begin
+          this.sn_tx_active_extend[s]--;
+        end
+      end
       this.vif_sn[s].g_drv.rni_cb.txrsplcrdv <= (this.sn_rsp_lcrdv_pending[s] != 0);
       this.vif_sn[s].g_drv.rni_cb.txdatlcrdv <= (this.sn_dat_lcrdv_pending[s] != 0);
       if (this.sn_rsp_lcrdv_pending[s] != 0) begin
@@ -993,6 +1033,8 @@ class vip_chi_driver_hnf #(
     int        s;
 
     s = 0;
+    // Before the REQ flit is driven, per 14.7.2.
+    this.sn_window_open(s);
     this.dn_dat_valid = 1'b0;
     this.dn_dat_beats.delete();
 
@@ -1033,6 +1075,8 @@ class vip_chi_driver_hnf #(
       @(this.vif_sn[s].g_drv.rni_cb);
     end
     beats = this.dn_dat_beats;
+    // The final completing flit of this transaction has been received.
+    this.sn_window_close(s);
   endtask
 
   // Acquire one outbound DAT send credit for the SN link (granted by the SN-F).
@@ -1064,6 +1108,10 @@ class vip_chi_driver_hnf #(
     s       = 0;
     n_beats = beats.size();
 
+    // Before the REQ flit is driven, per 14.7.2. Closed after the last write
+    // data beat, which is this transaction's final flit in either direction --
+    // the grant that authorises the burst has already arrived.
+    this.sn_window_open(s);
     this.dn_rsp_q.delete();
 
     req_flit        = '0;
@@ -1129,6 +1177,7 @@ class vip_chi_driver_hnf #(
       this.vif_sn[s].g_drv.rni_cb.txdatflitv    <= 1'b0;
       this.vif_sn[s].g_drv.rni_cb.txdatflit     <= '0;
     end
+    this.sn_window_close(s);
   endtask
 
   // Invalidate the HN-F's local memory image of a line (write-back model): after

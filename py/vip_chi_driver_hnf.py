@@ -141,6 +141,12 @@ class vip_chi_driver_hnf(uvm_component):
     self.sn_rsp_lcrdv_pending = [0] * n_sn
     self.sn_dat_lcrdv_pending = [0] * n_sn
     self.sn_link_up = [False] * n_sn
+    # Section 14.7.2 states the ICN-to-SN TXSACTIVE window separately from the
+    # ICN-to-RN one and gives it the other shape: it is opened by a request the
+    # home SENDS, and must be asserted before or in the cycle of that request's
+    # flit and held until after the final completing flit.
+    self.sn_tx_active_count = [0] * n_sn
+    self.sn_tx_active_extend = [0] * n_sn
 
     self.directory = {}       # line -> [per-port state int]
     self.excl_monitor = {}    # line -> [per-port bool]
@@ -456,6 +462,24 @@ class vip_chi_driver_hnf(uvm_component):
       self.rn_tx_active_extend[p] = max(
         0, int(self.cfg.txsactive_extend_max_cycles))
 
+  # The SN-facing twins. Opened at the top of a downstream request, before its
+  # REQ flit is driven, which is what 14.7.2's "before, or in the same cycle in
+  # which its initiating Request flit is sent" asks for; closed when the task
+  # that owns the transaction has collected its completion. A count rather than a
+  # flag so two downstream requests in flight cannot have the first one's close
+  # drop the sideband under the second.
+  def sn_window_open(self, s):
+    self.sn_tx_active_count[s] += 1
+    self.sn_tx_active_extend[s] = 0
+    self.sn_buses[s].drive(txsactive=1)
+
+  def sn_window_close(self, s):
+    if self.sn_tx_active_count[s]:
+      self.sn_tx_active_count[s] -= 1
+    if self.sn_tx_active_count[s] == 0:
+      self.sn_tx_active_extend[s] = max(
+        0, int(self.cfg.txsactive_extend_max_cycles))
+
   # The REQUEST window: one per dispatch, opened at capture and retired when the
   # service path is done with the RN link.
   def rn_tx_activity_begin(self, p):
@@ -580,9 +604,17 @@ class vip_chi_driver_hnf(uvm_component):
     while True:
       await sn.rising()
       self.drive_sn_idle_sideband(s)
-      sn.drive(txsactive=1 if self.sn_link_up[s] else 0,
+      # The only write to this wire's level. Was driven from sn_link_up, which
+      # made it high from bring-up to tear-down whatever the home had
+      # downstream -- legal by the letter, since over-assertion always is, and
+      # carrying nothing.
+      sn_active = (self.sn_tx_active_count[s] != 0
+                   or self.sn_tx_active_extend[s] != 0)
+      sn.drive(txsactive=1 if sn_active else 0,
                txrsplcrdv=1 if self.sn_rsp_lcrdv_pending[s] else 0,
                txdatlcrdv=1 if self.sn_dat_lcrdv_pending[s] else 0)
+      if self.sn_tx_active_count[s] == 0 and self.sn_tx_active_extend[s]:
+        self.sn_tx_active_extend[s] -= 1
       if self.sn_rsp_lcrdv_pending[s]:
         self.sn_rsp_lcrdv_pending[s] -= 1
       if self.sn_dat_lcrdv_pending[s]:
@@ -661,6 +693,8 @@ class vip_chi_driver_hnf(uvm_component):
   async def downstream_read(self, addr, size):
     sn = self.sn_buses[0]
     s = 0
+    # Before the REQ flit is driven, per 14.7.2.
+    self.sn_window_open(s)
     self.dn_dat_valid = False
     self.dn_dat_beats = []
 
@@ -694,12 +728,18 @@ class vip_chi_driver_hnf(uvm_component):
 
     while not self.dn_dat_valid:
       await sn.rising()
+    # The final completing flit of this transaction has been received.
+    self.sn_window_close(s)
     return list(self.dn_dat_beats)
 
   async def downstream_write(self, addr, size, beats, bes):
     sn = self.sn_buses[0]
     s = 0
     n_beats = len(beats)
+    # Before the REQ flit is driven, per 14.7.2. Closed after the last write data
+    # beat, which is this transaction's final flit in either direction -- the
+    # grant that authorises the burst has already arrived.
+    self.sn_window_open(s)
     self.dn_rsp_q = []
 
     # A first attempt, so AllowRetry must be asserted: IHI 0050 E section 2.9.4 /
@@ -751,6 +791,7 @@ class vip_chi_driver_hnf(uvm_component):
       await sn.rising()
       sn.drive(txdatflitpend=0, txdatflitv=0)
       sn.drive_flit("dat", {})
+    self.sn_window_close(s)
 
   # ==========================================================================
   # RN-facing send-credit waits.

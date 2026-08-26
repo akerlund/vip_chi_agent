@@ -149,10 +149,14 @@ class chi_coherent_tb_env(uvm_env):
       # off there because the HN-F may answer from another RN-F's snoop data, so
       # a completion is not visible end to end on one interface. Downstream it is:
       # the HN-F's ReadNoSnp and the SN-F's CompData are both on this link.
-      # The HN-F's SN-facing port drives TXSACTIVE from sn_link_up, the same
-      # shape the HN-I uses, so the same stand-down applies -- #, which named HN-F and HN-I together and had no evidence for
-      # either because neither endpoint was bound.
-      bind_chi(hnfs0_vif, f"{pfx}hnf0_sn_sva", txsactive_from_link_up=True),
+      # No TXSACTIVE stand-down. The home's SN-facing port used to drive the
+      # sideband from sn_link_up, which made it high from bring-up to tear-down
+      # whatever the home had downstream; it now carries a counted window opened
+      # at each downstream request and closed when that request's final flit is
+      # done, which is the shape 14.7.2 states for an ICN-to-SN interface. The
+      # stand-down came off with the drive it excused, exactly as it did on the
+      # RN-facing side.
+      bind_chi(hnfs0_vif, f"{pfx}hnf0_sn_sva"),
       bind_chi(dsnf0_vif, f"{pfx}dsnf0_sva"),
       # The MAIN range on the HN-F's RN-facing ports. Those endpoints carried
       # only the SNP bind below, which has no TXSACTIVE property, so the

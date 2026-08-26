@@ -282,8 +282,11 @@ filesets:
       - tc/tc_chi_coh_d_fwd_data_negctl.sv:                 {is_include_file: true}
       - tc/tc_chi_coh_e_fwd_data_negctl.sv:                 {is_include_file: true}
       - tc/chi_coh_snf_read_miss_base_test.sv:          {is_include_file: true}
+      - tc/chi_coh_hnf_sn_txsactive_base_test.sv:       {is_include_file: true}
       - tc/tc_chi_coh_d_snf_read_miss.sv:                   {is_include_file: true}
+      - tc/tc_chi_coh_d_hnf_sn_txsactive.sv:                {is_include_file: true}
       - tc/tc_chi_coh_e_snf_read_miss.sv:                   {is_include_file: true}
+      - tc/tc_chi_coh_e_hnf_sn_txsactive.sv:                {is_include_file: true}
       - tc/chi_coh_snf_writeback_readback_base_test.sv: {is_include_file: true}
       - tc/tc_chi_coh_d_snf_writeback_readback.sv:          {is_include_file: true}
       - tc/tc_chi_coh_e_snf_writeback_readback.sv:          {is_include_file: true}
