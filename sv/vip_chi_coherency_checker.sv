@@ -2119,8 +2119,13 @@ class vip_chi_coherency_checker #(
 
   // Functional coverage of the (from-state x snoop-opcode -> to-state) cache
   // transition covergroup, sampled on every observed snoop. Lets a constrained-
-  // random sweep self-verify that it closed many more of the 30 reachable bins
-  // than the deterministic scenario tests hit individually.
+  // random sweep self-verify that it closed more of the reachable cross than the
+  // deterministic scenario tests hit individually.
+  //
+  // Denominator-neutral on purpose. The number of reachable bins is a property
+  // of the bin declarations above and moves whenever a snoop opcode or a state
+  // joins or leaves them, so a count written here is a second copy that rots --
+  // and the covergroup already computes the ratio this returns.
   function real get_cache_transition_coverage(); return this.cg_cache_transition.get_coverage(); endfunction
 
   // ---------------------------------------------------------------------------

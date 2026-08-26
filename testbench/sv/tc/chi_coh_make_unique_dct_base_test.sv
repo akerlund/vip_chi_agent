@@ -34,4 +34,41 @@ class chi_coh_make_unique_dct_base_test #(
   protected virtual function void configure_agent_cfgs();
     super.hnf_cfg.hnf_enable_snoop_fwd = 1'b1;
   endfunction
+
+  // The inherited assertions do not distinguish the two paths.
+  //
+  // They require RN-F0 to read the defined all-zero image, and it reads that
+  // image whether the home forwarded it from RN-F1 or fetched it the ordinary
+  // way -- so a home whose DCT gate fell back to the normal dirty-snoop path
+  // would satisfy every one of them while never originating a forwarding snoop.
+  // Enabling a knob is not evidence that the knob was used.
+  //
+  // n_snp_fwd_judged is the evidence: the coherency checker counts a forwarding
+  // snoop only where it has correlated one to its causing request and checked
+  // the forwarded names against it, so a rise here says a fwd snoop went out AND
+  // that its FwdNID/FwdTxnID named the requester's read. The mismatch count is
+  // asserted beside it because judged-without-mismatch is the claim, not judged
+  // alone.
+  task run_phase(input uvm_phase phase);
+
+    int fwd_judged_before;
+    int fwd_judged_after;
+
+    fwd_judged_before = super.tb_env.coh_checker.get_snp_fwd_judged_count();
+
+    super.run_phase(phase);
+
+    fwd_judged_after = super.tb_env.coh_checker.get_snp_fwd_judged_count();
+
+    if (fwd_judged_after <= fwd_judged_before) begin
+      `uvm_fatal(get_name(), $sformatf(
+      "FATAL [%s] no forwarding snoop was judged (%0d -> %0d) with hnf_enable_snoop_fwd set, so the read was served by the ordinary snoop path and this testcase proved only what its non-DCT parent already proves",
+      super.tc_name, fwd_judged_before, fwd_judged_after))
+    end
+    if (super.tb_env.coh_checker.get_snp_fwd_mismatch_count() != 0) begin
+      `uvm_fatal(get_name(), $sformatf(
+      "FATAL [%s] %0d forwarding snoop(s) named a requester or transaction that did not match the request they answer",
+      super.tc_name, super.tb_env.coh_checker.get_snp_fwd_mismatch_count()))
+    end
+  endtask
 endclass
