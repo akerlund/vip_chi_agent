@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Check that the regression sizes quoted in prose match the tree.
 
-`docs/FUTURE_WORK.md` opens by asserting the charter is complete and evidencing
-it with a regression size. A number in prose has no way to notice that testcases
-were added, so it decays silently -- and a stale one makes the green verdict it
-supports unattributable to any state the reader can check. It went stale by
-twenty-odd testcases before anyone noticed.
+Several documents evidence "the charter is complete" with a regression size. A
+number in prose has no way to notice that testcases were added, so it decays
+silently -- and a stale one makes the green verdict it supports unattributable to
+any state the reader can check. One went stale by twenty-odd testcases before
+anyone noticed.
 
 This compares the numbers written in the documents against the testcases that
 actually exist, and reports the difference between the two flows so the "same
@@ -31,10 +31,14 @@ PY_TC_DIR = ROOT / "testbench" / "py" / "tc"
 SV_PKG = SV_TC_DIR / "chi_tc_pkg.sv"
 
 # Each entry: path, and a pattern whose two groups are the SV and PY counts.
+#
+# docs/FUTURE_WORK.md used to be checked here and deliberately is not any more:
+# it was reduced to a backlog of tickable work items and states no count at all.
+# A file that quotes no number cannot hold a stale one, and listing it here would
+# report the absence as a broken check for ever. Add a file back the moment it
+# starts quoting the pair again.
 CLAIMS = (
-  (ROOT / "docs" / "FUTURE_WORK.md",
-   re.compile(r"\*\*(\d+)\s+SV\s*\+\s*(\d+)\s+PY\*\*")),
-  # TEST_CASES.md states the same pair in prose, and states that it is
+  # TEST_CASES.md states the pair in prose, and states that it is
   # maintained by hand as part of adding a testcase. It was stale too, by one,
   # and the first version of this check did not look at it -- a checker that
   # covers some of the copies of a number leaves the rest free to rot.

@@ -1,290 +1,179 @@
 # vip_chi_agent — future work (backlog)
 
-The planned charter (Tiers A/B/C — SNP channel, RN-F/HN-F coherent subsystem,
-Checker D, coherent coverage, HN-I proxy, scoreboard, perf counters, exclusives,
-CMO, DCT forwarding, SN-F-behind-HN-F, MakeUnique, bounded-cache eviction) is
-**complete and tested** — every charter item has a named testcase in
-[../testbench/TEST_CASES.md](../testbench/TEST_CASES.md). The regression is
-**234 SV + 235 PY** — the same list on both flows apart from three documented
-exceptions: `tc_chi_sva_smoke` and `tc_chi_reject_scope`, both Python-only, and
-`tc_chi_e_hni_port1`, SV-only because the SV CHI-E proxy is 2x2 and the Python
-one 1x1, so its port-1 links do not exist to drive (see
-[../testbench/TEST_CASES.md](../testbench/TEST_CASES.md)) — last verified green
-in full on branch `dev` (2026-08-19). Those counts are not maintained by hand:
-`scripts/check_test_counts.py` compares them with the tree on every sweep,
-because this sentence had gone stale by twenty-odd testcases before anyone
-noticed, and a stale count makes the green verdict it supports unattributable to
-any state a reader can check. This file is the single
-remaining backlog: optional breadth (more of
-the CHI feature surface) and depth (hardening what already ships). Nothing here
-is required by any current consumer.
+The planned charter is complete and tested: every charter item has a named
+testcase in [../testbench/TEST_CASES.md](../testbench/TEST_CASES.md), and no open
+defects remain. Everything below is optional — breadth (more of the CHI feature
+surface) or depth (hardening what already ships). **Nothing here is required by
+any current consumer.**
 
-Effort legend: S (hours) / M (a day) / L (multi-day).
+Every item is a tickable box. Effort: S (hours) / M (about a day) / L
+(multi-day); risk is stated where it is not low.
+
+Regression counts are not maintained here. `scripts/check_test_counts.py`
+compares the documented figures with the tree on every sweep, because this file
+once carried a count that had gone stale by twenty-odd testcases.
 
 ---
 
-## Current review follow-up (2026-07-20)
+## 1. Documentation
 
-Source-review findings from the MakeUnique / DCT / rename follow-up pass.
+- [ ] **Bring the milestone-plan document into line with the tree.** Six
+      line-referenced edits, each measured, in
+      `docs/review_claude/gap_analysis_reconciliation.md`. The work it describes
+      is done; the document still asserts, in the present tense and with nothing
+      dated, a state three milestones back — and every one of the six understates
+      what exists. The opening five-gap summary is the one that matters most: all
+      five gaps and both smaller absences that follow it are closed. Fix it with a
+      dated line and a status column, **not** a rewrite — that section is the
+      record of where the VIP started, and losing it loses the reason the work was
+      done. Give the verification line a commit as well as a count: these figures
+      have gone stale twice between being measured and being applied, both times
+      because the line stated a number with no date. *Effort S.*
 
-- **MakeUnique DCT anti-vacuity** — `chi_coh_make_unique_dct_base_test`
-  currently only enables `hnf_enable_snoop_fwd` and inherits the base zero-readback
-  assertions. If the HN-F DCT gate falls back to the normal dirty-snoop path, the
-  test can still pass. Add an explicit monitor-FIFO check that RN-F1 observed
-  `SnpSharedFwd` and that `FwdTxnID` matches the requester read transaction. *Effort
-  S; risk low.*
-- **RN-F DCT no-data fallback** — `vip_chi_driver_rnf::process_snoop_fwd` falls
-  back to a no-data `SnpResp` if a forwarding snoop hits a valid holder with no
-  `cache_data`, but the HN-F DCT path waits for `SnpRespDataFwded`. The current
-  MakeUnique materialized-zero fix prevents this for MakeUnique-owned lines, but
-  the fallback itself can still wedge. Either fatal locally on missing data for a
-  fwd snoop or teach the HN-F to consume the fallback deliberately. *Effort S/M;
-  risk med.*
-- **Stale transition-coverage comment** — `vip_chi_coherency_checker` still says
-  the cache-transition sweep closes "30 reachable bins" even though the reduced
-  model documents 11 reachable transition tuples. Update the comment or make it
-  denominator-neutral. *Effort S; risk low.*
+## 2. Coherency depth
 
-## Current review follow-up (2026-08-07)
+- [ ] **Scoreboard completion contract for combined requests.** A combined
+      Write + CMO must not retire without its CMO half. Nothing currently refuses
+      to, so a completer that answered only the write would pass. *Effort S/M.*
+- [ ] **RN-F DCT no-data fallback.** `process_snoop_fwd` falls back to a no-data
+      `SnpResp` when a forwarding snoop hits a valid holder with no `cache_data`,
+      while the HN-F DCT path waits for `SnpRespDataFwded`. The MakeUnique
+      materialised-zero fix prevents this for MakeUnique-owned lines; the fallback
+      itself can still wedge. Either fatal locally on missing data for a forwarding
+      snoop, or teach the home to consume the fallback deliberately. *Effort S/M;
+      risk med.*
+- [ ] **Dirty writeback-on-eviction.** The bounded RN-F cache
+      (`cfg.rnf_cache_max_lines`) drops only CLEAN victims. Evicting a DIRTY one
+      needs autonomous RN-F REQ origination — a `WriteBackFull` with no triggering
+      sequence. Today a bounded cache that fills with dirty lines fatals with an
+      explicit message. Pairs with the `WriteBackPtl` / `WriteEvictFull` item in
+      §3. *Effort M.*
+- [ ] **Multi-SN address striping / SAM behind the HN-F.** The two-level hierarchy
+      ships `N_SN_PORTS = 1`. A SAM-routed fan-out behind the home (the HN-I SAM is
+      the template) would let the HN-F stripe misses across several SN-F targets by
+      address. *Effort M.*
 
-- ~~**`req_opcode_is_legal()` disagrees between the ports.**~~ *Resolved
-  2026-08-11.* The SV helper was stale for `ReadOnce`, `CleanInvalid`,
-  `MakeInvalid`, `WriteUniqueFull` and `WriteUniquePtl` — all five are carried
-  end-to-end by both ports (driver, HN-F, coherency checker, coverage, SVA) and
-  are now accepted unconditionally on both sides.
+## 3. Opcode families
 
-  `MakeReadUnique` turned out **not** to be the same case, and neither port had
-  it right. Its encoding is `0x41`, which does not fit the 6-bit CHI-D REQ
-  opcode field, so it is legal only under issue E — like `WriteNoSnpZero`
-  (`0x44`). SV rejected it for both issues; Python accepted it for both. Both
-  helpers now gate it on `ISSUE_P`/`is_e`.
+Grouped by the subsystem that would bring them in, because a list of 22 REQ
+encodings is not a backlog anyone can act on while "Stash" is one decision
+covering twelve. `scripts/check_opcodes.py --show-unimplemented` reproduces the
+list, given your own markdown conversion of the specification — the Arm document
+is not in this repository and must not be.
 
-  Two related defects fell out of that and are also fixed:
+- [ ] **DVM.** `DVMOp` REQ `0x14`, `SnpDVMOp` SNP `0x0D`. Needs TLB-maintenance
+      sequencing with sync/complete handshakes, not just the two encodings.
+      *Effort L.*
+- [ ] **Stash.** `StashOnceShared`/`Unique` REQ `0x22`/`0x23`, `StashOnceSep*`
+      `0x47`/`0x48`, `WriteUnique*Stash` `0x20`/`0x21`, `SnpStash*` SNP
+      `0x0C`/`0x0B`, `SnpUniqueStash` `0x05`, `SnpMakeInvalidStash` `0x06`,
+      `StashDone`/`CompStashDone` RSP `0x10`/`0x11`. Needs a stash-target model on
+      the RN-F side. Note the RSP pair: a stash implementation is not complete
+      without the two completion opcodes, which is what an opcode-row list hides
+      and a family list does not. *Effort L.*
+- [ ] **Invalidating `ReadOnce` forms.** `ReadOnceCleanInvalid` REQ `0x24`,
+      `ReadOnceMakeInvalid` `0x25`. Needs the RN-F cache to act on a read that also
+      invalidates. *Effort M.*
+- [ ] **`ReadNotSharedDirty` / `SnpNotSharedDirty`.** REQ `0x26`, SNP `0x04`.
+      Coupled: the request is only meaningful against a snoop response that can
+      return SD, so the pair lands together. *Effort M.*
+- [ ] **PreferUnique (CHI-E).** `ReadPreferUnique` REQ `0x4C`,
+      `SnpPreferUnique`/`SnpPreferUniqueFwd` SNP `0x15`/`0x16`. *Effort M.*
+- [ ] **`WriteBackPtl` / `WriteEvictFull`.** REQ `0x1A` / `0x15`. Both are eviction
+      paths the bounded RN-F cache would need before it could evict rather than
+      fatal, so this lands with the dirty-writeback item in §2. *Effort M.*
 
-  - `con_opcode_legal_rnf` offered `MakeReadUnique` to CHI-D RN-F
-    randomization in both ports. In SV the `req_opcode_t'()` cast truncated it
-    to `6'h01`, silently adding a second way to draw `ReadShared`; in Python
-    `opcode` is a flat `rand_bit_t(7)` with no such cast, so a free CHI-D RN-F
-    draw could land on `0x41` and produce an item claiming `MakeReadUnique`
-    that truncates to `ReadShared` at pack time. The read pool is now
-    issue-split in both ports.
+## 4. Interface and system breadth
 
-    No existing test emitted such a flit, and none could have: every coherent
-    sequence pins `x.opcode == opcode_val` from `_choose_opcode()`, so the RN-F
-    pool is only ever checked for satisfiability against an already-decided
-    opcode and never selects one. The defect is on the VIP's public
-    randomization surface — a caller doing `item.randomize()` with
-    `role == RNF` and no opcode pin — which is what the new test does and what
-    nothing exercised before.
-  - The SV helper wrote its two wide opcodes as `req_opcode_t'(...)` case
-    items, which under CHI-D aliased them onto unrelated opcodes and answered
-    for the wrong one. Both are now matched at full width ahead of the
-    truncating case.
+- [ ] **System Coherency Interface (`SYSCOREQ` / `SYSCOACK`).** The system-level
+      handshake by which a controller enables and disables an interface's
+      participation in coherency (IHI 0050E_a Ch. 15 / D Ch. 14). Neither port
+      models the two sideband signals and no testcase drives them. Backlog rather
+      than a non-goal: the VIP already models the link-level analogue, so this is
+      the same shape of state machine one level up. **Search for `SYSCOREQ`, not
+      "system coherency"** — the latter finds the VIP's own system coherency
+      checker (Checker D), an unrelated thing sharing the words, which is why this
+      gap survived several documentation passes. *Effort M.*
+- [ ] **Interface parity (`PARITY_EN_P`).** Parity across the whole CHI interface,
+      flit and sideband, with a checker and error injection. *Effort M.*
+- [ ] **`RSVDC` on REQ and DAT.** The specification's user-defined field, `X` bits
+      on REQ and `Y` on DAT (IHI 0050E_a Table 13-6 / 13-9). Absent from both ports
+      in both issues, and legal that way: the widths are implementation-defined and
+      zero is permitted for each. `scripts/check_flit_layout.py` lists it as an
+      advisory `missing` and that advisory is the intended steady state. Adding it
+      means two more config widths and no protocol behaviour to check, since the
+      field's meaning is by definition outside the specification. *Effort S; value
+      low.*
 
-  `tc_chi_opcode_pool_safe` previously drew from the RN-I pool only, which is
-  why the RN-F divergence survived; it now cross-checks the RN-F pool against
-  the helper on both issues in both ports (verified non-vacuous by
-  reintroducing the pool bug, which fails at draw 0).
+## 5. Polish
+
+- [ ] **Agent reset-watcher level check.** The `vip_chi_agent` reset watcher
+      requires a posedge of `rst_n`, so a bench with `rst_n` tied high from t0
+      never starts the drivers. Guard with a level check. *Effort S; risk med — it
+      changes reset detection for every test.*
+- [ ] **SVA reset-branch cost.** The `vip_chi_sva` `always_ff` disable branch
+      iterates all `2**txn_id_width` entries across ~12 arrays every clock while
+      `!checks_enable || !rst_n`; run it once on the disable edge instead.
+      *Effort S; false-fire risk.*
+- [ ] **Checker-A completion-count / opcode thinning.** The scoreboard keeps ~56
+      inline `size()==N` / `rsp_opcode==…` per-test checks for precise failure
+      messages even though Checker A subsumes them. Revisit if the suite grows.
+      *Effort M.*
+- [ ] **`tc_chi_channel_delay` order dependence.** Only if a single-process sweep
+      ever becomes the way this suite is run. The test asserts two exact cycle
+      equalities and fails — baseline 151 cycles against 152 — when the whole suite
+      runs as one cocotb regression in one simulator process, because state a
+      preceding testcase leaves behind reaches it. Under
+      `testbench/py/scripts/run.py` every testcase gets its own simulator
+      invocation, so nothing can carry and this is unreachable. Find the carried
+      state and make each burst start from something the test controls. **Do not
+      widen the equality to a tolerance** — that is the one assertion in the file
+      that cannot be weakened without losing its point: it is what separates "the
+      enable gates the delay" from "the window is applied unconditionally and the
+      enable is decoration". Ruled out already: the M3.2 code, the stimulus (the
+      solved request fields are byte-identical across both bursts), the random seed,
+      and L-credit phase. *Effort M; value low.*
 
 ---
 
-## 1. Coherent feature breadth
+## Not planned
 
-Extends the RN-F / HN-F subsystem with more of the CHI coherency surface.
+No boxes: these are recorded decisions, kept so they are not re-proposed as
+oversights.
 
-- **DVM** — distributed virtual memory / TLB-maintenance operations (DVMOp on the
-  SNP channel, sync/complete handshakes). No requester in the current bench needs
-  it. *Effort L.*
-- **Stash** — `WriteUniqueFullStash`, `StashOnce*`, `StashOnceSep*`: writes/reads
-  that also push a copy toward a target cache. Needs a stash-target model on the
-  RN-F side. *Effort L.*
-- **Multi-SN address striping / SAM behind the HN-F** — the two-level hierarchy
-  ships `N_SN_PORTS=1` (a single downstream SN-F). A SAM-routed multi-SN fan-out
-  behind the home (the HN-I SAM is the template) would let the HN-F stripe misses
-  across several SN-F targets by address. *Effort M.*
-- **Dirty writeback-on-eviction** — the bounded RN-F cache
-  (`cfg.rnf_cache_max_lines`) silently drops only CLEAN victims (SC/UC). Evicting
-  a DIRTY victim needs autonomous RN-F REQ origination (a WriteBackFull with no
-  triggering sequence); today a bounded cache that fills with dirty lines fatals
-  with an explicit message. *Effort M.*
-
-## 1b. Unimplemented opcodes, by protocol feature
-
-Everything the two ports do NOT define, grouped by the feature that would bring
-it in. The point of the grouping is that a list of 22 REQ encodings is not a
-backlog anyone can act on, while "combined Write + CMO" is one decision covering
-nine of them.
-
-**Reproducing this list.** `scripts/check_opcodes.py --show-unimplemented` prints
-it, but only when given a local markdown conversion of the specification — the
-Arm document is not in this repository and must not be:
-
-```
-python3 scripts/check_opcodes.py --spec-e <your IHI0050E_a conversion>.md \
-                                --show-unimplemented
-```
-
-The classification below was taken from a conversion of **IHI0050E_a**, 14019
-lines, sha256 beginning `a4a12b28166eac8c`, on 2026-08-24, when the script
-reported REQ 51/73, RSP 15/18, SNP 13/22, DAT 9/10. A different conversion may
-split tables differently and shift those totals; the FAMILIES are what this
-section commits to, not the ratios.
-
-Each family carries one of five dispositions:
-
-  **backlog**   wanted, not built. The subsystem it needs is named.
-  **excluded**  deliberately out of scope. The reason is recorded, and a
-                `scope_exclusion` row in the review trace matrix points here.
-  **n/a**       does not apply to the roles this VIP models.
-  **open**      an unresolved specification question, not a work item yet.
-  **parser**    implemented, but missing from the opcode tables — a defect.
-
-No family is currently `parser`: the ports agree with each other and with the
-specification on all 88 opcodes they define, which `check_opcodes.py` asserts on
-every run without needing a conversion.
-
-- **DVM** — `DVMOp` (REQ 0x14), `SnpDVMOp` (SNP 0x0D). **backlog**, see §1
-  above; needs TLB-maintenance sequencing, not just the two encodings.
-- **Stash** — `StashOnceShared/Unique` (REQ 0x22/0x23), `StashOnceSepShared/Unique`
-  (0x47/0x48), `WriteUniqueFullStash`/`WriteUniquePtlStash` (0x20/0x21),
-  `SnpStashShared/Unique` (SNP 0x0C/0x0B), `SnpUniqueStash` (0x05),
-  `SnpMakeInvalidStash` (0x06), `StashDone`/`CompStashDone` (RSP 0x10/0x11).
-  **backlog**, see §1 above; needs a stash-target model. Note the RSP pair: a
-  stash implementation is not complete without the two completion opcodes, which
-  is the kind of thing an opcode-row list hides and a family list does not.
-- **Combined Write + CMO** — `WriteBackFullCleanInv/CleanSh/CleanShPerSep`
-  (REQ 0x59/0x58/0x5A), `WriteCleanFullCleanSh/CleanShPerSep` (0x5C/0x5E),
-  `WriteUniqueFullCleanSh/CleanShPerSep` (0x54/0x56),
-  `WriteUniquePtlCleanSh/CleanShPerSep` (0x64/0x66). **implemented.** All nine
-  are declared, served by the HN-F and driven by `vip_chi_write_cmo_seq`, which
-  now carries a write-class axis over the whole family of fifteen;
-  `tc_chi_coh_e_combined_write_cmo` exercises six forms across the three coherent
-  write classes and both persistence choices. One gap remains, and it is a
-  property of the topology rather than of the family: the SystemVerilog home
-  sends `Persist` with PGroupID zero, because the group is built from
-  `GroupIDExt` and the coherent env stands up the base RN-F, which does not drive
-  it. The Python port reflects the real group. Tracked under §2, *Issue-E-exact
-  drivers on the coherent topology*.
-- **Invalidating ReadOnce forms** — `ReadOnceCleanInvalid` (REQ 0x24),
-  `ReadOnceMakeInvalid` (0x25). **backlog.** Both need the RN-F cache to act on a
-  read that also invalidates, which the current model does not do.
-- **ReadNotSharedDirty / SnpNotSharedDirty** — REQ 0x26, SNP 0x04. **backlog**,
-  and coupled: the request is only meaningful against a snoop response that can
-  return SD, so the pair lands together.
-- **PreferUnique (CHI-E)** — `ReadPreferUnique` (REQ 0x4C),
-  `SnpPreferUnique`/`SnpPreferUniqueFwd` (SNP 0x15/0x16). **backlog.**
-- **SnpQuery (CHI-E)** — SNP 0x10. **Implemented.** The home originates it under
-  `cfg.hnf_snp_query_enable`, with no request behind it (§4.5), and reconciles
-  the answer against its own directory; catalogue rule D10 judges §4.5's "must
-  not change the state of the cache line at the Snoopee" from the wire, with
-  `cfg.rnf_snp_query_mutates_negctl` as its control. Kept in this list because
-  the entry records what the "smallest coherent addition" turned out to cost.
-  Three predicates elsewhere answered wrongly the moment the opcode existed:
-  `snp_opcode_is_forwarding` read bit[4], which 0x10 sets and which stops
-  separating the Forward snoops in Issue E; the request-to-snoop rule (D8)
-  correlated a spontaneous snoop to whatever request was open on the line and
-  judged it against a Table 4-5 row that does not exist; and a data-less
-  `SnpResp` had never had to carry a dirty state, so nothing encoded Table 4-9 --
-  where UD and UC share one encoding and SD takes the one the general cache-state
-  field reserves.
-- **Memory Tagging `TagMatch`** — RSP 0x0A. **Implemented.** The completer
-  performs the comparison Table 13-34 requires and answers in `Resp[0]` per
-  Table 13-25; `CHI_SB_TAG_MATCH_OWED` judges that the response was owed and
-  `CHI_SB_TAG_MATCH_RESULT` judges what it said, each with its own negative
-  control. Kept in this list because the entry records how it went wrong: the
-  opcode, the response and the OWED rule all shipped while the completer
-  answered a constant `Fail` and compared nothing, because `Resp[0] = 0` is also
-  the encoding of cache state `I`. A presence rule cannot see a constant answer.
-- **`WriteBackPtl` / `WriteEvictFull`** — REQ 0x1A / 0x15. **backlog**, tied to
-  the dirty-writeback-on-eviction item in §1: both are eviction paths the bounded
-  RN-F cache would need before it could evict rather than fatal.
-- **`WriteDataCancel`** — DAT 0x07. **excluded.** It cancels beats of a write
-  whose data the requester has already begun sending, which presupposes a
-  requester that abandons a transaction mid-burst. Every driver here completes
-  the bursts it starts, and building the opcode without that behaviour would
-  produce a flit nothing in the bench could provoke or consume.
-
-Nothing on this list is `n/a` or `open` today. Both dispositions are kept in the
-vocabulary because the next conversion may add opcodes for roles this VIP does
-not model, and an empty category is cheaper than inventing one later.
-
-## 2. Infrastructure / breadth
-
-- **Interface parity (`PARITY_EN_P`)** — parity signals across the whole CHI
-  interface (flit + sideband), with a parity checker and error-injection. Out of
-  scope for v1. *Effort M.*
-- **Issue-E-exact drivers on the coherent topology** — **Implemented.**
-  `vip_chi_driver_rnf_e` puts `GroupIDExt` on the wire from a coherent
-  requester and `vip_chi_driver_hnf_e` reads it back, through the same
-  `req_group_id_ext` hook the SN-F already used; `vip_chi_hnf_agent_e` and
-  `chi_coherent_e_tb_env` exist to name them, because a CHI-D specialization of
-  either driver fails at **elaboration** on a `req_flit_t` member that struct
-  does not have — so the selection has to happen at a class boundary, not under
-  a runtime test on the issue. A test opts in by overriding `create_tb_env`.
-
-  Kept in this list for what it says about the shape of the defect. Neither end
-  of the link was wrong on its own: the requester sent no group, the home read
-  no group, and `Persist` carried PGroupID zero at both vantages with every
-  parity check, counter and scoreboard rule agreeing — the two ends were
-  consistent, and consistently wrong. `tc_chi_coh_e_combined_write_cmo` now pins
-  `{GroupIDExt, LPID}` to a value with bits set in both halves of 13.10.8's
-  equation and asserts the round trip, because a zero group is exactly what a
-  link that never carried the field reports.
-
-  The premise that let it happen is also recorded: `chi_coherent_tb_env` stood
-  up the base agents at CHI-E width because "coherent reads do not depend on the
-  E-only REQ fields", which was true when reads were all the topology carried,
-  and expired the day Combined Write + CMO landed on it. The second stated
-  reason — that the base monitor is the one publishing the SNP channel — was
-  never true of `vip_chi_monitor_e`, which overrides two capture hooks and
-  inherits SNP publication untouched.
-- **CHI-A / CHI-B** — earlier CHI issues. Out of scope by design; the VIP targets
-  CHI-D and CHI-E.
-- **System Coherency Interface (`SYSCOREQ` / `SYSCOACK`)** — the system-level
-  handshake by which a system controller enables and disables an interface's
-  participation in coherency (IHI 0050D Ch. 14 / IHI 0050E_a Ch. 15). Neither
-  port models the two sideband signals, and no testcase drives them. Backlog
-  rather than a non-goal: the VIP already models the link-level analogue (LASM
-  activation, deactivation and the quiescence handshake), so the system-level
-  pair is the same shape of state machine one level up, and a bench that
-  connects a real RN-F to a real system controller would need it. *Effort M.*
-
-  **Name collision, deliberately noted here:** grepping the tree for "system
-  coherency" finds the VIP's own *system coherency checker* (Checker D), which
-  is an unrelated thing that happens to share the words. That collision is why
-  this gap survived several documentation passes: the grep that should have
-  found nothing found something plausible instead. Search for `SYSCOREQ`.
-
-- **`RSVDC` on REQ and DAT** — the specification's user-defined field, `X` bits
-  wide on REQ and `Y` on DAT (IHI 0050E_a Table 13-6 / 13-9, D Table 12-6 /
-  12-9). Absent from both ports, in both issues, and legal that way: the widths
-  are implementation-defined and zero is a permitted value for each, so a VIP
-  that declares no user-defined bits is conformant. Recorded here because it was
-  the one *undocumented* omission -- every other configurable width in this VIP
-  is a knob on `vip_chi_cfg_t`, so a reader comparing the flit structs against
-  the tables finds `RSVDC` missing with nothing saying it was a decision.
-  `scripts/check_flit_layout.py` lists it as an advisory `missing` on three
-  channels; that advisory is the intended steady state, not a defect to chase.
-  Adding it would mean two more config widths and no protocol behavior to check
-  against, since the field's meaning is by definition outside the spec.
-  *Effort S; value low.*
-
-## 3. Depth / polish (deferred from the retired TODO.md)
-
-- **Checker-A completion-count / opcode thinning** — the scoreboard keeps ~56
-  inline `size()==N` / `rsp_opcode==…` per-test checks for precise failure
-  messages even though Checker A subsumes them. Stripping them is a larger,
-  aggressive pass; revisit if the suite grows. *Effort M.*
-- **Agent reset-watcher level check** — the `vip_chi_agent` reset watcher requires
-  a posedge of `rst_n`, so a bench with `rst_n` tied high from t0 never starts the
-  drivers. Guard with a level check. *Effort S; risk med — changes reset detection
-  for every test.*
-- **SVA reset-branch cost** — the `vip_chi_sva` `always_ff` disable branch
-  iterates all `2**txn_id_width` entries across ~12 arrays every clock while
-  `!checks_enable || !rst_n`; run it once on the disable edge instead. *Effort S;
-  touches `vip_chi_sva`, false-fire risk.*
-
-## Related (tracked elsewhere)
-
+- **Interconnect model / system env** (`svt_chi_interconnect`,
+  `svt_chi_system_env`, the `ic_*` agents) — the HN-I proxy and HN-F home already
+  cover the topologies this VIP's users build.
+- **CHI-A / B / C / F** — the VIP targets CHI-D and CHI-E.
+- **`WriteDataCancel`** (DAT `0x07`) — it cancels beats of a write already in
+  flight, presupposing a requester that abandons a transaction mid-burst. Every
+  driver here completes the bursts it starts, so the opcode would produce a flit
+  nothing in the bench could provoke or consume.
+- **The full 32-way hazard cross-product** — the single same-line invariant
+  catches the overwhelming majority.
+- **Snoop nested under its originating REQ.** A snoop leaves the home on a
+  different port from the one its request arrived on, so the two are seen by two
+  monitor instances and neither holds the other's transaction handle. Parenting
+  them needs a handle registry shared by every monitor on the home. The snoop is
+  its own stream and its TxnID appears on both, so a reader can still correlate
+  them; faking the parent link would be worse than not having it.
+- **Per-check covergroups.** Their purpose was regression-level aggregation of
+  which checks ran, and the CSV export does it better: pass *and* fail counts per
+  run per bind, surviving outside the coverage database, working identically on the
+  Python port which has no covergroups at all. Reinstate only if per-check
+  coverage is wanted as a **sign-off metric**, which is a different question
+  wanting different bins.
+- **A "wait for credit accumulation" reference event.** The credit pool is empty at
+  bring-up by construction — credits arrive as LCRDV pulses only after the link
+  activates — so there is nothing to wait for at the moment the request is raised.
+  It would be a knob with no reachable second state.
+- **The `reasonable_*` constraint pattern** — the `vip_chi_cfg_item` +
+  sequence-setter approach is clearer and does not fight the caller's own
+  `randomize() with`.
+- **`svt_pattern` / XML / FSDB property export** — infrastructure for a commercial
+  debug tool chain that does not exist here. The useful slice, plusarg check
+  disable, already ships.
+- **`use_tlm_generic_payload` / `use_pv_socket`** — TLM-2.0 interop with no
+  consumer.
 - **`M6 cg_outstanding` coverage** — a separate workstream; do not touch from
   vip_chi.

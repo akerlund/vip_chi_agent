@@ -211,8 +211,8 @@ together, not one endpoint answering reads. In short:
     that exist, so the documentation cannot rot ahead of the tree.
 
 Scope boundary: this is a CHI agent VIP, not an interconnect model. A full
-interconnect / system environment, the SYSCO sideband, and CHI issues A/B/C/F
-are non-goals; DVM, stash and multi-SN striping behind the HN-F are deferred
+interconnect / system environment and CHI issues A/B/C/F are non-goals; DVM,
+stash, multi-SN striping behind the HN-F and the SYSCO sideband are deferred
 rather than partially implemented. See
 [docs/FUTURE_WORK.md](docs/FUTURE_WORK.md) for that boundary.
 
