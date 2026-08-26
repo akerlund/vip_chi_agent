@@ -47,24 +47,17 @@ from vip_chi_types_pkg import (
   req_opcode_is_atomic, lasm, chi_xfer_dat_beats, req_bit17_is_dodwt,
   req_has_modeled_completion, req_completion_uses_dat,
   is_final_rsp_completion, unpack,
+  req_opcode_is_combined_write_cmo, req_opcode_combined_cmo_is_persist,
 )
 from vip_chi_if import ChiBus
 
-# Combined Write + CMO, and the subset whose CMO half is persistent. Spelled out
-# here rather than imported from the item so the driver's own response
-# expectations are readable in one place.
-_COMBINED_WRITE_CMO_C = {
-  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
-  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
-  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
-  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
-  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
-  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
-}
-_COMBINED_CMO_PERSIST_C = {
-  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
-  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
-}
+# Combined Write + CMO membership, and the persistent subset, are asked of the
+# TYPE PACKAGE rather than kept here. They were spelled out locally so the
+# driver's response expectations read in one place, and the cost of that showed
+# the first time the family grew: a local list is a copy, and this file held two
+# of them plus a third in _WRITE_DATA_OPCODES. All three missed the coherent
+# forms, and the failure was a driver that thought a combined write carried no
+# data at all.
 # Cycles the raw-injection path will hold a request's TXSACTIVE window open
 # waiting for a completion it does not itself collect.
 #
@@ -84,14 +77,6 @@ _WRITE_DATA_OPCODES = {
   int(ReqOpcode.WRITE_NO_SNP_FULL), int(ReqOpcode.WRITE_NO_SNP_PTL),
   int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL),
   int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL),
-  # The combined Write + CMO forms carry the payload of the write they contain:
-  # the CMO half adds responses, not data.
-  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH),
-  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_INV),
-  int(ReqOpcode.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP),
-  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
-  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
-  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
 }
 
 # Atomics that return data (AtomicLoad/Swap/Compare); AtomicStore does not.
@@ -972,8 +957,21 @@ class vip_chi_driver_rni(uvm_driver):
   # Request/completion helpers.
   # ==========================================================================
   def req_expects_write_data(self, req):
+    """Does this request carry a write data burst?
+
+    The combined Write + CMO forms are answered from the CLASSIFIER rather than
+    from a list here, because a list here is a third copy of the family
+    membership and the family has grown twice. The last time it grew, two
+    hand-kept sets were missed: the perf counters called a combined write a read,
+    and the protocol checker's write classification stood the burst-length rules
+    down for the whole family. Asking req_opcode_is_combined_write_cmo means a
+    form added to the type package is carried here for free.
+
+    The CMO half adds responses, not data, so every combined form carries the
+    payload of the write it contains.
+    """
     op = _I(req.opcode)
-    if op in _WRITE_DATA_OPCODES:
+    if op in _WRITE_DATA_OPCODES or req_opcode_is_combined_write_cmo(op):
       return True
     return req_opcode_is_atomic(op)
 
@@ -993,10 +991,10 @@ class vip_chi_driver_rni(uvm_driver):
     completion. That is not a hypothetical: it is what happened the first time
     this ran, and it surfaced as a wrong-opcode assertion on an unrelated write.
     """
-    return _I(req.opcode) in _COMBINED_WRITE_CMO_C
+    return req_opcode_is_combined_write_cmo(_I(req.opcode))
 
   def req_expects_combined_persist(self, req):
-    return _I(req.opcode) in _COMBINED_CMO_PERSIST_C
+    return req_opcode_combined_cmo_is_persist(_I(req.opcode))
 
   def req_expects_read_completion(self, req):
     return _I(req.opcode) != int(ReqOpcode.PREFETCH_TGT)

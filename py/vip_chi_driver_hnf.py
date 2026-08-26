@@ -36,13 +36,34 @@ from vip_chi_types_pkg import (
   Dir, Resp, RespErr, Exclusive, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode,
   CACHE_LINE_BYTES, chi_xfer_dat_beats, mask, req_final_state, snoop_for_req,
   snp_do_not_go_to_sd_required, snp_opcode_is_forwarding,
-  snp_ret_to_src_must_be_zero,
+  snp_ret_to_src_must_be_zero, req_opcode_combined_cmo_is_persist,
+  state_holds_dirty, req_opcode_write_data_is_copyback, pgroup_id_from_req,
 )
 from vip_chi_lcrd_mgr import VipChiLcrdMgr
 from vip_chi_cfg_agent import VipChiCfgAgent
 from vip_mem import vip_mem
 
 _I = int
+
+# The NINE coherent Combined Write + CMO opcodes, enumerated rather than
+# expressed as "combined and not WriteNoSnp".
+#
+# req_opcode_is_combined_write_cmo also answers true for the six WriteNoSnp
+# forms, which are Requester-to-Slave and reach an SN-F, never a Home.
+# Dispatching on the general predicate would send one of those down the coherent
+# path if it ever arrived here -- a wrong answer to a malformed input, where the
+# unsupported-opcode fatal is the right one.
+_COHERENT_COMBINED_WRITE_CMO_OPS = {
+  int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_BACK_FULL_CLEAN_INV),
+  int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH),
+  int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP),
+}
 
 _COHERENT_READ_OPS = {
   int(ReqOpcode.READ_SHARED), int(ReqOpcode.READ_CLEAN),
@@ -901,6 +922,8 @@ class vip_chi_driver_hnf(uvm_component):
       await self.service_coherent_read(p, req)
     elif op in (int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL)):
       await self.service_writeback(p, req)
+    elif op in _COHERENT_COMBINED_WRITE_CMO_OPS:
+      await self.service_combined_write_cmo(p, req)
     elif op == int(ReqOpcode.EVICT):
       await self.service_evict(p, req)
     elif op == int(ReqOpcode.CLEAN_INVALID):
@@ -1151,6 +1174,115 @@ class vip_chi_driver_hnf(uvm_component):
   # WriteBackFull / WriteCleanFull: grant CompDBIDResp, collect CopyBackWrData
   # into memory, clear the requester's directory ownership.
   # ==========================================================================
+  async def apply_combined_cmo(self, p, req, line):
+    """Apply the CMO half of a combined request, to the state the write left.
+
+    Section 2.8 orders the two: the CMO acts AFTER the write commits. What that
+    leaves it to do differs per CMO, and for two of the three the answer is
+    nothing -- which is a property of the write that preceded it rather than a
+    shortcut, so it is checked rather than assumed.
+    """
+    op = _I(req["opcode"])
+    entry = list(self.directory.get(line, [int(Resp.I)] * len(self.rn_buses)))
+
+    # CleanInvalid: every remaining holder loses the line, the requester's own
+    # copy included. This is the one of the three with work left to do, because a
+    # CopyBack write leaves the OTHER holders' clean copies untouched and
+    # CleanInvalid must take them.
+    if op == int(ReqOpcode.WRITE_BACK_FULL_CLEAN_INV):
+      for k in range(len(self.rn_buses)):
+        # Negative-control hook, as elsewhere: skip snoops so a stale holder can
+        # be induced.
+        if self.cfg.hnf_suppress_snoops:
+          continue
+        if entry[k] == int(Resp.I):
+          continue
+        await self.drive_snoop(k, line, int(SnpOpcode.CLEAN_INVALID))
+      self.directory[line] = [int(Resp.I)] * len(self.rn_buses)
+      self.excl_monitor.pop(line, None)
+      return
+
+    # CleanShared, and its persistent form. Both require that no dirty copy of
+    # the line remains below the point of coherency, and permit any holder to
+    # keep a CLEAN copy -- so there is nothing to snoop for here, and the reason
+    # is the write that just ran:
+    #
+    #   * after a WriteUnique the line is Invalid at every port, because
+    #     service_write_unique snooped the other holders and cleared the entry;
+    #   * after a CopyBack the requester has just written the only dirty copy
+    #     back, and the single-writer invariant means no other port held one.
+    #
+    # The second is an invariant rather than an observation, so it is checked. A
+    # dirty holder here would already be a multi-owner violation the coherency
+    # checker reports; the raise says which model broke rather than leaving a
+    # silently-skipped CMO behind it.
+    for k in range(len(self.rn_buses)):
+      if k != p and state_holds_dirty(entry[k]):
+        raise AssertionError(
+          f"[{self.get_name()}] combined CleanShared on line 0x{line:x} found "
+          f"port {k} holding it dirty (0x{entry[k]:x}) after the write half: "
+          f"CleanShared must leave no dirty copy below, and this home has no way "
+          f"to reach one it did not expect")
+
+  async def service_combined_write_cmo(self, p, req):
+    """Serve a coherent Combined Write + CMO.
+
+    One request carrying a write and a cache-maintenance operation to the same
+    address, applied IN THAT ORDER.
+
+    The write half is the base write unchanged -- that is what makes the family
+    breadth within a mechanism rather than a new one. What is added is the CMO
+    applied afterwards and, on the wire, a SECOND completion: CompCMO, which says
+    the CMO half happened. Without it a completer that ignored the CMO entirely
+    would produce a run indistinguishable from a correct one at the requester,
+    because the write completes exactly as an ordinary write does.
+    """
+    op = _I(req["opcode"])
+    line = self.line_addr(_I(req["addr"]))
+
+    # A SECOND contribution to this port's TXSACTIVE window, opened before the
+    # write half and closed after the last completion. service_writeback retires
+    # the request window itself once the CopyBackWrData is in, and 14.7.2 wants
+    # the sideband held until after the FINAL completing flit -- which for a
+    # combined request is the CMO's, not the write's. Two independent
+    # contributions to one count is what the count is for.
+    self.rn_window_open(p)
+
+    # Which write the combined form carries: a CopyBack the requester hands back,
+    # or a non-allocating WriteUnique. They take different service paths, and the
+    # difference matters to the CMO that follows -- see apply_combined_cmo. The
+    # same question the requester answers when it picks its DAT opcode, so it is
+    # asked in the same place: the two disagreeing is a stopped simulation, one
+    # end collecting a payload the other never sends.
+    if req_opcode_write_data_is_copyback(op):
+      await self.service_writeback(p, req)
+    else:
+      await self.service_write_unique(p, req)
+
+    await self.apply_combined_cmo(p, req, line)
+
+    # The CMO's own completion, to SrcID.
+    await self.drive_rn_rsp(p, int(RspOpcode.COMP_CMO), _I(req["txnid"]), 0,
+                            int(Resp.I), _I(req["tgtid"]), _I(req["srcid"]))
+
+    # The persistent forms owe a Persist after it, and section 2.8 routes that
+    # one by ReturnNID rather than SrcID -- the same split the SN-F applies to
+    # CleanSharedPersistSep.
+    #
+    # TxnID is ZERO and the group rides DBID, which is the shape Table A-4 gives
+    # this response and not an omission: a Persist is identified by where it is
+    # routed, so it is the one completion here with no TxnID to carry. 13.10.7
+    # puts PGroupID in the bits the table otherwise calls DBID, and a persist
+    # response has no data buffer for a real DBID to displace.
+    if req_opcode_combined_cmo_is_persist(op):
+      group_ext = _I(req["groupidext"]) if self.rn_buses[p].cfg.is_e else 0
+      await self.drive_rn_rsp(p, int(RspOpcode.PERSIST), 0,
+                              pgroup_id_from_req(group_ext, _I(req["lpid"])),
+                              int(Resp.I), _I(req["tgtid"]),
+                              _I(req.get("returnnid", req["srcid"])))
+
+    self.rn_window_close(p)
+
   async def service_writeback(self, p, req):
     line = self.line_addr(req["addr"])
     await self.drive_rn_rsp(p, int(RspOpcode.COMP_DBID_RESP), _I(req["txnid"]),

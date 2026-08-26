@@ -283,6 +283,8 @@ package chi_tc_pkg;
   `include "tc_chi_coh_d_hnf_sn_txsactive.sv"
   `include "tc_chi_coh_e_snf_read_miss.sv"
   `include "tc_chi_coh_e_hnf_sn_txsactive.sv"
+  `include "chi_coh_combined_write_cmo_base_test.sv"
+  `include "tc_chi_coh_e_combined_write_cmo.sv"
   `include "chi_coh_snf_writeback_readback_base_test.sv"
   `include "tc_chi_coh_d_snf_writeback_readback.sv"
   `include "tc_chi_coh_e_snf_writeback_readback.sv"

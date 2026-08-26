@@ -1764,6 +1764,70 @@ def req_opcode_combined_cmo_is_persist(opcode: int) -> bool:
                 int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP))
 
 
+# The PARTIAL writes: the ones whose payload carries meaningful byte enables, so
+# a beat may update some bytes of the line and leave the rest alone. Every other
+# write covers what it writes in full, and its byte enables are all ones.
+#
+# Named from the opcode's own Ptl suffix rather than from the write class, which
+# is why the combined forms belong here on the same footing as the plain ones: a
+# WriteUniquePtlCleanSh writes exactly the bytes a WriteUniquePtl does.
+_PARTIAL_WRITE_OPCODES_C = frozenset({
+  int(ReqOpcode.WRITE_NO_SNP_PTL),
+  int(ReqOpcode.WRITE_UNIQUE_PTL),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_INV),
+  int(ReqOpcode.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH),
+  int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP),
+})
+
+
+def req_opcode_write_is_partial(opcode: int) -> bool:
+  """Does this write's payload carry meaningful byte enables?
+
+  The twin of vip_chi_req_opcode_write_is_partial in the SystemVerilog package.
+  It lives here because the requester builds the byte enables, the completer
+  merges under them and the coverage model bins on them -- and a set of partial
+  writes that is short by one opcode does not fail: that opcode simply writes
+  full lines forever, and every check that reads the line back agrees with it.
+  """
+  return int(opcode) in _PARTIAL_WRITE_OPCODES_C
+
+
+# The CopyBack writes: a cache handing back a line it HOLDS. Their payload
+# travels as CopyBackWrData; every other write's travels as one of the two
+# NonCopyBackWrData encodings, and a completer waits for the one it expects.
+#
+# Enumerated in full rather than expressed as a base set plus the combined forms
+# built on it. Table B-1's preamble makes each Combined Write inherit the row of
+# the write it carries, so the family spans BOTH answers -- five CopyBack forms
+# and ten Non-CopyBack ones -- and there is no predicate over the family as a
+# whole that decides this.
+_COPYBACK_WRITE_DATA_OPCODES_C = frozenset({
+  int(ReqOpcode.WRITE_BACK_FULL),
+  int(ReqOpcode.WRITE_CLEAN_FULL),
+  int(ReqOpcode.WRITE_EVICT_OR_EVICT),
+  int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_BACK_FULL_CLEAN_INV),
+  int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH_PER_SEP),
+  int(ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH),
+  int(ReqOpcode.WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP),
+})
+
+
+def req_opcode_write_data_is_copyback(opcode: int) -> bool:
+  """Does this write's payload travel as CopyBackWrData?
+
+  The twin of vip_chi_req_opcode_write_data_is_copyback in the SystemVerilog
+  package. It lives here because the requester picks the DAT opcode, the
+  completer decides which one to wait for, and the coherency checker decides
+  whether to track the line as written back -- three places, one answer. Two
+  sides disagreeing about it is not a wrong field: the write data never matches
+  what the completer is collecting, so neither end can finish.
+  """
+  return int(opcode) in _COPYBACK_WRITE_DATA_OPCODES_C
+
+
 def req_opcode_is_combined_write_cmo(opcode: int) -> bool:
   """A single request carrying both a write and a cache maintenance operation.
 
@@ -2645,7 +2709,16 @@ _COMPACK_OPTIONAL_OPCODES = frozenset({
   int(ReqOpcode.WRITE_UNIQUE_PTL),
   int(ReqOpcode.WRITE_NO_SNP_FULL),
   int(ReqOpcode.WRITE_NO_SNP_PTL),
-}) | _COMBINED_WRITE_CMO_OPCODES
+# Section 2.8.3, under Table 2-9: "In a Combined Write transaction, the CompAck
+# requirement is the same as the CompAck requirement for the type of Write in the
+# Combined Write transaction." So the family does not share a row -- it inherits
+# fifteen rows from the writes it carries, and only the WriteNoSnp and
+# WriteUnique halves land on Optional. The CopyBack forms inherit WriteBack's and
+# WriteClean's "No" and fall through to PROHIBITED below, which is what a
+# CopyBack needs: its CopyBackWrData IS the acknowledgement, so a CompAck flit as
+# well is one the completer never waits for.
+}) | {o for o in _COMBINED_WRITE_CMO_OPCODES
+      if not req_opcode_write_data_is_copyback(o)}
 
 # The "Yes" rows. All of them are RN-F only.
 _COMPACK_REQUIRED_RNF_OPCODES = frozenset({

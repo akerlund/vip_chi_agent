@@ -150,7 +150,13 @@ class vip_chi_driver_rnf #(
   // ---------------------------------------------------------------------------
   protected function bit req_opcode_is_coherent_write_unique(input req_opcode_t opcode);
     return (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_C)) ||
-           (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C));
+           (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C)) ||
+           // The combined forms carry the same write and take the same
+           // requester-side path; only the completer does anything extra.
+           (opcode == VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_C) ||
+           (opcode == VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_C) ||
+           (opcode == VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_C) ||
+           (opcode == VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_C);
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -906,7 +912,14 @@ class vip_chi_driver_rnf #(
            (opcode == req_opcode_t'(VIP_CHI_REQ_EVICT_C)) ||
            // WriteEvictOrEvict gives the line up either way: with the data when
            // the home asks for it, and as a plain Evict when it does not.
-           (opcode == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C);
+           (opcode == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C) ||
+           // WriteBackFull + CMO evicts exactly as WriteBackFull does.
+           // WriteCleanFull + CMO is deliberately absent for the same reason
+           // WriteCleanFull is: a WriteClean writes the data back and the
+           // requester KEEPS a clean copy.
+           (opcode == VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_C) ||
+           (opcode == VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_C) ||
+           (opcode == VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_C);
   endfunction
 
   // ---------------------------------------------------------------------------

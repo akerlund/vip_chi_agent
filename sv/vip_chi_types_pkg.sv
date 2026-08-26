@@ -1256,6 +1256,67 @@ package vip_chi_types_pkg;
     endcase
   endfunction
 
+  // Does this write's payload carry meaningful byte enables?
+  //
+  // The partial writes are the ones where a beat may update some bytes of the
+  // line and leave the rest alone. Every other write covers what it writes in
+  // full, and its byte enables are all ones.
+  //
+  // Named from the opcode's own Ptl suffix rather than from the write class,
+  // which is why the combined forms belong here on the same footing as the plain
+  // ones: a WriteUniquePtlCleanSh writes exactly the bytes a WriteUniquePtl does.
+  //
+  // Asked in one place because the requester builds the byte enables, the
+  // completer merges under them and the coverage model bins on them -- and a set
+  // of partial writes that is short by one opcode does not fail: that opcode
+  // simply writes full lines forever, and every check that reads the line back
+  // agrees with it.
+  function automatic bit vip_chi_req_opcode_write_is_partial(
+    input vip_chi_req_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_E: return 1'b1;
+      default:                                         return 1'b0;
+    endcase
+  endfunction
+
+  // Does this write's payload travel as CopyBackWrData?
+  //
+  // The CopyBack writes are the ones where a cache hands back a line it HOLDS.
+  // Every other write's payload travels as one of the two NonCopyBackWrData
+  // encodings, and a completer waits for the one it expects -- so the requester
+  // picking the DAT opcode, the completer collecting it and the coherency
+  // checker tracking the line all have to give the same answer. Two sides
+  // disagreeing about it is not a wrong field: the data never matches what is
+  // being collected, so neither end can finish.
+  //
+  // Enumerated in full rather than expressed as a base set plus the combined
+  // forms built on it. Table B-1's preamble makes each Combined Write inherit
+  // the row of the write it carries, so the family spans BOTH answers -- five
+  // CopyBack forms and ten Non-CopyBack ones -- and no predicate over the family
+  // as a whole can decide this.
+  function automatic bit vip_chi_req_opcode_write_data_is_copyback(
+    input vip_chi_req_opcode_t opcode
+  );
+    case (opcode)
+      VIP_CHI_REQ_WRITE_BACK_FULL_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_E,
+      VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_E,
+      VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_E,
+      VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_E: return 1'b1;
+      default:                                         return 1'b0;
+    endcase
+  endfunction
+
   // TRUE when a combined Write + CMO carries a PERSISTENT CMO, whose Persist
   // response the completer must send only after the write data has arrived.
   function automatic bit vip_chi_req_opcode_combined_cmo_is_persist(
@@ -1978,9 +2039,17 @@ package vip_chi_types_pkg;
 
     // "In a Combined Write transaction, the CompAck requirement is the same as
     // the CompAck requirement for the type of Write in the Combined Write
-    // transaction." Every combined form this VIP models is a WriteNoSnp, so they
-    // inherit Optional -- NOT the "No" of the CMO half bolted onto them.
-    if (vip_chi_req_opcode_is_combined_write_cmo(req_op)) begin
+    // transaction." So the family does not share a row: it inherits a row per
+    // form from the write each one carries, and the CMO half contributes nothing
+    // here.
+    //
+    // The WriteNoSnp and WriteUnique forms inherit Optional. The CopyBack forms
+    // inherit WriteBack's and WriteClean's "No" and must fall through to
+    // PROHIBITED, which is what a CopyBack needs: its CopyBackWrData IS the
+    // acknowledgement, so a CompAck flit as well is one the completer never
+    // waits for.
+    if (vip_chi_req_opcode_is_combined_write_cmo(req_op) &&
+        !vip_chi_req_opcode_write_data_is_copyback(req_op)) begin
       return VIP_CHI_COMPACK_OPTIONAL_E;
     end
 

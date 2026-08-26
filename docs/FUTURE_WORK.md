@@ -5,7 +5,7 @@ Checker D, coherent coverage, HN-I proxy, scoreboard, perf counters, exclusives,
 CMO, DCT forwarding, SN-F-behind-HN-F, MakeUnique, bounded-cache eviction) is
 **complete and tested** — every charter item has a named testcase in
 [../testbench/TEST_CASES.md](../testbench/TEST_CASES.md). The regression is
-**229 SV + 230 PY** — the same list on both flows apart from three documented
+**230 SV + 231 PY** — the same list on both flows apart from three documented
 exceptions: `tc_chi_sva_smoke` and `tc_chi_reject_scope`, both Python-only, and
 `tc_chi_e_hni_port1`, SV-only because the SV CHI-E proxy is 2x2 and the Python
 one 1x1, so its port-1 links do not exist to drive (see
@@ -155,10 +155,15 @@ every run without needing a conversion.
 - **Combined Write + CMO** — `WriteBackFullCleanInv/CleanSh/CleanShPerSep`
   (REQ 0x59/0x58/0x5A), `WriteCleanFullCleanSh/CleanShPerSep` (0x5C/0x5E),
   `WriteUniqueFullCleanSh/CleanShPerSep` (0x54/0x56),
-  `WriteUniquePtlCleanSh/CleanShPerSep` (0x64/0x66). **backlog.** The
-  `WriteNoSnp*` half of this family IS implemented — `vip_chi_write_cmo_seq`
-  drives six of those — so this is breadth within a mechanism that exists, and
-  the cheapest of the four backlog families.
+  `WriteUniquePtlCleanSh/CleanShPerSep` (0x64/0x66). **implemented.** All nine
+  are declared, served by the HN-F and driven by `vip_chi_write_cmo_seq`, which
+  now carries a write-class axis over the whole family of fifteen;
+  `tc_chi_coh_e_combined_write_cmo` exercises six forms across the three coherent
+  write classes and both persistence choices. One gap remains, recorded with its
+  evidence rather than left implicit: the SystemVerilog home sends `Persist` with
+  PGroupID zero, because the group is built from `GroupIDExt` and only the
+  Issue-E-exact requester driver puts that field on the wire — the coherent
+  topology stands up the base RN-F. The Python port reflects the real group.
 - **Invalidating ReadOnce forms** — `ReadOnceCleanInvalid` (REQ 0x24),
   `ReadOnceMakeInvalid` (0x25). **backlog.** Both need the RN-F cache to act on a
   read that also invalidates, which the current model does not do.

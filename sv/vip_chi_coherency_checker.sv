@@ -1363,8 +1363,21 @@ class vip_chi_coherency_checker #(
     // A coherent writeback carries CopyBackWrData whose TxnID is the granted DBID
     // (= this REQ's TxnID): remember the line so that data establishes the shadow.
     // It is also a store -> it breaks every reservation on the line.
-    else if ((wop == VIP_CHI_REQ_WRITE_BACK_FULL_E) ||
-             (wop == VIP_CHI_REQ_WRITE_CLEAN_FULL_E)) begin
+    //
+    // The DAT arm that closes this keys on the CopyBackWrData encoding alone, so
+    // the two agree only if this arm claims the opcodes that produce it. Asked of
+    // the classifier for that reason: an unclaimed CopyBack leaves its data out
+    // of the shadow, and a shadow missing a write reports an agreement it never
+    // checked.
+    //
+    // WriteEvictOrEvict is the one CopyBack excluded, and the exclusion is about
+    // this entry's LIFETIME rather than about the opcode. The completer chooses
+    // whether that transaction has a data phase at all, and only the DAT arm
+    // deletes the entry -- so on the no-data leg an entry recorded here is never
+    // claimed, and TxnIDs are reused. The stale line would then take the next
+    // CopyBackWrData that happened to reuse the ID.
+    else if (vip_chi_types_pkg::vip_chi_req_opcode_write_data_is_copyback(wop) &&
+             (wop != VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_E)) begin
       this.open_wb_line[node][longint'(item.txn_id)] = line;
       this.clear_excl_all(line);
     end

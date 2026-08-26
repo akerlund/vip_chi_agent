@@ -51,6 +51,23 @@ typedef enum {
   VIP_CHI_CMO_CLEAN_SH_PER_SEP_E
 } vip_chi_combined_cmo_e;
 
+// Which write the combined request carries. NO_SNP reaches a memory node and is
+// the default because it is what this sequence drove before the coherent forms
+// existed; the other three reach a Home and take the coherent completer path.
+//
+// Not every (write, cmo, partial) triple is an opcode: Table 13-14 gives
+// CleanInv only to WriteNoSnp and WriteBackFull, and a Ptl form only to
+// WriteNoSnp and WriteUnique. choose_opcode fatals on a combination the table
+// does not have rather than substituting the nearest one, because a silent
+// substitution puts a different legal opcode on the wire and the test still
+// passes.
+typedef enum {
+  VIP_CHI_CWRITE_NO_SNP_E,
+  VIP_CHI_CWRITE_BACK_FULL_E,
+  VIP_CHI_CWRITE_CLEAN_FULL_E,
+  VIP_CHI_CWRITE_UNIQUE_E
+} vip_chi_combined_write_e;
+
 class vip_chi_write_cmo_seq #(
   vip_chi_cfg_t CFG_P = VIP_CHI_DEFAULT_CFG_C
   ) extends vip_chi_base_seq #(CFG_P);
@@ -59,16 +76,34 @@ class vip_chi_write_cmo_seq #(
 
   typedef vip_chi_types #(CFG_P)::req_opcode_t req_opcode_t;
 
-  protected bit                    partial;
-  protected vip_chi_combined_cmo_e cmo;
+  protected bit                      partial;
+  protected vip_chi_combined_cmo_e   cmo;
+  protected vip_chi_combined_write_e write_class;
 
   // ---------------------------------------------------------------------------
   // Constructor.
   // ---------------------------------------------------------------------------
   function new(input string name = "vip_chi_write_cmo_seq");
     super.new(name);
-    this.partial = 1'b0;
-    this.cmo     = VIP_CHI_CMO_CLEAN_SH_E;
+    this.partial     = 1'b0;
+    this.cmo         = VIP_CHI_CMO_CLEAN_SH_E;
+    this.write_class = VIP_CHI_CWRITE_NO_SNP_E;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // RN-F for the coherent write classes, RN-I for WriteNoSnp.
+  //
+  // The role picks which legal-opcode pool the item is solved against, and the
+  // two pools are deliberately different: an RN-I is never offered a CopyBack.
+  // Left at the base class's RN-I, every coherent form is unsolvable -- the
+  // opcode is pinned by choose_opcode and then rejected by a pool with no row
+  // for it, which the solver can only report as a failure to randomize.
+  // ---------------------------------------------------------------------------
+  protected virtual function vip_chi_role_t role_val();
+    if (this.write_class == VIP_CHI_CWRITE_NO_SNP_E) begin
+      return VIP_CHI_ROLE_RNI_E;
+    end
+    return VIP_CHI_ROLE_RNF_E;
   endfunction
 
   // Ptl rather than Full: the write half becomes a partial write.
@@ -78,6 +113,10 @@ class vip_chi_write_cmo_seq #(
 
   function void set_cmo(input vip_chi_combined_cmo_e value);
     this.cmo = value;
+  endfunction
+
+  function void set_write_class(input vip_chi_combined_write_e value);
+    this.write_class = value;
   endfunction
 
   // TRUE when the CMO half is persistent, so the completer owes a Persist.
@@ -133,21 +172,74 @@ class vip_chi_write_cmo_seq #(
       return req_opcode_t'('0);
     end
 
-    case (this.cmo)
-      VIP_CHI_CMO_CLEAN_INV_E: begin
-        return this.partial
-          ? req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C)
-          : req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C);
+    case (this.write_class)
+
+      VIP_CHI_CWRITE_BACK_FULL_E: begin
+        if (this.partial) begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] there is no partial WriteBackFull + CMO form", get_name()))
+          return req_opcode_t'('0);
+        end
+        case (this.cmo)
+          VIP_CHI_CMO_CLEAN_INV_E:
+            return req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_C);
+          VIP_CHI_CMO_CLEAN_SH_PER_SEP_E:
+            return req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_C);
+          default:
+            return req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_C);
+        endcase
       end
-      VIP_CHI_CMO_CLEAN_SH_PER_SEP_E: begin
-        return this.partial
-          ? req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C)
-          : req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C);
+
+      VIP_CHI_CWRITE_CLEAN_FULL_E: begin
+        if (this.partial) begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] there is no partial WriteCleanFull + CMO form", get_name()))
+          return req_opcode_t'('0);
+        end
+        if (this.cmo == VIP_CHI_CMO_CLEAN_INV_E) begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] there is no WriteCleanFullCleanInv form", get_name()))
+          return req_opcode_t'('0);
+        end
+        return (this.cmo == VIP_CHI_CMO_CLEAN_SH_PER_SEP_E)
+          ? req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_C)
+          : req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_C);
       end
+
+      VIP_CHI_CWRITE_UNIQUE_E: begin
+        if (this.cmo == VIP_CHI_CMO_CLEAN_INV_E) begin
+          `uvm_fatal(get_name(), $sformatf(
+            "FATAL [%s] there is no WriteUnique + CleanInvalid form", get_name()))
+          return req_opcode_t'('0);
+        end
+        if (this.cmo == VIP_CHI_CMO_CLEAN_SH_PER_SEP_E) begin
+          return this.partial
+            ? req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_C)
+            : req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_C);
+        end
+        return this.partial
+          ? req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_C)
+          : req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_C);
+      end
+
       default: begin
-        return this.partial
-          ? req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C)
-          : req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C);
+        case (this.cmo)
+          VIP_CHI_CMO_CLEAN_INV_E: begin
+            return this.partial
+              ? req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C)
+              : req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_INV_C);
+          end
+          VIP_CHI_CMO_CLEAN_SH_PER_SEP_E: begin
+            return this.partial
+              ? req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C)
+              : req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP_C);
+          end
+          default: begin
+            return this.partial
+              ? req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C)
+              : req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_CLEAN_SH_C);
+          end
+        endcase
       end
     endcase
   endfunction

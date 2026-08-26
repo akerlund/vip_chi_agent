@@ -969,11 +969,11 @@ class vip_chi_item #(
       if (this.custom_be.size() != 0) begin
         this.be[beat] = this.custom_be[beat];
       end
-      else if ((this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C)) ||
-               (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_C)) ||
-               (this.opcode == VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_C) ||
-               (this.opcode == VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_INV_C) ||
-               (this.opcode == VIP_CHI_REQ_WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP_C)) begin
+      // A partial write's beat may leave bytes alone; every other write covers
+      // what it writes in full. Asked of the types package because the completer
+      // merges under these same enables.
+      else if (vip_chi_types_pkg::vip_chi_req_opcode_write_is_partial(
+                 vip_chi_req_opcode_t'(this.opcode))) begin
         this.be[beat] = make_random_be();
       end
       else begin
@@ -1020,10 +1020,21 @@ class vip_chi_item #(
       end
     end
 
-    if ((this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C)) ||
+    // A CopyBack hands back a line this cache holds, and its CopyBackWrData is
+    // treated as an IMPLICIT CompAck -- which is why this arm has one encoding
+    // and not two, even for WriteEvictOrEvict where ExpCompAck is always set.
+    //
+    // Asked FIRST, and asked of the types package rather than tested here: the
+    // combined Write + CMO family spans both answers, so the family predicate
+    // below would claim five CopyBack forms for the Non-CopyBack arm.
+    if (vip_chi_types_pkg::vip_chi_req_opcode_write_data_is_copyback(
+          vip_chi_req_opcode_t'(this.opcode))) begin
+      this.dat_opcode = dat_opcode_t'(VIP_CHI_DAT_COPY_BACK_WR_DATA_C);
+    end
+    else if ((this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_FULL_C)) ||
         (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_NO_SNP_PTL_C)) ||
-        // A combined WriteNoSnp + CMO is a Non-CopyBack write like the one it
-        // contains, so its data travels as NonCopyBackWrData too.
+        // The combined forms that reach here are the WriteNoSnp and WriteUnique
+        // ones -- Non-CopyBack writes like the write each carries.
         vip_chi_types_pkg::vip_chi_req_opcode_is_combined_write_cmo(
           vip_chi_req_opcode_t'(this.opcode)) ||
         // WriteUnique is a non-allocating coherent write: its data travels as
@@ -1037,15 +1048,6 @@ class vip_chi_item #(
       else begin
         this.dat_opcode = dat_opcode_t'(VIP_CHI_DAT_NON_COPY_BACK_WR_DATA_C);
       end
-    end
-    else if ((this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_C)) ||
-             (this.opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_C)) ||
-             // WriteEvictOrEvict is a CopyBack too, and its CopyBackWrData is
-             // treated as an IMPLICIT CompAck -- which is why it keeps the plain
-             // opcode here even though ExpCompAck is always set.
-             (this.opcode == VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C)) begin
-      // Coherent writeback data travels as CopyBackWrData.
-      this.dat_opcode = dat_opcode_t'(VIP_CHI_DAT_COPY_BACK_WR_DATA_C);
     end
     else if (this.opcode == req_opcode_t'(VIP_CHI_REQ_READ_NO_SNP_SEP_C)) begin
       this.dat_opcode = dat_opcode_t'(VIP_CHI_DAT_DATA_SEP_RESP_C);
@@ -1696,6 +1698,26 @@ class vip_chi_item #(
           VIP_CHI_REQ_WRITE_UNIQUE_ZERO_C
         }) || (write_evict_or_evict_enable && opcode inside {
           VIP_CHI_REQ_WRITE_EVICT_OR_EVICT_C
+        }) || (combined_write_cmo_enable &&
+               (CFG_P.ISSUE_P == VIP_CHI_ISSUE_E_E) &&
+               VIP_CHI_MAX_REQ_OPCODE_WIDTH_C'(opcode) inside {
+          // The COHERENT combined Write + CMO forms, opt-in for the reason the
+          // WriteNoSnp ones are: ordinary coherent writes to the solver, so an
+          // unconditional entry would put them into every random coherent write
+          // test. Gated on Issue E as well as on the knob -- every one sits in
+          // the Opcode[6] = 1 half and does not fit CHI-D's 6-bit field, so the
+          // req_opcode_t'() cast the arms above use would TRUNCATE them onto
+          // unrelated legal opcodes rather than reject them. Compared at full
+          // width for that reason.
+          VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_C,
+          VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_C,
+          VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_C,
+          VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_C,
+          VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_C,
+          VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_C,
+          VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_C,
+          VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_C,
+          VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_C
         });
       }
     }

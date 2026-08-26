@@ -146,8 +146,11 @@ class chi_coherent_base_test #(
   // no retries, blocking response collection, quiet. `addr` defaults to the
   // shared coherent test line.
   // ---------------------------------------------------------------------------
+  // Typed on the BASE sequence, not the coherent one: every setter below is a
+  // base-class setter, and a coherent test also drives sequences that are not
+  // coherent_base_seq subclasses -- the combined Write + CMO family among them.
   protected function void cfg_read_seq(
-    input vip_chi_coherent_base_seq #(CFG_P) seq,
+    input vip_chi_base_seq #(CFG_P) seq,
     input item_t::addr_t addr = item_t::addr_t'(WRITE_READ_ADDR_C)
   );
     seq.reset();

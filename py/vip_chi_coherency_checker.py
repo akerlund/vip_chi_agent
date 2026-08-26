@@ -46,6 +46,7 @@ from vip_chi_types_pkg import (
   snp_opcode_forbids_retaining_unique, snp_opcode_is_forwarding,
   req_final_state, state_holds_dirty,
   snoop_permitted_for_req, req_generates_snoop,
+  req_opcode_write_data_is_copyback,
 )
 from vip_chi_analysis_imp import vip_chi_analysis_imp
 
@@ -723,7 +724,20 @@ class vip_chi_coherency_checker(uvm_component):
       self.open_rd_uniq[node][tid] = _uniq
       self.open_rd_op[node][tid] = wop
       self.open_rd_excl[node][tid] = bool(_I(item.excl))
-    elif wop in (int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL)):
+    # A coherent writeback's CopyBackWrData establishes the shadow line. The DAT
+    # arm that closes this keys on the CopyBackWrData encoding alone, so the two
+    # agree only if this arm claims the opcodes that produce it. Asked of the
+    # classifier for that reason: an unclaimed CopyBack leaves its data out of the
+    # shadow, and a shadow missing a write reports an agreement it never checked.
+    #
+    # WriteEvictOrEvict is the one CopyBack excluded, and the exclusion is about
+    # this entry's LIFETIME rather than about the opcode. The completer chooses
+    # whether that transaction has a data phase at all, and only the DAT arm
+    # deletes the entry -- so on the no-data leg an entry recorded here is never
+    # claimed, and TxnIDs are reused. The stale line would then take the next
+    # CopyBackWrData that happened to reuse the ID.
+    elif (req_opcode_write_data_is_copyback(wop)
+          and wop != int(ReqOpcode.WRITE_EVICT_OR_EVICT)):
       self.open_wb_line[node][_I(item.txn_id)] = line
       self.clear_excl_all(line)
     elif wop == int(ReqOpcode.CLEAN_UNIQUE):

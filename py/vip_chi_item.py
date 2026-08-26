@@ -39,6 +39,8 @@ from vip_chi_types_pkg import (
   ChiCfg, VIP_CHI_DEFAULT_CFG, Dir, Role, DataType, ReqOpcode, DatOpcode,
   RspOpcode, Resp, RespErr, Issue, RawChannel, mask, clog2, chi_xfer_dat_beats,
   req_opcode_is_atomic, req_opcode_is_atomic_compare,
+  req_opcode_write_data_is_copyback, req_opcode_write_is_partial,
+  req_opcode_is_combined_write_cmo,
   exp_comp_ack_required, exp_comp_ack_prohibited,
   SnpAttr, req_dodwt_applicable, SnpAttrReq, snp_attr_requirement,
   req_return_txn_id_applicable,
@@ -57,15 +59,32 @@ _WRITE_OPCODES_D = [_RO.WRITE_NO_SNP_PTL, _RO.WRITE_NO_SNP_FULL,
 _WRITE_OPCODES_E = _WRITE_OPCODES_D + [_RO.WRITE_NO_SNP_ZERO,
                                        _RO.CLEAN_SHARED_PERSIST_SEP]
 
-# Combined Write + CMO (Issue E). Legal to BUILD, but deliberately NOT in the
-# randomization pool above: they are opt-in through cfg.combined_write_cmo_enable
-# so an existing random write test cannot start emitting them and change every
-# waveform. Every one sits in the Opcode[6] = 1 half of Table 13-14 and does not
-# fit CHI-D's 6-bit REQ opcode field at all.
-_COMBINED_WRITE_CMO_OPCODES = [
+# The Combined Write + CMO forms an RN-I may be offered (Issue E). Legal to
+# BUILD, but deliberately NOT in the randomization pool above: they are opt-in
+# through cfg.combined_write_cmo_enable so an existing random write test cannot
+# start emitting them and change every waveform. Every one sits in the
+# Opcode[6] = 1 half of Table 13-14 and does not fit CHI-D's 6-bit REQ opcode
+# field at all.
+#
+# A POOL, not the family: this names the WriteNoSnp forms only, and the coherent
+# ones live in the RN-F pool below. Anything asking a question about the family
+# as a whole -- does it carry data, does it need Issue E -- must ask the types
+# package instead, because either pool alone answers for two thirds of it.
+_COMBINED_WRITE_CMO_RNI_POOL_C = [
   _RO.WRITE_NO_SNP_FULL_CLEAN_SH, _RO.WRITE_NO_SNP_FULL_CLEAN_INV,
   _RO.WRITE_NO_SNP_FULL_CLEAN_SH_PER_SEP, _RO.WRITE_NO_SNP_PTL_CLEAN_SH,
   _RO.WRITE_NO_SNP_PTL_CLEAN_INV, _RO.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP,
+]
+
+# The COHERENT combined forms, behind the same knob but in the RN-F pool: these
+# reach a Home rather than a memory node. Separate list because the two pools are
+# separate -- an RN-I must not be offered a CopyBack, combined or otherwise.
+_COMBINED_WRITE_CMO_RNF_POOL_C = [
+  _RO.WRITE_BACK_FULL_CLEAN_SH, _RO.WRITE_BACK_FULL_CLEAN_INV,
+  _RO.WRITE_BACK_FULL_CLEAN_SH_PER_SEP,
+  _RO.WRITE_CLEAN_FULL_CLEAN_SH, _RO.WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP,
+  _RO.WRITE_UNIQUE_FULL_CLEAN_SH, _RO.WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP,
+  _RO.WRITE_UNIQUE_PTL_CLEAN_SH, _RO.WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP,
 ]
 
 # Coherent RN-F legal REQ opcode sets (con_opcode_legal_rnf). MakeReadUnique is
@@ -95,13 +114,9 @@ _WRITE_PAYLOAD_OPCODES = {
   int(_RO.WRITE_NO_SNP_FULL), int(_RO.WRITE_NO_SNP_PTL), int(_RO.WRITE_BACK_FULL),
   int(_RO.WRITE_CLEAN_FULL), int(_RO.WRITE_UNIQUE_FULL), int(_RO.WRITE_UNIQUE_PTL),
   int(_RO.WRITE_EVICT_OR_EVICT),
-} | {int(o) for o in _COMBINED_WRITE_CMO_OPCODES}
-
-_PARTIAL_WRITE_OPCODES = {
-  int(_RO.WRITE_NO_SNP_PTL), int(_RO.WRITE_UNIQUE_PTL),
-  int(_RO.WRITE_NO_SNP_PTL_CLEAN_SH), int(_RO.WRITE_NO_SNP_PTL_CLEAN_INV),
-  int(_RO.WRITE_NO_SNP_PTL_CLEAN_SH_PER_SEP),
-}
+# The whole combined Write + CMO family carries a payload, both pools' worth, so
+# this comes from the classifier and not from either list above.
+} | {int(o) for o in _RO if req_opcode_is_combined_write_cmo(int(o))}
 
 # ExpCompAck legality per IHI 0050 E Table 2-9 / D Table 2-8, enumerated from
 # the types-package classifier so the table is written once. Two sets per
@@ -546,7 +561,7 @@ class vip_chi_item(uvm_sequence_item):
       legal |= set(range(0x28, 0x3A))  # atomics
       if v in (int(_RO.WRITE_NO_SNP_ZERO), int(_RO.CLEAN_SHARED_PERSIST_SEP)):
         return self._issue_e
-      if v in {int(o) for o in _COMBINED_WRITE_CMO_OPCODES}:
+      if req_opcode_is_combined_write_cmo(v):
         return self._issue_e
       # Both sit in the Opcode[6] = 1 half of the REQ table, so neither fits
       # CHI-D's 6-bit opcode field at all.
@@ -680,7 +695,7 @@ class vip_chi_item(uvm_sequence_item):
             self.opcode.inside(vsc.rangelist(*[int(o) for o in self._write_set]))
           with vsc.else_then:
             self.opcode.inside(vsc.rangelist(
-              *[int(o) for o in self._write_set + _COMBINED_WRITE_CMO_OPCODES]))
+              *[int(o) for o in self._write_set + _COMBINED_WRITE_CMO_RNI_POOL_C]))
 
   @vsc.constraint
   def con_opcode_legal_rnf(self):
@@ -697,16 +712,33 @@ class vip_chi_item(uvm_sequence_item):
           _base = [int(o) for o in _RNF_WRITE_OPCODES]
           _zero = [int(o) for o in _WRITE_UNIQUE_ZERO_OPCODES]
           _evict = [int(o) for o in _WRITE_EVICT_OR_EVICT_OPCODES]
-          with vsc.if_then(self.s_write_unique_zero == 0):
-            with vsc.if_then(self.s_write_evict_or_evict == 0):
-              self.opcode.inside(vsc.rangelist(*_base))
+          _cmo = [int(o) for o in _COMBINED_WRITE_CMO_RNF_POOL_C]
+          # Three independent knobs, so eight leaves. Spelled out rather than
+          # generated because vsc builds the constraint from the branch structure
+          # it is given, not from a list comprehension over it.
+          with vsc.if_then(self.s_combined_cmo == 0):
+            with vsc.if_then(self.s_write_unique_zero == 0):
+              with vsc.if_then(self.s_write_evict_or_evict == 0):
+                self.opcode.inside(vsc.rangelist(*_base))
+              with vsc.else_then:
+                self.opcode.inside(vsc.rangelist(*(_base + _evict)))
             with vsc.else_then:
-              self.opcode.inside(vsc.rangelist(*(_base + _evict)))
+              with vsc.if_then(self.s_write_evict_or_evict == 0):
+                self.opcode.inside(vsc.rangelist(*(_base + _zero)))
+              with vsc.else_then:
+                self.opcode.inside(vsc.rangelist(*(_base + _zero + _evict)))
           with vsc.else_then:
-            with vsc.if_then(self.s_write_evict_or_evict == 0):
-              self.opcode.inside(vsc.rangelist(*(_base + _zero)))
+            with vsc.if_then(self.s_write_unique_zero == 0):
+              with vsc.if_then(self.s_write_evict_or_evict == 0):
+                self.opcode.inside(vsc.rangelist(*(_base + _cmo)))
+              with vsc.else_then:
+                self.opcode.inside(vsc.rangelist(*(_base + _evict + _cmo)))
             with vsc.else_then:
-              self.opcode.inside(vsc.rangelist(*(_base + _zero + _evict)))
+              with vsc.if_then(self.s_write_evict_or_evict == 0):
+                self.opcode.inside(vsc.rangelist(*(_base + _zero + _cmo)))
+              with vsc.else_then:
+                self.opcode.inside(vsc.rangelist(
+                  *(_base + _zero + _evict + _cmo)))
 
   @vsc.constraint
   def con_return_path_fields(self):
@@ -915,7 +947,7 @@ class vip_chi_item(uvm_sequence_item):
 
       if self.custom_be:
         self.be[beat] = self.custom_be[beat]
-      elif op in _PARTIAL_WRITE_OPCODES:
+      elif req_opcode_write_is_partial(op):
         self.be[beat] = self._make_random_be()
       else:
         self.be[beat] = mask(self._be_w)
@@ -940,12 +972,16 @@ class vip_chi_item(uvm_sequence_item):
       self.tu = [0] * len(self.tu)
 
     if op in _WRITE_PAYLOAD_OPCODES or req_opcode_is_atomic(op):
-      # WriteUnique/atomic data travels as NonCopyBackWrData (+CompAck variant).
-      if op in (int(_RO.WRITE_BACK_FULL), int(_RO.WRITE_CLEAN_FULL),
-                # WriteEvictOrEvict is a CopyBack too, and its CopyBackWrData is
-                # treated as an IMPLICIT CompAck -- which is why it keeps the
-                # plain opcode here even though ExpCompAck is always set.
-                int(_RO.WRITE_EVICT_OR_EVICT)):
+      # A CopyBack hands back a line the cache holds, and its CopyBackWrData is
+      # treated as an IMPLICIT CompAck -- which is why there is one encoding here
+      # and not two, even for WriteEvictOrEvict where ExpCompAck is always set.
+      # Everything else -- WriteUnique, WriteNoSnp, atomics -- is a Non-CopyBack
+      # and picks its encoding from ExpCompAck.
+      #
+      # Asked of the types package rather than listed here: the combined
+      # Write + CMO family spans both answers, so a test against the family
+      # predicate would send five CopyBacks down the Non-CopyBack arm.
+      if req_opcode_write_data_is_copyback(op):
         self.dat_opcode = int(DatOpcode.COPY_BACK_WR_DATA)
       elif int(self.exp_comp_ack):
         self.dat_opcode = int(DatOpcode.NCB_WR_DATA_COMP_ACK)

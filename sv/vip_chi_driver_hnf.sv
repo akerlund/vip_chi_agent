@@ -1246,6 +1246,9 @@ class vip_chi_driver_hnf #(
              (op == req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_C))) begin
       this.service_writeback(p, req);
     end
+    else if (this.req_opcode_is_coherent_combined_write_cmo(op)) begin
+      this.service_combined_write_cmo(p, req);
+    end
     else if (op == req_opcode_t'(VIP_CHI_REQ_EVICT_C)) begin
       this.service_evict(p, req);
     end
@@ -1740,6 +1743,176 @@ class vip_chi_driver_hnf #(
   // and clear the requester's directory ownership (the line went to the home).
   // A combined grant means the RN-F needs no separate Comp.
   // ---------------------------------------------------------------------------
+  // The NINE coherent Combined Write + CMO opcodes, enumerated rather than
+  // expressed as "combined and not WriteNoSnp".
+  //
+  // vip_chi_req_opcode_is_combined_write_cmo also answers true for the six
+  // WriteNoSnp forms, which are Requester-to-Slave and reach an SN-F, never a
+  // Home. Dispatching on the general predicate would send one of those down the
+  // coherent path if it ever arrived here -- a wrong answer to a malformed
+  // input, where a fatal from the default arm is the right one.
+  protected function bit req_opcode_is_coherent_combined_write_cmo(
+    input req_opcode_t opcode
+  );
+    case (opcode)
+      req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_SH_PER_SEP_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_CLEAN_FULL_CLEAN_SH_PER_SEP_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_C),
+      req_opcode_t'(VIP_CHI_REQ_WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP_C): return 1'b1;
+      default:                                                        return 1'b0;
+    endcase
+  endfunction
+
+  // Which CMO the combined form carries. Only CleanInvalid invalidates.
+  protected function bit combined_cmo_is_invalidate(input req_opcode_t opcode);
+    return (opcode == req_opcode_t'(VIP_CHI_REQ_WRITE_BACK_FULL_CLEAN_INV_C));
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Apply the CMO half of a combined request, to the state the write left behind.
+  //
+  // Section 2.8 orders the two: the CMO acts AFTER the write commits. What that
+  // leaves it to do differs per CMO, and for two of the three the answer is
+  // nothing -- which is a property of the write that preceded it rather than a
+  // shortcut, so it is checked rather than assumed.
+  // ---------------------------------------------------------------------------
+  protected task apply_combined_cmo(input int p, input req_flit_t req, input addr_t line);
+    req_opcode_t                 op;
+    logic [N_RNF_PORTS-1:0][2:0] entry;
+    vip_chi_resp_t               cur_k;
+
+    op    = req_opcode_t'(req.opcode);
+    entry = this.directory.exists(line) ? this.directory[line] : '0;
+
+    // CleanInvalid: every remaining holder loses the line, the requester's own
+    // copy included. This is the one of the three with work left to do, because
+    // a CopyBack write leaves the OTHER holders' clean copies untouched and
+    // CleanInvalid must take them.
+    if (this.combined_cmo_is_invalidate(op)) begin
+      for (int k = 0; k < N_RNF_PORTS; k++) begin
+        // Negative-control hook, as elsewhere: skip snoops so a stale holder
+        // can be induced.
+        if (this.cfg.hnf_suppress_snoops) begin
+          continue;
+        end
+        cur_k = vip_chi_resp_t'(entry[k]);
+        if (cur_k == VIP_CHI_RESP_STATE_I_E) begin
+          continue;
+        end
+        this.drive_snoop(k, line, snp_opcode_t'(VIP_CHI_SNP_CLEAN_INVALID_C));
+      end
+      this.directory[line] = '0;
+      this.excl_monitor.delete(line);
+      return;
+    end
+
+    // CleanShared, and its persistent form. Both require that no dirty copy of
+    // the line remains below the point of coherency, and permit any holder to
+    // keep a CLEAN copy -- so there is nothing to snoop for here, and the reason
+    // is the write that just ran:
+    //
+    //   * after a WriteUnique the line is Invalid at every port, because
+    //     service_write_unique snooped the other holders and cleared the entry;
+    //   * after a CopyBack the requester has just written the only dirty copy
+    //     back, and the single-writer invariant means no other port held one.
+    //
+    // The second is an invariant rather than an observation, so it is checked.
+    // A dirty holder here would already be a multi-owner violation the coherency
+    // checker reports; the fatal says which model broke rather than leaving a
+    // silently-skipped CMO behind it.
+    for (int k = 0; k < N_RNF_PORTS; k++) begin
+      cur_k = vip_chi_resp_t'(entry[k]);
+      if ((k != p) && vip_chi_state_holds_dirty(cur_k)) begin
+        `uvm_fatal(get_name(), $sformatf(
+          "FATAL [%s] combined CleanShared on line 0x%0h found port %0d holding it dirty (0x%0h) after the write half: CleanShared must leave no dirty copy below, and this home has no way to reach one it did not expect",
+          get_name(), line, k, cur_k))
+      end
+    end
+  endtask
+
+  // ---------------------------------------------------------------------------
+  // Serve a coherent Combined Write + CMO: one request carrying a write and a
+  // cache-maintenance operation to the same address, applied IN THAT ORDER.
+  //
+  // The write half is the base write unchanged -- that is what makes the family
+  // breadth within a mechanism rather than a new one. What is added is the CMO
+  // applied afterwards and, on the wire, a SECOND completion: CompCMO, which
+  // says the CMO half happened. Without it a completer that ignored the CMO
+  // entirely would produce a run indistinguishable from a correct one at the
+  // requester, because the write completes exactly as an ordinary write does.
+  // ---------------------------------------------------------------------------
+  protected task service_combined_write_cmo(input int p, input req_flit_t req);
+    req_opcode_t op;
+    addr_t       line;
+    node_id_t    persist_tgt_id;
+
+    op   = req_opcode_t'(req.opcode);
+    line = this.line_addr(addr_t'(req.addr));
+
+    // A SECOND contribution to this port's TXSACTIVE window, opened before the
+    // write half and closed after the last completion. service_writeback retires
+    // the request window itself once the CopyBackWrData is in, and 14.7.2 wants
+    // the sideband held until after the FINAL completing flit -- which for a
+    // combined request is the CMO's, not the write's. Two independent
+    // contributions to one count is what the count is for.
+    this.rn_window_open(p);
+
+    // Which write the combined form carries: a CopyBack the requester hands back,
+    // or a non-allocating WriteUnique. They take different service paths, and the
+    // difference matters to the CMO that follows -- see apply_combined_cmo. The
+    // same question the requester answers when it picks its DAT opcode, so it is
+    // asked in the same place: the two disagreeing is a stopped simulation, one
+    // end collecting a payload the other never sends.
+    if (vip_chi_types_pkg::vip_chi_req_opcode_write_data_is_copyback(
+          vip_chi_req_opcode_t'(op))) begin
+      this.service_writeback(p, req);
+    end
+    else begin
+      this.service_write_unique(p, req);
+    end
+
+    this.apply_combined_cmo(p, req, line);
+
+    // The CMO's own completion, to SrcID.
+    this.drive_rn_rsp(p,
+                      item_t::rsp_opcode_t'(VIP_CHI_RSP_COMP_CMO_C),
+                      txn_id_t'(req.txnid), txn_id_t'(0),
+                      VIP_CHI_RESP_STATE_I_E,
+                      node_id_t'(req.tgtid), node_id_t'(req.srcid));
+
+    // The persistent forms owe a Persist after it, and section 2.8 routes that
+    // one by ReturnNID rather than SrcID -- the same split the SN-F applies to
+    // CleanSharedPersistSep.
+    //
+    // TxnID is ZERO, which is the shape Table A-4 gives this response and not an
+    // omission: a Persist is identified by where it is ROUTED, so it is the one
+    // completion here with no TxnID to carry.
+    //
+    // DBID carries PGroupID for this response (13.10.7 puts the group in the bits
+    // Table 13-7 otherwise calls DBID, and a persist response has no data buffer
+    // for a real DBID to displace). It is zero here because on this link the
+    // group never arrives: 13.10.8 builds PGroupID out of GroupIDExt, a field
+    // only the Issue-E-exact requester driver puts on the wire, and the coherent
+    // topology stands up the base RN-F. Sourcing it needs the E-exact drivers on
+    // both ends of the coherent link; the Python port, which has no elaboration
+    // constraint to work around, reflects the real group.
+    if (vip_chi_req_opcode_combined_cmo_is_persist(op)) begin
+      persist_tgt_id = node_id_t'(req.returnnid);
+      this.drive_rn_rsp(p,
+                        item_t::rsp_opcode_t'(VIP_CHI_RSP_PERSIST_C),
+                        txn_id_t'(0), txn_id_t'(0),
+                        VIP_CHI_RESP_STATE_I_E,
+                        node_id_t'(req.tgtid), persist_tgt_id);
+    end
+
+    this.rn_window_close(p);
+  endtask
+
   protected task service_writeback(input int p, input req_flit_t req);
     addr_t line;
 

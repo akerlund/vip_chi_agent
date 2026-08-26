@@ -41,12 +41,26 @@ _COHERENT_READ_OPS = {
 # Invalidating CMOs the RN-F issues (complete RSP-only, drop the local copy).
 _COHERENT_CMO_OPS = {int(ReqOpcode.CLEAN_INVALID), int(ReqOpcode.MAKE_INVALID)}
 # Non-allocating coherent writes (WriteUnique Full/Ptl -> end Invalid).
-_COHERENT_WU_OPS = {int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL)}
+_COHERENT_WU_OPS = {int(ReqOpcode.WRITE_UNIQUE_FULL), int(ReqOpcode.WRITE_UNIQUE_PTL),
+                    # The combined forms carry the same write and take the same
+                    # requester-side path; only the completer does anything extra.
+                    int(ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH),
+                    int(ReqOpcode.WRITE_UNIQUE_FULL_CLEAN_SH_PER_SEP),
+                    int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH),
+                    int(ReqOpcode.WRITE_UNIQUE_PTL_CLEAN_SH_PER_SEP)}
 # Coherent writes that evict the line to the home (end Invalid).
 # WriteEvictOrEvict gives the line up either way: with the data when the home
 # asks for it, and as a plain Evict when it does not.
 _COHERENT_EVICT_WRITE_OPS = {int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.EVICT),
-                             int(ReqOpcode.WRITE_EVICT_OR_EVICT)}
+                             int(ReqOpcode.WRITE_EVICT_OR_EVICT),
+                             # WriteBackFull + CMO evicts exactly as WriteBackFull
+                             # does. WriteCleanFull + CMO is deliberately absent
+                             # from this set for the same reason WriteCleanFull
+                             # is: a WriteClean writes the data back and the
+                             # requester KEEPS a clean copy.
+                             int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH),
+                             int(ReqOpcode.WRITE_BACK_FULL_CLEAN_INV),
+                             int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH_PER_SEP)}
 
 # Forwarding (DCT) snoop opcodes -- the snoopee forwards its data for relay.
 _SNP_FWD_OPS = {
