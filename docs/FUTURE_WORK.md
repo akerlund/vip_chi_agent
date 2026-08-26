@@ -98,6 +98,17 @@ Extends the RN-F / HN-F subsystem with more of the CHI coherency surface.
 - **Stash** — `WriteUniqueFullStash`, `StashOnce*`, `StashOnceSep*`: writes/reads
   that also push a copy toward a target cache. Needs a stash-target model on the
   RN-F side. *Effort L.*
+- **Graceful link deactivation on the COHERENT link** — the drain-to-`STOP`
+  handshake works on the RN-I <-> SN-F link and not on the RN-F <-> HN-F one, so
+  a coherent link reaches `STOP` only through a reset. Three things sit behind
+  it, measured rather than inferred: the HN-F fatals with *"unsupported REQ
+  opcode 0x0"* because the drain sends `ReqLCrdReturn` and the home's REQ dispatch
+  has no arm for it (the SN-F has had one all along); the HN-F has no per-port
+  `link_deactivating`, so the drain could never converge; and the RN-F's
+  `snp_credit_loop` has no stand-down, so it would keep putting credits on the
+  wire straight through a tear-down. Needs a testcase that reaches `STOP` on a
+  coherent link without a reset. `README.md` scopes the feature to the
+  RN-I <-> SN-F link, which is accurate today. *Effort M.*
 - **Multi-SN address striping / SAM behind the HN-F** — the two-level hierarchy
   ships `N_SN_PORTS=1` (a single downstream SN-F). A SAM-routed multi-SN fan-out
   behind the home (the HN-I SAM is the template) would let the HN-F stripe misses
@@ -159,11 +170,12 @@ every run without needing a conversion.
   are declared, served by the HN-F and driven by `vip_chi_write_cmo_seq`, which
   now carries a write-class axis over the whole family of fifteen;
   `tc_chi_coh_e_combined_write_cmo` exercises six forms across the three coherent
-  write classes and both persistence choices. One gap remains, recorded with its
-  evidence rather than left implicit: the SystemVerilog home sends `Persist` with
-  PGroupID zero, because the group is built from `GroupIDExt` and only the
-  Issue-E-exact requester driver puts that field on the wire — the coherent
-  topology stands up the base RN-F. The Python port reflects the real group.
+  write classes and both persistence choices. One gap remains, and it is a
+  property of the topology rather than of the family: the SystemVerilog home
+  sends `Persist` with PGroupID zero, because the group is built from
+  `GroupIDExt` and the coherent env stands up the base RN-F, which does not drive
+  it. The Python port reflects the real group. Tracked under §2, *Issue-E-exact
+  drivers on the coherent topology*.
 - **Invalidating ReadOnce forms** — `ReadOnceCleanInvalid` (REQ 0x24),
   `ReadOnceMakeInvalid` (0x25). **backlog.** Both need the RN-F cache to act on a
   read that also invalidates, which the current model does not do.
@@ -200,6 +212,24 @@ not model, and an empty category is cheaper than inventing one later.
 - **Interface parity (`PARITY_EN_P`)** — parity signals across the whole CHI
   interface (flit + sideband), with a parity checker and error-injection. Out of
   scope for v1. *Effort M.*
+- **Issue-E-exact drivers on the coherent topology** — `chi_coherent_tb_env`
+  stands up the base `vip_chi_agent` at CHI-E width on the stated premise that
+  "coherent reads do not depend on the E-only REQ fields that the `_e` drivers
+  add". A Combined Write with a persistent CMO is the first thing that does, and
+  it will not be the last: only `vip_chi_driver_rni_e` puts `GroupIDExt` on the
+  wire, so the SystemVerilog home has no group to reflect and sends `Persist`
+  with PGroupID zero where the Python port sends the real one.
+
+  The home cannot read the field either, and the reason is elaboration rather
+  than logic: its `req_flit_t` comes from `vip_chi_types_d` for a CHI-D
+  instantiation and that struct has no `groupidext` member, so naming it fails to
+  elaborate instead of failing at runtime. The SN-F already solves exactly this
+  with a `req_group_id_ext` virtual hook overridden in `vip_chi_driver_snf_e`.
+  Closing it means that hook on the HN-F base plus `vip_chi_driver_hnf_e`,
+  `vip_chi_hnf_agent_e` — the agent has to be subclassed too, or the CHI-D
+  specialization of the `_e` driver still gets elaborated — and an E coherent env
+  to select them. Worth doing for the plumbing rather than for the one field:
+  every later E-only REQ field on this topology needs the same. *Effort M.*
 - **CHI-A / CHI-B** — earlier CHI issues. Out of scope by design; the VIP targets
   CHI-D and CHI-E.
 - **System Coherency Interface (`SYSCOREQ` / `SYSCOACK`)** — the system-level
