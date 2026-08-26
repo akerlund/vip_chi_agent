@@ -15,22 +15,7 @@ once carried a count that had gone stale by twenty-odd testcases.
 
 ---
 
-## 1. Documentation
-
-- [ ] **Bring the milestone-plan document into line with the tree.** Six
-      line-referenced edits, each measured, in
-      `docs/review_claude/gap_analysis_reconciliation.md`. The work it describes
-      is done; the document still asserts, in the present tense and with nothing
-      dated, a state three milestones back — and every one of the six understates
-      what exists. The opening five-gap summary is the one that matters most: all
-      five gaps and both smaller absences that follow it are closed. Fix it with a
-      dated line and a status column, **not** a rewrite — that section is the
-      record of where the VIP started, and losing it loses the reason the work was
-      done. Give the verification line a commit as well as a count: these figures
-      have gone stale twice between being measured and being applied, both times
-      because the line stated a number with no date. *Effort S.*
-
-## 2. Coherency depth
+## 1. Coherency depth
 
 - [ ] **Scoreboard completion contract for combined requests.** A combined
       Write + CMO must not retire without its CMO half. Nothing currently refuses
@@ -47,13 +32,13 @@ once carried a count that had gone stale by twenty-odd testcases.
       needs autonomous RN-F REQ origination — a `WriteBackFull` with no triggering
       sequence. Today a bounded cache that fills with dirty lines fatals with an
       explicit message. Pairs with the `WriteBackPtl` / `WriteEvictFull` item in
-      §3. *Effort M.*
+      §2. *Effort M.*
 - [ ] **Multi-SN address striping / SAM behind the HN-F.** The two-level hierarchy
       ships `N_SN_PORTS = 1`. A SAM-routed fan-out behind the home (the HN-I SAM is
       the template) would let the HN-F stripe misses across several SN-F targets by
       address. *Effort M.*
 
-## 3. Opcode families
+## 2. Opcode families
 
 Grouped by the subsystem that would bring them in, because a list of 22 REQ
 encodings is not a backlog anyone can act on while "Stash" is one decision
@@ -81,9 +66,9 @@ is not in this repository and must not be.
       `SnpPreferUnique`/`SnpPreferUniqueFwd` SNP `0x15`/`0x16`. *Effort M.*
 - [ ] **`WriteBackPtl` / `WriteEvictFull`.** REQ `0x1A` / `0x15`. Both are eviction
       paths the bounded RN-F cache would need before it could evict rather than
-      fatal, so this lands with the dirty-writeback item in §2. *Effort M.*
+      fatal, so this lands with the dirty-writeback item in §1. *Effort M.*
 
-## 4. Interface and system breadth
+## 3. Interface and system breadth
 
 - [ ] **System Coherency Interface (`SYSCOREQ` / `SYSCOACK`).** The system-level
       handshake by which a controller enables and disables an interface's
@@ -105,7 +90,7 @@ is not in this repository and must not be.
       field's meaning is by definition outside the specification. *Effort S; value
       low.*
 
-## 5. Polish
+## 4. Polish
 
 - [ ] **Agent reset-watcher level check.** The `vip_chi_agent` reset watcher
       requires a posedge of `rst_n`, so a bench with `rst_n` tied high from t0
@@ -143,7 +128,11 @@ oversights.
 
 - **Interconnect model / system env** (`svt_chi_interconnect`,
   `svt_chi_system_env`, the `ic_*` agents) — the HN-I proxy and HN-F home already
-  cover the topologies this VIP's users build.
+  cover the topologies this VIP's users build. For scale if that is ever
+  revisited: the commercial product this was measured against ships **449 (CHI-D)
+  / 604 (CHI-E) protocol checks and 460 / 615 coverage classes**, counted by
+  parsing its own class references. Those figures are recorded here because they
+  cannot be re-derived from this repository — the references are not in it.
 - **CHI-A / B / C / F** — the VIP targets CHI-D and CHI-E.
 - **`WriteDataCancel`** (DAT `0x07`) — it cancels beats of a write already in
   flight, presupposing a requester that abandons a transaction mid-burst. Every
