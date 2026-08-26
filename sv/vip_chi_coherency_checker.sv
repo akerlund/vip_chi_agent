@@ -305,6 +305,19 @@ class vip_chi_coherency_checker #(
   // keeping the dirty. The dual of n_bad_snp_resp_form, which reads the other
   // direction.
   protected int n_snp_dirty_lost;
+  // Catalogue rule D10: a state-preserving snoop answered with a state other
+  // than the one the snoopee held. n_snp_preserving_judged is its non-vacuity
+  // evidence, and it needs one badly: the only opcode in the set is E-only and
+  // is sent only under a cfg knob, so a CHI-D run and every E run without the
+  // knob leave both at zero and the rule never runs at all.
+  protected int n_bad_snp_state_preserved;
+  protected int n_snp_preserving_judged;
+  // Snoops D8 declined because Table 4-5 never generates the opcode. Kept apart
+  // from n_snp_req_uncorrelated, which counts the declines caused by AMBIGUITY:
+  // a run whose D8 judged-count is low reads very differently depending on which
+  // of the two absorbed the traffic, and merging them would hide a home that had
+  // started sending spontaneous snoops nothing was judging.
+  protected int n_snp_req_spontaneous;
 
   // cg_excl samples (SC outcome x clear-cause), set at the obs_rsp resolution.
   protected bit                excl_result_sample;  // 1 = ExclOkay (won), 0 = fail
@@ -394,6 +407,14 @@ class vip_chi_coherency_checker #(
       bins snp_unique_fwd    = {VIP_CHI_SNP_UNIQUE_FWD_C};
     }
 
+    // The general cache-state encodings, which is the right set for the
+    // with-data half of the cross below and only that half. A data-less snoop
+    // response is in Table 4-9's space instead: there UD shares UC's encoding
+    // and SD is 0b011, which the cache-state field reserves and no bin here
+    // names. Nothing lands outside a bin today -- the never-SD reduction keeps a
+    // snoopee out of SD, and vip_chi_snp_resp_dataless_state folds a data-less
+    // UD onto uc -- but a model that adds SD needs a bin for 0b011 crossed with
+    // no_data, not a second meaning for this one.
     cp_state: coverpoint this.sr_resp_state_sample {
       bins inv = {VIP_CHI_RESP_STATE_I_E};
       bins sc  = {VIP_CHI_RESP_STATE_SC_E};
@@ -881,6 +902,9 @@ class vip_chi_coherency_checker #(
     this.n_req_final_retained     = 0;
     this.n_bad_dataless_resp      = 0;
     this.n_snp_dirty_lost         = 0;
+    this.n_bad_snp_state_preserved = 0;
+    this.n_snp_preserving_judged   = 0;
+    this.n_snp_req_spontaneous     = 0;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -989,6 +1013,16 @@ class vip_chi_coherency_checker #(
     input item_t::snp_opcode_t snp_opcode,
     input vip_chi_resp_t       current
   );
+    // Load-bearing here in a way it is not for the other opcodes. Everywhere
+    // else this is only a PREDICTION, overwritten by the state the response
+    // actually reports; for a preserving snoop the adoption is skipped -- the
+    // answer is in Table 4-9's lossy encoding -- so this value is the one the
+    // shadow keeps. Reaching it through the default arm below would work today
+    // and would stop working the moment a preserving opcode belonged in one of
+    // the two named arms.
+    if (vip_chi_snp_opcode_preserves_state(vip_chi_snp_opcode_t'(snp_opcode))) begin
+      return current;
+    end
     case (snp_opcode)
       VIP_CHI_SNP_SHARED_C, VIP_CHI_SNP_CLEAN_C, VIP_CHI_SNP_CLEAN_SHARED_C,
       // Forwarding shared-family snoops downgrade the snoopee to SC, same as their
@@ -1197,6 +1231,18 @@ class vip_chi_coherency_checker #(
     vip_chi_req_opcode_t cause_op;
     node_id_t            cause_src;
     longint              cause_txn;
+
+    // A snoop Table 4-5 never generates is declined before the correlation, and
+    // not because of a timing accident. Correlation is by line and by what is
+    // outstanding, so a spontaneous snoop sent while some request happens to be
+    // open on that line correlates perfectly and still has no cause: the home
+    // chose to send it, not the request. Judging it against the request's row
+    // asks the table a question it has no cell for, and the answer comes back
+    // "not permitted" for every request there is.
+    if (!vip_chi_snp_opcode_generated_by_request(snp_op)) begin
+      this.n_snp_req_spontaneous++;
+      return;
+    end
 
     cause_count = 0;
     cause_node  = -1;
@@ -1660,7 +1706,7 @@ class vip_chi_coherency_checker #(
     end
     this.n_bad_snp_resp_form++;
     `uvm_error("VIP_CHI_COH", $sformatf(
-      "COHERENCY VIOLATION: node %0d answered snoop opcode 0x%0h on line 0x%0h with DAT opcode 0x%0h; that snoop returns no data and discards its dirty copy",
+      "COHERENCY VIOLATION: node %0d answered snoop opcode 0x%0h on line 0x%0h with DAT opcode 0x%0h; that snoop returns no data",
       node, this.pending_snp_opcode[node], line, op))
   endfunction
 
@@ -1818,6 +1864,42 @@ class vip_chi_coherency_checker #(
         node, from_state, line, op, state))
     end
 
+    // -------------------------------------------------------------------------
+    // Catalogue rule D10: a snoop the specification forbids to change the
+    // snoopee's state must be answered with the state the snoopee held.
+    //
+    // IHI 0050 E 4.5, SnpQuery: "The SnpQuery snoop must not change the state of
+    // the cache line at the Snoopee." Table 4-26 gives every initial state
+    // itself as the expected final state, with no permitted alternative.
+    //
+    // Every other rule here bounds the answer from ABOVE -- D5 by what the
+    // opcode asked for, D6 by what the snoopee held, D7 by whether the dirty
+    // survived somewhere. A snoopee that answers a SnpQuery by dropping a clean
+    // line to Invalid passes all three: it asked for nothing, so nothing was
+    // refused; it claims less than it held, so no permission was invented;
+    // nothing dirty was lost. The line is simply gone, and the home has been
+    // handed a precise answer that is precisely wrong -- which is worse than a
+    // stale filter, because the home asked in order to STOP trusting the stale
+    // one.
+    //
+    // Compared through vip_chi_snp_resp_dataless_state and not directly. The
+    // held state comes from the shadow in the cache-state encoding; the answer
+    // is on RSP in Table 4-9's, where UD and UC share a row. A UD holder
+    // answering a SnpQuery correctly reports 0b010, and a raw comparison would
+    // call that a violation on every dirty line.
+    // -------------------------------------------------------------------------
+    if (vip_chi_snp_opcode_preserves_state(op) && !with_data) begin
+      this.n_snp_preserving_judged++;
+      if (state != vip_chi_snp_resp_dataless_state(from_state)) begin
+        this.n_bad_snp_state_preserved++;
+        legal = 1'b0;
+        `uvm_error("VIP_CHI_COH", $sformatf(
+          "COHERENCY VIOLATION: node %0d held state 0x%0h on line 0x%0h and answered snoop opcode 0x%0h reporting state 0x%0h; that snoop must not change the state, so the only answer it permits is 0x%0h",
+          node, from_state, line, op, state,
+          vip_chi_snp_resp_dataless_state(from_state)))
+      end
+    end
+
     // Non-vacuity: how many responses this rule actually had to judge. A zero
     // violation count says nothing on its own -- see n_snp_no_data_on_dirty.
     this.n_snp_resp_judged++;
@@ -1841,7 +1923,16 @@ class vip_chi_coherency_checker #(
     // reported it, and steering the model with a value known to be wrong would
     // turn one reported violation into a run of unexplained ones.
     // -------------------------------------------------------------------------
-    if (legal) begin
+    //
+    // A state-preserving snoop is the exception, and it is an exception about
+    // the ENCODING rather than about the response. Adopting there would DESTROY
+    // information: Table 4-9 gives UD and UC one row, so a correct answer from a
+    // dirty holder reads as UC, and writing that back tells the shadow the line
+    // is clean -- the one thing the query was never able to say. The snoop
+    // changed nothing, so the entry already held is both current and strictly
+    // more precise than the answer. A lossy report cannot refine a model that
+    // distinguishes more states than the report can name.
+    if (legal && !vip_chi_snp_opcode_preserves_state(op)) begin
       if (state != predicted) begin
         this.n_snp_resp_state_differs++;
       end
@@ -2113,6 +2204,9 @@ class vip_chi_coherency_checker #(
   function int get_req_final_retained_count(); return this.n_req_final_retained; endfunction
   function int get_bad_dataless_resp_count();  return this.n_bad_dataless_resp;  endfunction
   function int get_snp_dirty_lost_count();     return this.n_snp_dirty_lost;     endfunction
+  function int get_snp_req_spontaneous_count();      return this.n_snp_req_spontaneous;      endfunction
+  function int get_bad_snp_state_preserved_count(); return this.n_bad_snp_state_preserved; endfunction
+  function int get_snp_preserving_judged_count();   return this.n_snp_preserving_judged;   endfunction
   function int get_snp_req_judged_count();       return this.n_snp_req_judged;       endfunction
   function int get_snp_req_mismatch_count();     return this.n_snp_req_mismatch;     endfunction
   function int get_snp_req_uncorrelated_count(); return this.n_snp_req_uncorrelated; endfunction
@@ -2163,6 +2257,11 @@ class vip_chi_coherency_checker #(
     `uvm_info("VIP_CHI_COH", $sformatf(
       "COHERENCY DO NOT GO TO SD SUMMARY: bad_snp_sd_under_no_sd=%0d",
       this.n_bad_snp_sd_under_no_sd), UVM_LOW)
+    // Its own line for the same reason as the others: a wrapped field=value pair
+    // cannot be swept for with grep across a regression.
+    `uvm_info("VIP_CHI_COH", $sformatf(
+      "COHERENCY SNP PRESERVE SUMMARY: snp_preserving_judged=%0d bad_snp_state_preserved=%0d",
+      this.n_snp_preserving_judged, this.n_bad_snp_state_preserved), UVM_LOW)
     // Its own line for the same reason as the two above: the report server wraps
     // long lines, and a wrapped field=value pair cannot be swept for with grep.
     `uvm_info("VIP_CHI_COH", $sformatf(
@@ -2179,8 +2278,9 @@ class vip_chi_coherency_checker #(
       "COHERENCY COMPACK WINDOW SUMMARY: compack_windows=%0d compack_window_snoops=%0d compack_windows_unclosed=%0d",
       this.n_eca_windows, this.n_eca_window_snoops, this.n_eca_windows_unclosed), UVM_LOW)
     `uvm_info(get_name(), $sformatf(
-      "COHERENCY SNP REQ MATCH SUMMARY: snp_req_judged=%0d snp_req_mismatch=%0d snp_req_uncorrelated=%0d",
-      this.n_snp_req_judged, this.n_snp_req_mismatch, this.n_snp_req_uncorrelated), UVM_LOW)
+      "COHERENCY SNP REQ MATCH SUMMARY: snp_req_judged=%0d snp_req_mismatch=%0d snp_req_uncorrelated=%0d snp_req_spontaneous=%0d",
+      this.n_snp_req_judged, this.n_snp_req_mismatch, this.n_snp_req_uncorrelated,
+      this.n_snp_req_spontaneous), UVM_LOW)
     // Its own line: the report server wraps a long one, and a wrapped
     // `field=value` is invisible to the sweeps that grep for these.
     `uvm_info("VIP_CHI_COH", $sformatf(

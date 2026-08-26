@@ -169,6 +169,10 @@ filesets:
       - tc/tc_chi_coh_d_snp_resp_data_negctl.sv:           {is_include_file: true}
       - tc/tc_chi_coh_e_snp_resp_data_negctl.sv:           {is_include_file: true}
       - tc/tc_chi_coh_e_read_clean_snoop.sv:                {is_include_file: true}
+      - tc/chi_coh_snp_query_base_test.sv:                  {is_include_file: true}
+      - tc/tc_chi_coh_e_snp_query.sv:                       {is_include_file: true}
+      - tc/chi_coh_snp_query_negctl_base_test.sv:           {is_include_file: true}
+      - tc/tc_chi_coh_e_snp_query_negctl.sv:                {is_include_file: true}
       - tc/chi_coh_snoop_match_negctl_base_test.sv:    {is_include_file: true}
       - tc/tc_chi_coh_d_snoop_match_negctl.sv:              {is_include_file: true}
       - tc/tc_chi_coh_e_snoop_match_negctl.sv:              {is_include_file: true}

@@ -27,7 +27,8 @@ from vip_chi_types_pkg import (
   Role, Dir, Resp, RespErr, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode,
   CACHE_LINE_BYTES, mask, snp_opcode_returns_no_data,
   FillAction, req_fill_action,
-  req_final_state,
+  req_final_state, snp_opcode_is_forwarding, snp_opcode_preserves_state,
+  snp_resp_dataless_state,
 )
 from vip_chi_driver_rni import vip_chi_driver_rni
 
@@ -62,11 +63,6 @@ _COHERENT_EVICT_WRITE_OPS = {int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.EVICT
                              int(ReqOpcode.WRITE_BACK_FULL_CLEAN_INV),
                              int(ReqOpcode.WRITE_BACK_FULL_CLEAN_SH_PER_SEP)}
 
-# Forwarding (DCT) snoop opcodes -- the snoopee forwards its data for relay.
-_SNP_FWD_OPS = {
-  int(SnpOpcode.SHARED_FWD), int(SnpOpcode.CLEAN_FWD), int(SnpOpcode.ONCE_FWD),
-  int(SnpOpcode.NOT_SHARED_DIRTY_FWD), int(SnpOpcode.UNIQUE_FWD),
-}
 # Snoops that retain the shared (SC) state (else stay Invalid).
 _SNP_TO_SHARED_OPS = {
   int(SnpOpcode.SHARED), int(SnpOpcode.CLEAN), int(SnpOpcode.CLEAN_SHARED),
@@ -128,7 +124,11 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     return _I(state) in _DIRTY_STATES
 
   def snp_opcode_is_fwd(self, op):
-    return _I(op) in _SNP_FWD_OPS
+    # The types package answers this for the whole VIP. This driver used to keep
+    # its own list of the five Forward opcodes, which agreed with the shared
+    # classifier only because both were right at the time -- and the shared one
+    # was the one that changed.
+    return snp_opcode_is_forwarding(_I(op))
 
   # ==========================================================================
   # Reset: clear coherent-local state (the base clears RN-I bookkeeping).
@@ -387,6 +387,26 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
   # ==========================================================================
   def snoop_next_state(self, snp_opcode, current, do_not_go_to_sd=0):
     op = _I(snp_opcode)
+    # Asked first, and asked at all, because "no change" is this function's
+    # fall-through: SnpOnce lands there too, and it lands there because no rule
+    # applies to it rather than because one forbids the change. For SnpQuery a
+    # rule does -- 4.5, "must not change the state of the cache line at the
+    # Snoopee" -- and a requirement satisfied by reaching the end of an if-chain
+    # is one nothing would notice the loss of.
+    #
+    # It also has to precede the DoNotGoToSD guard below. An SD holder under a
+    # SnpQuery carrying that bit would otherwise be moved to SC by the guard,
+    # which is the one transition this opcode has no permission to make.
+    if snp_opcode_preserves_state(op):
+      # The control invalidates under a snoop that must not change the state.
+      # Corrupting it here rather than by leaving the opcode out of the set
+      # above, because that set is not what holds this line still: a snoop in
+      # neither of the two named sets already reaches the fall-through and keeps
+      # its state, so an opcode removed from the preserving set would go on
+      # preserving and the control would corrupt nothing. See the knob.
+      if self.cfg.rnf_snp_query_mutates_negctl:
+        return int(Resp.I)
+      return _I(current)
     if op in _SNP_TO_SHARED_OPS:
       nxt = int(Resp.I) if _I(current) == int(Resp.I) else int(Resp.SC)
     elif op in _SNP_TO_INVALID_OPS:
@@ -444,7 +464,11 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     if not no_data and was_dirty and fwd_data:
       await self.drive_snp_resp_data(snp, nxt, fwd_data)
     else:
-      await self.drive_snp_resp(snp, nxt)
+      # Table 4-9's encoding, not the cache-state one. The two agree on I, SC and
+      # UC and part company on the dirty states, which is where the SnpResp for a
+      # snoop that leaves a dirty holder dirty now lands -- see
+      # snp_resp_dataless_state.
+      await self.drive_snp_resp(snp, snp_resp_dataless_state(nxt))
 
   # ==========================================================================
   # Forwarding (DCT) snoop: ALWAYS forwards data (the requester is reading). The
@@ -466,7 +490,7 @@ class vip_chi_driver_rnf(vip_chi_driver_rni):
     if fwd_data:
       await self.drive_snp_resp_data(snp, nxt, fwd_data, is_fwd=True)
     else:
-      await self.drive_snp_resp(snp, nxt)
+      await self.drive_snp_resp(snp, snp_resp_dataless_state(nxt))
 
   # ==========================================================================
   # Drive one SnpResp on the RSP channel (clean, no data). The snoop's TxnID is

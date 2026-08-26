@@ -868,6 +868,32 @@ class vip_chi_cfg_agent extends uvm_object;
   // Default 0.
   bit rnf_snp_resp_sd_negctl = 1'b0;
 
+  // NOT a negative control. The home asks each requester what it holds, with a
+  // SnpQuery, instead of reading the answer out of its own directory -- IHI 0050
+  // E 4.5 permits the snoop with no request behind it, and 6.3.1 names this use:
+  // "In the absence of precise caching information from the snoop filter, the
+  // Home can use the SnpQuery snoop to determine the presence and state of the
+  // cache line at the Requester."
+  //
+  // Off by default because it puts an extra snoop on the wire ahead of every
+  // request from a port the directory believes holds the line, which changes the
+  // flit counts a test may be asserting on. E-only: SnpQuery has no encoding
+  // before Issue E, and the home fatals rather than downgrading.
+  bit hnf_snp_query_enable = 1'b0;
+
+  // Negative control for catalogue rule D10. The snoopee INVALIDATES the line
+  // under a snoop that must not change its state, and answers consistently with
+  // what it did -- so the response is self-consistent and only the rule that
+  // knows the opcode can see anything wrong.
+  //
+  // Nothing else fires on it, which is the point. D5 bounds the answer by what
+  // the opcode asked for and SnpQuery asks for nothing; D6 bounds it by what the
+  // snoopee held and I claims less, not more; D7 wants the dirty copy accounted
+  // for and excludes the snoops that return no data, which is the set SnpQuery
+  // is in. A snoopee can therefore lose a line to a query with every other rule
+  // agreeing. Default 0.
+  bit rnf_snp_query_mutates_negctl = 1'b0;
+
   // Negative control for the snoop response-form rule. A dirty snoopee answers
   // a snoop that returns no data -- SnpMakeInvalid -- on DAT, carrying the copy
   // Chapter 4 requires it to discard.
@@ -1422,6 +1448,7 @@ class vip_chi_cfg_agent extends uvm_object;
         this.snf_tag_match_unrequested_negctl ||
         this.snf_tag_match_invert_result_negctl ||
         this.rnf_snp_resp_sd_negctl ||
+        this.rnf_snp_query_mutates_negctl ||
         this.rnf_snp_resp_data_negctl ||
         this.rnf_txsactive_snoop_drop_negctl ||
         this.snf_persist_before_comp_negctl ||

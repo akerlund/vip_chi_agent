@@ -5,7 +5,7 @@ Checker D, coherent coverage, HN-I proxy, scoreboard, perf counters, exclusives,
 CMO, DCT forwarding, SN-F-behind-HN-F, MakeUnique, bounded-cache eviction) is
 **complete and tested** — every charter item has a named testcase in
 [../testbench/TEST_CASES.md](../testbench/TEST_CASES.md). The regression is
-**230 SV + 231 PY** — the same list on both flows apart from three documented
+**232 SV + 233 PY** — the same list on both flows apart from three documented
 exceptions: `tc_chi_sva_smoke` and `tc_chi_reject_scope`, both Python-only, and
 `tc_chi_e_hni_port1`, SV-only because the SV CHI-E proxy is 2x2 and the Python
 one 1x1, so its port-1 links do not exist to drive (see
@@ -184,8 +184,20 @@ every run without needing a conversion.
   return SD, so the pair lands together.
 - **PreferUnique (CHI-E)** — `ReadPreferUnique` (REQ 0x4C),
   `SnpPreferUnique`/`SnpPreferUniqueFwd` (SNP 0x15/0x16). **backlog.**
-- **SnpQuery (CHI-E)** — SNP 0x10. **backlog**; a query snoop changes no state,
-  so it is the smallest coherent addition on this list.
+- **SnpQuery (CHI-E)** — SNP 0x10. **Implemented.** The home originates it under
+  `cfg.hnf_snp_query_enable`, with no request behind it (§4.5), and reconciles
+  the answer against its own directory; catalogue rule D10 judges §4.5's "must
+  not change the state of the cache line at the Snoopee" from the wire, with
+  `cfg.rnf_snp_query_mutates_negctl` as its control. Kept in this list because
+  the entry records what the "smallest coherent addition" turned out to cost.
+  Three predicates elsewhere answered wrongly the moment the opcode existed:
+  `snp_opcode_is_forwarding` read bit[4], which 0x10 sets and which stops
+  separating the Forward snoops in Issue E; the request-to-snoop rule (D8)
+  correlated a spontaneous snoop to whatever request was open on the line and
+  judged it against a Table 4-5 row that does not exist; and a data-less
+  `SnpResp` had never had to carry a dirty state, so nothing encoded Table 4-9 --
+  where UD and UC share one encoding and SD takes the one the general cache-state
+  field reserves.
 - **Memory Tagging `TagMatch`** — RSP 0x0A. **Implemented.** The completer
   performs the comparison Table 13-34 requires and answers in `Resp[0]` per
   Table 13-25; `CHI_SB_TAG_MATCH_OWED` judges that the response was owed and

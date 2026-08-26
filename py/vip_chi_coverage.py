@@ -301,6 +301,7 @@ class cg_snp_opcode:
       snp_unique=vsc.bin(int(SnpOpcode.UNIQUE)),
       snp_clean_invalid=vsc.bin(int(SnpOpcode.CLEAN_INVALID)),
       snp_make_invalid=vsc.bin(int(SnpOpcode.MAKE_INVALID)),
+      snp_query=vsc.bin(int(SnpOpcode.QUERY)),
       snp_shared_fwd=vsc.bin(int(SnpOpcode.SHARED_FWD)),
       snp_clean_fwd=vsc.bin(int(SnpOpcode.CLEAN_FWD)),
       snp_once_fwd=vsc.bin(int(SnpOpcode.ONCE_FWD)),

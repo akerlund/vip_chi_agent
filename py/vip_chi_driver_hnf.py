@@ -38,6 +38,7 @@ from vip_chi_types_pkg import (
   snp_do_not_go_to_sd_required, snp_opcode_is_forwarding,
   snp_ret_to_src_must_be_zero, req_opcode_combined_cmo_is_persist,
   state_holds_dirty, req_opcode_write_data_is_copyback, pgroup_id_from_req,
+  Issue, snp_resp_dataless_state,
 )
 from vip_chi_lcrd_mgr import VipChiLcrdMgr
 from vip_chi_cfg_agent import VipChiCfgAgent
@@ -172,6 +173,11 @@ class vip_chi_driver_hnf(uvm_component):
     self.directory = {}       # line -> [per-port state int]
     self.excl_monitor = {}    # line -> [per-port bool]
     self.snp_txn_ctr = 0
+    # SnpQuery bookkeeping. The sent count is the non-vacuity evidence: the
+    # reconciliation below can only disagree on a line it actually asked about,
+    # so a zero mismatch count means nothing without it.
+    self.n_snp_query_sent = 0
+    self.n_snp_query_dir_mismatch = 0
     # One-shot latches for the three SNP field negative controls, per RN port and
     # for the same reason as the SV driver's: a control that fires on every snoop
     # makes the count a test asserts on depend on how many snoops the traffic
@@ -916,8 +922,69 @@ class vip_chi_driver_hnf(uvm_component):
       else:
         await bus.rising()
 
+  # ==========================================================================
+  # Ask every port the directory believes holds the line what it actually holds,
+  # before deciding anything about the request.
+  #
+  # IHI 0050 E 4.5: "Home can send a SnpQuery snoop without any corresponding
+  # request from a Requester", and "The Snoop response must include the precise
+  # state of the cache line at the targeted Snoopee". 6.3.1 names the use this
+  # models: "In the absence of precise caching information from the snoop
+  # filter, the Home can use the SnpQuery snoop to determine the presence and
+  # state of the cache line at the Requester."
+  #
+  # So the home is not being told anything it could not already look up -- it is
+  # deliberately asking instead of looking up, and comparing the two. The filter
+  # is the thing under test; the answer is the reference. A directory that has
+  # drifted from the caches it tracks is otherwise invisible until some later
+  # request is serviced wrongly, and by then the home's decision looks like the
+  # defect.
+  #
+  # Sent BEFORE the request is dispatched, which is the only moment with no
+  # window of its own to collide with: the previous request's CompAck is already
+  # collected (await_comp_ack blocks the response engine), and this one has not
+  # been answered, so the CompAck window 2.8.3 rule 2 reserves is empty in both
+  # directions.
+  #
+  # The comparison runs through snp_resp_dataless_state because the answer is
+  # LOSSY: Table 4-9 gives UC and UD one encoding, so a directory holding either
+  # of them expects the same report and this cannot tell them apart. Comparing
+  # the raw values would flag every dirty holder.
+  # ==========================================================================
+  async def query_line_holders(self, line):
+    if _I(self.rn_buses[0].cfg.issue) != int(Issue.E):
+      raise AssertionError(
+        f"[{self.get_name()}] hnf_snp_query_enable is set on a CHI-D link: "
+        f"SnpQuery has no encoding before Issue E (Table 13-17)")
+
+    entry = self._dir_entry(line)
+    for k in range(len(self.rn_buses)):
+      # A port the directory has no record of is not asked. There would be
+      # nothing to reconcile the answer against: a snoop sent there would be
+      # judged against an entry that was never a claim.
+      if entry[k] == int(Resp.I):
+        continue
+
+      expected = snp_resp_dataless_state(entry[k])
+      reported = await self.drive_snoop(k, line, int(SnpOpcode.QUERY))
+      self.n_snp_query_sent += 1
+
+      if reported is None:
+        # 4.5 forbids it, and the checker's response-form rule is what judges
+        # it. Nothing to reconcile against, so move on rather than guess.
+        continue
+
+      if reported != expected:
+        self.n_snp_query_dir_mismatch += 1
+        self.logger.error(
+          f"[{self.get_name()}] port {k}: SnpQuery on line 0x{line:x} reports "
+          f"state 0x{reported:x}; the directory holds 0x{entry[k]:x}, which "
+          f"Table 4-9 says would be reported as 0x{expected:x}")
+
   async def service_req(self, p, req):
     op = _I(req["opcode"])
+    if self.cfg.hnf_snp_query_enable:
+      await self.query_line_holders(self.line_addr(req["addr"]))
     if self.req_opcode_is_coherent_read(op):
       await self.service_coherent_read(p, req)
     elif op in (int(ReqOpcode.WRITE_BACK_FULL), int(ReqOpcode.WRITE_CLEAN_FULL)):
@@ -1657,12 +1724,18 @@ class vip_chi_driver_hnf(uvm_component):
   async def drive_snoop(self, k, line, op):
     snp_txn = await self.send_snoop_flit(k, line, op)
     try:
-      await self.collect_snp_response(k, snp_txn, line)
+      return await self.collect_snp_response(k, snp_txn, line)
     finally:
       self.rn_window_close(k)
 
   # Collect the response to the originated snoop on port k. Clean -> no-data
   # SnpResp on RSP; dirty -> SnpRespData on DAT (merged to memory as authority).
+  #
+  # Returns the state the snoopee reported, or None when the answer came with
+  # data. Only the SnpQuery caller reads it; every other caller derives the
+  # snoopee's new state from the opcode, which is what it is entitled to do for
+  # a snoop that COMMANDS a state. A query commands none, so the answer is the
+  # only place its outcome exists.
   async def collect_snp_response(self, k, snp_txn, line):
     rn = self.rn_buses[k]
     while True:
@@ -1672,7 +1745,7 @@ class vip_chi_driver_hnf(uvm_component):
         if (dop in (int(DatOpcode.SNP_RESP_DATA), int(DatOpcode.SNP_RESP_DATA_PTL)) and
             _I(dflit["txnid"]) == snp_txn):
           await self.collect_snp_resp_data(k, snp_txn, line)
-          break
+          return None
         raise AssertionError(
           f"[{self.get_name()}] port {k}: unexpected DAT (opcode 0x{dop:x} "
           f"TxnID 0x{_I(dflit['txnid']):x}) while awaiting SnpResp for snoop "
@@ -1683,9 +1756,10 @@ class vip_chi_driver_hnf(uvm_component):
         self.rn_rsp_lcrdv_pending[k] += 1
         if (_I(rflit["opcode"]) == int(RspOpcode.SNP_RESP) and
             _I(rflit["txnid"]) == snp_txn):
+          reported = _I(rflit["resp"])
           await rn.rising()
           self.drive_rn_idle_sideband(k)
-          break
+          return reported
 
         # A CompAck for an earlier completion is not a concurrency defect: it is
         # the acknowledgement this home is about to wait for, arriving while a

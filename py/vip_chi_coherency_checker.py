@@ -44,6 +44,8 @@ from vip_chi_types_pkg import (
   Resp, RespErr, ReqOpcode, RspOpcode, DatOpcode, SnpOpcode, CACHE_LINE_BYTES,
   snp_opcode_returns_no_data, snp_opcode_invalidates,
   snp_opcode_forbids_retaining_unique, snp_opcode_is_forwarding,
+  snp_opcode_preserves_state, snp_resp_dataless_state,
+  snp_opcode_generated_by_request,
   req_final_state, state_holds_dirty,
   snoop_permitted_for_req, req_generates_snoop,
   req_opcode_write_data_is_copyback,
@@ -327,6 +329,19 @@ class vip_chi_coherency_checker(uvm_component):
     # keeping the dirty. The dual of n_bad_snp_resp_form, which reads the other
     # direction.
     self.n_snp_dirty_lost = 0
+    # Catalogue rule D10: a state-preserving snoop answered with a state other
+    # than the one the snoopee held. n_snp_preserving_judged is its non-vacuity
+    # evidence, and it needs one badly: the only opcode in the set is E-only and
+    # is sent only under a cfg knob, so a CHI-D run and every E run without the
+    # knob leave both at zero and the rule never runs at all.
+    self.n_bad_snp_state_preserved = 0
+    self.n_snp_preserving_judged = 0
+    # Snoops D8 declined because Table 4-5 never generates the opcode. Kept apart
+    # from n_snp_req_uncorrelated, which counts the declines caused by AMBIGUITY:
+    # a run whose D8 judged-count is low reads very differently depending on
+    # which of the two absorbed the traffic, and merging them would hide a home
+    # that had started sending spontaneous snoops nothing was judging.
+    self.n_snp_req_spontaneous = 0
   def _init_coverage(self):
     """The covergroup hit sets: this port's whole coverage model.
 
@@ -338,6 +353,14 @@ class vip_chi_coherency_checker(uvm_component):
     every reset testcase -- which is what check_counter_parity.py reports.
     """
     # cg_snp_resp_legality hit set: (snp_opcode, resp_state, with_data).
+    #
+    # The state is whatever the response carried, and which ENCODING that is
+    # depends on the third element. With data it is the cache-state field of
+    # Table 4-11; without data it is Table 4-9's, where UD shares UC's encoding
+    # and SD is 0b011 -- a value the cache-state field reserves. The two spaces
+    # coincide on I, SC and UC, which is every data-less response this VIP can
+    # produce, so the set is unambiguous today. A model that adds SD is the one
+    # that has to say which space a tuple is in.
     self._srl_hit = set()
     # cg_req_snp_pairing hit set: (cause_req_opcode, snp_opcode). The SV port
     # keeps the same set beside its covergroup, so the count of distinct pairs
@@ -413,6 +436,15 @@ class vip_chi_coherency_checker(uvm_component):
 
   def snoop_result(self, snp_opcode, current):
     op = _I(snp_opcode)
+    if snp_opcode_preserves_state(op):
+      # Load-bearing here in a way it is not for the other opcodes. Everywhere
+      # else this is only a PREDICTION, overwritten by the state the response
+      # actually reports; for a preserving snoop the adoption is skipped -- the
+      # answer is in Table 4-9's lossy encoding -- so this value is the one the
+      # shadow keeps. Reaching it through the fall-through below would work today
+      # and would stop working the moment a preserving opcode belonged in one of
+      # the two named sets.
+      return _I(current)
     if op in _SNP_TO_SHARED:
       return int(Resp.I) if _I(current) == int(Resp.I) else int(Resp.SC)
     if op in _SNP_TO_INVALID:
@@ -632,7 +664,19 @@ class vip_chi_coherency_checker(uvm_component):
     outstanding to the same line is ordinary contention, not an error, but it
     leaves the cause ambiguous -- the rule declines to judge rather than guess,
     and the decline is counted.
+
+    A snoop Table 4-5 never generates is declined for a different reason, and it
+    is not a timing one. Correlation is by line and by what is outstanding, so a
+    spontaneous snoop sent while some request happens to be open on that line
+    correlates perfectly and still has no cause: the home chose to send it, not
+    the request. Judging it against the request's row asks the table a question
+    it has no cell for, and the answer comes back "not permitted" for every
+    request there is.
     """
+    if not snp_opcode_generated_by_request(_I(snp_op)):
+      self.n_snp_req_spontaneous += 1
+      return
+
     causes = [(k, self.req_op_by_line[k][line])
               for k in range(N_NODES)
               if k != node and line in self.req_op_by_line[k]]
@@ -962,6 +1006,40 @@ class vip_chi_coherency_checker(uvm_component):
         f"0x{state:x} and NO data; the dirty copy is neither retained nor "
         f"passed on")
 
+    # ------------------------------------------------------------------------
+    # Catalogue rule D10: a snoop the specification forbids to change the
+    # snoopee's state must be answered with the state the snoopee held.
+    #
+    # IHI 0050 E 4.5, SnpQuery: "The SnpQuery snoop must not change the state of
+    # the cache line at the Snoopee." Table 4-26 gives every initial state itself
+    # as the expected final state, with no permitted alternative.
+    #
+    # Every other rule here bounds the answer from ABOVE -- D5 by what the opcode
+    # asked for, D6 by what the snoopee held, D7 by whether the dirty survived
+    # somewhere. A snoopee that answers a SnpQuery by dropping a clean line to
+    # Invalid passes all three: it asked for nothing, so nothing was refused; it
+    # claims less than it held, so no permission was invented; nothing dirty was
+    # lost. The line is simply gone, and the home has been handed a precise
+    # answer that is precisely wrong -- which is worse than a stale filter,
+    # because the home asked in order to STOP trusting the stale one.
+    #
+    # Compared through snp_resp_dataless_state and not directly. The held state
+    # comes from the shadow in the cache-state encoding; the answer is on RSP in
+    # Table 4-9's, where UD and UC share a row. A UD holder answering a SnpQuery
+    # correctly reports 0b010, and a raw comparison would call that a violation
+    # on every dirty line.
+    # ------------------------------------------------------------------------
+    if snp_opcode_preserves_state(op) and not with_data:
+      self.n_snp_preserving_judged += 1
+      if state != snp_resp_dataless_state(from_state):
+        self.n_bad_snp_state_preserved += 1
+        legal = False
+        self.logger.error(
+          f"COHERENCY VIOLATION: node {node} held state 0x{from_state:x} on "
+          f"line 0x{line:x} and answered snoop opcode 0x{op:x} reporting state "
+          f"0x{state:x}; that snoop must not change the state, so the only "
+          f"answer it permits is 0x{snp_resp_dataless_state(from_state):x}")
+
     self.n_snp_resp_judged += 1
 
     # ------------------------------------------------------------------------
@@ -983,7 +1061,16 @@ class vip_chi_coherency_checker(uvm_component):
     # reported it, and steering the model with a value known to be wrong would
     # turn one reported violation into a run of unexplained ones.
     # ------------------------------------------------------------------------
-    if legal:
+    #
+    # A state-preserving snoop is the exception, and it is an exception about the
+    # ENCODING rather than about the response. Adopting there would DESTROY
+    # information: Table 4-9 gives UD and UC one row, so a correct answer from a
+    # dirty holder reads as UC, and writing that back tells the shadow the line
+    # is clean -- the one thing the query was never able to say. The snoop
+    # changed nothing, so the entry already held is both current and strictly
+    # more precise than the answer. A lossy report cannot refine a model that
+    # distinguishes more states than the report can name.
+    if legal and not snp_opcode_preserves_state(op):
       if state != predicted:
         self.n_snp_resp_state_differs += 1
       self.set_node_state(line, node, state)
@@ -1002,7 +1089,7 @@ class vip_chi_coherency_checker(uvm_component):
     self.logger.error(
       f"COHERENCY VIOLATION: node {node} answered snoop opcode "
       f"0x{_I(self.pending_snp_opcode[node]):x} on line 0x{line:x} with DAT "
-      f"opcode 0x{op:x}; that snoop returns no data and discards its dirty copy")
+      f"opcode 0x{op:x}; that snoop returns no data")
 
   # Catalogue rule D9 -- SNOOP_OUTSIDE_COMPACK_WINDOW.
   #
@@ -1260,11 +1347,20 @@ class vip_chi_coherency_checker(uvm_component):
   def get_snp_dirty_lost_count(self):
     return self.n_snp_dirty_lost
 
+  def get_bad_snp_state_preserved_count(self):
+    return self.n_bad_snp_state_preserved
+
+  def get_snp_preserving_judged_count(self):
+    return self.n_snp_preserving_judged
+
   def get_snp_req_judged_count(self):
     return self.n_snp_req_judged
 
   def get_snp_req_mismatch_count(self):
     return self.n_snp_req_mismatch
+
+  def get_snp_req_spontaneous_count(self):
+    return self.n_snp_req_spontaneous
 
   def get_snp_req_uncorrelated_count(self):
     return self.n_snp_req_uncorrelated
@@ -1344,6 +1440,7 @@ class vip_chi_coherency_checker(uvm_component):
             self.n_bad_snp_resp_form + self.n_bad_snp_resp_state +
             self.n_bad_snp_sd_under_no_sd +
             self.n_bad_dataless_resp + self.n_snp_dirty_lost +
+            self.n_bad_snp_state_preserved +
             self.n_snp_req_mismatch + self.n_snp_fwd_mismatch +
             self.n_eca_window_snoops + self.n_line_hazard)
 
@@ -1372,6 +1469,12 @@ class vip_chi_coherency_checker(uvm_component):
     self.logger.info(
       f"COHERENCY DO NOT GO TO SD SUMMARY: "
       f"bad_snp_sd_under_no_sd={self.n_bad_snp_sd_under_no_sd}")
+    # Its own line for the same reason as the others: a wrapped field=value pair
+    # cannot be swept for with grep across a regression.
+    self.logger.info(
+      f"COHERENCY SNP PRESERVE SUMMARY: "
+      f"snp_preserving_judged={self.n_snp_preserving_judged} "
+      f"bad_snp_state_preserved={self.n_bad_snp_state_preserved}")
     # Its own line for the same reason as the two above: the report server wraps
     # long lines, and a wrapped field=value pair cannot be swept for with grep.
     self.logger.info(
@@ -1397,7 +1500,8 @@ class vip_chi_coherency_checker(uvm_component):
       f"COHERENCY SNP REQ MATCH SUMMARY: "
       f"snp_req_judged={self.n_snp_req_judged} "
       f"snp_req_mismatch={self.n_snp_req_mismatch} "
-      f"snp_req_uncorrelated={self.n_snp_req_uncorrelated}")
+      f"snp_req_uncorrelated={self.n_snp_req_uncorrelated} "
+      f"snp_req_spontaneous={self.n_snp_req_spontaneous}")
     # Its own line: the report server wraps a long one, and a wrapped
     # `field=value` is invisible to the sweeps that grep for these.
     self.logger.info(

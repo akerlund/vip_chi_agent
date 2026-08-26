@@ -114,6 +114,12 @@ class vip_chi_driver_hnf #(
   // decide which other sharers to snoop, and updated as reads/snoops resolve.
   protected logic [N_RNF_PORTS-1:0][2:0] directory [addr_t];
 
+  // SnpQuery bookkeeping. The sent count is the non-vacuity evidence: the
+  // reconciliation can only disagree on a line it actually asked about, so a
+  // zero mismatch count means nothing without it.
+  int unsigned n_snp_query_sent          = 0;
+  int unsigned n_snp_query_dir_mismatch  = 0;
+
   // Exclusive (LL/SC) monitor, one bit per RN-F port, keyed line-aligned exactly
   // like `directory`. A set bit means that port holds a valid exclusive
   // reservation on the line taken by an exclusive load (ReadShared/ReadClean with
@@ -1234,10 +1240,87 @@ class vip_chi_driver_hnf #(
   // ---------------------------------------------------------------------------
   // Terminate one captured request: dispatch by opcode class.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Ask every port the directory believes holds the line what it actually holds,
+  // before deciding anything about the request.
+  //
+  // IHI 0050 E 4.5: "Home can send a SnpQuery snoop without any corresponding
+  // request from a Requester", and "The Snoop response must include the precise
+  // state of the cache line at the targeted Snoopee". 6.3.1 names the use this
+  // models: "In the absence of precise caching information from the snoop
+  // filter, the Home can use the SnpQuery snoop to determine the presence and
+  // state of the cache line at the Requester."
+  //
+  // So the home is not being told anything it could not already look up -- it is
+  // deliberately asking instead of looking up, and comparing the two. The filter
+  // is the thing under test; the answer is the reference. A directory that has
+  // drifted from the caches it tracks is otherwise invisible until some later
+  // request is serviced wrongly, and by then the home's decision looks like the
+  // defect.
+  //
+  // Sent BEFORE the request is dispatched, which is the only moment with no
+  // window of its own to collide with: the previous request's CompAck is already
+  // collected (await_comp_ack blocks the response engine), and this one has not
+  // been answered, so the CompAck window 2.8.3 rule 2 reserves is empty in both
+  // directions.
+  //
+  // The comparison runs through vip_chi_snp_resp_dataless_state because the
+  // answer is LOSSY: Table 4-9 gives UC and UD one encoding, so a directory
+  // holding either of them expects the same report and this cannot tell them
+  // apart. Comparing the raw values would flag every dirty holder.
+  // ---------------------------------------------------------------------------
+  protected task query_line_holders(input addr_t line);
+    logic [N_RNF_PORTS-1:0][2:0] entry;
+    vip_chi_resp_t               held;
+    vip_chi_resp_t               expected;
+    vip_chi_resp_t               reported;
+    bit                          with_data;
+
+    if (CFG_P.ISSUE_P != VIP_CHI_ISSUE_E_E) begin
+      `uvm_fatal(get_name(), $sformatf(
+        "FATAL [%s] hnf_snp_query_enable is set on a CHI-D link: SnpQuery has no encoding before Issue E (Table 13-17)",
+        get_name()))
+    end
+
+    entry = this.directory.exists(line) ? this.directory[line] : '0;
+
+    for (int k = 0; k < N_RNF_PORTS; k++) begin
+      held = vip_chi_resp_t'(entry[k]);
+      // A port the directory has no record of is not asked. There would be
+      // nothing to reconcile the answer against: a snoop sent there would be
+      // judged against an entry that was never a claim.
+      if (held == VIP_CHI_RESP_STATE_I_E) begin
+        continue;
+      end
+
+      expected = vip_chi_snp_resp_dataless_state(held);
+      this.drive_snoop_get_state(k, line, snp_opcode_t'(VIP_CHI_SNP_QUERY_C),
+                                 reported, with_data);
+      this.n_snp_query_sent += 1;
+
+      if (with_data) begin
+        // 4.5 forbids it, and the checker's response-form rule is what judges
+        // it. Nothing to reconcile against, so move on rather than guess.
+        continue;
+      end
+
+      if (reported != expected) begin
+        this.n_snp_query_dir_mismatch += 1;
+        `uvm_error(get_name(), $sformatf(
+          "[%s] port %0d: SnpQuery on line 0x%0h reports state 0x%0h; the directory holds 0x%0h, which Table 4-9 says would be reported as 0x%0h",
+          get_name(), k, line, reported, held, expected))
+      end
+    end
+  endtask
+
   protected task service_req(input int p, input req_flit_t req);
     req_opcode_t op;
 
     op = req_opcode_t'(req.opcode);
+
+    if (this.cfg.hnf_snp_query_enable) begin
+      this.query_line_holders(this.line_addr(addr_t'(req.addr)));
+    end
 
     if (this.req_opcode_is_coherent_read(op)) begin
       this.service_coherent_read(p, req);
@@ -2554,9 +2637,26 @@ class vip_chi_driver_hnf #(
   // uvm_fatal, which ends the simulation rather than returning to a caller that
   // would need the window retired.
   protected task drive_snoop(input int k, input addr_t line, input snp_opcode_t op);
+    vip_chi_resp_t reported;
+    bit            with_data;
+    this.drive_snoop_get_state(k, line, op, reported, with_data);
+  endtask
+
+  // The same snoop, with the snoopee's answer handed back. Only the SnpQuery
+  // caller reads it; every other caller derives the snoopee's new state from the
+  // opcode, which is what it is entitled to do for a snoop that COMMANDS a
+  // state. A query commands none, so the answer is the only place its outcome
+  // exists.
+  protected task drive_snoop_get_state(
+    input  int             k,
+    input  addr_t          line,
+    input  snp_opcode_t    op,
+    output vip_chi_resp_t  reported,
+    output bit             with_data
+  );
     txn_id_t snp_txn;
     this.send_snoop_flit(k, line, op, node_id_t'(0), txn_id_t'(0), snp_txn);
-    this.collect_snp_response(k, snp_txn, line);
+    this.collect_snp_response_get_state(k, snp_txn, line, reported, with_data);
     this.rn_window_close(k);
   endtask
 
@@ -2568,9 +2668,24 @@ class vip_chi_driver_hnf #(
   // and the requester's CompData (sourced from memory) carries the dirty data.
   // ---------------------------------------------------------------------------
   protected task collect_snp_response(input int k, input txn_id_t snp_txn, input addr_t line);
+    vip_chi_resp_t reported;
+    bit            with_data;
+    this.collect_snp_response_get_state(k, snp_txn, line, reported, with_data);
+  endtask
+
+  protected task collect_snp_response_get_state(
+    input  int            k,
+    input  txn_id_t       snp_txn,
+    input  addr_t         line,
+    output vip_chi_resp_t reported,
+    output bit            with_data
+  );
     rsp_flit_t           rflit;
     dat_flit_t           dflit;
     vip_chi_dat_opcode_t dop;
+
+    reported  = VIP_CHI_RESP_STATE_I_E;
+    with_data = 1'b0;
 
     forever begin
       // Our dirty response is SnpRespData / SnpRespDataPtl on DAT, carrying the
@@ -2587,6 +2702,7 @@ class vip_chi_driver_hnf #(
              (dop == vip_chi_dat_opcode_t'(VIP_CHI_DAT_SNP_RESP_DATA_PTL_C))) &&
             (txn_id_t'(dflit.txnid) == snp_txn)) begin
           this.collect_snp_resp_data(k, snp_txn, line);
+          with_data = 1'b1;
           break;
         end
 
@@ -2608,6 +2724,7 @@ class vip_chi_driver_hnf #(
 
         if ((vip_chi_rsp_opcode_t'(rflit.opcode) == vip_chi_rsp_opcode_t'(VIP_CHI_RSP_SNP_RESP_C)) &&
             (txn_id_t'(rflit.txnid) == snp_txn)) begin
+          reported = vip_chi_resp_t'(rflit.resp);
           @(this.vif_rn[k].g_drv.hnf_cb);
           this.drive_rn_idle_sideband(k);
           break;

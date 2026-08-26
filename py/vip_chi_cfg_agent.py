@@ -677,6 +677,32 @@ class VipChiCfgAgent:
     # because what the checker judges is the response.
     self.rnf_snp_resp_sd_negctl = False
 
+    # NOT a negative control. The home asks each requester what it holds, with a
+    # SnpQuery, instead of reading the answer out of its own directory -- IHI
+    # 0050 E 4.5 permits the snoop with no request behind it, and 6.3.1 names this
+    # use: "In the absence of precise caching information from the snoop filter,
+    # the Home can use the SnpQuery snoop to determine the presence and state of
+    # the cache line at the Requester."
+    #
+    # Off by default because it puts an extra snoop on the wire ahead of every
+    # request from a port the directory believes holds the line, which changes
+    # the flit counts a test may be asserting on. E-only: SnpQuery has no
+    # encoding before Issue E, and the home raises rather than downgrading.
+    self.hnf_snp_query_enable = False
+
+    # Negative control for catalogue rule D10. The snoopee INVALIDATES the line
+    # under a snoop that must not change its state, and answers consistently with
+    # what it did -- so the response is self-consistent and only the rule that
+    # knows the opcode can see anything wrong.
+    #
+    # Nothing else fires on it, which is the point. D5 bounds the answer by what
+    # the opcode asked for and SnpQuery asks for nothing; D6 bounds it by what
+    # the snoopee held and I claims less, not more; D7 wants the dirty copy
+    # accounted for and excludes the snoops that return no data, which is the set
+    # SnpQuery is in. A snoopee can therefore lose a line to a query with every
+    # other rule agreeing.
+    self.rnf_snp_query_mutates_negctl = False
+
     # Negative control for the snoop response-form rule. A dirty snoopee answers
     # a snoop that returns no data -- SnpMakeInvalid -- on DAT, carrying the copy
     # Chapter 4 requires it to discard.
@@ -977,6 +1003,7 @@ class VipChiCfgAgent:
       "hnf_downstream_force_decerr": self.hnf_downstream_force_decerr,
       "hnf_txsactive_early_drop_negctl": self.hnf_txsactive_early_drop_negctl,
       "rnf_txsactive_snoop_drop_negctl": self.rnf_txsactive_snoop_drop_negctl,
+      "rnf_snp_query_mutates_negctl": self.rnf_snp_query_mutates_negctl,
       "raw_req_txsactive_flit_scoped_negctl":
         self.raw_req_txsactive_flit_scoped_negctl,
       "snf_persist_target_srcid_negctl": self.snf_persist_target_srcid_negctl,

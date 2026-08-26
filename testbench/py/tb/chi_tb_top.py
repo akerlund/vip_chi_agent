@@ -699,6 +699,20 @@ async def tc_chi_coh_e_read_clean_snoop(dut) -> None:
   await _run_e_coherent(dut, test_name)
 
 
+@cocotb.test(name="tc_chi_coh_e_snp_query", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_snp_query(dut) -> None:
+  """Run this public testcase through the CHI-E coherent topology."""
+  test_name = "tc_chi_coh_e_snp_query"
+  await _run_e_coherent(dut, test_name)
+
+
+@cocotb.test(name="tc_chi_coh_e_snp_query_negctl", timeout_time=20, timeout_unit="ms")
+async def tc_chi_coh_e_snp_query_negctl(dut) -> None:
+  """Run this public testcase through the CHI-E coherent topology."""
+  test_name = "tc_chi_coh_e_snp_query_negctl"
+  await _run_e_coherent(dut, test_name)
+
+
 @cocotb.test(name="tc_chi_coh_e_snoop_match_negctl", timeout_time=20, timeout_unit="ms")
 async def tc_chi_coh_e_snoop_match_negctl(dut) -> None:
   """Run this public testcase through the CHI-E coherent topology."""

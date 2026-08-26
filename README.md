@@ -114,8 +114,9 @@ together, not one endpoint answering reads. In short:
     the only thing that can tell them apart — and it is what makes a partial
     store and a later fill merge rather than one discarding the other.
   - Snoop families: `SnpShared`, `SnpClean`, `SnpOnce`, `SnpCleanShared`,
-    `SnpUnique`, `SnpCleanInvalid`, `SnpMakeInvalid`, and the DCT forwarding
-    forms.
+    `SnpUnique`, `SnpCleanInvalid`, `SnpMakeInvalid`, the DCT forwarding forms,
+    and `SnpQuery` (CHI-E) — the one the home may send with no request behind it,
+    to read a Requester's state instead of trusting its own snoop filter.
   - Exclusive monitor (LL/SC) with conflict-driven failure.
   - Configurable granted state per coherent-read class, snoop latency, RN-F
     cache capacity, and opt-in DCT.
@@ -193,7 +194,7 @@ together, not one endpoint answering reads. In short:
   - A single include entry point and one umbrella package.
   - UVM `uvm_config_db` wiring for the HN-I System Address Map and QoS window.
 - **Parity and regression evidence**
-  - **230 SystemVerilog** testcases and **231 pyUVM** testcases, mirrored
+  - **232 SystemVerilog** testcases and **233 pyUVM** testcases, mirrored
     between the two flows and gated by name so a test added on one side and not
     the other fails rather than quietly halving the coverage.
   - Cross-port gates on the surfaces that can drift while both ports pass their

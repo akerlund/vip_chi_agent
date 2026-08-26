@@ -69,8 +69,11 @@ class chi_coh_snp_resp_data_negctl_base_test #(
   // The rule this control exists to provoke. Demoted by message so the run can
   // still gate on "UVM_ERROR : 0", and then COUNTED: a demotion nobody counts is
   // indistinguishable from a rule that stopped working.
-  localparam string TARGET_PATTERN_C =
-    "*that snoop returns no data and discards its dirty copy*";
+  // The clause naming the DISCARD is gone from the message, and so is it from
+  // here. SnpQuery answers no data either and keeps its dirty copy, so the rule
+  // now reports for two opcodes that agree about the channel and disagree about
+  // the copy. The remaining phrase is still unique to this rule.
+  localparam string TARGET_PATTERN_C = "*that snoop returns no data*";
 
   chi_sb_rule_negctl_catcher coh_catcher;
 

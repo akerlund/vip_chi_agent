@@ -454,15 +454,13 @@ class vip_chi_driver_rnf #(
   // TRUE for the forwarding (DCT) snoop opcodes -- the snoopee forwards its data
   // for relay to the requester instead of answering a plain SnpResp/SnpRespData.
   // ---------------------------------------------------------------------------
+  // The types package answers this for the whole VIP. This driver used to keep
+  // its own list of the five Forward opcodes, which agreed with the shared
+  // classifier only because both were right at the time -- and the shared one
+  // was the one that changed.
   protected function bit snp_opcode_is_fwd(input snp_opcode_t op);
-    case (op)
-      snp_opcode_t'(VIP_CHI_SNP_SHARED_FWD_C),
-      snp_opcode_t'(VIP_CHI_SNP_CLEAN_FWD_C),
-      snp_opcode_t'(VIP_CHI_SNP_ONCE_FWD_C),
-      snp_opcode_t'(VIP_CHI_SNP_NOT_SHARED_DIRTY_FWD_C),
-      snp_opcode_t'(VIP_CHI_SNP_UNIQUE_FWD_C): return 1'b1;
-      default: return 1'b0;
-    endcase
+    return vip_chi_types_pkg::vip_chi_snp_opcode_is_forwarding(
+             vip_chi_snp_opcode_t'(op));
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -509,8 +507,12 @@ class vip_chi_driver_rnf #(
     nxt = this.snoop_next_state_raw(snp_opcode, current);
 
     // Staying in SD would not be a transition and is not caught here; this
-    // bounds where the snoop MOVES the line to.
+    // bounds where the snoop MOVES the line to. A state-preserving snoop moves
+    // it nowhere, so the guard has nothing to bound and must not fire: applied
+    // there it would itself be the transition 4.5 forbids.
     if ((nxt == VIP_CHI_RESP_STATE_SD_PD_DIRTY_E) && do_not_go_to_sd &&
+        !vip_chi_types_pkg::vip_chi_snp_opcode_preserves_state(
+           vip_chi_snp_opcode_t'(snp_opcode)) &&
         (snp_opcode != snp_opcode_t'(VIP_CHI_SNP_ONCE_FWD_C))) begin
       return VIP_CHI_RESP_STATE_SC_E;
     end
@@ -521,6 +523,31 @@ class vip_chi_driver_rnf #(
     input snp_opcode_t   snp_opcode,
     input vip_chi_resp_t current
   );
+    // Asked first, and asked at all, because "no change" is this function's
+    // default arm: SnpOnce lands there too, and it lands there because no rule
+    // applies to it rather than because one forbids the change. For SnpQuery a
+    // rule does -- 4.5, "must not change the state of the cache line at the
+    // Snoopee" -- and a requirement satisfied by falling through a case is one
+    // nothing would notice the loss of.
+    //
+    // The caller applies the DoNotGoToSD guard to whatever this returns, and an
+    // SD holder under a SnpQuery carrying that bit would be moved to SC by it.
+    // That is the one transition this opcode has no permission to make, so the
+    // guard is skipped for the preserving opcodes in snoop_next_state.
+    if (vip_chi_types_pkg::vip_chi_snp_opcode_preserves_state(
+          vip_chi_snp_opcode_t'(snp_opcode))) begin
+      // The control invalidates under a snoop that must not change the state.
+      // Corrupting it here rather than by leaving the opcode out of the case
+      // below, because that case is not what holds this line still: an opcode in
+      // neither named arm already reaches the default and keeps its state, so
+      // removing SnpQuery from the preserving set would go on preserving and the
+      // control would corrupt nothing. See the knob.
+      if (this.cfg.rnf_snp_query_mutates_negctl) begin
+        return VIP_CHI_RESP_STATE_I_E;
+      end
+      return current;
+    end
+
     case (snp_opcode)
       snp_opcode_t'(VIP_CHI_SNP_SHARED_C),
       snp_opcode_t'(VIP_CHI_SNP_CLEAN_C),
@@ -610,7 +637,11 @@ class vip_chi_driver_rnf #(
       this.drive_snp_resp_data(snp, nxt, fwd_data);
     end
     else begin
-      this.drive_snp_resp(snp, nxt);
+      // Table 4-9's encoding, not the cache-state one. The two agree on I, SC
+      // and UC and part company on the dirty states, which is where the SnpResp
+      // for a snoop that leaves a dirty holder dirty now lands -- see
+      // vip_chi_snp_resp_dataless_state.
+      this.drive_snp_resp(snp, vip_chi_snp_resp_dataless_state(nxt));
     end
   endtask
 
@@ -658,7 +689,7 @@ class vip_chi_driver_rnf #(
       this.drive_snp_resp_data(snp, nxt, fwd_data, 1'b1 /*is_fwd*/);
     end
     else begin
-      this.drive_snp_resp(snp, nxt);
+      this.drive_snp_resp(snp, vip_chi_snp_resp_dataless_state(nxt));
     end
   endtask
 

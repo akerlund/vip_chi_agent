@@ -540,6 +540,7 @@ class vip_chi_coverage #(
       bins snp_unique        = {VIP_CHI_SNP_UNIQUE_C};
       bins snp_clean_invalid = {VIP_CHI_SNP_CLEAN_INVALID_C};
       bins snp_make_invalid  = {VIP_CHI_SNP_MAKE_INVALID_C};
+      bins snp_query         = {VIP_CHI_SNP_QUERY_C};
       // Forwarding (DCT) snoops.
       bins snp_shared_fwd           = {VIP_CHI_SNP_SHARED_FWD_C};
       bins snp_clean_fwd            = {VIP_CHI_SNP_CLEAN_FWD_C};

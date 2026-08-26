@@ -2,6 +2,13 @@ class chi_coherency_negctl_catcher extends uvm_report_catcher;
 
   bit saw_coherency_error = 1'b0;
 
+  // How many records this catcher demoted. A count rather than only a flag, so a
+  // test can hold it against the rule counter it also reads: if the two
+  // disagree, either a report escaped the catcher or a counter moved without a
+  // report, and both mean the control is measuring something other than what it
+  // says. The pyUVM twin carries the same field.
+  int claimed = 0;
+
   // ---------------------------------------------------------------------------
   // Constructor
   // ---------------------------------------------------------------------------
@@ -23,6 +30,7 @@ class chi_coherency_negctl_catcher extends uvm_report_catcher;
         (uvm_is_match("*COHERENCY VIOLATION*", get_message()) ||
          uvm_is_match("*EXCLUSIVE VIOLATION*", get_message()))) begin
       this.saw_coherency_error = 1'b1;
+      this.claimed++;
       set_severity(UVM_INFO);
       set_id("VIP_CHI_EXPECTED_COH_VIOLATION");
       set_message("Expected Checker-D coherency/exclusive violation observed and demoted to INFO");
